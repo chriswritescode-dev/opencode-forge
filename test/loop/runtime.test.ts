@@ -8,6 +8,7 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
+import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
@@ -54,6 +55,7 @@ describe('Loop Runtime', () => {
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   let loopSessionUsageRepo: LoopSessionUsageRepo
+  let loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo>
   let currentLoop: Loop | null = null
 
   beforeEach(() => {
@@ -66,6 +68,7 @@ describe('Loop Runtime', () => {
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
     loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    loopTransitionsRepo = createLoopTransitionsRepo(db)
 
     loopService = createLoopService(
       loopsRepo,
@@ -142,6 +145,7 @@ describe('Loop Runtime', () => {
       plansRepo,
       reviewFindingsRepo,
       sectionPlansRepo,
+      loopTransitionsRepo,
       projectId: PROJECT_ID,
       client: forge.client,
       logger,
@@ -2357,6 +2361,76 @@ describe('stall handling terminates with stall timeout when configured cap is re
       }
     })
 
+    test('auditorFallbackIndex 0 keeps primary auditor model and variant', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        auditorFallbackIndex: 0,
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const auditorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorPrompts.length).toBeGreaterThan(0)
+      for (const call of auditorPrompts) {
+        expect((call.params as any)?.model).toEqual({ providerID: 'test', modelID: 'auditor' })
+        expect((call.params as any)?.variant).toBe('audit-high')
+      }
+    })
+
+    test('auditorFallbackIndex 1 uses fallback model and drops variant', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        auditorFallbackIndex: 1,
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const auditorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorPrompts.length).toBeGreaterThan(0)
+      for (const call of auditorPrompts) {
+        expect((call.params as any)?.model).toEqual({ providerID: 'fb', modelID: 'auditor-2' })
+        expect((call.params as any)?.variant).toBeUndefined()
+      }
+    })
+
     test('model fallback omits variant when model is undefined', async () => {
       let failCount = 2
       const { client, calls } = createFakeForgeClient({
@@ -2434,7 +2508,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop, logs } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
       const loopName = 'test-loop-cd-fix'
 
       // Create a loop in final_auditing phase with outstanding bugs
@@ -2446,6 +2520,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         auditCount: 1,
         iteration: 1,
         maxIterations: 5,
+        auditorFallbackIndex: 1,
+        auditorVariant: 'audit-high',
       })
       loopService.setState(state.loopName, state)
 
@@ -2524,6 +2600,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(finalAuditPromptText).toContain('Coder decisions & verification notes')
       expect(finalAuditPromptText).toContain('Chose approach X')
       expect(finalAuditPromptText).toContain('FOO=bar pnpm test')
+      // The final-audit prompt must honour the persisted fallback index: fb/auditor-2, no variant.
+      expect(finalAuditPrompt?.model).toEqual({ providerID: 'fb', modelID: 'auditor-2' })
+      expect(finalAuditPrompt?.variant).toBeUndefined()
     })
   })
 
@@ -3052,6 +3131,979 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // abort should be called exactly once (not twice from the race)
       const abortCalls = calls.filter(c => c.method === 'session.abort')
       expect(abortCalls.length).toBe(1)
+    })
+  })
+
+  describe('auditor model fallback', () => {
+    function auditLimitPromptAsync(params: any): void {
+      if (params?.agent === 'auditor-loop') {
+        const err = new Error('You have reached your usage limit')
+        ;(err as any).statusCode = 403
+        throw err
+      }
+    }
+
+    function makeCodingIdleMessages(): Array<{ info: { role: string; finish: string }; parts: Array<{ type: string; text: string }> }> {
+      return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Coded something.' }] }]
+    }
+
+    async function driveAuditSend(loop: Loop, state: LoopState): Promise<void> {
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
+    }
+
+    test('audit prompt send failure with a configured fallback re-dispatches with the fallback auditor model', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => makeCodingIdleMessages(),
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'auditor') {
+              const err = new Error('You have reached your usage limit')
+              ;(err as any).statusCode = 403
+              throw err
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await driveAuditSend(loop, state)
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls.length).toBe(2)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'test', modelID: 'auditor' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('audit prompt send failure with no configured fallback terminates', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => makeCodingIdleMessages(),
+          promptAsync: async (params: any) => auditLimitPromptAsync(params),
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await driveAuditSend(loop, state)
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+      expect(afterState!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('two configured fallbacks where every send is limited re-dispatches twice then terminates', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => makeCodingIdleMessages(),
+          promptAsync: async (params: any) => auditLimitPromptAsync(params),
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await driveAuditSend(loop, state)
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      // initial (test/auditor) + resend #1 (fb/a) + resend #2 (fb/b)
+      expect(auditorCalls.length).toBe(3)
+    })
+
+    test('coding phase provider limit still terminates immediately and leaves auditorFallbackIndex at 0', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+      expect(afterState!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('no loop_transitions row is written for a fallback advance', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => makeCodingIdleMessages(),
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'auditor') {
+              const err = new Error('You have reached your usage limit')
+              ;(err as any).statusCode = 403
+              throw err
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await driveAuditSend(loop, state)
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+
+      // The coding→auditing rotation is the only phase change; the fallback
+      // advance is not a phase transition and must not write a row.
+      const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].fromPhase).toBe('coding')
+      expect(rows[0].toPhase).toBe('auditing')
+    })
+
+    test('an abort emitted by fallback re-dispatch leaves the loop in the auditor phase with the fallback prompt active', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'user', finish: 'stop' }, parts: [{ type: 'text', text: 'prompt' }] }],
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // A provider-limit retry triggers the fallback, which aborts the session
+      // internally and re-dispatches on the fallback model.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The internal session.abort surfaces as a queued AbortError event after
+      // the fallback prompt was already dispatched. It must be consumed, not
+      // treated as an audit failure that rotates the loop back to coding.
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'AbortError' } },
+      })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('duplicate provider-limit signals for the same failed prompt cause exactly one advance and one resend', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // One failed prompt emits both a retry status and an error event.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // Exactly one fallback resend — the duplicate signal must not advance again.
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('a later limit from the fallback prompt advances to the next fallback entry', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // Original prompt fails: retry + error (duplicate) → one advance to index 1.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The fallback prompt begins its own lifecycle.
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+
+      // A genuine limit from the fallback prompt must advance to the next entry.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(2)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'b' } })
+    })
+
+    test('single primary retry then fallback busy then a single fallback retry advances exactly once more', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The primary emits ONLY a single retry-limit signal (no error companion),
+      // so the companion coalescing budget stays at zero after the advance.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The fallback prompt begins its own lifecycle.
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+
+      // A single fallback retry must NOT be absorbed as the primary's companion;
+      // it is a genuine failure of the replacement prompt and advances to #2.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(2)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'b' } })
+    })
+
+    test('primary retry then fallback busy then a replacement-only provider-limit error advances to the next fallback', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The primary emits a single retry-limit signal: advance 0→1 and
+      // re-dispatch on fb/a.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The replacement prompt begins its own lifecycle, closing the companion window.
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+
+      // The replacement fails with ONLY a provider-limit session.error (no
+      // preceding retry). This is a genuine failure of the active replacement
+      // prompt and must NOT be absorbed as the primary's companion.
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } },
+      })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(2)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'b' } })
+    })
+
+    test('replacement-only provider-limit error with no remaining fallback exhausts the chain and terminates', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The primary emits a single retry-limit signal: advance 0→1 and
+      // re-dispatch on fb/a.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The replacement begins its lifecycle, then fails with only a
+      // provider-limit error — no remaining fallback, so the chain exhausts.
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } },
+      })
+
+      const finalState = loopService.getAnyState(state.loopName)
+      expect(finalState).not.toBeNull()
+      expect(finalState!.active).toBe(false)
+      expect(finalState!.status).toBe('errored')
+      expect(finalState!.terminationReason).toContain('provider_limit:')
+      expect(finalState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+    })
+
+    test('concurrent abort and replacement-busy events leave the loop auditing with one fallback dispatch', async () => {
+      let releaseSend!: () => void
+      const sendGate = new Promise<void>((resolve) => { releaseSend = resolve })
+      let markSendStarted!: () => void
+      const sendStarted = new Promise<void>((resolve) => { markSendStarted = resolve })
+
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'user', finish: 'stop' }, parts: [{ type: 'text', text: 'prompt' }] }],
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'auditor-2') {
+              markSendStarted()
+              await sendGate
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // Begin the fallback re-dispatch without awaiting it. The provider-limit
+      // handler holds the state lock, aborts the session (queuing an
+      // AbortError), and sends the fallback prompt, held in-flight at sendGate.
+      const retryP = loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      await sendStarted // fallback resend is in-flight; internalFallbackAborts is set
+
+      // Queue the intentional-abort event, then the replacement busy, while the
+      // fallback send is still pending. Without serialization the busy cleanup
+      // clears the abort marker before the queued AbortError consumes it,
+      // rotating the loop back to coding.
+      const abortP = loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'AbortError' } },
+      })
+      const busyP = loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+
+      releaseSend()
+      await Promise.all([retryP, abortP, busyP])
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('concurrent retry/error/busy delivery causes exactly one advancement and resend; a later limit advances normally', async () => {
+      let releaseSend!: () => void
+      const sendGate = new Promise<void>((resolve) => { releaseSend = resolve })
+      let markSendStarted!: () => void
+      const sendStarted = new Promise<void>((resolve) => { markSendStarted = resolve })
+
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'user', finish: 'stop' }, parts: [{ type: 'text', text: 'prompt' }] }],
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'a') {
+              markSendStarted()
+              await sendGate
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The original failure emits a retry status and a duplicate error. The
+      // retry advances 0→1 and sends fallback #1, held in-flight at sendGate.
+      const retryP = loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      await sendStarted // fallback #1 is in-flight; coalescedLimitSessions is set
+
+      // Queue the duplicate error, let it reach its lock acquisition (mirroring
+      // production, where the duplicate error is dispatched well before the
+      // replacement prompt's busy), then queue the busy.
+      const errorP = loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      const busyP = loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+
+      releaseSend()
+      await Promise.all([retryP, errorP, busyP])
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // Exactly one resend — the duplicate error must not advance again.
+      let auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+
+      // A genuine limit from the replacement prompt still advances normally.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(2)
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'b' } })
+    })
+
+    function persistedAuditLimitMessage() {
+      return [
+        { info: { role: 'assistant', finish: 'error', error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } }, parts: [] },
+      ]
+    }
+
+    test('two pre-busy retry limit signals from one prompt cause exactly one advance and resend', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The primary emits TWO retry-limit signals for the SAME failed prompt
+      // before the replacement (fb/a) begins its own lifecycle (no busy yet).
+      // Both belong to the one failure and must advance the chain exactly once.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // Exactly one resend on fb/a — the second retry was coalesced, not advanced.
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+    })
+
+    test('concurrent fallback dispatch, busy, then idle runs the audit phase exactly once', async () => {
+      let releaseSend!: () => void
+      const sendGate = new Promise<void>((resolve) => { releaseSend = resolve })
+      let markSendStarted!: () => void
+      const sendStarted = new Promise<void>((resolve) => { markSendStarted = resolve })
+
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Found a bug: edge case' }] }],
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'auditor-2') {
+              markSendStarted()
+              await sendGate
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // Begin the fallback re-dispatch (held in-flight at sendGate, holding the
+      // state lock). While it is held, the fast fallback emits busy then idle.
+      const retryP = loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      await sendStarted // fallback resend is in-flight; idle-gate marker pending
+
+      // busy clears the idle-gate pending marker synchronously, then both queue
+      // behind the lock held by the fallback dispatch.
+      const busyP = loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+      const idleP = loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
+
+      releaseSend()
+      await Promise.all([retryP, busyP, idleP])
+
+      // The idle must NOT be discarded: the audit phase runs, processes the
+      // fallback's clean audit result, and completes the loop.
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.terminationReason).toBe('completed')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('persisted provider-limit in auditing assistant error attempts the configured fallback', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => persistedAuditLimitMessage() },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('persisted provider-limit in auditing assistant error with no fallback terminates', async () => {
+      const { client } = createFakeForgeClient({
+        session: { messages: async () => persistedAuditLimitMessage() },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+      expect(afterState!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('persisted provider-limit in final auditing assistant error attempts the configured fallback', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => persistedAuditLimitMessage() },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'final_auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('final_auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('session.error ProviderAuthError on the current audit session re-dispatches on the fallback auditor model', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'ProviderAuthError', data: { message: 'You have reached your usage limit' } } },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('stale (non-current) audit session provider-limit error with a configured fallback terminates and leaves auditorFallbackIndex at 0', async () => {
+      const { client } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const auditSessionId = 'audit-session-id'
+      const state = makeState({ sessionId: auditSessionId, phase: 'auditing' })
+      loop.start({ state })
+
+      // Rotate to a new current audit session; the old one becomes stale.
+      const newAuditSessionId = 'new-audit-session-id'
+      loop.restart(state.loopName, {
+        newState: makeState({ sessionId: newAuditSessionId, phase: 'auditing' }),
+        newSessionId: newAuditSessionId,
+      })
+
+      // The retired audit session emits a provider-limit error. It is stale, so
+      // the choke point must decline to fall back and the loop must terminate.
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: auditSessionId, error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+      expect(afterState!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('delayed old-prompt abort after busy is consumed; a limit after busy advances to the next entry', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // Original failure: retry advances 0→1 and re-dispatches on fb/a.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The replacement prompt begins its lifecycle; this closes the failed
+      // prompt's companion window and clears the coalesced-limit record.
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+
+      // A delayed AbortError from the failed prompt's internal abort arrives
+      // after busy and is consumed (not treated as an audit failure).
+      await loop.tick({ type: 'session.error', properties: { sessionID: state.sessionId, error: { name: 'AbortError' } } })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // A provider-limit error from the active replacement prompt is genuine and
+      // advances to the next fallback entry.
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } } },
+      })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(2)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'b' } })
+    })
+
+    test('multiple internal aborts from one chain walk are all consumed without suppressing a later genuine abort', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'user', finish: 'stop' }, parts: [{ type: 'text', text: 'prompt' }] }],
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'a') {
+              const err = new Error('You have reached your usage limit')
+              ;(err as any).statusCode = 403
+              throw err
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The failure triggers one chain walk: fallback #1 is limited (advance to
+      // #2) and #2 succeeds. Each resend issues an internal abort on the same
+      // reused session, so two AbortErrors are outstanding.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      let auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(2)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'b' } })
+
+      // Both internal AbortErrors must be consumed (not treated as audit failure).
+      await loop.tick({ type: 'session.error', properties: { sessionID: state.sessionId, error: { name: 'AbortError' } } })
+      await loop.tick({ type: 'session.error', properties: { sessionID: state.sessionId, error: { name: 'AbortError' } } })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+
+      // A third, genuine abort is no longer suppressed and rotates to coding.
+      await loop.tick({ type: 'session.error', properties: { sessionID: state.sessionId, error: { name: 'AbortError' } } })
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.auditorFallbackIndex).toBe(2)
+    })
+
+    test('a rejected internal abort leaves no marker, so a later genuine abort follows normal audit failure recovery', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'user', finish: 'stop' }, parts: [{ type: 'text', text: 'prompt' }] }],
+          abort: async () => {
+            throw new Error('session already idle')
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The provider-limit retry triggers a fallback re-dispatch whose internal
+      // abort REJECTS because the session is already idle.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The replacement prompt is genuinely aborted before idle. The failed
+      // internal abort must not have left a marker that consumes this AbortError,
+      // so it follows normal audit failure recovery and rotates back to coding.
+      await loop.tick({ type: 'session.error', properties: { sessionID: state.sessionId, error: { name: 'AbortError' } } })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('a queued abort-generated idle during fallback settlement is suppressed once the replacement prompt is pending', async () => {
+      let loopRef: Loop | null = null
+      let queuedIdle: Promise<void> | null = null
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => makeCodingIdleMessages(),
+          abort: async (params: any) => {
+            // The internal abort surfaces as a session idle for the aborted (failed)
+            // prompt while the fallback settle delay is in progress. The failed
+            // prompt's pending marker is already cleared by sendLoopPrompt, so this
+            // idle passes the pre-lock gate and queues behind the state lock held by
+            // the fallback dispatch.
+            if (loopRef) queuedIdle = loopRef.tick({ type: 'session.status', properties: { sessionID: params.sessionID, status: { type: 'idle' } } })
+          },
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'auditor') {
+              const err = new Error('You have reached your usage limit')
+              ;(err as any).statusCode = 403
+              throw err
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      loopRef = loop
+
+      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await driveAuditSend(loop, state)
+      if (queuedIdle) await queuedIdle
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // Exactly one fallback dispatch: the replacement prompt. The queued stale
+      // idle must not run the auditing phase again on the reused session.
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(2)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'test', modelID: 'auditor' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+    })
+
+    test('an idle-only internal abort does not leave a marker that consumes a later genuine replacement abort', async () => {
+      let loopRef: Loop | null = null
+      let queuedIdle: Promise<void> | null = null
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'user', finish: 'stop' }, parts: [{ type: 'text', text: 'prompt' }] }],
+          abort: async (params: any) => {
+            // The internal abort surfaces as a session idle (no AbortError). It
+            // is queued during the settle delay and will be suppressed once the
+            // replacement prompt is pending.
+            if (loopRef) queuedIdle = loopRef.tick({ type: 'session.status', properties: { sessionID: params.sessionID, status: { type: 'idle' } } })
+          },
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      loopRef = loop
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // The provider-limit retry triggers a fallback re-dispatch whose internal
+      // abort emits only a `session.status: idle` (no AbortError).
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+      if (queuedIdle) await queuedIdle
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+
+      // The replacement prompt is genuinely aborted by the user/provider. The
+      // idle-only internal abort must not have left a marker that consumes this
+      // AbortError, so it follows normal audit-failure recovery and rotates back
+      // to coding instead of leaving the loop auditing a stopped prompt.
+      await loop.tick({ type: 'session.error', properties: { sessionID: state.sessionId, error: { name: 'AbortError' } } })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
     })
   })
 

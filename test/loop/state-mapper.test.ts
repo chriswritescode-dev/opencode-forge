@@ -283,6 +283,19 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
     const result = loopStateToRow(state, 'proj-1')
     expect(result.phase).toBe('final_audit_fix')
   })
+
+  it('round-trips auditorFallbackIndex through loopRowToState and loopStateToRow', () => {
+    const row = makeRow({ auditorFallbackIndex: 2 })
+    const state = loopRowToState(row)
+    expect(state.auditorFallbackIndex).toBe(2)
+    const result = loopStateToRow(state, 'proj-1')
+    expect(result.auditorFallbackIndex).toBe(2)
+  })
+
+  it('defaults auditorFallbackIndex to 0 when unset', () => {
+    const state = loopRowToState(makeRow())
+    expect(state.auditorFallbackIndex).toBe(0)
+  })
 })
 
 // Helper to convert a row through our mapping (simulating what the existing code does)

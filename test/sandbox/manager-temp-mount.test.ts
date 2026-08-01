@@ -3,8 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import type { DockerService } from '../../src/sandbox/docker'
-import { createMockLogger, createMockDockerService } from '../helpers/sandbox-mocks'
+import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 
 describe('SandboxManager temp mount', () => {
   const tmpDirs: string[] = []
@@ -25,14 +24,14 @@ describe('SandboxManager temp mount', () => {
   test('mounts the temp dir read-write at the identical container path', async () => {
     const tmpDir = join(createTempRoot(), 'oc-forge')
 
-    const mockDocker = createMockDockerService()
+    const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
       tmpDir,
     }
 
-    const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
+    const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
     const resolved = resolve(tmpDir)
@@ -40,54 +39,51 @@ describe('SandboxManager temp mount', () => {
     // Created on demand (writable scratch space), unlike the read-only tool-output mount.
     expect(existsSync(resolved)).toBe(true)
 
-    const calls = mockDocker.getCreateContainerCalls()
-    const opts = calls[0][3] as { extraMounts?: string[] } | undefined
-    const mounts = opts?.extraMounts ?? []
-    // Read-write: no :ro suffix.
-    expect(mounts).toContain(`${resolved}:${resolved}`)
+    // Appears in workspaces as read-write
+    const workspaces = runtime.getCreateSandboxCalls()[0][1]
+    expect(workspaces).toContainEqual({ hostDir: resolved, readOnly: false })
 
     const active = manager.getActive('test')
     expect(active?.mounts).toContainEqual({ hostDir: resolved, containerDir: resolved, readOnly: false })
   })
 
   test('skips the mount when no temp dir is configured', async () => {
-    const mockDocker = createMockDockerService()
+    const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
 
-    const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
+    const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(2)
+    expect(active?.mounts).toHaveLength(1)
   })
 
   test('skips the mount when it is nested inside the workspace', async () => {
     const workspace = createTempRoot()
     const nested = join(workspace, '.forge', 'tmp')
 
-    const mockDocker = createMockDockerService()
+    const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
       tmpDir: nested,
     }
 
-    const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
+    const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', workspace)
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(2)
-    expect(active?.mounts[0]).toEqual({ hostDir: resolve(workspace), containerDir: '/workspace' })
-    expect(active?.mounts[1]).toEqual({ hostDir: resolve(workspace), containerDir: resolve(workspace) })
+    expect(active?.mounts).toHaveLength(1)
+    expect(active?.mounts[0]).toEqual({ hostDir: resolve(workspace), containerDir: resolve(workspace) })
   })
 
-  test('coexists with the tool-output mount', async () => {
+  test('drops the temp mount when it is nested inside the tool-output mount', async () => {
     // tool-output mount requires its host dir to already exist; point it at the temp root.
     const root = createTempRoot()
     const tmpDir = join(root, 'oc-forge')
 
-    const mockDocker = createMockDockerService()
+    const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
@@ -95,12 +91,15 @@ describe('SandboxManager temp mount', () => {
       tmpDir,
     }
 
-    const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
+    const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
     const tmpResolved = resolve(tmpDir)
+    // The tmp dir overlaps the read-only tool-output mount (its ancestor) and arrives after it
+    // in priority order, so it is dropped — `sbx` rejects overlapping workspace paths.
     expect(active?.mounts).toContainEqual({ hostDir: resolve(root), containerDir: resolve(root), readOnly: true })
-    expect(active?.mounts).toContainEqual({ hostDir: tmpResolved, containerDir: tmpResolved, readOnly: false })
+    expect(active?.mounts.some((m) => m.hostDir === tmpResolved)).toBe(false)
+    expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
   })
 })

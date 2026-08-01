@@ -13,7 +13,7 @@ import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-r
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
-import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
@@ -122,6 +122,13 @@ export interface Loop {
   setParentSessionLookup(lookup: (sessionId: string) => Promise<string | null>): void
   /** Access the underlying LoopService for state/prompt/section operations. */
   service: LoopService
+  /**
+   * Resolve an auditor provider limit by advancing the fallback chain and
+   * re-dispatching the audit prompt, or declining so the caller terminates.
+   * Exposed for the restart path, which must invoke it after releasing the
+   * per-loop state lock. Returns true when the limit was absorbed.
+   */
+  handleAuditorProviderLimit(loopName: string, limitReason: string, opts?: { eventSessionId?: string; eventType?: 'status' | 'error' }): Promise<boolean>
 }
 
 export { isWorkspaceNotFoundError } from './runtime-workspace'
@@ -145,7 +152,54 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const idleRetryAttempts = new Map<string, number>()
   const stateLocks = new Map<string, Promise<unknown>>()
 
+  /**
+   * Sessions we abort ourselves in `resendAuditPromptWithAuditorModel` to
+   * re-dispatch the audit prompt on a fallback model. The value counts how many
+   * internal aborts we issued for that session and have not yet consumed. The
+   * resulting AbortError events must be consumed (not treated as an audit
+   * failure that rotates the loop back to coding). One fallback-chain walk can
+   * abort the same reused session more than once, so this is a counter, not a
+   * set: every outstanding internal abort gets exactly one matching AbortError
+   * consumed, and a genuine abort is only suppressed while a real internal
+   * abort is still outstanding. The counter is drained as AbortError events are
+   * observed and cleared as a backstop once the replacement prompt completes its
+   * lifecycle, so it can never suppress a later genuine abort.
+   */
+  const internalFallbackAborts = new Map<string, number>()
+
+  /**
+   * Consume one outstanding internal-abort marker for `sessionId`, mirroring how
+   * an AbortError event is consumed in the `session.error` handler. An internal
+   * abort terminates either with an AbortError OR with a `session.status: idle`;
+   * both are single-consumption terminal events, so both decrement the same
+   * counter. Returns true when a marker was consumed.
+   */
+  function consumeInternalFallbackAbort(sessionId: string): boolean {
+    const outstanding = internalFallbackAborts.get(sessionId)
+    if (outstanding === undefined || outstanding <= 0) return false
+    if (outstanding === 1) internalFallbackAborts.delete(sessionId)
+    else internalFallbackAborts.set(sessionId, outstanding - 1)
+    return true
+  }
+
+  /**
+   * Per-loop record of a provider-limit failure we have already absorbed for the
+   * current auditor fallback re-dispatch. A single failed prompt can emit more
+   * than one limit signal (multiple `session.status: retry` events and/or a
+   * terminal `session.error`) before the replacement prompt begins its own
+   * lifecycle, and all of them belong to the same failure. While this record is
+   * present we absorb every further limit signal for the same session so the
+   * chain advances exactly once per failed prompt. The coalescing window closes
+   * when the replacement prompt emits `session.status: busy` (which clears this
+   * record), so a provider-limit signal from the active replacement prompt is
+   * never mistaken for the previous prompt's companion. The record is reset on
+   * each committed advance and on the replacement's busy, so it always scopes to
+   * the failed prompt's teardown window rather than the session as a whole.
+   */
+  const coalescedLimitSessions = new Map<string, string>()
+
   const IDLE_RETRY_DELAY_MS = 1500
+  const AUDITOR_FALLBACK_SETTLE_MS = 250
   const MAX_IDLE_RETRIES = 1
   const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
 
@@ -358,6 +412,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     phase: string,
     errorSignal?: { name?: string; message?: string; statusCode?: number } | null,
   ): Promise<{ assistantErrorDetected: boolean; currentState: LoopState } | null> {
+    // `null` means the caller must `return` without continuing: either the loop
+    // was terminated or the audit was re-dispatched on a fallback auditor model.
     if (!assistantError) {
       return { assistantErrorDetected: false, currentState }
     }
@@ -366,6 +422,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const limitReason = classifyProviderLimit(errorSignal ?? {})
     if (limitReason) {
+      if (await handleAuditorProviderLimit(loopName, limitReason)) return null
       logger.error(`Loop: provider limit detected in ${phase} assistant error for ${loopName}: ${limitReason}, terminating`)
       await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
       return null
@@ -511,7 +568,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
-    const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName)
+    const auditorModel = resolveLoopAuditorChoice(getConfig(), loopService, loopName).model
     const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
     // Use the configured post-action model if set, falling back to the loop's auditor model when it fails.
     const primaryModel = configuredModel ?? auditorModel
@@ -891,6 +948,122 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
+  function isAuditorPhase(phase: LoopState['phase']): boolean {
+    return phase === 'auditing' || phase === 'final_auditing'
+  }
+
+  /**
+   * Abort the current audit session (it may be mid-retry when the provider limit
+   * arrives via `session.status`), settle, then re-dispatch the audit prompt on the
+   * SAME session using the fallback auditor model choice. `createAuditSession`
+   * never binds a model, so the existing session accepts a different model on the
+   * next prompt without creating a new session.
+   */
+  async function resendAuditPromptWithAuditorModel(loopName: string, state: LoopState): Promise<{ error?: unknown }> {
+    // Abort the retrying session, then mark this abort as internally initiated
+    // so the resulting AbortError event is consumed rather than treated as an
+    // audit failure. The marker is added only once the abort succeeds: a rejected
+    // abort (session already idle) emits no AbortError, so leaving a marker would
+    // suppress a later genuine abort of the replacement prompt.
+    try {
+      await client.session.abort({ sessionID: state.sessionId })
+      internalFallbackAborts.set(state.sessionId, (internalFallbackAborts.get(state.sessionId) ?? 0) + 1)
+    } catch {
+      // Session may already be idle.
+    }
+    await new Promise((r) => setTimeout(r, AUDITOR_FALLBACK_SETTLE_MS))
+
+    // The idle-gate / in-flight guard must not reject the resend.
+    clearPromptPending(loopName, logger)
+    clearPromptInFlight(loopName)
+
+    const promptText = state.phase === 'final_auditing' ? loopService.buildFinalAuditPrompt(state) : loopService.buildAuditPrompt(state)
+    const choice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
+    const { error } = await sendPromptWithFallback({
+      loopName,
+      sessionId: state.sessionId,
+      promptText,
+      agent: 'auditor-loop',
+      model: choice.model,
+      variant: choice.variant,
+    })
+    if (!error) {
+      watchdog.recordActivity(loopName, 'auditor-model-fallback')
+    }
+    return { error }
+  }
+
+  /**
+   * Single choke point for "auditor provider limit → fallback or terminate".
+   * Returns `true` when the limit was absorbed (caller must `return` without
+   * terminating), `false` when the caller must terminate exactly as today.
+   */
+  async function handleAuditorProviderLimit(
+    loopName: string,
+    limitReason: string,
+    opts?: { eventSessionId?: string; eventType?: 'status' | 'error' },
+  ): Promise<boolean> {
+    let state = loopService.getActiveState(loopName)
+    if (!state?.active || !isAuditorPhase(state.phase)) return false
+    if (opts?.eventSessionId && opts.eventSessionId !== state.sessionId) return false
+
+    // A single failed prompt can emit multiple limit signals (one or more
+    // `session.status: retry` events and/or a terminal `session.error`) before
+    // the replacement prompt begins its own lifecycle. All of them belong to
+    // the same failure, so while the coalescing window is open for this session
+    // we absorb every further limit signal (status or error) and the chain
+    // advances exactly once per failed prompt. The window closes when the
+    // replacement emits `session.status: busy` (clearing `coalescedLimitSessions`),
+    // so a genuine limit from the active replacement prompt always advances or
+    // exhausts the chain. Prompt-send failures (no event type) are also genuine.
+    if (opts?.eventType === 'error' || opts?.eventType === 'status') {
+      if (coalescedLimitSessions.get(loopName) === state.sessionId) {
+        logger.log(`Loop: coalescing duplicate auditor provider limit for ${loopName} (${limitReason})`)
+        return true
+      }
+    }
+
+    const chain = buildAuditorModelChain(getConfig(), state)
+    let from = state.auditorFallbackIndex ?? 0
+    while (true) {
+      const next = nextAuditorFallbackIndex(chain, from)
+      if (next === null) {
+        logger.error(`Loop: auditor fallback chain exhausted for ${loopName} (${limitReason})`)
+        return false
+      }
+
+      const committed = loopService.advanceAuditorFallbackIndex(loopName, from, next)
+      if (committed === null) {
+        // Another detection path already advanced; never double-prompt.
+        logger.log(`Loop: auditor fallback already advanced for ${loopName}, skipping re-dispatch`)
+        return true
+      }
+
+      // Record this session as coalesced so companion signals for the same
+      // failed prompt are absorbed above rather than advancing again.
+      coalescedLimitSessions.set(loopName, state.sessionId)
+
+      state = loopService.getActiveState(loopName)
+      if (!state?.active || !isAuditorPhase(state.phase)) return true
+
+      logger.log(`Loop: auditor provider limit for ${loopName} (${limitReason}) → auditor fallback #${committed}`)
+
+      const { error } = await resendAuditPromptWithAuditorModel(loopName, state)
+      if (!error) return true
+      if (error instanceof ConcurrentPromptError) return true
+
+      if (classifyProviderLimit(extractErrorSignal(error)) !== null) {
+        state = loopService.getActiveState(loopName)
+        if (!state?.active) return true
+        from = next
+        continue
+      }
+
+      logger.error(`Loop: auditor fallback re-dispatch failed for ${loopName}`, error)
+      return false
+    }
+  }
+
   async function handlePromptError(loopName: string, _state: LoopState, context: string, err: unknown, retryFn?: () => Promise<void>): Promise<void> {
     if (err instanceof ConcurrentPromptError) {
       logger.log(`Loop: ${context} — rejected as concurrent prompt (prior guard active), skipping retry/termination`)
@@ -906,6 +1079,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const signal = extractErrorSignal(err)
     const limitReason = classifyProviderLimit(signal)
     if (limitReason) {
+      if (await handleAuditorProviderLimit(loopName, limitReason)) return
       logger.error(`Loop: ${context} — provider limit detected, terminating without retry`)
       await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
       return
@@ -1132,7 +1306,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   ): Promise<boolean> {
     const finalAuditState = loopService.getActiveState(loopName) ?? { ...currentState, phase: 'final_auditing' }
     const finalAuditPrompt = loopService.buildFinalAuditPrompt(finalAuditState)
-    const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName, logger)
+    const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before final audit creation')
     const created = await createAuditSession({
@@ -1143,7 +1317,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       totalSections: currentState.totalSections ?? 0,
       worktreeDir: currentState.worktreeDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
-      auditorModel,
+      auditorModel: auditorChoice.model,
       prompt: finalAuditPrompt,
       allowDirectories: resolveLoopAllowedDirectories(getConfig()),
       logger,
@@ -1180,8 +1354,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       sessionId: created.auditSessionId,
       promptText: finalAuditPrompt,
       agent: 'auditor-loop',
-      model: auditorModel,
-      variant: currentState.auditorVariant,
+      model: auditorChoice.model,
+      variant: auditorChoice.variant,
     })
 
     if (finalAuditPromptErr) {
@@ -1275,7 +1449,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Phase-runner dispatch (see phaseRunners below) routes a final_audit_fix loop
     // to runFinalAuditFixPhase, so runCodingPhase only handles the regular coding phase.
     const currentConfig = getConfig()
-    const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
+    const auditorChoice = resolveLoopAuditorChoice(currentConfig, loopService, loopName, logger)
     const auditPrompt = loopService.buildAuditPrompt(currentState)
     const codeSessionId = currentState.sessionId
 
@@ -1310,7 +1484,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       totalSections: currentState.totalSections ?? 0,
       worktreeDir: currentState.worktreeDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
-      auditorModel,
+      auditorModel: auditorChoice.model,
       prompt: auditPrompt,
       allowDirectories: resolveLoopAllowedDirectories(currentConfig),
     })
@@ -1389,8 +1563,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       sessionId: created.auditSessionId,
       promptText: loopService.buildAuditPrompt(currentState),
       agent: 'auditor-loop',
-      model: auditorModel,
-      variant: currentState.auditorVariant,
+      model: auditorChoice.model,
+      variant: auditorChoice.variant,
     })
 
     if (auditPromptErr) {
@@ -1400,13 +1574,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         currentState = loopService.getActiveState(loopName) ?? currentState
         if (recovered.recovered || !currentState.workspaceId) {
           const auditPromptText = loopService.buildAuditPrompt(currentState)
+          const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
           const retryResult = await promptAuditSession(client, {
             sessionId: created.auditSessionId,
             worktreeDir: currentState.worktreeDir,
             workspaceId: currentState.workspaceId,
             prompt: auditPromptText,
-            auditorModel,
-            auditorVariant: currentState.auditorVariant,
+            auditorModel: retryChoice.model,
+            auditorVariant: retryChoice.variant,
           })
           if (retryResult.ok) {
             logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
@@ -1423,13 +1598,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         agent: 'auditor-loop',
         errorContext: 'failed to send audit prompt',
         send: async (fresh) => {
+          const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
           const retryResult = await promptAuditSession(client, {
             sessionId: created.auditSessionId,
             worktreeDir: fresh.worktreeDir,
             workspaceId: fresh.workspaceId,
             prompt: loopService.buildAuditPrompt(fresh),
-            auditorModel,
-            auditorVariant: fresh.auditorVariant,
+            auditorModel: retryChoice.model,
+            auditorVariant: retryChoice.variant,
           })
           if (!retryResult.ok) throw retryResult.error
         },
@@ -1560,6 +1736,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (auditErrorSignal) {
       const limitReason = classifyProviderLimit(auditErrorSignal)
       if (limitReason) {
+        if (await handleAuditorProviderLimit(loopName, limitReason)) return
         logger.error(`Loop: provider limit in persisted auditing error for ${loopName}: ${limitReason}, terminating`)
         await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
         return
@@ -1848,6 +2025,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (finalAuditErrorSignal) {
       const limitReason = classifyProviderLimit(finalAuditErrorSignal)
       if (limitReason) {
+        if (await handleAuditorProviderLimit(loopName, limitReason)) return
         logger.error(`Loop: provider limit in persisted final audit error for ${loopName}: ${limitReason}, terminating`)
         await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
         return
@@ -2111,6 +2289,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         await withStateLock(loopName, async () => {
           const state = loopService.getActiveState(loopName)
           if (!state?.active) return
+          // Consume an abort we initiated ourselves to re-dispatch the audit
+          // prompt on a fallback model. The fallback prompt was already sent on
+          // this same session, so its AbortError must not be treated as an audit
+          // failure that rotates the loop back to coding. A single fallback-chain
+          // walk can abort the same reused session more than once, so this is a
+          // counter: each outstanding internal abort consumes exactly one
+          // AbortError. Removing the final entry here (and the idle backstop
+          // below) means a later genuine abort is never suppressed.
+          if (consumeInternalFallbackAbort(eventSessionId)) {
+            logger.log(`Loop: consuming internal fallback abort for session ${eventSessionId}`)
+            return
+          }
           const isCurrentSession = state.sessionId === eventSessionId
           if (!isCurrentSession) {
             logger.log(`Loop: ignoring stale aborted event for session ${eventSessionId} (current=${state.sessionId})`)
@@ -2158,6 +2348,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           statusCode: errorProps?.error?.data?.statusCode,
         })
         if (limitReason) {
+          if (await handleAuditorProviderLimit(loopName, limitReason, { eventSessionId, eventType: 'error' })) return
           logger.error(`Loop: provider limit detected for ${loopName}: ${limitReason}, terminating`)
           await terminateLoop(loopName, state, { kind: 'provider_limit', message: limitReason })
           return
@@ -2212,12 +2403,48 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (status?.type === 'busy') {
       const loopName = loopService.resolveLoopName(sessionId)
+      // The replacement prompt has begun its own lifecycle, so the idle-gate and
+      // in-flight markers for this session belong to the freshly dispatched
+      // prompt and are cleared. This `busy` also closes the failed prompt's
+      // teardown window: a provider-limit `session.error` emitted before it is
+      // the failed prompt's terminal companion (absorbed by
+      // `coalescedLimitSessions`), whereas any limit signalled after the
+      // replacement starts belongs to the replacement and must advance the
+      // fallback chain. Clearing the coalesced record here keeps a genuine
+      // failure of the active replacement prompt from being mistaken for the
+      // previous prompt's companion.
+      //
+      // The idle-gate pending marker is cleared synchronously (outside the
+      // lock) because it only gates a premature `idle` that precedes this
+      // `busy`. A fast fallback can emit `busy` then `idle` while the fallback
+      // dispatch still holds the state lock; deferring this clear behind the
+      // lock would let the following idle observe the still-pending marker at
+      // its pre-lock gate and be suppressed, stalling the loop with no phase
+      // run. Busy proves the prompt started, so its idle is always legitimate.
+      //
+      // The in-flight and coalesced-limit markers are still cleared under the
+      // lock: the internal-abort counter and duplicate provider-limit signals
+      // for the same failed prompt are queued with `withStateLock`, so an
+      // unlocked cleanup would clear the guard before the queued handler
+      // consumed it — treating the intentional abort as an audit failure or
+      // re-advancing the fallback index. Serializing that boundary here means
+      // the earlier-queued lifecycle event is always processed first.
       if (loopName && isAwaitingBusy(loopName, sessionId)) {
         logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
         clearPromptPending(loopName, logger)
       }
+      const clearBusyMarkers = async (): Promise<void> => {
+        if (loopName) {
+          clearPromptInFlightBySession(loopName, sessionId)
+        }
+        if (loopName && coalescedLimitSessions.get(loopName) === sessionId) {
+          coalescedLimitSessions.delete(loopName)
+        }
+      }
       if (loopName) {
-        clearPromptInFlightBySession(loopName, sessionId)
+        await withStateLock(loopName, clearBusyMarkers)
+      } else {
+        clearBusyMarkers()
       }
       return
     }
@@ -2233,6 +2460,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await withStateLock(loopName, async () => {
         const state = loopService.getActiveState(loopName)
         if (!state?.active) return
+        if (await handleAuditorProviderLimit(loopName, limitReason, { eventSessionId: sessionId, eventType: 'status' })) return
         logger.error(`Loop: provider limit detected via retry status for ${loopName}: ${limitReason}, terminating`)
         await terminateLoop(loopName, state, { kind: 'provider_limit', message: limitReason })
       })
@@ -2253,6 +2481,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (isAwaitingBusy(loopName, sessionId)) {
       if (!isAwaitingBusyExpired(loopName)) {
         logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
+        // This premature idle is the aborted prompt's abort terminal (the
+        // internal abort emitted idle instead of an AbortError). Consume its
+        // marker so it cannot suppress a later genuine abort of the replacement.
+        consumeInternalFallbackAbort(sessionId)
         return
       }
       logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName}, dispatching idle anyway`)
@@ -2262,6 +2494,43 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await withStateLock(loopName, async () => {
       const state = loopService.getActiveState(loopName)
       if (!state || !state.active) return
+
+      // Re-check the idle gate now that we hold the lock. During a provider-limit
+      // fallback, `resendAuditPromptWithAuditorModel` holds the lock while aborting,
+      // settling, and re-dispatching. The failed prompt's pending marker was already
+      // cleared (by sendLoopPrompt) before the settle delay, so an `idle` emitted by
+      // our internal abort can pass the pre-lock check above (line 2463) and queue
+      // behind the lock. By the time it runs here, the replacement prompt has been
+      // marked pending for this same reused session, so this stale idle must be
+      // suppressed against the latest lifecycle rather than running the phase on a
+      // session that is busy again.
+      if (isAwaitingBusy(loopName, sessionId)) {
+        if (!isAwaitingBusyExpired(loopName)) {
+          logger.debug(`[idle-gate] suppressing queued premature idle loop=${loopName} session=${sessionId} (replacement prompt pending)`)
+          // Same as the pre-lock suppression: this stale idle is the failed
+          // prompt's abort terminal (idle, not AbortError). Consume the marker
+          // so it cannot suppress a later genuine abort of the replacement.
+          consumeInternalFallbackAbort(sessionId)
+          return
+        }
+        logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName} after lock, dispatching idle anyway`)
+        clearPromptPending(loopName, logger)
+      }
+
+      // The session's prompt has completed its lifecycle. Any internal abort we
+      // issued for this session (to re-dispatch the audit on a fallback model)
+      // was issued before the replacement prompt, so its AbortError would have
+      // arrived by now. Clearing the counter here is the backstop that ensures
+      // a stale counter (from an internal abort that produced no event) can
+      // never suppress a later genuine abort.
+      internalFallbackAborts.delete(sessionId)
+      // The failed prompt is definitively done once the replacement completes,
+      // so its companion limit signal (if any) has arrived. Clear the coalescing
+      // window so a genuine limit from the replacement prompt advances normally
+      // even when the original failure emitted no companion signal.
+      if (coalescedLimitSessions.get(loopName) === sessionId) {
+        coalescedLimitSessions.delete(loopName)
+      }
 
       const isCurrentSession = state.sessionId === sessionId
       if (!isCurrentSession) {
@@ -2663,6 +2932,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     setParentSessionLookup(lookup: (sessionId: string) => Promise<string | null>) {
       getParentSessionId = lookup
     },
+    handleAuditorProviderLimit,
     service: loopService,
   }
 }

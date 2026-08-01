@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, afterEach } from 'vitest'
+import { describe, test, expect, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
@@ -18,7 +18,6 @@ describe('resolveCustomMounts', () => {
 
   function withTempDir(): string {
     tmpDir = mkdtempSync(join(tmpdir(), 'forge-mount-'))
-    // Ensure the directory actually exists (mkdtempSync already creates it)
     return tmpDir
   }
 
@@ -26,11 +25,11 @@ describe('resolveCustomMounts', () => {
     const dir = withTempDir()
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: dir, container: '/data' },
+      { host: dir },
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
     expect(result).toEqual([
-      { hostDir: resolve(dir), containerDir: '/data', readOnly: true },
+      { hostDir: resolve(dir), containerDir: resolve(dir), readOnly: true },
     ])
     expect(logger.log).not.toHaveBeenCalled()
   })
@@ -39,11 +38,11 @@ describe('resolveCustomMounts', () => {
     const dir = withTempDir()
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: dir, container: '/data', readonly: false },
+      { host: dir, readonly: false },
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
     expect(result).toEqual([
-      { hostDir: resolve(dir), containerDir: '/data', readOnly: false },
+      { hostDir: resolve(dir), containerDir: resolve(dir), readOnly: false },
     ])
     expect(logger.log).not.toHaveBeenCalled()
   })
@@ -52,11 +51,11 @@ describe('resolveCustomMounts', () => {
     const dir = withTempDir()
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: dir, container: '/mnt', readonly: true },
+      { host: dir, readonly: true },
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
     expect(result).toEqual([
-      { hostDir: resolve(dir), containerDir: '/mnt', readOnly: true },
+      { hostDir: resolve(dir), containerDir: resolve(dir), readOnly: true },
     ])
   })
 
@@ -77,7 +76,7 @@ describe('resolveCustomMounts', () => {
   test('missing host directory is skipped', () => {
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: '/definitely/not/here', container: '/data' },
+      { host: '/definitely/not/here' },
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
     expect(result).toEqual([])
@@ -85,70 +84,56 @@ describe('resolveCustomMounts', () => {
     expect(logger.log.mock.calls[0][0]).toContain('host path does not exist')
   })
 
-  test('non-absolute container path is skipped', () => {
+  test('collision with reserved host path is skipped', () => {
     const dir = withTempDir()
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: dir, container: 'data' },
+      { host: dir },
     ]
-    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
-    expect(result).toEqual([])
-    expect(logger.log).toHaveBeenCalledTimes(1)
-    expect(logger.log.mock.calls[0][0]).toContain('must be absolute')
-  })
-
-  test('collision with reserved container path is skipped', () => {
-    const dir = withTempDir()
-    const logger = createMockLogger()
-    const raw: SandboxMountConfig[] = [
-      { host: dir, container: '/workspace' },
-    ]
-    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
+    const result = resolveCustomMounts(raw, new Set([resolve(dir)]), logger)
     expect(result).toEqual([])
     expect(logger.log).toHaveBeenCalledTimes(1)
     expect(logger.log.mock.calls[0][0]).toContain('already in use')
   })
 
-  test('nested collision with reserved container path is skipped', () => {
+  test('nested collision with reserved host path is skipped', () => {
     const dir = withTempDir()
+    const nested = join(dir, 'cache')
+    mkdirSync(nested, { recursive: true })
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: dir, container: '/workspace/cache', readonly: false },
+      { host: nested, readonly: false },
     ]
-    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
+    const result = resolveCustomMounts(raw, new Set([resolve(dir)]), logger)
     expect(result).toEqual([])
     expect(logger.log).toHaveBeenCalledTimes(1)
     expect(logger.log.mock.calls[0][0]).toContain('already in use')
   })
 
-  test('duplicate container path among entries skips the second', () => {
+  test('duplicate host path among entries skips the second', () => {
     const dir1 = withTempDir()
-    const dir2 = mkdtempSync(join(tmpdir(), 'forge-mount-'))
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: dir1, container: '/shared' },
-      { host: dir2, container: '/shared' },
+      { host: dir1 },
+      { host: dir1 },
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
     expect(result).toHaveLength(1)
-    expect(result[0]).toEqual({ hostDir: resolve(dir1), containerDir: '/shared', readOnly: true })
+    expect(result[0]).toEqual({ hostDir: resolve(dir1), containerDir: resolve(dir1), readOnly: true })
     expect(logger.log).toHaveBeenCalledTimes(1)
     expect(logger.log.mock.calls[0][0]).toContain('already in use')
-    // Clean up the second temp dir
-    rmSync(dir2, { recursive: true, force: true })
   })
 
-  test('missing host or container field is skipped', () => {
+  test('missing host field is skipped', () => {
     const dir = withTempDir()
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
-      { host: '', container: '/data' } as SandboxMountConfig,
-      { host: dir, container: '' } as SandboxMountConfig,
+      { host: '' } as SandboxMountConfig,
+      { host: dir },
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
-    expect(result).toEqual([])
-    expect(logger.log).toHaveBeenCalledTimes(2)
-    expect(logger.log.mock.calls[0][0]).toContain('missing host/container')
-    expect(logger.log.mock.calls[1][0]).toContain('missing host/container')
+    expect(result).toHaveLength(1)
+    expect(logger.log).toHaveBeenCalledTimes(1)
+    expect(logger.log.mock.calls[0][0]).toContain('missing host path')
   })
 })

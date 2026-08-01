@@ -28,6 +28,8 @@ export interface LoopRow {
   hostSessionId: string | null
   /** Goal-loop executor session binding; null/undefined for plan loops. */
   executorSessionId?: string | null
+  /** Index into the auditor model fallback chain; 0 is the preferred model. */
+  auditorFallbackIndex?: number
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: number
@@ -57,6 +59,8 @@ export interface LoopsRepo {
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
   resetError(projectId: string, loopName: string): void
+  /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the row is absent/non-running/index mismatch. */
+  advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number): number | null
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
@@ -95,6 +99,8 @@ export interface LoopsRepo {
       totalSections: number
       finalAuditDone: boolean
       startedAt: number
+      /** Primary auditor model used for the restarted prompt; persisted so later chain resolution agrees. */
+      auditorModel: string | null
       /** Goal-loop executor binding to persist on restart; null for plan loops. */
       executorSessionId: string | null
     }
@@ -149,6 +155,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     executionVariant: row.execution_variant,
     auditorVariant: row.auditor_variant,
     kind: (row.loop_kind === 'goal' ? 'goal' : 'plan') as LoopRow['kind'],
+    auditorFallbackIndex: row.auditor_fallback_index ?? 0,
   }
 }
 
@@ -184,6 +191,7 @@ interface LoopRowRaw {
   execution_variant: string | null
   auditor_variant: string | null
   loop_kind: string | null
+  auditor_fallback_index: number
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
@@ -192,7 +200,7 @@ const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktre
   model_failed, sandbox, sandbox_container, started_at, completed_at,
   termination_reason, completion_summary, workspace_id, host_session_id,
   executor_session_id, current_section_index, total_sections, final_audit_done,
-  execution_variant, auditor_variant, loop_kind`
+  execution_variant, auditor_variant, loop_kind, auditor_fallback_index`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
 
@@ -252,6 +260,12 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   const resetErrorStmt = db.prepare(`
     UPDATE loops SET error_count = 0, model_failed = 0
     WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const advanceAuditorFallbackIndexStmt = db.prepare(`
+    UPDATE loops SET auditor_fallback_index = ?
+    WHERE project_id = ? AND loop_name = ? AND status = 'running' AND auditor_fallback_index = ?
+    RETURNING auditor_fallback_index
   `)
 
   const setCurrentSessionIdStmt = db.prepare(`
@@ -330,9 +344,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       audit_count = ?,
       error_count = 0,
       model_failed = 0,
+      auditor_fallback_index = 0,
       sandbox = ?,
       sandbox_container = ?,
       workspace_id = ?,
+      auditor_model = ?,
       started_at = ?,
       completed_at = NULL,
       termination_reason = NULL,
@@ -365,7 +381,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       sandbox_container = ?, started_at = ?, completed_at = ?, termination_reason = ?,
       completion_summary = ?, workspace_id = ?, host_session_id = ?, executor_session_id = ?,
       current_section_index = ?, total_sections = ?, final_audit_done = ?,
-      execution_variant = ?, auditor_variant = ?, loop_kind = ?
+      execution_variant = ?, auditor_variant = ?, loop_kind = ?, auditor_fallback_index = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -413,6 +429,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       row.executionVariant ?? null,
       row.auditorVariant ?? null,
       row.kind ?? 'plan',
+      row.auditorFallbackIndex ?? 0,
     ]
   }
 
@@ -505,6 +522,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       resetErrorStmt.run(projectId, loopName)
     },
 
+    advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number): number | null {
+      const result = advanceAuditorFallbackIndexStmt.get(toIndex, projectId, loopName, fromIndex) as { auditor_fallback_index: number } | null
+      return result?.auditor_fallback_index ?? null
+    },
+
     setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void {
       setCurrentSessionIdStmt.run(sessionId, projectId, loopName)
     },
@@ -581,6 +603,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.sandbox ? 1 : 0,
           opts.sandboxContainer,
           opts.workspaceId,
+          opts.auditorModel,
           opts.startedAt,
           opts.currentSectionIndex,
           opts.totalSections,

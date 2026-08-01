@@ -1,40 +1,35 @@
-import { toContainerPath, rewriteOutput } from './path'
-import type { SandboxMount } from './path'
-import type { DockerService } from './docker'
+import type { SandboxRuntime } from './sbx'
 
 interface SandboxExecutionDeps {
-  docker: DockerService
+  runtime: SandboxRuntime
   containerName: string
   hostDir: string
-  mounts: SandboxMount[]
+  envFile?: string
 }
 
 /**
  * Execute a glob pattern search inside a sandbox container.
- * Returns rewritten file paths with container paths converted back to host paths.
+ * Mounts are at identical host paths, so returned paths are emitted verbatim.
  */
 export async function executeSandboxGlob(
   sandbox: SandboxExecutionDeps,
   pattern: string,
   searchPath?: string,
 ): Promise<string> {
-  const { docker, containerName, mounts } = sandbox
-  const path = searchPath
-    ? toContainerPath(searchPath, mounts)
-    : '/workspace'
+  const { runtime, containerName, hostDir, envFile } = sandbox
+  const path = searchPath || hostDir
 
   const safePattern = pattern.replace(/'/g, "'\\''")
   const cmd = `rg --files --glob '${safePattern}' '${path}' 2>/dev/null | head -100`
 
   try {
-    const result = await docker.exec(containerName, cmd, { timeout: 30000 })
+    const result = await runtime.exec(containerName, cmd, { timeout: 30000, envFile, cwd: hostDir })
 
     if (!result.stdout.trim()) return 'No files found'
 
     const lines = result.stdout.trim().split('\n').filter(Boolean)
-    const rewritten = lines.map(l => rewriteOutput(l, mounts))
 
-    let output = rewritten.join('\n')
+    let output = lines.join('\n')
     if (lines.length >= 100) {
       output += '\n\n(Results are truncated: showing first 100 results. Consider using a more specific path or pattern.)'
     }
@@ -52,17 +47,15 @@ interface GrepMatch {
 
 /**
  * Execute a grep/regex search inside a sandbox container.
- * Returns rewritten file paths with container paths converted back to host paths.
+ * Mounts are at identical host paths, so returned paths are emitted verbatim.
  */
 export async function executeSandboxGrep(
   sandbox: SandboxExecutionDeps,
   pattern: string,
   options?: { path?: string; include?: string },
 ): Promise<string> {
-  const { docker, containerName, mounts } = sandbox
-  const searchPath = options?.path
-    ? toContainerPath(options.path, mounts)
-    : '/workspace'
+  const { runtime, containerName, hostDir, envFile } = sandbox
+  const searchPath = options?.path || hostDir
 
   const safePattern = pattern.replace(/'/g, "'\\''")
   let cmd = `rg -nH --hidden --no-messages --field-match-separator='|' --regexp '${safePattern}'`
@@ -73,7 +66,7 @@ export async function executeSandboxGrep(
   cmd += ` '${searchPath}' 2>/dev/null | head -100`
 
   try {
-    const result = await docker.exec(containerName, cmd, { timeout: 30000 })
+    const result = await runtime.exec(containerName, cmd, { timeout: 30000, envFile, cwd: hostDir })
 
     if (!result.stdout.trim()) return 'No files found'
 
@@ -83,7 +76,7 @@ export async function executeSandboxGrep(
     for (const line of lines) {
       const parts = line.split('|')
       if (parts.length < 3) continue
-      const filePath = rewriteOutput(parts[0], mounts)
+      const filePath = parts[0]
       const lineNum = parseInt(parts[1], 10)
       const text = parts.slice(2).join('|')
       const truncatedText = text.length > 2000 ? text.slice(0, 1997) + '...' : text

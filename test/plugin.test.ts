@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { createForgePlugin } from '../src/index'
-import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { PluginConfig } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
@@ -119,7 +119,7 @@ describe('createForgePlugin', () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
       sandbox: {
-        mode: 'docker',
+        mode: 'sbx',
       },
     }
 
@@ -532,7 +532,7 @@ describe('createForgePlugin', () => {
   test('Plugin initializes successfully with sandbox.enabled=false', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'docker', enabled: false },
+      sandbox: { mode: 'sbx', enabled: false },
     }
 
     const plugin = createForgePlugin(config)
@@ -551,6 +551,43 @@ describe('createForgePlugin', () => {
 
     expect(hooks).toBeDefined()
     expect(typeof hooks).toBe('object')
+  })
+
+  test('Logs legacy sandbox config warnings for a Docker config', async () => {
+    const logFile = join(testDir, 'forge.log')
+    const legacySandbox = {
+      mode: 'docker',
+      projectMountPath: '/workspace',
+      resources: { shmSize: '64m', memorySwap: '1g' },
+      network: { hostGateway: 'host.docker.internal' },
+      mounts: [{ host: '/host', container: '/container' }],
+    }
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      logging: { enabled: true, file: logFile },
+      sandbox: legacySandbox as PluginConfig['sandbox'],
+    }
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    const logContents = readFileSync(logFile, 'utf-8')
+    expect(logContents).toContain("sandbox.mode 'docker' is ignored")
+    expect(logContents).toContain('sandbox.projectMountPath is ignored')
+    expect(logContents).toContain('sandbox.resources.shmSize is ignored')
+    expect(logContents).toContain('sandbox.resources.memorySwap is ignored')
+    expect(logContents).toContain('sandbox.network.hostGateway is ignored')
+    expect(logContents).toContain('sandbox.mounts[].container is ignored')
   })
 
 })
@@ -585,20 +622,20 @@ describe('PluginConfig', () => {
   test('Accepts sandbox config', () => {
     const config: PluginConfig = {
       sandbox: {
-        mode: 'docker',
+        mode: 'sbx',
         image: 'custom-image:latest',
       },
     }
 
-    expect(config.sandbox?.mode).toBe('docker')
+    expect(config.sandbox?.mode).toBe('sbx')
   })
 
   test('Accepts sandbox.enabled flag for opting out of Docker', () => {
     const enabledConfig: PluginConfig = {
-      sandbox: { mode: 'docker', enabled: true },
+      sandbox: { mode: 'sbx', enabled: true },
     }
     const disabledConfig: PluginConfig = {
-      sandbox: { mode: 'docker', enabled: false },
+      sandbox: { mode: 'sbx', enabled: false },
     }
 
     expect(enabledConfig.sandbox?.enabled).toBe(true)

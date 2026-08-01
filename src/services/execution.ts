@@ -15,6 +15,7 @@ import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
+import { auditorModelChoiceAt, buildAuditorModelChain } from '../utils/loop-helpers'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -735,11 +736,11 @@ export async function attachLoopToSession(
         if (!waitResult.ready) {
           deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason})`)
           try {
-            const { createDockerService } = await import('../sandbox/docker')
-            const docker = createDockerService(deps.logger as unknown as Console)
-            const cn = docker.containerName(loopName)
-            if (await docker.isRunning(cn)) {
-              await docker.removeContainer(cn)
+            const { createSbxRuntime } = await import('../sandbox/sbx')
+            const runtime = createSbxRuntime(deps.logger as unknown as Console)
+            const cn = runtime.sandboxContainerName(loopName)
+            if (await runtime.isRunning(cn)) {
+              await runtime.removeSandbox(cn)
             }
           } catch (cleanupErr) {
             deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
@@ -1765,6 +1766,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // actually aborted and replaced — not the stale pre-lock A.
     let previousSessionId = stoppedState.sessionId
     let bindFailed = false
+    // New session id produced by the restart, captured at outer scope so the
+    // deferred provider-limit fallback path (which runs after the callback
+    // closes) can report the restarted loop's session id.
+    let restartedSessionId: string | null = null
 
     type RestartOutcome =
       | { ok: true; newSessionId: string; previousSessionId: string; sandbox: boolean; bindFailed: boolean }
@@ -1773,9 +1778,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // per-loop state lock: deps.loop.terminate -> terminateLoopByName ->
       // withStateLock is non-reentrant, so calling it inside the runExclusive
       // callback (which already holds the lock) deadlocks. The callback returns
-      // this marker so the outer flow performs the canonical termination without
-      // any lock held.
-      | { ok: false; error: string; providerLimitMessage: string }
+      // this marker so the outer flow performs the canonical termination (or,
+      // for a final-audit restart, the auditor fallback) without any lock held.
+      | { ok: false; error: string; providerLimitMessage: string; deferAuditorFallback: boolean }
 
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
       // Re-read authoritative state under the per-loop lock.
@@ -1952,7 +1957,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         status: 'running',
         worktree: stoppedState.worktree,
         sandbox: restartSandbox,
-        sandboxContainer: restartSandbox ? deps.sandboxManager?.docker.containerName(stoppedState.loopName) : undefined,
+        sandboxContainer: restartSandbox ? deps.sandboxManager?.runtime.sandboxContainerName(stoppedState.loopName) : undefined,
         executionModel: stoppedState.executionModel,
         auditorModel: stoppedState.auditorModel,
         executionVariant: stoppedState.executionVariant,
@@ -1996,7 +2001,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         promptText = stoppedState.prompt ?? ''
       }
 
-      const restartAuditorModel = parseModelString(stoppedState.auditorModel ?? deps.config.auditorModel)
+      const restartAuditorState = {
+        ...stoppedState,
+        auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
+        modelFailed: false,
+        auditorFallbackIndex: 0,
+      }
+      const restartAuditorChoice = auditorModelChoiceAt(buildAuditorModelChain(deps.config, restartAuditorState), 0)
+      const restartAuditorModel = restartAuditorChoice.model
       const loopModel = stoppedState.phase === 'post_action' && postActionCfg?.model
         ? parseModelString(postActionCfg.model)
         : stoppedState.phase === 'final_auditing' || stoppedState.phase === 'post_action'
@@ -2020,6 +2032,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandbox: newState.sandbox ?? false,
         sandboxContainer: newState.sandboxContainer ?? null,
         workspaceId: newState.workspaceId ?? null,
+        auditorModel: restartAuditorState.auditorModel ?? null,
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
         finalAuditDone: newState.finalAuditDone,
@@ -2049,7 +2062,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       const restartVariant = promptAgent === 'auditor-loop'
-        ? stoppedState.auditorVariant
+        ? restartAuditorChoice.variant
         : stoppedState.executionVariant
 
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
@@ -2104,17 +2117,29 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         if (limitReason) {
           deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
           clearPromptPending(stoppedState.loopName, deps.logger)
-          deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
+          // For a final-audit restart the session is reused by the auditor
+          // fallback re-dispatch, so keep its reverse index intact. For a
+          // coding-style restart the loop terminates and the session is orphaned.
+          const isAuditorRestart = promptAgent === 'auditor-loop'
+          if (!isAuditorRestart) {
+            deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
+          }
           // Defer the canonical termination (deps.loop.terminate) and the
-          // sandbox teardown to outside the runExclusive callback: deps.loop.
-          // terminate reacquires the per-loop state lock via
-          // terminateLoopByName -> withStateLock, which is non-reentrant, so
-          // invoking it here would deadlock the runExclusive-held lock. The
-          // in-memory cleanup above (clearPromptPending,
-          // unregisterSessionReverseIndex) is lock-free and safe to perform
-          // under the held lock. Returning the marker lets the outer flow
-          // terminate after the lock is released.
-          return { ok: false, error: `Provider limit on restart prompt: ${limitReason}`, providerLimitMessage: limitReason }
+          // auditor fallback (deps.loop.handleAuditorProviderLimit) to outside
+          // the runExclusive callback: both reacquire the per-loop state lock
+          // via terminateLoopByName / the fallback re-dispatch, which is
+          // non-reentrant, so invoking them here would deadlock the
+          // runExclusive-held lock. The in-memory cleanup above
+          // (clearPromptPending, unregisterSessionReverseIndex) is lock-free
+          // and safe to perform under the held lock. Returning the marker lets
+          // the outer flow terminate or fall back after the lock is released.
+          restartedSessionId = effectiveSessionId
+          return {
+            ok: false as const,
+            error: `Provider limit on restart prompt: ${limitReason}`,
+            providerLimitMessage: limitReason,
+            deferAuditorFallback: isAuditorRestart,
+          }
         }
 
         const isConcurrent = promptResult.error instanceof ConcurrentPromptError
@@ -2225,6 +2250,63 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // runExclusive (terminateLoopByName -> withStateLock -> deadlock). Perform
     // the canonical termination here, after the lock has been released.
     if (!outcome.ok && 'providerLimitMessage' in outcome) {
+      // A final-audit restart prompt that was directly rejected on a provider
+      // limit is routed through the shared auditor fallback chain instead of
+      // terminating: advance the persisted index and re-dispatch on the next
+      // auditor model. The handler self-gates on the restarted phase, so a
+      // coding-style restart limit still declines and terminates as before.
+      // A final-audit restart fallback re-dispatch must hold the per-loop state
+      // lock, exactly like the in-loop tick handlers that call
+      // handleAuditorProviderLimit. resendAuditPromptWithAuditorModel aborts the
+      // session and that abort can emit its AbortError before the abort promise
+      // resolves; only the internal-abort marker set after the abort resolves
+      // tells the tick's error handler not to treat it as an audit failure.
+      // Without this lock the AbortError could be processed concurrently, rotate
+      // the loop back to coding, and leave a stale final-audit prompt racing the
+      // fallback re-dispatch. Serializing through runExclusive queues that event
+      // behind this fallback so the marker and replacement prompt are established
+      // first. The original restart lock has already released here (the callback
+      // above returned), so acquiring the lock does not deadlock.
+      if (outcome.deferAuditorFallback) {
+        // The same failed restart prompt can be observed by two detection
+        // paths: this deferred direct-rejection handler and the runtime's
+        // session.error / session.status retry tick handlers, which both call
+        // handleAuditorProviderLimit. The restart resets auditor_fallback_index
+        // to 0, so if the index has already advanced past 0 by the time we run,
+        // a lifecycle handler already advanced the chain and re-dispatched the
+        // audit on a fallback model for this same failure. Treating that as
+        // "chain exhausted" here would terminate a loop that already recovered,
+        // so recognize it as already handled and absorb instead.
+        //
+        // The recheck MUST run inside the same runExclusive acquisition as the
+        // conditional handleAuditorProviderLimit call. A queued lifecycle limit
+        // handler can advance and re-dispatch the fallback after the original
+        // restart lock releases but before our callback executes; reading the
+        // index before acquiring the lock would then see 0 and, once we hold the
+        // lock with the chain exhausted, terminate a loop that already recovered.
+        const absorbed = await deps.loopHandler!.runExclusive(stoppedState.loopName, async () => {
+          const currentState = deps.loop.service.getActiveState(stoppedState.loopName)
+          if (!!currentState && (currentState.auditorFallbackIndex ?? 0) > 0) {
+            return true
+          }
+          return deps.loop.handleAuditorProviderLimit(stoppedState.loopName, outcome.providerLimitMessage)
+        })
+        if (absorbed) {
+          deps.loopHandler!.startWatchdog(stoppedState.loopName)
+          return ok({
+            operation: 'loop.restart',
+            loopName: stoppedState.loopName,
+            sessionId: restartedSessionId!,
+            previousSessionId,
+            worktreeDir: stoppedState.worktreeDir,
+            worktreeBranch: stoppedState.worktreeBranch,
+            worktree: !!stoppedState.worktree,
+            sandbox: restartSandbox,
+            bindFailed,
+            iteration: stoppedState.iteration,
+          })
+        }
+      }
       await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: outcome.providerLimitMessage })
       if (restartSandbox && deps.sandboxManager) {
         await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})

@@ -1,83 +1,75 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import type { DockerService } from '../../src/sandbox/docker'
-import type { Logger } from '../../src/types'
+import type { SbxAvailability } from '../../src/sandbox/sbx'
+import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
+
+const available: SbxAvailability = { available: true }
+const daemonDown: SbxAvailability = { available: false, reason: 'daemon-down', detail: 'mock daemon down' }
 
 describe('SandboxManager caching', () => {
-  let mockDocker: Partial<DockerService>
-  let mockLogger: Partial<Logger>
+  let mockRuntime: ReturnType<typeof createMockSandboxRuntime>
+  let mockLogger: ReturnType<typeof createMockLogger>
 
   beforeEach(() => {
     vi.useFakeTimers()
-    mockDocker = {
-      checkDocker: vi.fn(async () => true),
-      imageExists: vi.fn(async () => true),
-      containerName: (worktreeName: string) => `forge-${worktreeName}`,
-      isRunning: vi.fn(async () => false),
-      createContainer: vi.fn(async () => {}),
-      removeContainer: vi.fn(async () => {}),
-      listContainersByPrefix: vi.fn(async () => []),
-    }
-    mockLogger = {
-      log: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    }
+    mockRuntime = createMockSandboxRuntime()
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => available)
+    mockRuntime.templateExists = vi.fn(async () => true)
+    mockRuntime.isRunning = vi.fn(async () => false)
+    mockLogger = createMockLogger()
   })
 
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('should cache checkDocker and latch imageExists across two start() calls', async () => {
-    const firstIsRunning = vi.fn(async () => false)
-    const secondIsRunning = vi.fn(async () => true)
-    mockDocker.isRunning = vi.fn()
-      .mockImplementationOnce(firstIsRunning)
-      .mockImplementationOnce(secondIsRunning)
+  it('should cache checkAvailable and latch templateExists across two start() calls', async () => {
+    mockRuntime.isRunning = vi.fn()
+      .mockImplementationOnce(async () => false)
+      .mockImplementationOnce(async () => true)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     await manager.start('test-wt', '/tmp/project')
 
     await manager.start('test-wt', '/tmp/project')
 
-    expect(mockDocker.checkDocker).toHaveBeenCalledTimes(1)
-    expect(mockDocker.imageExists).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
   })
 
-  it('should reject both calls when Docker is unavailable and cache negative result within TTL', async () => {
-    mockDocker.checkDocker = vi.fn(async () => false)
+  it('should reject both calls when runtime is unavailable and cache negative result within TTL', async () => {
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => daemonDown)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
-    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('Docker is not available')
-    expect(mockDocker.checkDocker).toHaveBeenCalledTimes(1)
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('daemon is not running')
+    expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
 
-    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('Docker is not available')
-    expect(mockDocker.checkDocker).toHaveBeenCalledTimes(1)
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('daemon is not running')
+    expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
 
     vi.advanceTimersByTime(30_000)
-    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('Docker is not available')
-    expect(mockDocker.checkDocker).toHaveBeenCalledTimes(2)
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('daemon is not running')
+    expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(2)
   })
 
-  it('should not call checkDocker or imageExists when restore delegates to start and cache is warm', async () => {
-    mockDocker.isRunning = vi.fn(async () => false)
+  it('should not call checkAvailable or templateExists when restore delegates to start and cache is warm', async () => {
+    mockRuntime.isRunning = vi.fn(async () => false)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     await manager.start('test-wt', '/tmp/project')
-    expect(mockDocker.checkDocker).toHaveBeenCalledTimes(1)
-    expect(mockDocker.imageExists).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
 
-    mockDocker.isRunning = vi.fn(async () => false)
+    mockRuntime.isRunning = vi.fn(async () => false)
     await manager.restore('other-wt', '/tmp/project', new Date().toISOString())
 
-    expect(mockDocker.checkDocker).toHaveBeenCalledTimes(1)
-    expect(mockDocker.imageExists).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
   })
 })

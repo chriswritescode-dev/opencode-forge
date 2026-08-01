@@ -9,7 +9,8 @@ import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger, slugify } from './utils/logger'
-import { createDockerService } from './sandbox/docker'
+import { createSbxRuntime, describeSbxUnavailable } from './sandbox/sbx'
+import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
 import { resolveForgeTempDir } from './utils/opencode-paths'
@@ -211,6 +212,10 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
 
+    for (const warning of collectLegacySandboxConfigWarnings(config.sandbox as unknown)) {
+      logger.log(warning)
+    }
+
     const forgeClient = createForgeClientFromPluginInput(input)
 
     const dataDir = config.dataDir || resolveDataDir()
@@ -225,33 +230,26 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     }
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    // The sandbox container runs as root (required by the nested Docker daemon), but the agent's
-    // in-container shell commands run as the host UID:GID so files written to the bind-mounted
-    // worktree are owned by the host user, not root. Undefined on platforms without UID concept.
-    const hostExecUser = typeof process.getuid === 'function' && typeof process.getgid === 'function'
-      ? `${process.getuid()}:${process.getgid()}`
-      : undefined
-    const dockerService = createDockerService(logger, { execUser: hostExecUser })
+    const runtime = createSbxRuntime(logger)
     if (!isSandboxConfigEnabled(config)) {
-      logger.log('Docker sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
+      logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
       try {
-        sandboxManager = createSandboxManager(dockerService, {
+        sandboxManager = createSandboxManager(runtime, {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
           dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
           tmpDir: forgeTempDir,
           sourceProjectDir: directory,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
-          projectMountPath: config.sandbox?.projectMountPath,
           ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
+          ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
           buildContextDir: resolveBundledContainerDir(),
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
-          ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
         }, logger, defaultGitService)
-        logger.log('Docker sandbox manager initialized')
+        logger.log('Sandbox manager initialized')
       } catch (err) {
-        logger.error('Failed to initialize Docker sandbox manager', err)
+        logger.error('Failed to initialize sbx sandbox manager', err)
       }
     }
 
@@ -278,17 +276,30 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       const buildContextDir = resolveBundledContainerDir()
       void (async () => {
         try {
-          const dockerOk = await dockerService.checkDocker()
-          if (!dockerOk) return
-          const exists = await dockerService.imageExists(sandboxImage)
-          if (!exists) {
-            logger.log(`Sandbox image "${sandboxImage}" not found — publishing toast`)
+          const available = await runtime.checkAvailable()
+          if (!available.available) {
             await forgeClient.tui.publish({
               body: {
                 type: 'tui.toast.show' as const,
                 properties: {
-                  title: 'Sandbox image not found',
-                  message: `Docker image "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}"`,
+                  title: 'Sandbox unavailable',
+                  message: describeSbxUnavailable(available),
+                  variant: 'warning' as const,
+                  duration: 10_000,
+                },
+              },
+            }).catch(() => {})
+            return
+          }
+          const exists = await runtime.templateExists(sandboxImage)
+          if (!exists) {
+            logger.log(`Sandbox template "${sandboxImage}" not found — publishing toast`)
+            await forgeClient.tui.publish({
+              body: {
+                type: 'tui.toast.show' as const,
+                properties: {
+                  title: 'Sandbox template not found',
+                  message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}" && docker save ${sandboxImage} -o <tar> && sbx template load <tar>`,
                   variant: 'warning' as const,
                   duration: 10_000,
                 },
@@ -706,7 +717,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       'shell.env': createShellEnvHook({
         resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
         sandboxManager,
-        ...(hostExecUser ? { execUser: hostExecUser } : {}),
         getUserConfiguredShell: () => userConfiguredShell,
         logger,
       }),

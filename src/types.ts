@@ -86,63 +86,56 @@ export interface LoopConfig {
 }
 
 /**
- * Network access configuration for the sandbox container.
- * Controls host gateway access, environment passthrough, and project `.env` file mounting.
+ * Network access configuration for the sandbox.
+ * Controls egress allow-listing and environment passthrough.
  */
 export interface SandboxNetworkConfig {
-  /** Enable host.docker.internal gateway. Defaults to true. Set false to disable. */
-  hostGateway?: boolean
-  /** Environment variable names to pass through from host process into the container. */
+  /** Environment variable names to pass through from host process into the sandbox. */
   env?: string[]
+  /** Hostnames to allow through the sbx network proxy via `sbx policy allow network`. */
+  allow?: string[]
 }
 
 /**
- * Resource limits for the sandbox container. Maps directly to `docker run` flags.
- * Docker Desktop's defaults (often 2GB / 2 CPUs) are too tight for many real projects
- * — `pnpm install` gets OOM-killed (exit 137) and shell commands run slowly.
+ * Resource limits for the sandbox. Maps directly to `sbx create` flags.
+ * sbx defaults are often too tight for many real projects — `pnpm install`
+ * gets OOM-killed (exit 137) and shell commands run slowly.
  */
 export interface SandboxResources {
-  /** Memory limit, e.g. '8g', '4096m'. Maps to `--memory`. */
+  /** Memory limit, e.g. '8g', '1024m'. Maps to `sbx create --memory`. */
   memory?: string
-  /** Memory+swap limit, e.g. '12g'. Maps to `--memory-swap`. */
-  memorySwap?: string
-  /** Number of CPUs, e.g. '4', '2.5'. Maps to `--cpus`. */
+  /** Number of CPUs. `sbx create --cpus` is integer-only. */
   cpus?: string
-  /** Shared memory size, e.g. '512m'. Maps to `--shm-size`. */
-  shmSize?: string
 }
 
 /**
- * A single custom bind-mount for the sandbox container.
+ * A single custom mount for the sbx sandbox. `sbx` always mounts a workspace
+ * at its identical host path, so only the host path is specified.
  */
 export interface SandboxMountConfig {
-  /** Absolute host directory (or file) path to bind-mount into the container. */
+  /** Absolute host directory (or file) path mounted into the sandbox. */
   host: string
-  /** Absolute container path where the host path is mounted. */
-  container: string
   /** Mount read-only. Defaults to true (read-only); set false for read-write access. */
   readonly?: boolean
 }
 
 /**
- * Configuration for sandbox execution environment.
+ * Configuration for the sandbox execution environment (sbx).
  */
 export interface SandboxConfig {
-  /** Sandbox mode. Currently only 'docker' is supported. Reserved for future modes. */
-  mode: 'docker'
-  /** Enable sandboxed execution. When false, loops run in worktree-only mode even if Docker is available. Default: true. */
+  /** Sandbox mode. Currently only 'sbx' is supported. Reserved for future modes. */
+  mode?: 'sbx'
+  /** Enable sandboxed execution. When false, loops run in worktree-only mode even if sbx is available. Default: true. */
   enabled?: boolean
-  /** Docker image to use for sandboxed execution. */
+  /** sbx template tag to use for sandboxed execution. */
   image?: string
-  /** Container resource limits. Defaults to memory=8g, cpus=4, shmSize=1g. */
+  /** Resource limits. Defaults to memory=8g, cpus=4. */
   resources?: SandboxResources
-  /** Mount the source project directory as a read-only volume. Defaults to true. */
+  /** Mount the source project directory read-only. Defaults to true. */
   mountProjectReadonly?: boolean
-  /** Container path for the read-only project mount. Defaults to '/project'. */
-  projectMountPath?: string
-  /** Additional host directories to bind-mount into the sandbox container. */
+  /** Additional host directories to mount into the sbx sandbox. */
   mounts?: SandboxMountConfig[]
-  /** Network access configuration (host gateway, env passthrough). */
+  /** Network access configuration (egress allow-list, env passthrough). */
   network?: SandboxNetworkConfig
 }
 
@@ -244,6 +237,8 @@ export interface PluginConfig {
   executionVariant?: string
   /** Default reasoning/thinking variant for the auditor model. */
   auditorVariant?: string
+  /** Ordered "provider/model" entries tried, in order, when the current auditor model hits a provider usage/auth limit mid-loop; variants are **not** inherited by fallback entries. */
+  auditorFallbackModels?: string[]
   /** Loop behavior configuration. */
   loop?: LoopConfig
   /** Group launch configuration. */

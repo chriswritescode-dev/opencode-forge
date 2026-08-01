@@ -6,7 +6,7 @@
  *   - on-disk worktree directory
  *   - git worktree registration
  *   - git branch (forge/<loopName>)
- *   - running Docker sandbox container
+ *   - running sbx sandbox
  *
  * Usage:
  *   bun scripts/cleanup-loop.ts <loopName> [--project-dir=/path/to/project] [--dry-run]
@@ -23,6 +23,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { spawnSync } from 'child_process'
 import { readFlagValue } from '../src/utils/cli-flags'
+import { parseSbxSandboxList } from '../src/sandbox/sbx'
 
 interface Args {
   loopName: string
@@ -195,15 +196,17 @@ function cleanupGitWorktree(loopName: string, projectDir: string | undefined, dr
 }
 
 function cleanupSandbox(loopName: string, dryRun: boolean): void {
-  const containerName = `forge-${loopName}`
-  console.log(`\ndocker sandbox container ${containerName}:`)
-  const inspect = spawnSync('docker', ['inspect', containerName], { encoding: 'utf-8' })
-  if (inspect.status !== 0) {
+  const sandboxName = `forge-${loopName}`
+  console.log(`\nsbx sandbox ${sandboxName}:`)
+  const inspect = spawnSync('sbx', ['ls', '--json'], { encoding: 'utf-8' })
+  const found = parseSbxSandboxList(inspect.stdout).find((e) => e.name === sandboxName)
+  if (!found) {
     console.log(`  not present`)
     return
   }
-  logAction(dryRun, `docker rm -f ${containerName}`, () => {
-    const r = spawnSync('docker', ['rm', '-f', containerName], { encoding: 'utf-8' })
+  console.log(`  present (running=${found.running})`)
+  logAction(dryRun, `sbx rm --force ${sandboxName}`, () => {
+    const r = spawnSync('sbx', ['rm', '--force', sandboxName], { encoding: 'utf-8' })
     if (r.status !== 0) throw new Error(r.stderr || 'unknown error')
   })
 }

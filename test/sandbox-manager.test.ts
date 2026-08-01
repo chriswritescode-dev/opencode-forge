@@ -3,85 +3,16 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { execSync } from 'child_process'
-import { createSandboxManager } from '../src/sandbox/manager'
-import type { DockerService } from '../src/sandbox/docker'
-import type { Logger } from '../src/types'
-
-function createMockLogger(): Logger {
-  return {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-}
-
-function createMockDockerService() {
-  const removeContainerCalls: string[] = []
-  const createContainerCalls: Array<[string, string, string, { extraMounts?: string[] } | undefined]> = []
-  let containers = ['forge-foo', 'forge-bar']
-  let runningContainers = new Set<string>()
-  let shouldDockerBeAvailable = true
-  let shouldImageExist = true
-  let shouldRemoveThrow = false
-
-  const buildImageCalls: Array<[string, string]> = []
-
-  const mock = {
-    checkDocker: async () => shouldDockerBeAvailable,
-    imageExists: async () => shouldImageExist,
-    buildImage: async (dockerfilePath: string, tag: string) => {
-      buildImageCalls.push([dockerfilePath, tag])
-    },
-    createContainer: async (name: string, projectDir: string, image: string, opts?: { extraMounts?: string[] }) => {
-      createContainerCalls.push([name, projectDir, image, opts])
-      runningContainers.add(name)
-    },
-    removeContainer: async (name: string) => {
-      removeContainerCalls.push(name)
-      if (shouldRemoveThrow) {
-        throw new Error('Failed to remove container')
-      }
-    },
-    exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-    execPipe: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-    isRunning: async (name: string) => runningContainers.has(name),
-    containerName: (worktreeName: string) => `forge-${worktreeName}`,
-    listContainersByPrefix: async (prefix: string) => {
-      return containers.filter((name) => name.startsWith(prefix))
-    },
-    getRemoveContainerCalls: () => removeContainerCalls,
-    getCreateContainerCalls: () => createContainerCalls,
-    getBuildImageCalls: () => buildImageCalls,
-    setContainers: (newContainers: string[]) => {
-      containers = newContainers
-    },
-    setRunning: (name: string, running: boolean) => {
-      if (running) {
-        runningContainers.add(name)
-      } else {
-        runningContainers.delete(name)
-      }
-    },
-    setDockerAvailable: (available: boolean) => {
-      shouldDockerBeAvailable = available
-    },
-    setImageExists: (exists: boolean) => {
-      shouldImageExist = exists
-    },
-    setRemoveThrow: (shouldThrow: boolean) => {
-      shouldRemoveThrow = shouldThrow
-    },
-  }
-  return mock
-}
+import { createSandboxManager, buildSandboxWorkspaces } from '../src/sandbox/manager'
+import { createMockSandboxRuntime, createMockLogger } from './helpers/sandbox-mocks'
 
 describe('SandboxManager', () => {
   describe('cleanupOrphans', () => {
     test('with no whitelist kills all containers', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -89,7 +20,7 @@ describe('SandboxManager', () => {
       const removed = await manager.cleanupOrphans()
 
       expect(removed).toBe(2)
-      const calls = mockDocker.getRemoveContainerCalls()
+      const calls = mockRuntime.getRemoveSandboxCalls()
       expect(calls).toContain('forge-foo')
       expect(calls).toContain('forge-bar')
       expect(manager.isActive('foo')).toBe(false)
@@ -97,10 +28,10 @@ describe('SandboxManager', () => {
     })
 
     test('with whitelist preserves matching containers', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -110,7 +41,7 @@ describe('SandboxManager', () => {
       const removed = await manager.cleanupOrphans(['foo'])
 
       expect(removed).toBe(1)
-      const calls = mockDocker.getRemoveContainerCalls()
+      const calls = mockRuntime.getRemoveSandboxCalls()
       expect(calls).toContain('forge-bar')
       expect(calls).not.toContain('forge-foo')
       expect(manager.isActive('foo')).toBe(true)
@@ -119,20 +50,20 @@ describe('SandboxManager', () => {
 
   describe('restore', () => {
     test('repopulates map when container is running', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
-      mockDocker.setRunning('forge-foo', true)
+      mockRuntime.setRunning('forge-foo', true)
       const startedAt = new Date().toISOString()
 
       await manager.restore('foo', '/path/foo', startedAt)
 
-      const createCalls = mockDocker.getCreateContainerCalls()
+      const createCalls = mockRuntime.getCreateSandboxCalls()
       expect(createCalls.length).toBe(0)
       const active = manager.getActive('foo')
       expect(active).not.toBeNull()
@@ -141,15 +72,15 @@ describe('SandboxManager', () => {
     })
 
     test('repopulates map with original startedAt when provided', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
-      mockDocker.setRunning('forge-foo', true)
+      mockRuntime.setRunning('forge-foo', true)
       const originalStartedAt = '2025-01-01T00:00:00.000Z'
 
       await manager.restore('foo', '/path/foo', originalStartedAt)
@@ -160,37 +91,37 @@ describe('SandboxManager', () => {
     })
 
     test('starts new container when not running', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
-      mockDocker.setRunning('forge-foo', false)
+      mockRuntime.setRunning('forge-foo', false)
 
       await manager.restore('foo', '/path/foo', new Date().toISOString())
 
-      const createCalls = mockDocker.getCreateContainerCalls()
+      const createCalls = mockRuntime.getCreateSandboxCalls()
       expect(createCalls.length).toBe(1)
       expect(createCalls[0][0]).toBe('forge-foo')
-      expect(createCalls[0][1]).toBe('/path/foo')
+      expect(createCalls[0][1][0].hostDir).toBe('/path/foo')
       const active = manager.getActive('foo')
       expect(active).not.toBeNull()
       expect(active?.containerName).toBe('forge-foo')
     })
 
     test('preserves startedAt when starting new container', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
-      mockDocker.setRunning('forge-foo', false)
+      mockRuntime.setRunning('forge-foo', false)
       const originalStartedAt = '2025-01-01T00:00:00.000Z'
 
       await manager.restore('foo', '/path/foo', originalStartedAt)
@@ -202,25 +133,25 @@ describe('SandboxManager', () => {
   })
 
   describe('start', () => {
-    test('throws when Docker is not available', async () => {
-      const mockDocker = createMockDockerService()
-      mockDocker.setDockerAvailable(false)
+    test('throws when sbx daemon is not available', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      mockRuntime.setAvailable(false)
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
-      await expect(manager.start('test', '/path')).rejects.toThrow('Docker is not available')
+      await expect(manager.start('test', '/path')).rejects.toThrow('daemon is not running')
     })
 
     test('throws actionable error when image does not exist, without building', async () => {
-      const mockDocker = createMockDockerService()
-      mockDocker.setImageExists(false)
+      const mockRuntime = createMockSandboxRuntime()
+      mockRuntime.setTemplateExists(false)
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'my-custom-image:tag', buildContextDir: '/some/context' },
         logger
       )
@@ -231,37 +162,37 @@ describe('SandboxManager', () => {
       expect((err as Error).message).toMatch(/my-custom-image:tag/)
       expect((err as Error).message).toMatch(/\/some\/context/)
       expect((err as Error).message).toMatch(/"sandbox":\s*\{\s*"enabled":\s*false\s*\}/)
-      expect(mockDocker.getBuildImageCalls().length).toBe(0)
+      expect(mockRuntime.getCreateSandboxCalls().length).toBe(0)
     })
 
     test('returns early when container already running', async () => {
-      const mockDocker = createMockDockerService()
-      mockDocker.setRunning('forge-test', true)
+      const mockRuntime = createMockSandboxRuntime()
+      mockRuntime.setRunning('forge-test', true)
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
       const result = await manager.start('test', '/path')
 
-      expect(mockDocker.getCreateContainerCalls().length).toBe(0)
+      expect(mockRuntime.getCreateSandboxCalls().length).toBe(0)
       expect(result).toEqual({ containerName: 'forge-test' })
     })
 
     test('creates container and populates active map', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
       const result = await manager.start('test', '/path')
 
-      expect(mockDocker.getCreateContainerCalls().length).toBe(1)
+      expect(mockRuntime.getCreateSandboxCalls().length).toBe(1)
       expect(manager.isActive('test')).toBe(true)
       const active = manager.getActive('test')
       expect(active).not.toBeNull()
@@ -278,28 +209,68 @@ describe('SandboxManager', () => {
         execSync('git commit --allow-empty -m init', { cwd: tempDir })
         execSync(`git worktree add "${worktreeDir}" -b feature-test`, { cwd: tempDir })
 
-        const mockDocker = createMockDockerService()
+        const mockRuntime = createMockSandboxRuntime()
         const logger = createMockLogger()
         const manager = createSandboxManager(
-          mockDocker as unknown as DockerService,
+          mockRuntime,
           { image: 'oc-forge-sandbox:latest' },
           logger
         )
 
         await manager.start('test', worktreeDir)
 
-        const createCalls = mockDocker.getCreateContainerCalls()
+        const createCalls = mockRuntime.getCreateSandboxCalls()
         expect(createCalls.length).toBe(1)
-        const opts = createCalls[0][3]
-        const mounts = opts?.extraMounts ?? []
+        const workspaces = createCalls[0][1]
         const gitDir = execSync('git rev-parse --git-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim()
         const commonDir = execSync('git rev-parse --git-common-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim()
         const absoluteGitDir = resolve(worktreeDir, gitDir)
         const absoluteCommonDir = resolve(worktreeDir, commonDir)
 
-        expect(mounts).toContain(`${absoluteGitDir}:${absoluteGitDir}`)
-        expect(mounts).toContain(`${absoluteCommonDir}:${absoluteCommonDir}`)
-        expect(mounts.some(mount => mount.endsWith(':ro'))).toBe(false)
+        // The git common dir workspace survives read-write and covers the whole git region
+        // (including the nested worktree git dir), so in-sandbox git writes stay writable.
+        const commonWorkspace = workspaces.find(w => w.hostDir === absoluteCommonDir)
+        expect(commonWorkspace).toBeDefined()
+        expect(commonWorkspace?.readOnly).not.toBe(true)
+        // The git dir region is covered read-write by an accepted workspace.
+        expect(workspaces.some(w => absoluteGitDir === w.hostDir || absoluteGitDir.startsWith(w.hostDir + '/'))).toBe(true)
+        expect(workspaces.some(w => w.readOnly === true)).toBe(false)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    test('git mounts inside sourceProjectDir survive read-write while the overlapping project workspace is dropped', async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-git-project-'))
+      try {
+        const projectDir = join(tempDir, 'main-project')
+        const worktreeDir = join(tempDir, 'worktree')
+        execSync(`git init "${projectDir}"`, { cwd: tempDir })
+        execSync('git config user.email test@example.com', { cwd: projectDir })
+        execSync('git config user.name Test', { cwd: projectDir })
+        execSync('git commit --allow-empty -m init', { cwd: projectDir })
+        execSync(`git worktree add "${worktreeDir}" -b feature-test`, { cwd: projectDir })
+
+        const mockRuntime = createMockSandboxRuntime()
+        const logger = createMockLogger()
+        const manager = createSandboxManager(
+          mockRuntime,
+          { image: 'oc-forge-sandbox:latest', sourceProjectDir: projectDir, mountProjectReadonly: true },
+          logger
+        )
+
+        await manager.start('test', worktreeDir)
+
+        const workspaces = mockRuntime.getCreateSandboxCalls()[0][1]
+        const commonDir = resolve(worktreeDir, execSync('git rev-parse --git-common-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim())
+        const gitDir = resolve(worktreeDir, execSync('git rev-parse --git-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim())
+
+        // The git metadata region survives read-write (the common dir covers the nested git dir)...
+        expect(workspaces.some(w => w.hostDir === commonDir && w.readOnly !== true)).toBe(true)
+        expect(workspaces.some(w => gitDir === w.hostDir || gitDir.startsWith(w.hostDir + '/'))).toBe(true)
+        // ...while the read-only project workspace, an ancestor of the git dirs, is dropped.
+        expect(workspaces.some(w => w.hostDir === projectDir)).toBe(false)
+        expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
       } finally {
         rmSync(tempDir, { recursive: true, force: true })
       }
@@ -308,10 +279,10 @@ describe('SandboxManager', () => {
 
   describe('stop', () => {
     test('removes container and clears active map', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -319,16 +290,16 @@ describe('SandboxManager', () => {
       await manager.start('test', '/path')
       await manager.stop('test')
 
-      expect(mockDocker.getRemoveContainerCalls()).toContain('forge-test')
+      expect(mockRuntime.getRemoveSandboxCalls()).toContain('forge-test')
       expect(manager.isActive('test')).toBe(false)
     })
 
-    test('clears active map even when removeContainer throws', async () => {
-      const mockDocker = createMockDockerService()
-      mockDocker.setRemoveThrow(true)
+    test('clears active map even when removeSandbox throws', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      mockRuntime.setRemoveThrow(true)
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -340,26 +311,26 @@ describe('SandboxManager', () => {
     })
 
     test('uses containerName fallback when not in active map', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
       await manager.stop('unknown')
 
-      expect(mockDocker.getRemoveContainerCalls()).toContain('forge-unknown')
+      expect(mockRuntime.getRemoveSandboxCalls()).toContain('forge-unknown')
     })
   })
 
   describe('getActive and isActive', () => {
     test('returns null and false for unknown worktree', () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -369,10 +340,10 @@ describe('SandboxManager', () => {
     })
 
     test('returns active sandbox after start', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -385,10 +356,10 @@ describe('SandboxManager', () => {
     })
 
     test('returns null and false after stop', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -403,11 +374,11 @@ describe('SandboxManager', () => {
 
   describe('cleanupOrphans additional', () => {
     test('handles empty container list', async () => {
-      const mockDocker = createMockDockerService()
-      mockDocker.setContainers([])
+      const mockRuntime = createMockSandboxRuntime()
+      mockRuntime.setSandboxes([])
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -418,19 +389,19 @@ describe('SandboxManager', () => {
     })
 
     test('continues cleanup when removal fails', async () => {
-      const mockDocker = createMockDockerService()
-      mockDocker.setContainers(['forge-first', 'forge-second'])
-      mockDocker.setRemoveThrow(true)
+      const mockRuntime = createMockSandboxRuntime()
+      mockRuntime.setSandboxes(['forge-first', 'forge-second'])
+      mockRuntime.setRemoveThrow(true)
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
 
       await manager.cleanupOrphans()
 
-      const calls = mockDocker.getRemoveContainerCalls()
+      const calls = mockRuntime.getRemoveSandboxCalls()
       expect(calls).toContain('forge-first')
       expect(calls).toContain('forge-second')
     })
@@ -438,10 +409,10 @@ describe('SandboxManager', () => {
 
   describe('isLive', () => {
     test('returns false when worktree is not in active map', async () => {
-      const mockDocker = createMockDockerService()
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -451,11 +422,11 @@ describe('SandboxManager', () => {
       expect(result).toBe(false)
     })
 
-    test('returns true when worktree is in map and Docker reports container running', async () => {
-      const mockDocker = createMockDockerService()
+    test('returns true when worktree is in map and runtime reports sandbox running', async () => {
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -468,11 +439,11 @@ describe('SandboxManager', () => {
       expect(manager.isActive('test')).toBe(true)
     })
 
-    test('returns false and removes stale map entry when Docker reports container not running', async () => {
-      const mockDocker = createMockDockerService()
+    test('returns false and removes stale map entry when runtime reports sandbox not running', async () => {
+      const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
-        mockDocker as unknown as DockerService,
+        mockRuntime,
         { image: 'oc-forge-sandbox:latest' },
         logger
       )
@@ -481,14 +452,48 @@ describe('SandboxManager', () => {
       await manager.start('test', '/path')
       expect(manager.isActive('test')).toBe(true)
 
-      // Simulate Docker reporting the container is not running
-      mockDocker.setRunning('forge-test', false)
+      // Simulate the runtime reporting the sandbox is not running
+      mockRuntime.setRunning('forge-test', false)
 
       const result = await manager.isLive('test')
 
       expect(result).toBe(false)
       // Stale map entry should have been removed
       expect(manager.isActive('test')).toBe(false)
+    })
+  })
+
+  describe('buildSandboxWorkspaces', () => {
+    test('drops nested workspaces and keeps non-nested mounts', () => {
+      const logger = createMockLogger()
+      const result = buildSandboxWorkspaces(
+        [
+          { hostDir: '/a', containerDir: '/a' },
+          { hostDir: '/a/sub', containerDir: '/a/sub' },
+          { hostDir: '/b', containerDir: '/b' },
+        ],
+        logger
+      )
+
+      expect(result).toHaveLength(2)
+      expect(result[0].hostDir).toBe('/a')
+      expect(result[1].hostDir).toBe('/b')
+      expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/overlaps/))
+    })
+
+    test('drops an ancestor mount that arrives after a descendant', () => {
+      const logger = createMockLogger()
+      const result = buildSandboxWorkspaces(
+        [
+          { hostDir: '/a/b', containerDir: '/a/b' },
+          { hostDir: '/a', containerDir: '/a' },
+        ],
+        logger
+      )
+
+      expect(result).toHaveLength(1)
+      expect(result[0].hostDir).toBe('/a/b')
+      expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/overlaps/))
     })
   })
 })

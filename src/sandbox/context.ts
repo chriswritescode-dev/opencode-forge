@@ -1,12 +1,13 @@
-import type { DockerService } from './docker'
+import type { SandboxRuntime } from './sbx'
 import type { PluginConfig } from '../types'
 import type { SandboxMount } from './path'
 
 export interface SandboxContext {
-  docker: DockerService
+  runtime: SandboxRuntime
   containerName: string
   hostDir: string
   mounts: SandboxMount[]
+  envFile?: string
 }
 
 export interface SandboxLoopContextState {
@@ -17,9 +18,9 @@ export interface SandboxLoopContextState {
 }
 
 export interface SandboxContextManager {
-  docker: DockerService
+  runtime: SandboxRuntime
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
-  getActive(worktreeName: string): { containerName: string; projectDir: string; mounts: SandboxMount[] } | null
+  getActive(worktreeName: string): { containerName: string; projectDir: string; mounts: SandboxMount[]; envFile?: string } | null
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
@@ -44,10 +45,11 @@ export async function resolveSandboxContextForLoop(
   const active = sandboxManager.getActive(state.loopName)
   if (!active) return null
   return {
-    docker: sandboxManager.docker,
+    runtime: sandboxManager.runtime,
     containerName: active.containerName,
     hostDir: active.projectDir,
-    mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: '/workspace' }],
+    mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
+    envFile: active.envFile,
   }
 }
 

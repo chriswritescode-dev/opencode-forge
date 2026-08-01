@@ -1,11 +1,14 @@
 import { describe, test, expect, vi } from 'vitest'
 import { createShellEnvHook } from '../../src/hooks/shell-env'
-import { SHIM_ENV_CONTAINER, SHIM_ENV_EXEC_USER, SHIM_ENV_HOST_SHELL } from '../../src/sandbox/shell-shim'
+import { SHIM_ENV_CONTAINER, SHIM_ENV_ENV_FILE, SHIM_ENV_HOST_SHELL } from '../../src/sandbox/shell-shim'
 import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-function makeSandboxManager(active: { containerName: string; projectDir: string } | null, opts?: { ensureRunningError?: Error }) {
+function makeSandboxManager(
+  active: { containerName: string; projectDir: string; envFile?: string } | null,
+  opts?: { ensureRunningError?: Error },
+) {
   return {
     docker: {} as never,
     restore: vi.fn(async () => {}),
@@ -18,11 +21,14 @@ function makeSandboxManager(active: { containerName: string; projectDir: string 
 }
 
 describe('createShellEnvHook', () => {
-  test('injects container and exec user for an active sandbox loop session', async () => {
+  test('injects container and env file for an active sandbox loop session', async () => {
     const hook = createShellEnvHook({
       resolveActiveLoopForSession: vi.fn(async () => ({ loopName: 'loop-a', active: true, sandbox: true, worktreeDir: '/wt' })),
-      sandboxManager: makeSandboxManager({ containerName: 'forge-loop-a', projectDir: '/wt' }),
-      execUser: '501:20',
+      sandboxManager: makeSandboxManager({
+        containerName: 'forge-loop-a',
+        projectDir: '/wt',
+        envFile: '/data/forge/sandbox-env/forge-loop-a.env',
+      }),
       getUserConfiguredShell: () => undefined,
       logger,
     })
@@ -31,15 +37,29 @@ describe('createShellEnvHook', () => {
     await hook({ cwd: '/wt', sessionID: 'ses_1' }, output)
 
     expect(output.env[SHIM_ENV_CONTAINER]).toBe('forge-loop-a')
-    expect(output.env[SHIM_ENV_EXEC_USER]).toBe('501:20')
+    expect(output.env[SHIM_ENV_ENV_FILE]).toBe('/data/forge/sandbox-env/forge-loop-a.env')
     expect(output.env[SHIM_ENV_HOST_SHELL]).toBeUndefined()
+  })
+
+  test('injects container without an env-file variable when the sandbox has none', async () => {
+    const hook = createShellEnvHook({
+      resolveActiveLoopForSession: vi.fn(async () => ({ loopName: 'loop-a', active: true, sandbox: true, worktreeDir: '/wt' })),
+      sandboxManager: makeSandboxManager({ containerName: 'forge-loop-a', projectDir: '/wt' }),
+      getUserConfiguredShell: () => undefined,
+      logger,
+    })
+    const output = { env: {} as Record<string, string> }
+
+    await hook({ cwd: '/wt', sessionID: 'ses_1' }, output)
+
+    expect(output.env[SHIM_ENV_CONTAINER]).toBe('forge-loop-a')
+    expect(output.env[SHIM_ENV_ENV_FILE]).toBeUndefined()
   })
 
   test('injects nothing container-related for a non-loop session', async () => {
     const hook = createShellEnvHook({
       resolveActiveLoopForSession: vi.fn(async () => null),
       sandboxManager: makeSandboxManager({ containerName: 'forge-x', projectDir: '/wt' }),
-      execUser: '501:20',
       getUserConfiguredShell: () => undefined,
       logger,
     })

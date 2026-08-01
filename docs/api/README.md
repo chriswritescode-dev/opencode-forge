@@ -108,10 +108,10 @@ Execution flow dialog with mode and model selection:
 
 - **Plans** — architect authors validated plans directly into SQL storage with `plan-write`/`plan-edit`
 - **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](_media/configuration.md#remotes))
-- **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
+- **Loops** — iterative coding/auditing with isolated git worktree and optional sbx sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — sidebar and execution dialog
-- **Sandbox** — Optional Docker worktree loop isolation with bind-mounted project files
+- **Sandbox** — Optional sbx worktree loop isolation with bind-mounted project files
 
 ## Agents
 
@@ -143,7 +143,7 @@ Forge provides these tool groups:
 - **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
 - **Sandbox shell** — `sh` when a sandbox manager is available
 
-Loops always run in an isolated git worktree; Docker sandbox is used automatically when available.
+Loops always run in an isolated git worktree; sbx sandbox is used automatically when available.
 
 | Tool | Description |
 |------|-------------|
@@ -237,7 +237,7 @@ Choose from three execution modes:
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (Docker sandbox used automatically when available)
+3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (sbx sandbox used automatically when available)
 
 #### Model Selection
 
@@ -339,7 +339,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions a Docker sandbox when available.
+- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions an sbx sandbox when available.
 
 | Mode | When to choose it |
 |------|-------------------|
@@ -413,7 +413,7 @@ Loop sessions rotate between code and auditor work, so Forge persists per-sessio
 
 ### Worktree Isolation
 
-Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
+Loops always run in an isolated git worktree. Sandbox is optional: when the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
 
 ### Auditor Integration
 
@@ -458,7 +458,7 @@ The loop terminates when any of these conditions is met:
 - **Post-action completion** — After a clean final audit and a successful post-completion action phase (if configured).
 - **Consecutive errors** — 3 consecutive errors in either phase.
 
-Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
+Loops always run in an isolated git worktree. Sandbox is optional: when the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 ## Workspace Integration
 
@@ -480,7 +480,7 @@ Workspace integration requires the **experimental workspace runtime** enabled in
 When a worktree loop starts with `OPENCODE_EXPERIMENTAL_WORKSPACES=true`, forge:
 
 1. Calls `experimental.workspace.create` with `type: "forge"`, `branch: null`, and `extra: { loopName, projectDirectory, workspaceCreatedAt }` to register the workspace through the `forge` adapter
-2. The adapter's `create` hook creates the git worktree (reusing an orphaned branch when possible) and, when configured, provisions the Docker sandbox container
+2. The adapter's `create` hook creates the git worktree (reusing an orphaned branch when possible) and, when configured, provisions the sbx sandbox
 3. Creates a new Code session pointed at the worktree directory
 4. Calls `experimental.workspace.warp` to bind the session to that workspace
 5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
@@ -514,28 +514,31 @@ The flag must be set before OpenCode starts — setting it inside an already-run
 
 Worktree loops require a git repository with at least one commit. OpenCode scopes its instance to project `global` when started in a directory without a root commit, and worktree loop sessions created against a `global` project are invisible to the TUI. If you see a "No git commit in this project" error, create an initial commit and restart OpenCode.
 
-## Docker Sandbox
+## Sandbox
 
-Run loop iterations inside an isolated Docker container. Sandbox is optional: when Docker is available and configured, Forge provisions a loop container automatically; otherwise loops run in worktree-only mode.
+Run loop iterations inside an isolated `sbx` sandbox. Sandbox is optional: when the `sbx` daemon is available and configured, Forge provisions a loop sandbox automatically; otherwise loops run in worktree-only mode.
 
-See [Sandbox](_media/sandbox.md) for setup, Docker-in-Docker behavior, host networking, environment passthrough, custom bind mounts, large-output handling, and resource defaults.
+See [Sandbox](_media/sandbox.md) for setup, native in-sandbox Docker, network access, environment passthrough, custom bind mounts, large-output handling, and resource defaults.
 
 ### Prerequisites
 
-- Docker running on your machine
+- The `sbx` CLI installed and authenticated (`sbx login`), with the `sbx` daemon running (`sbx daemon start`) on a supported platform (macOS 14+ Apple silicon, Windows 11 with Hypervisor Platform, or Ubuntu 24.04+ with KVM).
+- Docker, used only to build the sandbox template.
 - OpenCode >= 1.15.5 — sandbox shell routing relies on the session-aware `shell.env` plugin hook. Enforced via `engines.opencode`, so older versions refuse to load the plugin rather than silently running sandbox commands on the host. (Loops additionally require OpenCode >= 1.17.8 for workspace integration, see [Requirements](#requirements).)
 
 ### Setup
 
-**1. Build the sandbox image:**
+**1. Build and load the sandbox template:**
 
 ```bash
 docker build -t oc-forge-sandbox:latest container/
+docker save oc-forge-sandbox:latest -o forge-sandbox.tar
+sbx template load forge-sandbox.tar
 ```
 
 The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
-The `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox image" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox image`, which opens a confirmation dialog and runs `docker build` automatically.
+The `container/Dockerfile` ships with the plugin package. If the template is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox template" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically.
 
 Restart OpenCode after changing sandbox configuration.
 
