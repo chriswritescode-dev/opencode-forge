@@ -4,7 +4,7 @@ import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
 import { mkdirSync, existsSync, writeFileSync, chmodSync, rmSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
-import { isSameOrDescendantPath, type SandboxMount } from './path'
+import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 
 export interface SandboxManagerConfig {
   image: string
@@ -45,8 +45,8 @@ function normalizeContainerPath(path: string): string {
 }
 
 function containerPathsOverlap(a: string, b: string): boolean {
-  const left = normalizeContainerPath(a)
-  const right = normalizeContainerPath(b)
+  const left = normalizeContainerPath(canonicalizePath(a))
+  const right = normalizeContainerPath(canonicalizePath(b))
   return isSameOrDescendantPath(left, right) || isSameOrDescendantPath(right, left)
 }
 
@@ -279,11 +279,11 @@ export function createSandboxManager(
     const resolvedGitDir = resolve(projectDir, gitDirResult.stdout.trim())
     const resolvedCommonDir = resolve(projectDir, commonDirResult.stdout.trim())
 
-    if (!resolvedGitDir.startsWith(projectDir + '/')) {
+    if (!isSameOrDescendantPath(canonicalizePath(resolvedGitDir), canonicalizePath(projectDir))) {
       paths.add(resolvedGitDir)
     }
 
-    if (!resolvedCommonDir.startsWith(projectDir + '/')) {
+    if (!isSameOrDescendantPath(canonicalizePath(resolvedCommonDir), canonicalizePath(projectDir))) {
       paths.add(resolvedCommonDir)
     }
 
