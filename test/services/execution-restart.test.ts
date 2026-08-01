@@ -1692,7 +1692,9 @@ describe('handleLoopRestart restartability rules', () => {
     // Default auditor-limit handler mimicking the runtime choke point so the
     // restart path's routing to it can be exercised without a full runtime. Uses
     // the real shared chain helpers and the real compare-and-swap advance.
+    const handleAuditorProviderLimitCalls: Array<{ name: string; message: string }> = []
     const defaultHandleAuditorProviderLimit = async (name: string, message: string): Promise<boolean> => {
+      handleAuditorProviderLimitCalls.push({ name, message })
       const state = loopService.getActiveState(name)
       if (!state?.active || (state.phase !== 'auditing' && state.phase !== 'final_auditing')) return false
       const cfg = {
@@ -1774,6 +1776,7 @@ describe('handleLoopRestart restartability rules', () => {
     return {
       service,
       client,
+      handleAuditorProviderLimitCalls,
     }
   }
 
@@ -2171,7 +2174,7 @@ describe('handleLoopRestart restartability rules', () => {
     })
 
     const terminateSpy = vi.fn(async () => true)
-    const { service, client } = await createMockService({
+    const { service, client, handleAuditorProviderLimitCalls } = await createMockService({
       terminate: terminateSpy,
       config: { auditorFallbackModels: ['prov/fb'] },
     })
@@ -2191,9 +2194,14 @@ describe('handleLoopRestart restartability rules', () => {
     )
 
     // The fallback absorbed the limit: the restart reports success and does NOT
-    // terminate, and the chain advanced to index 1 with a re-dispatch on prov/fb.
+    // terminate, the deferred handler was invoked with the failing loop and the
+    // provider-limit reason, and the chain advanced to index 1 with a
+    // re-dispatch on prov/fb.
     expect(result.ok).toBe(true)
     expect(terminateSpy).not.toHaveBeenCalled()
+    expect(handleAuditorProviderLimitCalls).toContainEqual(
+      { name: loopName, message: expect.stringContaining('usage limit') },
+    )
 
     const newState = loopService.getAnyState(loopName)
     expect(newState).not.toBeNull()

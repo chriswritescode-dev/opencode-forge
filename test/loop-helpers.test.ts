@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveLoopModel, resolveLoopAuditorModel, resolveLoopAuditorChoice, buildAuditorModelChain, auditorModelChoiceAt, nextAuditorFallbackIndex, resolveUsageFallbackModelLabel, formatDuration, computeElapsedSeconds } from '../src/utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, auditorModelChoiceAt, nextAuditorFallbackIndex, resolveUsageFallbackModelLabel, formatDuration, computeElapsedSeconds } from '../src/utils/loop-helpers'
 import type { PluginConfig } from '../src/types'
 
 describe('resolveLoopModel', () => {
@@ -66,7 +66,7 @@ describe('resolveLoopAuditorModel', () => {
       auditorModel: 'provider/config-auditor',
       executionModel: 'provider/exec-model',
     } as PluginConfig
-    const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+    const result = resolveLoopAuditorChoice(config, mockLoopService, 'test-loop').model
     expect(result).toEqual({ providerID: 'provider', modelID: 'state-auditor' })
   })
 
@@ -79,7 +79,7 @@ describe('resolveLoopAuditorModel', () => {
       auditorModel: 'provider/config-auditor',
       executionModel: 'provider/exec-model',
     } as PluginConfig
-    const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+    const result = resolveLoopAuditorChoice(config, mockLoopService, 'test-loop').model
     expect(result).toEqual({ providerID: 'provider', modelID: 'state-exec' })
   })
 
@@ -91,7 +91,7 @@ describe('resolveLoopAuditorModel', () => {
       auditorModel: 'provider/config-auditor',
       executionModel: 'provider/exec-model',
     } as PluginConfig
-    const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+    const result = resolveLoopAuditorChoice(config, mockLoopService, 'test-loop').model
     expect(result).toEqual({ providerID: 'provider', modelID: 'exec-model' })
   })
 
@@ -102,7 +102,7 @@ describe('resolveLoopAuditorModel', () => {
     const config = { 
       auditorModel: 'provider/config-auditor',
     } as PluginConfig
-    const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+    const result = resolveLoopAuditorChoice(config, mockLoopService, 'test-loop').model
     expect(result).toBeUndefined()
   })
 
@@ -113,7 +113,7 @@ describe('resolveLoopAuditorModel', () => {
     const config = { 
       executionModel: 'provider/exec-model',
     } as PluginConfig
-    const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+    const result = resolveLoopAuditorChoice(config, mockLoopService, 'test-loop').model
     expect(result).toEqual({ providerID: 'provider', modelID: 'exec-model' })
   })
 
@@ -122,7 +122,7 @@ describe('resolveLoopAuditorModel', () => {
       active: true,
     })
     const config = {} as PluginConfig
-    const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+    const result = resolveLoopAuditorChoice(config, mockLoopService, 'test-loop').model
     expect(result).toBeUndefined()
   })
 
@@ -138,7 +138,7 @@ describe('resolveLoopAuditorModel', () => {
       loop: { model: 'provider/loop-model' },
       executionModel: 'provider/exec-model',
     } as PluginConfig
-    const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+    const result = resolveLoopAuditorChoice(config, mockLoopService, 'test-loop').model
     expect(result).toBeUndefined()
   })
 })
@@ -213,7 +213,7 @@ describe('buildAuditorModelChain', () => {
       variant: undefined,
       source: 'state.auditorModel=provider/state-auditor',
     })
-    expect(chain[0].model).toEqual(resolveLoopAuditorModel(config, { getActiveState: () => state } as any, 'test-loop'))
+    expect(chain[0].model).toEqual(resolveLoopAuditorChoice(config, { getActiveState: () => state } as any, 'test-loop').model)
   })
 
   it('preserves order, drops unparseable and duplicate entries', () => {

@@ -3,8 +3,8 @@ import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
 import { formatSessionOutput, formatAuditResult, formatCompletionSummary, formatPostActionReport } from '../utils/loop-format'
-import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
-import { formatDuration, computeElapsedSeconds, resolveUsageFallbackModelLabel } from '../utils/loop-helpers'
+import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES, type LoopState } from '../loop'
+import { formatDuration, computeElapsedSeconds, resolveUsageFallbackModelLabel, buildAuditorModelChain, auditorModelChoiceAt, usageRoleForPhase } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -15,6 +15,14 @@ const z = tool.schema
 
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { loopHandler, config, logger } = ctx
+
+  function auditorModelStatusLabel(state: LoopState): string {
+    const chain = buildAuditorModelChain(config, state)
+    const index = state.auditorFallbackIndex ?? 0
+    const choice = auditorModelChoiceAt(chain, index)
+    const base = choice.model ? `${choice.model.providerID}/${choice.model.modelID}` : 'default'
+    return index > 0 ? `${base} (fallback ${index}/${chain.length - 1})` : base
+  }
 
   /**
    * Detects when a newly created loop session resolved to a different opencode
@@ -436,7 +444,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           )
           statusLines.push(
             `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
-            `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
+            `Auditor model: ${auditorModelStatusLabel(state)}`,
           )
 
           if (state.postActionReport) {
@@ -456,7 +464,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             logger,
             {
               fallbackModel: resolveUsageFallbackModelLabel(config, state, state.phase),
-              role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+              role: usageRoleForPhase(state.phase),
             },
           ) : null
           if (sessionOutput) {
@@ -556,7 +564,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
               logger,
               {
                 fallbackModel: resolveUsageFallbackModelLabel(config, state, state.phase),
-                role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+                role: usageRoleForPhase(state.phase),
               },
             )
           } catch {
@@ -603,7 +611,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Error count: ${state.errorCount} (retries before termination: ${MAX_RETRIES})`,
           `Audit count: ${state.auditCount ?? 0}`,
           `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
-          `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
+          `Auditor model: ${auditorModelStatusLabel(state)}`,
           ...(stallCount > 0 ? [`Stalls: ${stallCount}`] : []),
           ...(stallReason ? [`Last stall reason: ${stallReason}`] : []),
           ...(stallStatus ? [`Last stall status: ${stallStatus}`] : []),

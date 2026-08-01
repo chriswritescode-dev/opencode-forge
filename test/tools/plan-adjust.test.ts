@@ -11,6 +11,7 @@ import { createPlanAmendmentsRepo } from '../../src/storage/repos/plan-amendment
 import { createLoopService } from '../../src/loop/service'
 import { createPlanAdjustTool } from '../../src/tools/plan-adjust'
 import type { Logger } from '../../src/types'
+import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -35,120 +36,7 @@ describe('plan-adjust tool', () => {
     dbPath = join(tempDir, 'test.db')
     db = new Database(dbPath)
 
-    db.run(`
-      CREATE TABLE loops (
-        project_id           TEXT NOT NULL,
-        loop_name            TEXT NOT NULL,
-        status               TEXT NOT NULL,
-        current_session_id   TEXT NOT NULL,
-        worktree             INTEGER NOT NULL,
-        worktree_dir         TEXT NOT NULL,
-        worktree_branch      TEXT,
-        project_dir          TEXT NOT NULL,
-        max_iterations       INTEGER NOT NULL,
-        iteration            INTEGER NOT NULL DEFAULT 0,
-        audit_count          INTEGER NOT NULL DEFAULT 0,
-        error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL,
-        execution_model      TEXT,
-        auditor_model        TEXT,
-        model_failed         INTEGER NOT NULL DEFAULT 0,
-        sandbox              INTEGER NOT NULL DEFAULT 0,
-        sandbox_container    TEXT,
-        started_at           INTEGER NOT NULL,
-        completed_at         INTEGER,
-        termination_reason   TEXT,
-        completion_summary   TEXT,
-        workspace_id         TEXT,
-        host_session_id      TEXT,
-        session_directory    TEXT,
-        current_section_index INTEGER NOT NULL DEFAULT 0,
-        total_sections       INTEGER NOT NULL DEFAULT 0,
-        final_audit_done     INTEGER NOT NULL DEFAULT 0,
-        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-        execution_variant    TEXT,
-        auditor_variant      TEXT,
-        loop_kind            TEXT NOT NULL DEFAULT 'plan',
-        executor_session_id  TEXT,
-        auditor_fallback_index INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (project_id, loop_name)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE loop_large_fields (
-        project_id          TEXT NOT NULL,
-        loop_name           TEXT NOT NULL,
-        last_audit_result   TEXT,
-        post_action_report  TEXT,
-        goal                TEXT,
-        PRIMARY KEY (project_id, loop_name),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE plans (
-        project_id   TEXT NOT NULL,
-        loop_name    TEXT,
-        session_id   TEXT,
-        content      TEXT NOT NULL,
-        updated_at   INTEGER NOT NULL,
-        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-        UNIQUE (project_id, loop_name),
-        UNIQUE (project_id, session_id)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE review_findings (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL DEFAULT '',
-        file TEXT NOT NULL,
-        line INTEGER NOT NULL,
-        severity TEXT NOT NULL,
-        description TEXT NOT NULL,
-        scenario TEXT,
-        created_at INTEGER NOT NULL,
-        section_index INTEGER,
-        PRIMARY KEY (project_id, loop_name, file, line, section_index)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE section_plans (
-        project_id    TEXT    NOT NULL,
-        loop_name     TEXT    NOT NULL,
-        section_index INTEGER NOT NULL,
-        title         TEXT    NOT NULL,
-        content       TEXT    NOT NULL,
-        status        TEXT    NOT NULL DEFAULT 'pending',
-        attempts      INTEGER NOT NULL DEFAULT 0,
-        summary_done           TEXT,
-        summary_deviations     TEXT,
-        summary_follow_ups     TEXT,
-        started_at    INTEGER,
-        completed_at  INTEGER,
-        created_at    INTEGER NOT NULL,
-        PRIMARY KEY (project_id, loop_name, section_index),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE plan_amendments (
-        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id         TEXT NOT NULL,
-        loop_name          TEXT NOT NULL,
-        source             TEXT NOT NULL DEFAULT 'auditor',
-        rationale          TEXT NOT NULL,
-        applied_at_section INTEGER NOT NULL,
-        sections_before    TEXT NOT NULL,
-        sections_after     TEXT NOT NULL,
-        created_at         INTEGER NOT NULL
-      )
-    `)
+    setupLoopsTestDb(db)
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)

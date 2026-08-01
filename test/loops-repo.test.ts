@@ -502,6 +502,37 @@ describe('LoopsRepo', () => {
 
       expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
     })
+
+    test('reset returns the index to 0 and reports a change', () => {
+      repo.insert(testRow, testLarge)
+      repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 0, 1)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+
+      const changed = repo.resetAuditorFallbackIndex(testRow.projectId, testRow.loopName)
+      expect(changed).toBe(true)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('reset is a no-op when the index is already 0', () => {
+      repo.insert(testRow, testLarge)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
+
+      const changed = repo.resetAuditorFallbackIndex(testRow.projectId, testRow.loopName)
+      expect(changed).toBe(false)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('reset does not touch a non-running row', () => {
+      repo.insert(testRow, testLarge)
+      repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 0, 1)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+      // Flip the row to non-running after the index was advanced while running.
+      repo.setStatus(testRow.projectId, testRow.loopName, 'completed')
+
+      const changed = repo.resetAuditorFallbackIndex(testRow.projectId, testRow.loopName)
+      expect(changed).toBe(false)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+    })
   })
 
   describe('setLastAuditResult', () => {

@@ -1,5 +1,6 @@
 import type { LoopService, LoopState, TerminationReason } from '../loop'
 import { classifyProviderLimit } from '../loop/provider-limit'
+import { isAuditorPhase } from '../utils/loop-helpers'
 import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
 
@@ -57,6 +58,8 @@ export function createLoopWatchdog(input: {
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
   terminate(loopName: string, state: LoopState, reason: TerminationReason): Promise<void>
+  /** Routes an auditor provider limit into the fallback chain. Returns true when absorbed (do not terminate), false when the caller must terminate. */
+  handleAuditorProviderLimit?: (loopName: string, limitReason: string) => Promise<boolean>
   /** Ancestor-aware session→loop resolver for child/subagent sessions. Falls back to loopService.resolveLoopName when absent. */
   resolveSessionLoopName?: (sessionId: string) => Promise<string | null>
   statusRetryAttempts?: number
@@ -216,6 +219,14 @@ export function createLoopWatchdog(input: {
               // async status poll and ancestor-resolution window.
               const freshState = input.loopService.getActiveState(loopName)
               if (!freshState?.active) return
+              if (input.handleAuditorProviderLimit && isAuditorPhase(freshState.phase)) {
+                const absorbed = await input.handleAuditorProviderLimit(loopName, limitReason)
+                if (absorbed) {
+                  resetActivity(loopName, 'status:retry')
+                  input.logger.debug(`Loop watchdog: auditor provider limit absorbed via fallback for ${loopName}, resetting timer`)
+                  return
+                }
+              }
               await input.terminate(loopName, freshState, { kind: 'provider_limit', message: limitReason })
               return
             }

@@ -36,6 +36,7 @@ function makeFakeLoopService(): LoopService {
     getPlanText: vi.fn(() => null),
     incrementError: vi.fn(() => 1),
     resetError: vi.fn(),
+    resetAuditorFallbackIndex: vi.fn(() => false),
     setPhase: vi.fn(),
     setPhaseAndResetError: vi.fn(),
     setModelFailed: vi.fn(),

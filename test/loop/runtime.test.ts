@@ -2600,9 +2600,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(finalAuditPromptText).toContain('Coder decisions & verification notes')
       expect(finalAuditPromptText).toContain('Chose approach X')
       expect(finalAuditPromptText).toContain('FOO=bar pnpm test')
-      // The final-audit prompt must honour the persisted fallback index: fb/auditor-2, no variant.
-      expect(finalAuditPrompt?.model).toEqual({ providerID: 'fb', modelID: 'auditor-2' })
-      expect(finalAuditPrompt?.variant).toBeUndefined()
+      // The first dirty final-audit succeeded, so the persisted fallback index was
+      // reset to 0: the subsequent final audit uses the primary model with its variant.
+      expect(finalAuditPrompt?.model).toEqual({ providerID: 'test', modelID: 'auditor' })
+      expect(finalAuditPrompt?.variant).toBe('audit-high')
     })
   })
 
@@ -3732,7 +3733,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(false)
       expect(afterState!.terminationReason).toBe('completed')
-      expect(afterState!.auditorFallbackIndex).toBe(1)
+      expect(afterState!.auditorFallbackIndex).toBe(0)
 
       const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
       expect(auditorCalls).toHaveLength(1)
@@ -4104,6 +4105,71 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState!.active).toBe(true)
       expect(afterState!.phase).toBe('coding')
       expect(afterState!.auditorFallbackIndex).toBe(1)
+    })
+
+    test('a provider-limit fallback advance is reset to 0 by the next successful audit, restoring primary model and variant', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => makeCodingIdleMessages(),
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      // A persistent bug finding keeps audits dirty so a successful audit rotates
+      // back to coding instead of terminating, giving us a second audit dispatch.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: 'test-loop',
+        file: 'src/fallback-reset.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'persistent issue',
+      })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorVariant: 'audit-high' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // First audit: the primary hits a provider limit (advances 0→1) and
+      // re-dispatches on the fallback.
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      let afterState = loopService.getActiveState(state.loopName)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      // The fallback prompt completes with a dirty audit result, which rotates
+      // back to coding and must reset the persisted index to 0.
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
+      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
+
+      afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.auditorFallbackIndex).toBe(0)
+
+      const firstAuditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(firstAuditorCalls).toHaveLength(1)
+      expect(firstAuditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+
+      // The dirty audit rotated to a fresh coding session.
+      const newSessionId = afterState!.sessionId
+      expect(newSessionId).not.toBe(state.sessionId)
+      loopService.registerLoopSession(newSessionId, state.loopName)
+
+      // Second audit: coding idles again and must dispatch on the PRIMARY auditor
+      // model with the configured auditorVariant restored (index is back to 0).
+      await loop.tick({ type: 'session.status', properties: { sessionID: newSessionId, status: { type: 'busy' } } })
+      await loop.tick({ type: 'session.status', properties: { sessionID: newSessionId, status: { type: 'idle' } } })
+
+      const allAuditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      const lastAuditor = allAuditorCalls[allAuditorCalls.length - 1]
+      expect(lastAuditor.params).toMatchObject({ model: { providerID: 'test', modelID: 'auditor' }, variant: 'audit-high' })
     })
   })
 

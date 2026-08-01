@@ -72,6 +72,8 @@ export interface LoopService {
   resetError(name: string): void
   /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the loop is absent/non-running/index mismatch. */
   advanceAuditorFallbackIndex(name: string, fromIndex: number, toIndex: number): number | null
+  /** Reset the auditor fallback index to 0 after a successful audit; returns true when a running row was actually changed. */
+  resetAuditorFallbackIndex(name: string): boolean
   setPhase(name: string, phase: LoopState['phase']): void
   setPhaseAndResetError(name: string, phase: LoopState['phase']): void
   setModelFailed(name: string, failed: boolean): void
@@ -411,12 +413,21 @@ export function createLoopService(
   }
 
   function advanceAuditorFallbackIndex(name: string, fromIndex: number, toIndex: number): number | null {
-    const state = getAnyState(name)
     const result = loopsRepo.advanceAuditorFallbackIndex(projectId, name, fromIndex, toIndex)
     if (result !== null) {
+      const state = getAnyState(name)
       notifyLoopChange('auditor-fallback', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
     }
     return result
+  }
+
+  function resetAuditorFallbackIndex(name: string): boolean {
+    const changed = loopsRepo.resetAuditorFallbackIndex(projectId, name)
+    if (changed) {
+      const state = getAnyState(name)
+      notifyLoopChange('auditor-fallback', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+    }
+    return changed
   }
 
   function setPhase(name: string, phase: LoopState['phase']): void {
@@ -855,6 +866,7 @@ export function createLoopService(
     incrementError,
     resetError,
     advanceAuditorFallbackIndex,
+    resetAuditorFallbackIndex,
     setPhase,
     setPhaseAndResetError,
     setModelFailed,

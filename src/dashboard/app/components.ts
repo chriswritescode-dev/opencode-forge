@@ -768,7 +768,11 @@ function LoopDetailHeader(props: {
       ${() => (hasSectionsTotal() ? LoopDetailStat({ label: 'Section', value: () => lp().currentSectionIndex + ' / ' + lp().totalSections }) : '')}
       ${() => (hasUsage() ? LoopDetailStat({ label: 'Messages', value: () => String(props.dashLoop.usage!.totalMessageCount) }) : '')}
       ${LoopDetailStat({ label: 'Execution model', value: () => lp().executionModel ?? '—' })}
-      ${LoopDetailStat({ label: 'Auditor model', value: () => lp().auditorModel ?? '—' })}
+      ${LoopDetailStat({ label: 'Auditor model', value: () => {
+        const base = lp().auditorModel ?? '—'
+        const fallbackIndex = lp().auditorFallbackIndex ?? 0
+        return fallbackIndex > 0 ? `${base} (fallback ${fallbackIndex})` : base
+      }})}
       ${LoopDetailStat({ label: 'Branch', value: () => lp().worktreeBranch ?? '—' })}
       ${LoopDetailStat({ label: 'Sandbox', value: () => (lp().sandbox ? 'on' : 'off') })}
       ${LoopDetailStat({ label: 'Kind', value: () => lp().kind ?? '—' })}

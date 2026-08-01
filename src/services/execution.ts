@@ -452,6 +452,11 @@ export interface ForgeExecutionServiceDeps {
 // Helper Functions
 // ============================================================================
 
+function normalizeModelString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : undefined
+}
+
 function ok<T>(data: T, warnings?: ForgeExecutionWarning[]): ForgeExecutionResponse<T> {
   return { ok: true, data, warnings }
 }
@@ -2003,7 +2008,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       const restartAuditorState = {
         ...stoppedState,
-        auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
+        auditorModel: normalizeModelString(stoppedState.auditorModel ?? deps.config.auditorModel),
         modelFailed: false,
         auditorFallbackIndex: 0,
       }

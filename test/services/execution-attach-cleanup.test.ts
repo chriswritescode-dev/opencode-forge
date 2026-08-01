@@ -73,6 +73,7 @@ describe('attachLoopToSession', () => {
         findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
+        handleAuditorProviderLimit: async () => false,
       } as any,
       loopHandler: {
         runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
