@@ -3,6 +3,7 @@ import { defaultGitService, type GitService } from './git-service'
 import { createRemoteForgeClient, type RemoteClientOptions } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
+import { resolveLoopPermissionRules } from '../constants/loop'
 import { reserveTuiLoopName, launchTuiLoop } from './tui-client'
 
 export interface RemoteLoopRequest {
@@ -145,9 +146,18 @@ export async function executeRemoteLoop(
       startRef: sha,
       syncRef,
       gitRemote: remote.gitRemote,
+      // Persist the portable configured rules so every subsequent session of the
+      // remote loop (rotations, audits, post-actions) keeps them: those sessions
+      // rebuild rulesets from the remote server's own config, which lacks the
+      // launching machine's loop.permissions. Host-specific directory grants stay
+      // omitted because they do not exist on the remote machine.
+      permissionRules: resolveLoopPermissionRules(deps.config),
     },
     forgeLoopOverrides: {
       sandboxEnabled: remote.sandbox,
+    },
+    permissionOptions: {
+      extraRules: resolveLoopPermissionRules(deps.config),
     },
     debug,
   })

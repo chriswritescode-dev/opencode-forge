@@ -15,7 +15,7 @@ import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
 import { resolveForgeTempDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
-import { MAX_TOTAL_SECTIONS, resolveLoopAllowedDirectories } from './constants/loop'
+import { MAX_TOTAL_SECTIONS, resolveLoopPermissionOptions, collectLoopPermissionConfigWarnings } from './constants/loop'
 import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
@@ -217,6 +217,24 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     }
 
     const forgeClient = createForgeClientFromPluginInput(input)
+
+    const loopPermissionWarnings = collectLoopPermissionConfigWarnings(config)
+    for (const warning of loopPermissionWarnings) {
+      logger.log(warning)
+    }
+    if (loopPermissionWarnings.length > 0 && forgeClient) {
+      void forgeClient.tui.publish({
+        body: {
+          type: 'tui.toast.show' as const,
+          properties: {
+            title: 'Forge loop permissions',
+            message: loopPermissionWarnings.join(' '),
+            variant: 'warning' as const,
+            duration: 10_000,
+          },
+        },
+      }).catch(() => {})
+    }
 
     const dataDir = config.dataDir || resolveDataDir()
 
@@ -479,7 +497,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sessionLoopResolver,
       directory,
       logger,
-      getAllowExternalDirectories: () => resolveLoopAllowedDirectories(config),
+      getPermissionOptions: () => resolveLoopPermissionOptions(config),
     })
     const sandboxMessageHook = createSandboxMessageHook({
       sessionLoopResolver,

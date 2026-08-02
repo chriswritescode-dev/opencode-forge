@@ -1,7 +1,7 @@
 import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 import { createLoopSessionWithWorkspace } from './loop-session'
-import { buildAuditSessionPermissionRuleset } from '../constants/loop'
+import { buildAuditSessionPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { formatAuditSessionTitle } from './session-titles'
 
 interface RunAuditSessionInput {
@@ -14,8 +14,8 @@ interface RunAuditSessionInput {
   workspaceId?: string
   auditorModel?: { providerID: string; modelID: string }
   prompt: string
-  /** Absolute directories to grant audit-session read access to despite worktree isolation. */
-  allowDirectories?: string[]
+  /** Ruleset options (allowed directories plus configured rules) for the audit session. */
+  permissionOptions?: LoopPermissionRulesetOptions
   logger: Logger | Console
 }
 
@@ -30,7 +30,7 @@ export async function createAuditSession(
   input: RunAuditSessionInput,
 ): Promise<RunAuditSessionResult | null> {
   const { client } = input
-  const permission = buildAuditSessionPermissionRuleset({ allowDirectories: input.allowDirectories })
+  const permission = buildAuditSessionPermissionRuleset(input.permissionOptions)
   const created = await createLoopSessionWithWorkspace({
     client,
     title: formatAuditSessionTitle(input.loopName, {

@@ -20,7 +20,7 @@ import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limi
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { slugify } from '../utils/logger'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
@@ -1189,7 +1189,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
       sandboxEnabledForLoop = sandboxEnabled
 
-      const permissionRuleset = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(deps.config) })
+      const permissionRuleset = buildLoopPermissionRuleset(resolveLoopPermissionOptions(deps.config))
 
       // Create single code session
       const createResult = await createLoopSessionWithWorkspace({
@@ -1406,7 +1406,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       createdWorkspaceId = ws.workspaceId
 
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
-      const permissionRuleset = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(deps.config) })
+      const permissionRuleset = buildLoopPermissionRuleset(resolveLoopPermissionOptions(deps.config))
 
       const createResult = await createLoopSessionWithWorkspace({
         client: deps.client,
@@ -1756,7 +1756,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(deps.config) })
+    const permissionRuleset = buildLoopPermissionRuleset(resolveLoopPermissionOptions(deps.config))
     // Pre-lock snapshot used as the rollback target only when the loop is
     // already stopped (no active under-lock state to re-fetch). For active
     // loops we refresh this from the authoritative under-lock state below,
@@ -1889,7 +1889,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(deps.config) }) : permissionRuleset,
+        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset(resolveLoopPermissionOptions(deps.config)) : permissionRuleset,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',

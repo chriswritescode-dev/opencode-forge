@@ -17,7 +17,7 @@ import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nex
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, resolveLoopAllowedDirectories } from '../constants/loop'
+import { buildLoopPermissionRuleset, resolveLoopPermissionOptions, type LoopPermissionRulesetOptions, type PermissionRule } from '../constants/loop'
 import { createLoopSessionWithWorkspace } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
@@ -151,6 +151,50 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
   const stateLocks = new Map<string, Promise<unknown>>()
+
+  /**
+   * Portable user-configured permission rules persisted in remote workspace metadata
+   * (`extra.permissionRules`, written by the remote launcher). Remote loops rebuild
+   * every subsequent ruleset from the remote server's own config, which does not carry
+   * the launching machine's `loop.permissions`; these rules are carried through the
+   * workspace so rotations, audits, final audits, and post-actions keep them. Local
+   * loops and workspaces without the field resolve an empty list and are unchanged.
+   */
+  const workspacePortableRules = new Map<string, PermissionRule[]>()
+  async function readWorkspacePortableRules(state: Pick<LoopState, 'workspaceId'>): Promise<PermissionRule[]> {
+    const wsId = state.workspaceId
+    if (!wsId) return []
+    const cached = workspacePortableRules.get(wsId)
+    if (cached) return cached
+    let rules: PermissionRule[] = []
+    try {
+      const list = (await client.workspace.list()) as Array<{ id?: string; extra?: unknown }> | undefined
+      const ws = list?.find((w) => w?.id === wsId)
+      const extra = (ws?.extra ?? {}) as { permissionRules?: unknown }
+      if (Array.isArray(extra.permissionRules)) {
+        rules = (extra.permissionRules as unknown[]).filter(
+          (r): r is PermissionRule =>
+            typeof r === 'object' && r !== null &&
+            typeof (r as PermissionRule).permission === 'string' &&
+            typeof (r as PermissionRule).pattern === 'string' &&
+            ((r as PermissionRule).action === 'allow' || (r as PermissionRule).action === 'deny'),
+        )
+      }
+    } catch {
+      rules = []
+    }
+    workspacePortableRules.set(wsId, rules)
+    return rules
+  }
+
+  async function resolveLoopPermissionOptionsForLoop(
+    state: Pick<LoopState, 'workspaceId'>,
+  ): Promise<LoopPermissionRulesetOptions> {
+    const opts = resolveLoopPermissionOptions(getConfig())
+    const portable = await readWorkspacePortableRules(state)
+    if (portable.length === 0) return opts
+    return { ...opts, extraRules: [...(opts.extraRules ?? []), ...portable] }
+  }
 
   /**
    * Sessions we abort ourselves in `resendAuditPromptWithAuditorModel` to
@@ -344,7 +388,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
+    const permissionRuleset = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(state))
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
 
@@ -523,7 +567,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!currentState.worktreeDir) return false
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
-    const permission = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
+    const permission = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(currentState))
     const created = await createLoopSessionWithWorkspace({
       client,
       title: formatPostActionSessionTitle(loopName),
@@ -1321,7 +1365,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       auditorModel: auditorChoice.model,
       prompt: finalAuditPrompt,
-      allowDirectories: resolveLoopAllowedDirectories(getConfig()),
+      permissionOptions: await resolveLoopPermissionOptionsForLoop(currentState),
       logger,
     })
     if (!created) {
@@ -1464,7 +1508,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       workspaceId?: string
       auditorModel?: { providerID: string; modelID: string }
       prompt: string
-      allowDirectories?: string[]
+      permissionOptions?: LoopPermissionRulesetOptions
     }, attempts = MAX_RETRIES): Promise<{ auditSessionId: string; boundWorkspaceId?: string; bindFailed: boolean; bindError?: unknown } | null> {
       for (let i = 0; i < attempts; i++) {
         const created = await createAuditSession({ client, ...input, logger })
@@ -1488,7 +1532,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       auditorModel: auditorChoice.model,
       prompt: auditPrompt,
-      allowDirectories: resolveLoopAllowedDirectories(currentConfig),
+      permissionOptions: await resolveLoopPermissionOptionsForLoop(currentState),
     })
 
     if (!created) {

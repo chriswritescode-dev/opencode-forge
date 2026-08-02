@@ -382,7 +382,7 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
       } as any,
       directory: '/repo',
       logger,
-      getAllowExternalDirectories: () => [VAULT],
+      getPermissionOptions: () => ({ allowDirectories: [VAULT] }),
     })
 
     await hook.onSessionCreated({
@@ -396,6 +396,42 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
       sessionID: 'child-session',
       directory: '/repo/.worktrees/active-loop',
       permission: buildLoopPermissionRuleset({ allowDirectories: [VAULT] }),
+    })
+  })
+
+  test('fallback ruleset includes configured loop.permissions deny rules for subagent sessions', async () => {
+    const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
+    const mockGet = vi.fn(async () => ({}))
+    const mockUpdate = vi.fn(async () => {})
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const options = { allowDirectories: [VAULT], extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' as const }] }
+
+    const hook = createLoopPermissionPatcher({
+      client: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: vi.fn(async () => ({
+          loopName: 'active-loop',
+          active: true,
+          worktreeDir: '/repo/.worktrees/active-loop',
+          sandbox: false,
+        })),
+      } as any,
+      directory: '/repo',
+      logger,
+      getPermissionOptions: () => options,
+    })
+
+    await hook.onSessionCreated({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'child-session', parentID: 'parent-session' } },
+      },
+    })
+
+    expect(mockUpdate).toHaveBeenCalledWith({
+      sessionID: 'child-session',
+      directory: '/repo/.worktrees/active-loop',
+      permission: buildLoopPermissionRuleset(options),
     })
   })
 

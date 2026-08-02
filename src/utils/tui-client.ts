@@ -13,7 +13,7 @@ import { deriveExecutionPreferencesFromWorkspaces } from './tui-execution-prefer
 import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
-import { buildLoopPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
 import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
@@ -267,7 +267,7 @@ export interface LaunchTuiLoopOptions {
   executionVariant?: string
   auditorVariant?: string
   hostSessionId?: string
-  allowDirectories?: string[]
+  permissionOptions?: LoopPermissionRulesetOptions
   /** Extra workspace fields merged into extra (e.g. startRef/syncRef/gitRemote). */
   extraWorkspaceFields?: Record<string, unknown>
   /** Merged into the forgeLoop envelope (e.g. sandboxEnabled=false for remote). */
@@ -345,7 +345,7 @@ export async function launchTuiLoop(
     }
 
     const parsedModel = parseModelString(opts.executionModel)
-    const permission = buildLoopPermissionRuleset({ allowDirectories: opts.allowDirectories })
+    const permission = buildLoopPermissionRuleset(opts.permissionOptions)
     const session = await opts.client.session.create({
       workspaceID: workspace.id,
       title: loopName,
@@ -410,7 +410,7 @@ export async function selectTuiSession(api: TuiPluginApi, client: ForgeClient, s
 export async function connectForgeProject(
   api: TuiPluginApi,
   directory?: string,
-  allowExternalDirectories?: string[],
+  permissionOptions?: LoopPermissionRulesetOptions,
   dbPath?: string,
 ): Promise<ForgeProjectClient | null> {
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
@@ -506,7 +506,7 @@ export async function connectForgeProject(
           executionVariant: req.executionVariant,
           auditorVariant: req.auditorVariant,
           hostSessionId: sessionId || undefined,
-          allowDirectories: allowExternalDirectories,
+          permissionOptions,
           dbPath,
           onLaunched: (sid, wid) => selectTuiSession(api, client, sid, wid),
           debug: tuiDebug,

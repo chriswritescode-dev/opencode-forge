@@ -1,7 +1,7 @@
 import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 import type { createSessionLoopResolver } from '../services/session-loop-resolver'
-import { buildLoopPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 
 /**
  * Sessions already verified to carry a loop ruleset (or verified to not need
@@ -50,8 +50,8 @@ export interface CreateLoopPermissionPatcherDeps {
   sessionLoopResolver: ReturnType<typeof createSessionLoopResolver>
   directory: string
   logger: Logger
-  /** Resolves the configured external-directory allowlist for loop sessions. */
-  getAllowExternalDirectories?: () => string[] | undefined
+  /** Resolves the configured loop permission ruleset options for loop sessions. */
+  getPermissionOptions?: () => LoopPermissionRulesetOptions | undefined
 }
 
 export interface LoopPermissionPatcher {
@@ -69,7 +69,7 @@ export interface LoopPermissionPatcher {
 }
 
 export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDeps): LoopPermissionPatcher {
-  const { client, sessionLoopResolver, directory, logger, getAllowExternalDirectories } = deps
+  const { client, sessionLoopResolver, directory, logger, getPermissionOptions } = deps
 
   async function applyRuleset(input: {
     sessionID: string
@@ -91,7 +91,7 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
     } catch (err) {
       logger.error(`[loop-permission] failed to fetch parent ${parentID} for inheritance`, err)
     }
-    if (!ruleset) ruleset = buildLoopPermissionRuleset({ allowDirectories: getAllowExternalDirectories?.() })
+    if (!ruleset) ruleset = buildLoopPermissionRuleset(getPermissionOptions?.() ?? {})
 
     logger.log(
       `[loop-permission] patching loop=${loopName} session=${sessionID} parent=${parentID} ruleset=${rulesetSource}`,

@@ -11,7 +11,7 @@ import { createSbxRuntime } from './sandbox/sbx'
 import { buildAndLoadSandboxTemplate } from './sandbox/template'
 import { runCommand } from './sandbox/process'
 import { tmpdir } from 'os'
-import { resolveLoopAllowedDirectories } from './constants/loop'
+import { resolveLoopPermissionOptions } from './constants/loop'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
@@ -396,7 +396,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), forgeDbPath).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, resolveLoopPermissionOptions(pluginConfig), forgeDbPath).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 

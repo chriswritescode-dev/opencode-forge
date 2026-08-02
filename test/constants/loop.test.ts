@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
 import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
@@ -17,6 +17,14 @@ describe('MAX_TOTAL_SECTIONS', () => {
 describe('PLAN_AUTHORING_TOOL_NAMES', () => {
   it('is the single list of plan-authoring tools every deny path derives from', () => {
     expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit'])
+  })
+})
+
+describe('FORGE_MANAGED_PERMISSIONS', () => {
+  it('contains the blanket allow, external_directory, and every structural deny name', () => {
+    for (const permission of ['*', 'external_directory', ...PLAN_AUTHORING_TOOL_NAMES, 'question', 'review-write', 'edit']) {
+      expect(FORGE_MANAGED_PERMISSIONS.has(permission)).toBe(true)
+    }
   })
 })
 
@@ -151,5 +159,52 @@ describe('resolveLoopAllowedDirectories', () => {
     const rules = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(undefined) })
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: DEFAULT_FORGE_TMP_DIR, action: 'allow' })
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: `${DEFAULT_FORGE_TMP_DIR}/**`, action: 'allow' })
+  })
+})
+
+describe('configured extraRules', () => {
+  const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
+  const CONFIGURED_DENY = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+
+  it('omitted extraRules leaves both rulesets unchanged (backward compatibility)', () => {
+    expect(buildLoopPermissionRuleset({ allowDirectories: [VAULT] })).toEqual(
+      buildLoopPermissionRuleset({ allowDirectories: [VAULT], extraRules: [] }),
+    )
+    expect(buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT] })).toEqual(
+      buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT], extraRules: [] }),
+    )
+  })
+
+  it('inserts a configured rule after the external_directory allow rules and before the first structural deny, in both rulesets', () => {
+    for (const rules of [
+      buildLoopPermissionRuleset({ allowDirectories: [VAULT], extraRules: [CONFIGURED_DENY] }),
+      buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT], extraRules: [CONFIGURED_DENY] }),
+    ]) {
+      expect(rules).toContainEqual(CONFIGURED_DENY)
+      const occurrences = rules.filter(r => r.permission === CONFIGURED_DENY.permission && r.action === 'deny').length
+      expect(occurrences).toBe(1)
+
+      const configuredIdx = rules.findIndex(r => r.permission === 'webfetch' && r.action === 'deny')
+      const lastExternalAllowIdx = rules
+        .map((r, i) => (r.permission === 'external_directory' && r.action === 'allow' ? i : -1))
+        .filter(i => i !== -1)
+        .pop() ?? -1
+      const firstStructuralDenyIdx = rules.findIndex(r => r.permission === 'review-write' || r.permission === 'edit')
+      expect(configuredIdx).toBeGreaterThan(lastExternalAllowIdx)
+      expect(configuredIdx).toBeLessThan(firstStructuralDenyIdx)
+    }
+  })
+})
+
+describe('resolveLoopPermissionOptions', () => {
+  it('resolves both the directory list and the parsed rule from config', () => {
+    const config = { loop: { permissions: { deny: ['webfetch'] }, allowExternalDirectories: ['/vault'] } }
+    const options = resolveLoopPermissionOptions(config)
+    expect(options.allowDirectories).toEqual([DEFAULT_FORGE_TMP_DIR, '/vault'])
+    expect(options.extraRules).toEqual([{ permission: 'webfetch', pattern: '*', action: 'deny' }])
+  })
+
+  it('yields empty options when config is undefined', () => {
+    expect(resolveLoopPermissionOptions(undefined)).toEqual({ allowDirectories: [DEFAULT_FORGE_TMP_DIR], extraRules: [] })
   })
 })

@@ -53,7 +53,38 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
 | `loop.allowExternalDirectories` | unset | Absolute host directories that loop, audit, and post-action sessions may read despite worktree isolation. |
+| `loop.permissions` | unset | Per-tool permission overrides (`allow`/`deny`) for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
+
+### Loop Permissions
+
+`loop.permissions` lets you override individual tool permissions for loop, audit, and post-action sessions without editing the structural ruleset. It is optional; when unset, sessions use Forge's defaults.
+
+```jsonc
+"loop": {
+  "permissions": {
+    "allow": ["bash", { "permission": "read", "pattern": "/abs/path/**" }],
+    "deny": ["browser_navigate"]
+  }
+}
+```
+
+Each entry is a tool name (pattern `*`) or an object `{ permission, pattern }` scoping the match. `allow` entries are processed first, then `deny` entries; on ties `deny` wins. Duplicate entries are dropped.
+
+Configured rules are layered into the ruleset in this order:
+
+1. Blanket allow-all (worktree/audit isolation).
+2. Blanket `external_directory` deny.
+3. `external_directory` allows (opencode's tool-output directory, then `loop.allowExternalDirectories`).
+4. Configured `allow` rules.
+5. Configured `deny` rules.
+6. Forge structural denies.
+
+Because configured rules sit between the external-directory allows and Forge's structural denies, they can grant or deny user tools but can never override a structural deny.
+
+**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan`, `plan_enter`, `plan_exit`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`, `review-write`, `review-delete`, `edit`, `write`, `multiedit`, and `apply_patch`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`group-*` would let a loop recurse into itself or manage other loops.
+
+The block applies to loop, audit, and post-action sessions. Remote loop launches receive the configured rules but not `loop.allowExternalDirectories` (host-specific configured paths are not portable to a remote server).
 
 ### Worktree Logging
 

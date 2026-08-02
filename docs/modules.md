@@ -457,8 +457,9 @@ Cross-cutting helpers (~25 files) organized by concern:
 Security rules for loop and audit sessions.
 
 ```typescript
-buildLoopPermissionRuleset(): PermissionRule[]      // Allow-all except review/plan/loop/external_directory
-buildAuditSessionPermissionRuleset(): PermissionRule[] // Read-only, deny all mutations
+buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, external_directory deny+allows, then configured rules, then review/plan/loop structural denies
+buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, external_directory deny+allows, configured rules, then structural denies for the direct mutation tools edit/write/multiedit/apply_patch plus the shared plan/loop denies
+resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Single resolver for allowDirectories + configured loop.permissions rules
 ```
 
 Source: [src/constants/loop.ts](../src/constants/loop.ts)
