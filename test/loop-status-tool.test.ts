@@ -610,6 +610,72 @@ describe('loop-status tool restart path', () => {
     expect(callWithPermission).toBeDefined()
     expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false, allowDirectories: resolveLoopAllowedDirectories({}) }))
   })
+
+  test('auditor model label clamps persisted fallback index to the chain', async () => {
+    const { client: forgeClient } = createFakeForgeClient()
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const worktreeDir = `${TEST_DIR}/worktree-clamped-index`
+    mkdirSync(worktreeDir, { recursive: true })
+
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-clamped-index',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-clamped-index',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt clamped index',
+      phase: 'auditing',
+      errorCount: 0,
+      auditCount: 1,
+      status: 'completed',
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'prov/primary',
+      auditorFallbackIndex: 3,
+      workspaceId: 'ws-clamped',
+      hostSessionId: 'host-clamped',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
+      directory: TEST_DIR,
+      config: { auditorFallbackModels: ['prov/fb'] },
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+
+    expect(result).toContain('prov/fb (fallback 1/1)')
+    expect(result).not.toContain('(fallback 3/1)')
+  })
 })
 
 describe('loop-status cumulative usage', () => {

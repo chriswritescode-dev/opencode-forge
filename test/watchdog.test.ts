@@ -477,6 +477,163 @@ describe('createLoopWatchdog', () => {
     watchdog.stop(loopName)
   })
 
+  it('absorbs provider-limit retry in final_auditing when fallback returns true and resets activity', async () => {
+    const stateRef = { current: createState({ phase: 'final_auditing', sessionId: 'audit-session' }) }
+    const terminateCalls: unknown[] = []
+    const fallbackCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
+      },
+      client: createMockClient(async () => ({
+        'audit-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
+      })),
+      logger,
+      recover: async () => {},
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+      handleAuditorProviderLimit: async (ln, reason) => {
+        fallbackCalls.push({ ln, reason })
+        return true
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(60)
+
+    expect(fallbackCalls.length).toBeGreaterThanOrEqual(1)
+    expect((fallbackCalls[0] as { ln: string }).ln).toBe(loopName)
+    expect(String((fallbackCalls[0] as { reason: unknown }).reason)).toContain('usage limit')
+    expect(terminateCalls.length).toBe(0)
+    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('terminates with provider_limit in final_auditing when fallback returns false', async () => {
+    const stateRef = { current: createState({ phase: 'final_auditing', sessionId: 'audit-session' }) }
+    const terminateCalls: unknown[] = []
+    const fallbackCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
+      },
+      client: createMockClient(async () => ({
+        'audit-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
+      })),
+      logger,
+      recover: async () => {},
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+      handleAuditorProviderLimit: async (ln, reason) => {
+        fallbackCalls.push({ ln, reason })
+        return false
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(60)
+
+    expect(fallbackCalls.length).toBe(1)
+    expect(terminateCalls.length).toBe(1)
+    expect(terminateCalls[0]).toEqual({
+      kind: 'provider_limit',
+      message: expect.stringContaining('usage limit'),
+    })
+
+    watchdog.stop(loopName)
+  })
+
+  it('terminates with provider_limit when fallback absent (backwards compatible)', async () => {
+    const stateRef = { current: createState({ phase: 'final_auditing', sessionId: 'audit-session' }) }
+    const terminateCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
+      },
+      client: createMockClient(async () => ({
+        'audit-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
+      })),
+      logger,
+      recover: async () => {},
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(60)
+
+    expect(terminateCalls.length).toBe(1)
+    expect(terminateCalls[0]).toEqual({
+      kind: 'provider_limit',
+      message: expect.stringContaining('usage limit'),
+    })
+
+    watchdog.stop(loopName)
+  })
+
+  it('does not absorb provider-limit retry in a non-auditor phase', async () => {
+    const stateRef = { current: createState({ phase: 'coding' }) }
+    const terminateCalls: unknown[] = []
+    let fallbackCalls = 0
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
+      },
+      client: createMockClient(async () => ({
+        'coding-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
+      })),
+      logger,
+      recover: async () => {},
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+      handleAuditorProviderLimit: async () => {
+        fallbackCalls += 1
+        return true
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(60)
+
+    expect(fallbackCalls).toBe(0)
+    expect(terminateCalls.length).toBe(1)
+    expect(terminateCalls[0]).toEqual({
+      kind: 'provider_limit',
+      message: expect.stringContaining('usage limit'),
+    })
+
+    watchdog.stop(loopName)
+  })
+
   it('terminates when child session has provider-limit retry via resolveSessionLoopName', async () => {
     const stateRef = { current: createState() }
     const terminateCalls: unknown[] = []

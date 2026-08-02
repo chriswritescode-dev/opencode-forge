@@ -61,6 +61,8 @@ export interface LoopsRepo {
   resetError(projectId: string, loopName: string): void
   /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the row is absent/non-running/index mismatch. */
   advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number): number | null
+  /** Reset the auditor fallback index to 0; returns true when a running row was actually changed, false when it was already 0 / non-running / absent. */
+  resetAuditorFallbackIndex(projectId: string, loopName: string): boolean
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
@@ -266,6 +268,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     UPDATE loops SET auditor_fallback_index = ?
     WHERE project_id = ? AND loop_name = ? AND status = 'running' AND auditor_fallback_index = ?
     RETURNING auditor_fallback_index
+  `)
+
+  const resetAuditorFallbackIndexStmt = db.prepare(`
+    UPDATE loops SET auditor_fallback_index = 0
+    WHERE project_id = ? AND loop_name = ? AND status = 'running' AND auditor_fallback_index != 0
   `)
 
   const setCurrentSessionIdStmt = db.prepare(`
@@ -525,6 +532,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number): number | null {
       const result = advanceAuditorFallbackIndexStmt.get(toIndex, projectId, loopName, fromIndex) as { auditor_fallback_index: number } | null
       return result?.auditor_fallback_index ?? null
+    },
+
+    resetAuditorFallbackIndex(projectId: string, loopName: string): boolean {
+      const result = resetAuditorFallbackIndexStmt.run(projectId, loopName) as unknown as { changes: number }
+      return result.changes > 0
     },
 
     setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void {

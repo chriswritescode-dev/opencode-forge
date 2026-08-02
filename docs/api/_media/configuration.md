@@ -14,7 +14,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
-| `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries use `provider/model` format and are tried in order; variants are NOT inherited. Applies only to `auditing`/`final_auditing`. The fallback index resets to `0` on loop restart. Empty/omitted means a limited auditor terminates the loop. |
+| `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries use `provider/model` format and are tried in order; variants are NOT inherited. Applies only to `auditing`/`final_auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `remotes` | unset | Remote opencode servers available as loop launch targets in the TUI execution dialog. See [Remotes](#remotes). |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |

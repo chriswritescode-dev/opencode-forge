@@ -13,7 +13,7 @@ import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-r
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
-import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex } from '../utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
@@ -412,8 +412,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     phase: string,
     errorSignal?: { name?: string; message?: string; statusCode?: number } | null,
   ): Promise<{ assistantErrorDetected: boolean; currentState: LoopState } | null> {
-    // `null` means the caller must `return` without continuing: either the loop
-    // was terminated or the audit was re-dispatched on a fallback auditor model.
+    // `null` means the caller must `return` without continuing: the loop was
+    // terminated.
     if (!assistantError) {
       return { assistantErrorDetected: false, currentState }
     }
@@ -422,7 +422,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const limitReason = classifyProviderLimit(errorSignal ?? {})
     if (limitReason) {
-      if (await handleAuditorProviderLimit(loopName, limitReason)) return null
       logger.error(`Loop: provider limit detected in ${phase} assistant error for ${loopName}: ${limitReason}, terminating`)
       await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
       return null
@@ -798,7 +797,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (queue.some(entry => entry.sessionId === sessionId)) return
     
     // Determine role and fallback model at queue time
-    const role: 'code' | 'auditor' = phase && (phase === 'auditing' || phase === 'final_auditing') ? 'auditor' : 'code'
+    const role = usageRoleForPhase(phase)
     const fallbackModel = phase && state ? getFallbackModelForSession(state, phase) : undefined
     
     queue.push({ sessionId, role, fallbackModel, directory })
@@ -868,6 +867,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     idleRetryAttempts.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
+    coalescedLimitSessions.delete(loopName)
     clearPromptPending(loopName, logger)
     clearPromptInFlight(loopName)
 
@@ -894,13 +894,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     // Clean up session→loop reverse index for this loop
     for (const [sid, ln] of sessionToLoop) {
-      if (ln === loopName) sessionToLoop.delete(sid)
+      if (ln === loopName) {
+        sessionToLoop.delete(sid)
+        internalFallbackAborts.delete(sid)
+      }
     }
+    internalFallbackAborts.delete(sessionId)
     sessionToLoop.delete(sessionId)
 
     // Capture usage for the final active session before termination
     const fallbackModel = getFallbackModelForSession(state, state.phase)
-    const role: 'code' | 'auditor' = state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code'
+    const role = usageRoleForPhase(state.phase)
     await captureLoopSessionUsage({
       loopName,
       sessionId: state.sessionId,
@@ -946,10 +950,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     } finally {
       terminatingLoops.delete(loopName)
     }
-  }
-
-  function isAuditorPhase(phase: LoopState['phase']): boolean {
-    return phase === 'auditing' || phase === 'final_auditing'
   }
 
   /**
@@ -1043,7 +1043,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // failed prompt are absorbed above rather than advancing again.
       coalescedLimitSessions.set(loopName, state.sessionId)
 
-      state = loopService.getActiveState(loopName)
+      state = { ...state, auditorFallbackIndex: committed }
       if (!state?.active || !isAuditorPhase(state.phase)) return true
 
       logger.log(`Loop: auditor provider limit for ${loopName} (${limitReason}) → auditor fallback #${committed}`)
@@ -1244,6 +1244,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     logger,
     recover: recoverWatchdogStall,
     terminate: tryTerminateLoop,
+    handleAuditorProviderLimit: (loopName: string, limitReason: string) =>
+      withStateLock(loopName, () => handleAuditorProviderLimit(loopName, limitReason)),
     resolveSessionLoopName,
   })
 
@@ -1755,6 +1757,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
 
     if (!assistantErrorDetected) {
+      loopService.resetAuditorFallbackIndex(loopName)
+      currentState = { ...currentState, auditorFallbackIndex: 0 }
       const newAuditCount = (currentState.auditCount ?? 0) + 1
       logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
 
@@ -2042,6 +2046,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'final_auditing')
 
     if (!assistantErrorDetected) {
+      loopService.resetAuditorFallbackIndex(loopName)
+      currentState = { ...currentState, auditorFallbackIndex: 0 }
       const hasOutstandingBugs = loopService.hasOutstandingFindings(loopName, 'bug')
 
       const finalAuditEvent: TransitionEvent = { type: hasOutstandingBugs ? 'final-audit-dirty' : 'final-audit-clean' }
@@ -2422,29 +2428,30 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // its pre-lock gate and be suppressed, stalling the loop with no phase
       // run. Busy proves the prompt started, so its idle is always legitimate.
       //
-      // The in-flight and coalesced-limit markers are still cleared under the
-      // lock: the internal-abort counter and duplicate provider-limit signals
-      // for the same failed prompt are queued with `withStateLock`, so an
-      // unlocked cleanup would clear the guard before the queued handler
-      // consumed it — treating the intentional abort as an audit failure or
-      // re-advancing the fallback index. Serializing that boundary here means
-      // the earlier-queued lifecycle event is always processed first.
+      // The in-flight marker is cleared synchronously as well: it is a
+      // membership check, not a guard against a queued lifecycle event, so
+      // clearing it immediately on this busy is always safe.
+      //
+      // The state lock is taken only when a coalesced provider-limit marker is
+      // present for this exact session. `busy` is the highest-frequency loop
+      // event and awaits the shared event pipeline, so we avoid paying the lock
+      // on every occurrence. The lock is required only to serialize the
+      // coalesced-limit clear against the queued limit handler: duplicate
+      // provider-limit signals for the same failed prompt are queued with
+      // `withStateLock`, so an unlocked cleanup would clear the guard before
+      // the queued handler consumed it, re-advancing the fallback index.
       if (loopName && isAwaitingBusy(loopName, sessionId)) {
         logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
         clearPromptPending(loopName, logger)
       }
-      const clearBusyMarkers = async (): Promise<void> => {
-        if (loopName) {
-          clearPromptInFlightBySession(loopName, sessionId)
-        }
-        if (loopName && coalescedLimitSessions.get(loopName) === sessionId) {
-          coalescedLimitSessions.delete(loopName)
-        }
-      }
       if (loopName) {
-        await withStateLock(loopName, clearBusyMarkers)
-      } else {
-        clearBusyMarkers()
+        const coalesced = coalescedLimitSessions.get(loopName) === sessionId
+        clearPromptInFlightBySession(loopName, sessionId)
+        if (coalesced) {
+          await withStateLock(loopName, async () => {
+            coalescedLimitSessions.delete(loopName)
+          })
+        }
       }
       return
     }
@@ -2693,6 +2700,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     idleRetryAttempts.clear()
     codingLaunchRecoveryAttempts.clear()
+    internalFallbackAborts.clear()
+    coalescedLimitSessions.clear()
     loopRetainedSessions.clear()
     sessionToLoop.clear()
     terminatingLoops.clear()
@@ -2750,6 +2759,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     idleRetryAttempts.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
+    coalescedLimitSessions.delete(loopName)
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {

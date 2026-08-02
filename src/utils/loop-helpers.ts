@@ -122,13 +122,12 @@ export function resolveLoopAuditorChoice(
   return choice
 }
 
-export function resolveLoopAuditorModel(
-  config: PluginConfig,
-  loopService: LoopService,
-  loopName: string,
-  logger?: Logger,
-): { providerID: string; modelID: string } | undefined {
-  return resolveLoopAuditorChoice(config, loopService, loopName, logger).model
+export function isAuditorPhase(phase: LoopState['phase'] | undefined): boolean {
+  return phase === 'auditing' || phase === 'final_auditing'
+}
+
+export function usageRoleForPhase(phase: LoopState['phase'] | undefined): 'code' | 'auditor' {
+  return isAuditorPhase(phase) ? 'auditor' : 'code'
 }
 
 // Resolves the label used to attribute assistant usage when a message's own
@@ -140,7 +139,7 @@ export function resolveUsageFallbackModelLabel(
   state: LoopState,
   phase: LoopState['phase'],
 ): string | undefined {
-  if (phase === 'auditing' || phase === 'final_auditing') {
+  if (isAuditorPhase(phase)) {
     const choice = auditorModelChoiceAt(buildAuditorModelChain(config, state), state.auditorFallbackIndex ?? 0)
     if (choice.model) {
       return `${choice.model.providerID}/${choice.model.modelID}`
