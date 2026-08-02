@@ -2,7 +2,7 @@ import type { SandboxRuntime, SandboxWorkspace } from './sbx'
 import { describeSbxUnavailable, type SbxAvailability } from './sbx'
 import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
-import { mkdirSync, existsSync, writeFileSync, chmodSync, rmSync } from 'fs'
+import { mkdirSync, existsSync, writeFileSync, chmodSync, rmSync, realpathSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { isSameOrDescendantPath, type SandboxMount } from './path'
 
@@ -44,9 +44,25 @@ function normalizeContainerPath(path: string): string {
   return normalized.length > 1 && normalized.endsWith('/') ? normalized.slice(0, -1) : normalized
 }
 
+/**
+ * Canonical form used only to compare mount paths. `resolve()` does not follow symlinks but
+ * `git rev-parse` returns already-canonical paths, so mixing the two forms hides real nesting
+ * (on macOS `/var/folders/...` vs `/private/var/folders/...`). Emitted mounts keep their original
+ * path: sbx binds `hostDir` at the identical container path, so canonicalizing the mount itself
+ * would move the in-container path away from the one the agent references.
+ */
+function canonicalComparisonPath(path: string): string {
+  const normalized = normalizeContainerPath(path)
+  try {
+    return realpathSync.native(normalized)
+  } catch {
+    return normalized
+  }
+}
+
 function containerPathsOverlap(a: string, b: string): boolean {
-  const left = normalizeContainerPath(a)
-  const right = normalizeContainerPath(b)
+  const left = canonicalComparisonPath(a)
+  const right = canonicalComparisonPath(b)
   return isSameOrDescendantPath(left, right) || isSameOrDescendantPath(right, left)
 }
 
@@ -246,7 +262,7 @@ export function createSandboxManager(
       logger.log(`Sandbox: skipping tool-output mount; directory does not exist: ${resolved}`)
       return undefined
     }
-    if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
+    if (isSameOrDescendantPath(resolved, workspaceDir)) return undefined
     return { hostDir: resolved, containerDir: resolved, readOnly: true }
   }
 
@@ -260,7 +276,7 @@ export function createSandboxManager(
       logger.log(`Sandbox: skipping temp mount; could not create ${resolved}: ${err instanceof Error ? err.message : String(err)}`)
       return undefined
     }
-    if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
+    if (isSameOrDescendantPath(resolved, workspaceDir)) return undefined
     return { hostDir: resolved, containerDir: resolved, readOnly: false }
   }
 

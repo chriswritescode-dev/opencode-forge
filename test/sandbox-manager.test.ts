@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, realpathSync, symlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { execSync } from 'child_process'
@@ -271,6 +271,44 @@ describe('SandboxManager', () => {
         // ...while the read-only project workspace, an ancestor of the git dirs, is dropped.
         expect(workspaces.some(w => w.hostDir === projectDir)).toBe(false)
         expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    test('a symlinked worktree path still drops the overlapping project workspace', async () => {
+      const tempDir = realpathSync(mkdtempSync(join(tmpdir(), 'sandbox-symlink-')))
+      try {
+        const projectDir = join(tempDir, 'main-project')
+        const worktreeDir = join(tempDir, 'worktree')
+        execSync(`git init "${projectDir}"`, { cwd: tempDir })
+        execSync('git config user.email test@example.com', { cwd: projectDir })
+        execSync('git config user.name Test', { cwd: projectDir })
+        execSync('git commit --allow-empty -m init', { cwd: projectDir })
+        execSync(`git worktree add "${worktreeDir}" -b symlink-test`, { cwd: projectDir })
+
+        // Reach the same tree through a symlink so resolve() and git's canonical output disagree.
+        const linkDir = join(tempDir, 'link')
+        symlinkSync(tempDir, linkDir)
+        const linkedWorktree = join(linkDir, 'worktree')
+        const linkedProject = join(linkDir, 'main-project')
+
+        const mockRuntime = createMockSandboxRuntime()
+        const logger = createMockLogger()
+        const manager = createSandboxManager(
+          mockRuntime,
+          { image: 'oc-forge-sandbox:latest', sourceProjectDir: linkedProject, mountProjectReadonly: true },
+          logger
+        )
+
+        await manager.start('test', linkedWorktree)
+
+        const workspaces = mockRuntime.getCreateSandboxCalls()[0][1]
+        // The project workspace is an ancestor of the git dirs only after canonicalization.
+        expect(workspaces.some(w => w.hostDir === linkedProject)).toBe(false)
+        expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
+        // Emitted mounts keep the original (symlinked) path so container paths stay stable.
+        expect(workspaces.some(w => w.hostDir === linkedWorktree)).toBe(true)
       } finally {
         rmSync(tempDir, { recursive: true, force: true })
       }
