@@ -35,9 +35,11 @@
   "auditorVariant": "",
 
   // Ordered auditor fallback models used when the current auditor model hits a provider
-  // usage/auth limit mid-loop. Tried in order; variants are NOT inherited. Empty/omitted
-  // means a limited auditor terminates the loop as before.
-  // "auditorFallbackModels": ["provider/model-b", "provider/model-c"],
+  // usage/auth limit mid-loop. Tried in order. Entries are a "provider/model" string, or
+  // an object to pin a variant to that fallback; auditorVariant is NOT inherited, so a
+  // string entry runs with no variant. Empty/omitted means a limited auditor terminates
+  // the loop as before.
+  // "auditorFallbackModels": ["provider/model-b", { "model": "provider/model-c", "variant": "high" }],
 
   // Iterative development loop settings
   "loop": {

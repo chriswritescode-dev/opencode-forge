@@ -218,6 +218,18 @@ export interface RemoteServerConfig {
 }
 
 /**
+ * A fallback auditor model entry with its own reasoning/thinking variant.
+ * Used when a fallback needs a different variant than the primary auditor model,
+ * which never inherits its variant to fallbacks.
+ */
+export interface AuditorFallbackModel {
+  /** Model in "provider/model" format. */
+  model: string
+  /** Reasoning/thinking variant applied when this fallback is selected. */
+  variant?: string
+}
+
+/**
  * Complete plugin configuration for opencode-forge.
  */
 export interface PluginConfig {
@@ -237,8 +249,8 @@ export interface PluginConfig {
   executionVariant?: string
   /** Default reasoning/thinking variant for the auditor model. */
   auditorVariant?: string
-  /** Ordered "provider/model" entries tried, in order, when the current auditor model hits a provider usage/auth limit mid-loop; variants are **not** inherited by fallback entries. */
-  auditorFallbackModels?: string[]
+  /** Ordered entries tried, in order, when the current auditor model hits a provider usage/auth limit mid-loop. Use a `"provider/model"` string, or `{ model, variant }` to pin a variant to that fallback; the primary `auditorVariant` is **not** inherited by fallback entries. */
+  auditorFallbackModels?: Array<string | AuditorFallbackModel>
   /** Loop behavior configuration. */
   loop?: LoopConfig
   /** Group launch configuration. */

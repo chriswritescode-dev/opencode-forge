@@ -260,6 +260,58 @@ describe('buildAuditorModelChain', () => {
       { providerID: 'provider', modelID: 'b' },
     ])
   })
+
+  it('carries a per-entry variant from object fallback entries', () => {
+    const state: any = { active: true, auditorModel: 'provider/primary', auditorVariant: 'audit-high' }
+    const config = {
+      auditorFallbackModels: [
+        { model: 'provider/a', variant: 'max' },
+        'provider/b',
+        { model: 'provider/c' },
+      ],
+    } as PluginConfig
+    const chain = buildAuditorModelChain(config, state)
+    expect(chain.map((c) => [c.model, c.variant])).toEqual([
+      [{ providerID: 'provider', modelID: 'primary' }, 'audit-high'],
+      [{ providerID: 'provider', modelID: 'a' }, 'max'],
+      [{ providerID: 'provider', modelID: 'b' }, undefined],
+      [{ providerID: 'provider', modelID: 'c' }, undefined],
+    ])
+    expect(chain[1].source).toBe('config.auditorFallbackModels[0]=provider/a variant=max')
+    expect(chain[2].source).toBe('config.auditorFallbackModels[1]=provider/b')
+  })
+
+  it('drops malformed object entries and normalizes an empty variant to undefined', () => {
+    const state: any = { active: true, executionModel: 'provider/primary' }
+    const config = {
+      auditorFallbackModels: [
+        { model: 'bogus', variant: 'max' },
+        { variant: 'max' },
+        null,
+        { model: 'provider/a', variant: '' },
+      ],
+    } as unknown as PluginConfig
+    const chain = buildAuditorModelChain(config, state)
+    expect(chain.map((c) => c.model)).toEqual([
+      { providerID: 'provider', modelID: 'primary' },
+      { providerID: 'provider', modelID: 'a' },
+    ])
+    expect(chain[1].variant).toBeUndefined()
+    expect(chain[1].source).toBe('config.auditorFallbackModels[3]=provider/a')
+  })
+
+  it('dedupes across string and object entries, keeping the first occurrence', () => {
+    const state: any = { active: true, executionModel: 'provider/primary' }
+    const config = {
+      auditorFallbackModels: [
+        { model: 'provider/a', variant: 'max' },
+        'provider/a',
+      ],
+    } as PluginConfig
+    const chain = buildAuditorModelChain(config, state)
+    expect(chain).toHaveLength(2)
+    expect(chain[1].variant).toBe('max')
+  })
 })
 
 describe('auditorModelChoiceAt', () => {

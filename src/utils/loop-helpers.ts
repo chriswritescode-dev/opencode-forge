@@ -34,7 +34,9 @@ export function buildAuditorModelChain(
 
   const fallbacks = config.auditorFallbackModels ?? []
   for (let i = 0; i < fallbacks.length; i++) {
-    const raw = fallbacks[i]
+    const entry = fallbacks[i]
+    const raw = typeof entry === 'string' ? entry : entry?.model
+    const variant = typeof entry === 'string' ? undefined : entry?.variant || undefined
     const model = parseModelString(raw)
     if (!model) continue
     const key = `${model.providerID}/${model.modelID}`
@@ -42,8 +44,8 @@ export function buildAuditorModelChain(
     seen.add(key)
     chain.push({
       model,
-      variant: undefined,
-      source: `config.auditorFallbackModels[${i}]=${raw}`,
+      variant,
+      source: `config.auditorFallbackModels[${i}]=${raw}${variant ? ` variant=${variant}` : ''}`,
     })
   }
 
