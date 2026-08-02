@@ -459,10 +459,19 @@ Security rules for loop and audit sessions.
 ```typescript
 buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, external_directory deny+allows, then configured rules, then review/plan/loop structural denies
 buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, external_directory deny+allows, configured rules, then structural denies for the direct mutation tools edit/write/multiedit/apply_patch plus the shared plan/loop denies
-resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Single resolver for allowDirectories + configured loop.permissions rules
+resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Local resolver: allowDirectories + configured loop.permissions deny rules
+resolveRemoteLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Remote launch: configured rules without host-specific directories
 ```
 
+Only `deny` entries are honoured; Forge-managed permissions and blanket denies of Forge-required
+permissions (`FORGE_REQUIRED_PERMISSIONS`) are rejected with a warning.
+
 Source: [src/constants/loop.ts](../src/constants/loop.ts)
+
+Workspace-aware resolution (merges portable `extra.permissionRules` persisted by a remote launch)
+lives in `resolveLoopPermissionOptionsForWorkspace`.
+
+Source: [src/utils/loop-permission-options.ts](../src/utils/loop-permission-options.ts)
 
 ---
 

@@ -21,6 +21,7 @@ import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limi
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { slugify } from '../utils/logger'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
+import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
@@ -1756,7 +1757,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset(resolveLoopPermissionOptions(deps.config))
+    const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
+    const permissionRuleset = buildLoopPermissionRuleset(permissionOptions)
     // Pre-lock snapshot used as the rollback target only when the loop is
     // already stopped (no active under-lock state to re-fetch). For active
     // loops we refresh this from the authoritative under-lock state below,
@@ -1858,10 +1860,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       let newSessionId: string | undefined
 
       if (stoppedState.worktree) {
-        const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+        const { createBuiltinWorktreeWorkspace, getForgeWorkspaceEntry } = await import('../workspace/forge-worktree')
+        const previousEntry = stoppedState.workspaceId ? await getForgeWorkspaceEntry(deps.client, stoppedState.workspaceId) : undefined
         const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
+          extra: previousEntry?.extra ?? undefined,
         }, deps.logger, deps.workspaceStatusRegistry)
         if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
         const ws = wsResult.workspace
@@ -1889,7 +1893,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset(resolveLoopPermissionOptions(deps.config)) : permissionRuleset,
+        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset(permissionOptions) : permissionRuleset,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',

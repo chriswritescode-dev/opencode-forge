@@ -3,6 +3,8 @@ import {
   parseLoopPermissionRules,
   resolveLoopPermissionRules,
   collectLoopPermissionConfigWarnings,
+  FORGE_MANAGED_PERMISSIONS,
+  FORGE_REQUIRED_PERMISSIONS,
 } from '../../src/constants/loop'
 import type { PluginConfig } from '../../src/types'
 
@@ -13,11 +15,11 @@ describe('parseLoopPermissionRules', () => {
   })
 
   it('warns and returns empty when raw is not an object', () => {
-    for (const bad of ['nope', 42, ['allow']]) {
+    for (const bad of ['nope', 42, ['deny']]) {
       const result = parseLoopPermissionRules(bad)
       expect(result.rules).toEqual([])
       expect(result.warnings).toEqual([
-        'loop.permissions is ignored: expected an object with "allow" and/or "deny" arrays',
+        'loop.permissions is ignored: expected an object with a "deny" array',
       ])
     }
   })
@@ -30,49 +32,90 @@ describe('parseLoopPermissionRules', () => {
   })
 
   it('preserves the pattern verbatim for object entries', () => {
+    expect(parseLoopPermissionRules({ deny: [{ permission: 'webfetch', pattern: 'git push *' }] })).toEqual({
+      rules: [{ permission: 'webfetch', pattern: 'git push *', action: 'deny' }],
+      warnings: [],
+    })
+  })
+
+  it('defaults a blank or missing pattern to "*"', () => {
+    expect(parseLoopPermissionRules({ deny: [{ permission: 'webfetch' }, { permission: 'task', pattern: '  ' }] })).toEqual({
+      rules: [
+        { permission: 'webfetch', pattern: '*', action: 'deny' },
+        { permission: 'task', pattern: '*', action: 'deny' },
+      ],
+      warnings: [],
+    })
+  })
+
+  it('ignores a legacy allow array with a migration warning, producing only deny rules', () => {
+    const result = parseLoopPermissionRules({ allow: ['bash'], deny: ['webfetch'] })
+    expect(result.rules).toEqual([{ permission: 'webfetch', pattern: '*', action: 'deny' }])
+    expect(result.warnings).toEqual([
+      'loop.permissions.allow is ignored: only deny entries are supported',
+    ])
+  })
+
+  it('produces no rules when only a legacy allow array is supplied', () => {
+    const result = parseLoopPermissionRules({ allow: ['bash', 'read'] })
+    expect(result.rules).toEqual([])
+    expect(result.warnings).toEqual([
+      'loop.permissions.allow is ignored: only deny entries are supported',
+    ])
+  })
+
+  it('drops Forge-managed permissions, each producing exactly one warning', () => {
+    const result = parseLoopPermissionRules({
+      deny: ['*', 'external_directory', 'question', 'plan-write', 'loop-status', 'edit'],
+    })
+    expect(result.rules).toEqual([])
+    expect(result.warnings).toEqual([
+      'loop.permissions.deny entry "*" is ignored: Forge manages this permission for every loop and audit session',
+      'loop.permissions.deny entry "external_directory" is ignored: Forge manages this permission for every loop and audit session — use loop.allowExternalDirectories instead',
+      'loop.permissions.deny entry "question" is ignored: Forge manages this permission for every loop and audit session',
+      'loop.permissions.deny entry "plan-write" is ignored: Forge manages this permission for every loop and audit session',
+      'loop.permissions.deny entry "loop-status" is ignored: Forge manages this permission for every loop and audit session',
+      'loop.permissions.deny entry "edit" is ignored: Forge manages this permission for every loop and audit session',
+    ])
+  })
+
+  it('drops blanket denies of Forge-required permissions with a distinct warning', () => {
+    const result = parseLoopPermissionRules({
+      deny: ['review-read', 'plan-read', 'section-read', 'plan-adjust', 'bash', 'read'],
+    })
+    expect(result.rules).toEqual([])
+    expect(result.warnings).toEqual([
+      'loop.permissions.deny entry "review-read" is ignored: a blanket deny of this tool breaks the loop — scope it with a pattern instead',
+      'loop.permissions.deny entry "plan-read" is ignored: a blanket deny of this tool breaks the loop — scope it with a pattern instead',
+      'loop.permissions.deny entry "section-read" is ignored: a blanket deny of this tool breaks the loop — scope it with a pattern instead',
+      'loop.permissions.deny entry "plan-adjust" is ignored: a blanket deny of this tool breaks the loop — scope it with a pattern instead',
+      'loop.permissions.deny entry "bash" is ignored: a blanket deny of this tool breaks the loop — scope it with a pattern instead',
+      'loop.permissions.deny entry "read" is ignored: a blanket deny of this tool breaks the loop — scope it with a pattern instead',
+    ])
+  })
+
+  it('drops an explicit pattern "*" deny of a required permission the same as the bare name', () => {
+    const result = parseLoopPermissionRules({ deny: [{ permission: 'bash', pattern: '*' }] })
+    expect(result.rules).toEqual([])
+    expect(result.warnings).toHaveLength(1)
+  })
+
+  it('honours a scoped deny of a Forge-required permission', () => {
     expect(parseLoopPermissionRules({ deny: [{ permission: 'bash', pattern: 'git push *' }] })).toEqual({
       rules: [{ permission: 'bash', pattern: 'git push *', action: 'deny' }],
       warnings: [],
     })
   })
 
-  it('defaults a blank or missing pattern to "*"', () => {
-    expect(parseLoopPermissionRules({ deny: [{ permission: 'bash' }, { permission: 'read', pattern: '  ' }] })).toEqual({
-      rules: [
-        { permission: 'bash', pattern: '*', action: 'deny' },
-        { permission: 'read', pattern: '*', action: 'deny' },
-      ],
-      warnings: [],
-    })
-  })
-
-  it('places allow rules before deny rules', () => {
-    const result = parseLoopPermissionRules({ allow: ['webfetch'], deny: ['bash'] })
-    expect(result.rules.map((r) => r.permission)).toEqual(['webfetch', 'bash'])
-    expect(result.rules.map((r) => r.action)).toEqual(['allow', 'deny'])
-  })
-
-  it('lets a user deny win over a user allow for the same permission', () => {
-    const result = parseLoopPermissionRules({ allow: ['bash'], deny: [{ permission: 'bash', pattern: 'git *' }] })
-    expect(result.rules).toEqual([
-      { permission: 'bash', pattern: '*', action: 'allow' },
-      { permission: 'bash', pattern: 'git *', action: 'deny' },
-    ])
-  })
-
-  it('drops Forge-managed permissions, each producing exactly one warning', () => {
+  it('honours the documented example verbatim so a shipped example can never be dead config', () => {
     const result = parseLoopPermissionRules({
-      allow: ['*', 'external_directory', 'question', 'plan-write', 'loop-status', 'edit'],
+      deny: ['browser_navigate', { permission: 'bash', pattern: 'git push *' }],
     })
-    expect(result.rules).toEqual([])
-    expect(result.warnings).toEqual([
-      'loop.permissions.allow entry "*" is ignored: Forge manages this permission for every loop and audit session',
-      'loop.permissions.allow entry "external_directory" is ignored: Forge manages this permission for every loop and audit session — use loop.allowExternalDirectories instead',
-      'loop.permissions.allow entry "question" is ignored: Forge manages this permission for every loop and audit session',
-      'loop.permissions.allow entry "plan-write" is ignored: Forge manages this permission for every loop and audit session',
-      'loop.permissions.allow entry "loop-status" is ignored: Forge manages this permission for every loop and audit session',
-      'loop.permissions.allow entry "edit" is ignored: Forge manages this permission for every loop and audit session',
+    expect(result.rules).toEqual([
+      { permission: 'browser_navigate', pattern: '*', action: 'deny' },
+      { permission: 'bash', pattern: 'git push *', action: 'deny' },
     ])
+    expect(result.warnings).toEqual([])
   })
 
   it('drops malformed entries with a warning and never throws', () => {
@@ -107,21 +150,29 @@ describe('parseLoopPermissionRules', () => {
     expect(result.warnings).toHaveLength(1)
   })
 
-  it('skips a present-but-non-array allow/deny with a warning naming the key', () => {
+  it('warns when allow is present but not an array, and when deny is present but not an array', () => {
     const result = parseLoopPermissionRules({ allow: 'bash', deny: 'read' })
     expect(result.rules).toEqual([])
     expect(result.warnings).toEqual([
-      'loop.permissions.allow is ignored: expected an array',
+      'loop.permissions.allow is ignored: only deny entries are supported',
       'loop.permissions.deny is ignored: expected an array',
     ])
   })
 
-  it('deduplicates identical permission|pattern|action triples, keeping the first', () => {
+  it('deduplicates identical permission|pattern triples, keeping the first', () => {
     const result = parseLoopPermissionRules({
-      allow: ['webfetch', 'webfetch', { permission: 'webfetch' }],
+      deny: ['webfetch', 'webfetch', { permission: 'webfetch' }],
     })
-    expect(result.rules).toEqual([{ permission: 'webfetch', pattern: '*', action: 'allow' }])
+    expect(result.rules).toEqual([{ permission: 'webfetch', pattern: '*', action: 'deny' }])
     expect(result.warnings).toEqual([])
+  })
+})
+
+describe('FORGE_REQUIRED_PERMISSIONS', () => {
+  it('is disjoint from FORGE_MANAGED_PERMISSIONS so the two rejections can never conflict', () => {
+    for (const name of FORGE_REQUIRED_PERMISSIONS) {
+      expect(FORGE_MANAGED_PERMISSIONS.has(name)).toBe(false)
+    }
   })
 })
 

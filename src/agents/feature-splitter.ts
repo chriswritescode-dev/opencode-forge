@@ -1,6 +1,6 @@
 import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
-import { PLAN_AUTHORING_TOOL_NAMES } from '../constants/loop'
+import { AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, SHARED_STRUCTURAL_DENY_PERMISSIONS } from '../constants/loop'
 
 export function buildFeatureSplitterAgent(promptsDir?: string): AgentDefinition {
   return {
@@ -10,7 +10,7 @@ export function buildFeatureSplitterAgent(promptsDir?: string): AgentDefinition 
     mode: 'primary',
     hidden: true,
     tools: {
-      exclude: ['plan', 'plan_enter', 'plan_exit', 'question', 'write', 'edit', 'patch', ...PLAN_AUTHORING_TOOL_NAMES],
+      exclude: [...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS],
     },
     systemPrompt: loadPrompt(['agents', 'feature-splitter.md'], promptsDir),
   }

@@ -523,6 +523,40 @@ describe('executeRemoteLoop', () => {
 
   // ── loop.permissions config threaded to remote session.create ───────────
 
+  test('surfaces dropped loop.permissions warnings on the remote-launch surface', async () => {
+    const config: PluginConfig = {
+      remotes: [
+        { name: 'server1', url: REMOTE_URL, password: 'sekret' },
+      ],
+      loop: {
+        permissions: { deny: ['*'] },
+      },
+    }
+    const git = happyGit()
+    const { spy: createClient } = createClientSpy()
+    const onWarning = vi.fn()
+
+    const result = await executeRemoteLoop(
+      {
+        remoteName: 'server1',
+        localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
+        title: 'Test Plan',
+        loopName: 'test-loop',
+        plan: '# Test Plan\n\nDo work.',
+      },
+      { config, git, createClient: createClient as any, onWarning },
+    )
+
+    expect('error' in result).toBe(false)
+
+    // The dropped Forge-managed deny rule is surfaced to the user, not dropped silently.
+    expect(onWarning).toHaveBeenCalledTimes(1)
+    expect(onWarning).toHaveBeenCalledWith(
+      expect.stringContaining('loop.permissions.deny entry "*" is ignored'),
+    )
+  })
+
   test('threads loop.permissions deny rules to remote session.create but omits host external_directory allow rules', async () => {
     const config: PluginConfig = {
       remotes: [
@@ -531,7 +565,7 @@ describe('executeRemoteLoop', () => {
       loop: {
         allowExternalDirectories: ['/home/user/Obsidian'],
         permissions: {
-          deny: [{ permission: 'bash', pattern: '*' }],
+          deny: [{ permission: 'webfetch', pattern: '*' }],
         },
       },
     }
@@ -558,7 +592,7 @@ describe('executeRemoteLoop', () => {
     // Configured deny rule reaches the remote permission array
     expect(createArgs.permission).toEqual(
       expect.arrayContaining([
-        { permission: 'bash', pattern: '*', action: 'deny' },
+        { permission: 'webfetch', pattern: '*', action: 'deny' },
       ]),
     )
 
@@ -577,7 +611,7 @@ describe('executeRemoteLoop', () => {
     // remote session (rotations, audits, post-actions) rebuilds with them.
     const createParams = (remoteClient.workspace.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(createParams.extra.permissionRules).toEqual([
-      { permission: 'bash', pattern: '*', action: 'deny' },
+      { permission: 'webfetch', pattern: '*', action: 'deny' },
     ])
   })
 })

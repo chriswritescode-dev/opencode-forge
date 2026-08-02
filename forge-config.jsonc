@@ -65,14 +65,15 @@
     // (e.g. an Obsidian vault). Use absolute host paths; governs Read/Glob/Grep (external_directory).
     // "allowExternalDirectories": ["/abs/host/path/to/vault"]
     //
-    // Per-tool permission overrides for loop, audit, and post-action sessions.
-    // "allow" then "deny" are applied in order (deny wins on ties), layered between the
+    // Per-tool deny overrides for loop, audit, and post-action sessions, layered between the
     // external-directory allow rules and Forge's structural denies. Entries are a tool name
-    // (pattern "*"), or an object to scope the pattern. Forge-managed permissions
-    // ("*", "external_directory", and every structural deny) are rejected and reported.
+    // (pattern "*"), or an object to scope the pattern. Only "deny" entries are supported;
+    // an "allow" array is ignored with a warning. Forge-managed permissions ("*",
+    // "external_directory", and every structural deny) are rejected, as are blanket denies of
+    // Forge-required permissions ("review-read", "plan-read", "section-read", "plan-adjust",
+    // "bash", "read") — scope those with a pattern instead of denying them outright.
     // "permissions": {
-    //   "allow": ["bash", { "permission": "read", "pattern": "/abs/path/**" }],
-    //   "deny": ["browser_navigate"]
+    //   "deny": ["browser_navigate", { "permission": "bash", "pattern": "git push *" }]
     // }
     //
     // Shared scratch/temp directory available to loops in BOTH modes. It is added to the

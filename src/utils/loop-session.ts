@@ -3,6 +3,7 @@ import type { Logger } from '../types'
 import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 import { buildLoopPermissionRuleset } from '../constants/loop'
+import { publishToast } from './toast'
 
 interface CreateLoopSessionInput {
   client: ForgeClient
@@ -82,7 +83,6 @@ interface WorkspaceDetachedToastInput {
   client: ForgeClient
   directory: string
   loopName: string
-  variant?: 'warning'
   logger: Logger | Console
   context?: string
 }
@@ -93,18 +93,14 @@ export function publishWorkspaceDetachedToast(input: WorkspaceDetachedToastInput
     ? `Workspace attachment lost ${input.context}; session continues without workspace grouping.`
     : 'Workspace attachment lost; session continues without workspace grouping.'
 
-  client.tui.publish({
+  publishToast({
+    client,
     directory: input.directory,
-    body: {
-      type: 'tui.toast.show',
-      properties: {
-        title: input.loopName,
-        message,
-        variant: input.variant ?? 'warning',
-        duration: 5000,
-      },
-    },
-  }).catch((err: unknown) => {
-    input.logger.error('Loop: failed to publish workspace-detached toast', err)
+    logger: input.logger,
+    title: input.loopName,
+    message,
+    variant: 'warning',
+    duration: 5000,
+    logPrefix: 'Loop: failed to publish workspace-detached toast',
   })
 }

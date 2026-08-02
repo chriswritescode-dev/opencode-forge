@@ -3,7 +3,7 @@ import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plug
 import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
 import { loadPluginConfig, resolveBundledContainerDir } from './setup'
-import { resolveForgeDbPath } from './storage'
+import { resolveForgeDbPath, resolveDataDir } from './storage'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
@@ -12,6 +12,7 @@ import { buildAndLoadSandboxTemplate } from './sandbox/template'
 import { runCommand } from './sandbox/process'
 import { tmpdir } from 'os'
 import { resolveLoopPermissionOptions } from './constants/loop'
+import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnings'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
@@ -268,6 +269,16 @@ const tui: TuiPlugin = async (api) => {
     showVersion: tuiConfig?.showVersion ?? true,
     keybinds: { ...DEFAULT_KEYBINDS, ...tuiConfig?.keybinds },
   }
+
+  createEffect(() => {
+    if (!api.state.ready) return
+    emitLoopPermissionConfigWarnings(pluginConfig, pluginConfig.dataDir || resolveDataDir(), directory, {
+      logger: console,
+      onWarnings: (warnings) => {
+        api.ui.toast({ title: 'Forge loop permissions', message: warnings.join(' '), variant: 'warning', duration: 10_000 })
+      },
+    })
+  })
 
   // Auto-follow loop session rotations. Runs independently of the sidebar
   // option so users with the sidebar disabled still get follow-on-rotation.

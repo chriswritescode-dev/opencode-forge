@@ -208,3 +208,42 @@ describe('resolveLoopPermissionOptions', () => {
     expect(resolveLoopPermissionOptions(undefined)).toEqual({ allowDirectories: [DEFAULT_FORGE_TMP_DIR], extraRules: [] })
   })
 })
+
+describe('config -> resolveLoopPermissionOptions -> ruleset composition', () => {
+  const structuralDeniesOf = (rules: ReturnType<typeof buildLoopPermissionRuleset>) =>
+    rules.filter((r) => r.action === 'deny' && r.permission !== 'external_directory').map((r) => r.permission)
+
+  for (const build of [buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset]) {
+    it(`${build.name} keeps structural denies last when built from a real config`, () => {
+      const config = { loop: { permissions: { deny: ['webfetch', { permission: 'bash', pattern: 'git push *' }] } } }
+      const rules = build(resolveLoopPermissionOptions(config))
+
+      const configuredIdx = rules.findIndex((r) => r.permission === 'webfetch')
+      const scopedIdx = rules.findIndex((r) => r.permission === 'bash' && r.pattern === 'git push *')
+      expect(configuredIdx).toBeGreaterThan(-1)
+      expect(scopedIdx).toBeGreaterThan(-1)
+
+      // Every structural deny must resolve after the configured rules, so
+      // last-match-wins can never let config override one.
+      const firstStructuralIdx = rules.findIndex(
+        (r) => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission) && r.permission !== 'external_directory',
+      )
+      expect(firstStructuralIdx).toBeGreaterThan(configuredIdx)
+      expect(firstStructuralIdx).toBeGreaterThan(scopedIdx)
+    })
+
+    it(`${build.name} drops a config that tries to undo a structural deny`, () => {
+      const before = structuralDeniesOf(build(resolveLoopPermissionOptions(undefined)))
+      const after = structuralDeniesOf(
+        build(resolveLoopPermissionOptions({ loop: { permissions: { deny: ['question', 'external_directory'] } } })),
+      )
+      expect(after).toEqual(before)
+    })
+
+    it(`${build.name} ignores a blanket deny of a Forge-required tool end to end`, () => {
+      const rules = build(resolveLoopPermissionOptions({ loop: { permissions: { deny: ['bash', 'review-read'] } } }))
+      expect(rules.some((r) => r.permission === 'bash')).toBe(false)
+      expect(rules.some((r) => r.permission === 'review-read')).toBe(false)
+    })
+  }
+})

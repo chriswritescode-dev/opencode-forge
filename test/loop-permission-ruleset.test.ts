@@ -597,4 +597,38 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
       permission: buildLoopPermissionRuleset(),
     })
   })
+
+  test('fallback path applies portable rules from the workspace when parent inheritance is unavailable', async () => {
+    const portableRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    const mockGet = vi.fn(async ({ sessionID }: { sessionID: string }) => {
+      if (sessionID === 'child-session') return { parentID: 'other-subagent', permission: [] }
+      return { permission: [{ permission: 'task', pattern: '*', action: 'deny' }] }
+    })
+    const mockUpdate = vi.fn(async () => {})
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+
+    const patcher = createLoopPermissionPatcher({
+      client: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: vi.fn(async () => ({
+          loopName: 'active-loop',
+          active: true,
+          worktreeDir: '/repo/.worktrees/active-loop',
+          sandbox: false,
+          workspaceId: 'ws-portable',
+        })),
+      } as any,
+      directory: '/repo',
+      logger,
+      getPermissionOptions: vi.fn(async (workspaceId?: string) => {
+        expect(workspaceId).toBe('ws-portable')
+        return { extraRules: [portableRule] }
+      }),
+    })
+
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+
+    const updateArgs = (mockUpdate as any).mock.calls[0][0]
+    expect(updateArgs.permission).toContainEqual(portableRule)
+  })
 })

@@ -1,4 +1,5 @@
 import { resolveOpencodeToolOutputDir, resolveForgeTempDir } from '../utils/opencode-paths'
+import { isRecord } from '../utils/is-record'
 import type { PluginConfig, LoopPermissionsConfig } from '../types'
 
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
@@ -47,57 +48,63 @@ export const FORGE_MANAGED_PERMISSIONS: ReadonlySet<string> = new Set([
   ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
 ])
 
+/** Loop-protocol and core tools a loop cannot function without. Only a *blanket* deny (pattern `*`)
+ *  of one of these is rejected: a loop that cannot read its findings, section plan, or
+ *  plan-of-record — or cannot run `bash` or `read` at all — silently burns iterations to
+ *  maxIterations with nothing pointing at the config. A scoped deny such as
+ *  `{ permission: 'bash', pattern: 'git push *' }` is honoured. */
+export const FORGE_REQUIRED_PERMISSIONS: ReadonlySet<string> = new Set([
+  'review-read',
+  'plan-read',
+  'section-read',
+  'plan-adjust',
+  'bash',
+  'read',
+])
+
 function denyRulesFor(names: readonly string[]): PermissionRule[] {
   return names.map((permission) => ({ permission, pattern: '*', action: 'deny' as const }))
 }
 
 /** Normalizes one configured rule into a typed `PermissionRule`, or `null` if it must be dropped. */
-function parseLoopPermissionEntry(
-  key: 'allow' | 'deny',
-  index: number,
-  raw: unknown,
-  warnings: string[],
-): PermissionRule | null {
-  const drop = (msg: string): null => {
-    warnings.push(msg)
+function parseLoopPermissionEntry(index: number, raw: unknown, warnings: string[]): PermissionRule | null {
+  const drop = (): null => {
+    warnings.push(`loop.permissions.deny[${index}] is ignored: expected a tool name or { permission, pattern }`)
     return null
   }
 
   if (typeof raw === 'string') {
     const permission = raw.trim()
-    if (!permission) return drop(`loop.permissions.${key}[${index}] is ignored: expected a tool name or { permission, pattern }`)
-    return { permission, pattern: '*', action: key }
+    if (!permission) return drop()
+    return { permission, pattern: '*', action: 'deny' }
   }
 
-  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+  if (isRecord(raw)) {
     const obj = raw as { permission?: unknown; pattern?: unknown }
-    if (typeof obj.permission !== 'string') {
-      return drop(`loop.permissions.${key}[${index}] is ignored: expected a tool name or { permission, pattern }`)
-    }
+    if (typeof obj.permission !== 'string') return drop()
     const permission = obj.permission.trim()
-    if (!permission) return drop(`loop.permissions.${key}[${index}] is ignored: expected a tool name or { permission, pattern }`)
-    if (obj.pattern !== undefined && typeof obj.pattern !== 'string') {
-      return drop(`loop.permissions.${key}[${index}] is ignored: expected a tool name or { permission, pattern }`)
-    }
+    if (!permission) return drop()
+    if (obj.pattern !== undefined && typeof obj.pattern !== 'string') return drop()
     const pattern = typeof obj.pattern === 'string' ? obj.pattern.trim() : ''
-    return { permission, pattern: pattern || '*', action: key }
+    return { permission, pattern: pattern || '*', action: 'deny' }
   }
 
-  return drop(`loop.permissions.${key}[${index}] is ignored: expected a tool name or { permission, pattern }`)
+  return drop()
 }
 
 /**
  * Parses the user-supplied `loop.permissions` config into typed rules plus warnings for dropped
- * entries. `allow` then `deny` are processed in that order (deny wins on ties). Entries naming a
- * Forge-managed permission are dropped. Returns the same `PermissionRule` shape used by the loop and
- * audit rulesets, so parsed rules layer directly onto them.
+ * entries. Only `deny` entries are supported; a legacy `allow` array is ignored with a migration
+ * warning. Entries naming a Forge-managed permission are dropped, as are blanket (`*`) denies of a
+ * Forge-required permission. Returns the same `PermissionRule` shape used by the loop and audit
+ * rulesets, so parsed rules layer directly onto them.
  */
 export function parseLoopPermissionRules(raw: unknown): { rules: PermissionRule[]; warnings: string[] } {
   const warnings: string[] = []
   if (raw === undefined || raw === null) return { rules: [], warnings }
 
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    warnings.push('loop.permissions is ignored: expected an object with "allow" and/or "deny" arrays')
+  if (!isRecord(raw)) {
+    warnings.push('loop.permissions is ignored: expected an object with a "deny" array')
     return { rules: [], warnings }
   }
 
@@ -105,34 +112,41 @@ export function parseLoopPermissionRules(raw: unknown): { rules: PermissionRule[
   const rules: PermissionRule[] = []
   const seen = new Set<string>()
 
-  const addRules = (key: 'allow' | 'deny', list: unknown): void => {
-    if (list === undefined) return
-    if (!Array.isArray(list)) {
-      warnings.push(`loop.permissions.${key} is ignored: expected an array`)
-      return
-    }
-    for (let i = 0; i < list.length; i++) {
-      const rule = parseLoopPermissionEntry(key, i, list[i], warnings)
-      if (!rule) continue
-      if (FORGE_MANAGED_PERMISSIONS.has(rule.permission)) {
-        const suffix =
-          rule.permission === 'external_directory'
-            ? ' — use loop.allowExternalDirectories instead'
-            : ''
-        warnings.push(
-          `loop.permissions.${key} entry "${rule.permission}" is ignored: Forge manages this permission for every loop and audit session${suffix}`,
-        )
-        continue
+  if (raw.allow !== undefined) {
+    warnings.push('loop.permissions.allow is ignored: only deny entries are supported')
+  }
+
+  if (config.deny !== undefined) {
+    if (!Array.isArray(config.deny)) {
+      warnings.push('loop.permissions.deny is ignored: expected an array')
+    } else {
+      for (let i = 0; i < config.deny.length; i++) {
+        const rule = parseLoopPermissionEntry(i, config.deny[i], warnings)
+        if (!rule) continue
+        if (rule.pattern === '*' && FORGE_REQUIRED_PERMISSIONS.has(rule.permission)) {
+          warnings.push(
+            `loop.permissions.deny entry "${rule.permission}" is ignored: a blanket deny of this tool breaks the loop — scope it with a pattern instead`,
+          )
+          continue
+        }
+        if (FORGE_MANAGED_PERMISSIONS.has(rule.permission)) {
+          const suffix =
+            rule.permission === 'external_directory'
+              ? ' — use loop.allowExternalDirectories instead'
+              : ''
+          warnings.push(
+            `loop.permissions.deny entry "${rule.permission}" is ignored: Forge manages this permission for every loop and audit session${suffix}`,
+          )
+          continue
+        }
+        const signature = `${rule.permission}|${rule.pattern}|${rule.action}`
+        if (seen.has(signature)) continue
+        seen.add(signature)
+        rules.push(rule)
       }
-      const signature = `${rule.permission}|${rule.pattern}|${rule.action}`
-      if (seen.has(signature)) continue
-      seen.add(signature)
-      rules.push(rule)
     }
   }
 
-  addRules('allow', config.allow)
-  addRules('deny', config.deny)
   return { rules, warnings }
 }
 
@@ -151,6 +165,16 @@ export function resolveLoopPermissionOptions(config: PluginConfig | undefined): 
     allowDirectories: resolveLoopAllowedDirectories(config),
     extraRules: resolveLoopPermissionRules(config),
   }
+}
+
+/**
+ * Resolves ruleset options for a remote loop launched from this machine: the
+ * configured rules without `allowDirectories`, because host-specific directory
+ * paths are meaningless on the remote machine. This asymmetry is documented at
+ * docs/configuration.md.
+ */
+export function resolveRemoteLoopPermissionOptions(config: PluginConfig | undefined): LoopPermissionRulesetOptions {
+  return { extraRules: resolveLoopPermissionRules(config) }
 }
 
 /** Collects warnings produced while parsing `loop.permissions` (dropped or ignored entries). */
