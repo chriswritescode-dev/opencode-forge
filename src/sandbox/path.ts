@@ -1,7 +1,17 @@
+import { realpathSync } from 'fs'
+
 export interface SandboxMount {
   hostDir: string
   containerDir: string
   readOnly?: boolean
+}
+
+export function canonicalizePath(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
 }
 
 export function isSameOrDescendantPath(path: string, prefix: string): boolean {
