@@ -2215,6 +2215,61 @@ describe('handleLoopRestart restartability rules', () => {
     expect(fallbackPrompt).toBeDefined()
   })
 
+  test('absorbed auditor fallback restart still publishes the workspace-detached toast when the bind failed', async () => {
+    const loopName = 'final-audit-bind-fail-fallback-restart-loop'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+      workspaceId: 'ws_old',
+    })
+
+    const terminateSpy = vi.fn(async () => true)
+    const { service, client, handleAuditorProviderLimitCalls } = await createMockService({
+      terminate: terminateSpy,
+      config: { auditorFallbackModels: ['prov/fb'] },
+    })
+
+    // Force the workspace bind to fail so bindFailed is set on the restart.
+    ;(client.workspace.warp as any).mockImplementation(async () => {
+      throw new Error('bind failed')
+    })
+
+    // Record toast publications instead of the default no-op.
+    const toastPublish = vi.fn(async () => {})
+    ;(client.tui.publish as any).mockImplementation(toastPublish)
+
+    // The restarted final-audit prompt is directly rejected on a provider limit;
+    // the fallback re-dispatch on prov/fb succeeds and absorbs the limit.
+    ;(client.session.promptAsync as any).mockImplementation(async (params: any) => {
+      if (params?.model?.providerID === 'prov' && params?.model?.modelID === 'fb') {
+        return
+      }
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    // Absorbed by the fallback: the restart reports success and does not terminate.
+    expect(result.ok).toBe(true)
+    expect(terminateSpy).not.toHaveBeenCalled()
+    expect(handleAuditorProviderLimitCalls).toContainEqual(
+      { name: loopName, message: expect.stringContaining('usage limit') },
+    )
+
+    // Even though the limit was absorbed, the failed workspace bind must still
+    // surface the workspace-detached toast.
+    expect(toastPublish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ type: 'tui.toast.show' }),
+      }),
+    )
+  })
+
   test('restart auditor fallback holds the per-loop lock so a concurrent abort lifecycle event is deferred (abort-emits-before-resolving regression)', async () => {
     // Regression guard: the deferred final-audit restart fallback
     // (deps.loop.handleAuditorProviderLimit) must run inside the per-loop

@@ -13,7 +13,7 @@ import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-r
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
-import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, auditorModelChoiceAt, isAuditorPhase, usageRoleForPhase } from '../utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
@@ -978,10 +978,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearPromptInFlight(loopName)
 
     const promptText = state.phase === 'final_auditing' ? loopService.buildFinalAuditPrompt(state) : loopService.buildAuditPrompt(state)
-    const chain = buildAuditorModelChain(getConfig(), state)
-    const index = state.auditorFallbackIndex ?? 0
-    const choice = auditorModelChoiceAt(chain, index)
-    logger.log(`auditorFallbackChoice(${loopName}): index=${index}/${chain.length - 1} from ${choice.source} → ${choice.model ? `${choice.model.providerID}/${choice.model.modelID}` : 'undefined (session model)'}`)
+    const choice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
     const { error } = await sendPromptWithFallback({
       loopName,
       sessionId: state.sessionId,
@@ -2447,13 +2444,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
         clearPromptPending(loopName, logger)
       }
-      if (loopName && coalescedLimitSessions.get(loopName) === sessionId) {
-        await withStateLock(loopName, async () => {
-          clearPromptInFlightBySession(loopName, sessionId)
-          coalescedLimitSessions.delete(loopName)
-        })
-      } else if (loopName) {
+      if (loopName) {
+        const coalesced = coalescedLimitSessions.get(loopName) === sessionId
         clearPromptInFlightBySession(loopName, sessionId)
+        if (coalesced) {
+          await withStateLock(loopName, async () => {
+            coalescedLimitSessions.delete(loopName)
+          })
+        }
       }
       return
     }

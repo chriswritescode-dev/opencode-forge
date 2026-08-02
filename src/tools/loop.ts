@@ -18,7 +18,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
   function auditorModelStatusLabel(state: LoopState): string {
     const chain = buildAuditorModelChain(config, state)
-    const index = state.auditorFallbackIndex ?? 0
+    const index = Math.min(Math.max(state.auditorFallbackIndex ?? 0, 0), chain.length - 1)
     const choice = auditorModelChoiceAt(chain, index)
     const base = choice.model ? `${choice.model.providerID}/${choice.model.modelID}` : 'default'
     return index > 0 ? `${base} (fallback ${index}/${chain.length - 1})` : base

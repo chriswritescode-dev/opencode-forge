@@ -2249,6 +2249,34 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
     })
 
+    const restartSucceeded = (
+      sessionId: string,
+      previousSession: string,
+      bindFailedValue: boolean,
+    ): ForgeExecutionResponse<LoopRestartedResult> => {
+      if (bindFailedValue) {
+        publishWorkspaceDetachedToast({
+          client: deps.client,
+          directory: stoppedState.projectDir ?? stoppedState.worktreeDir,
+          loopName: stoppedState.loopName,
+          logger: deps.logger,
+          context: 'on restart',
+        })
+      }
+      return ok({
+        operation: 'loop.restart',
+        loopName: stoppedState.loopName,
+        sessionId,
+        previousSessionId: previousSession,
+        worktreeDir: stoppedState.worktreeDir,
+        worktreeBranch: stoppedState.worktreeBranch,
+        worktree: !!stoppedState.worktree,
+        sandbox: restartSandbox,
+        bindFailed: bindFailedValue,
+        iteration: stoppedState.iteration,
+      })
+    }
+
     // Provider-limit termination deferred from inside the runExclusive
     // callback. The callback cannot call deps.loop.terminate itself because
     // that reacquires the non-reentrant per-loop state lock held by
@@ -2298,18 +2326,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         })
         if (absorbed) {
           deps.loopHandler!.startWatchdog(stoppedState.loopName)
-          return ok({
-            operation: 'loop.restart',
-            loopName: stoppedState.loopName,
-            sessionId: restartedSessionId!,
-            previousSessionId,
-            worktreeDir: stoppedState.worktreeDir,
-            worktreeBranch: stoppedState.worktreeBranch,
-            worktree: !!stoppedState.worktree,
-            sandbox: restartSandbox,
-            bindFailed,
-            iteration: stoppedState.iteration,
-          })
+          return restartSucceeded(restartedSessionId!, previousSessionId, bindFailed)
         }
       }
       await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: outcome.providerLimitMessage })
@@ -2321,28 +2338,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     if (!outcome.ok) return fail('internal_error', 500, outcome.error)
 
-    if (outcome.bindFailed) {
-      publishWorkspaceDetachedToast({
-        client: deps.client,
-        directory: stoppedState.projectDir ?? stoppedState.worktreeDir,
-        loopName: stoppedState.loopName,
-        logger: deps.logger,
-        context: 'on restart',
-      })
-    }
-
-    return ok({
-      operation: 'loop.restart',
-      loopName: stoppedState.loopName,
-      sessionId: outcome.newSessionId,
-      previousSessionId: outcome.previousSessionId,
-      worktreeDir: stoppedState.worktreeDir,
-      worktreeBranch: stoppedState.worktreeBranch,
-      worktree: !!stoppedState.worktree,
-      sandbox: outcome.sandbox,
-      bindFailed: outcome.bindFailed,
-      iteration: stoppedState.iteration,
-    })
+    return restartSucceeded(outcome.newSessionId, outcome.previousSessionId, outcome.bindFailed)
   }
   
   async function dispatch<C extends ForgeExecutionCommand>(
