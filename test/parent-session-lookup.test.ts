@@ -95,6 +95,57 @@ describe('createParentSessionLookup', () => {
     await new Promise((resolve) => setTimeout(resolve, 60))
   })
 
+  test('transient session.get failures propagate instead of being cached as absence', async () => {
+    const sessionId = 'session-transient'
+    const transient = new ForgeClientError({ kind: 'connection', method: 'session.get', message: 'Unable to connect' })
+    const { client } = createFakeForgeClient({
+      session: {
+        get: async () => { throw transient },
+      },
+    })
+    const loop = createMockLoop([])
+
+    const lookup = createParentSessionLookup({
+      client,
+      directory: '/host',
+      loop: loop as any,
+      logger: mockLogger,
+      negativeTtlMs: 1000,
+    })
+
+    // A transient failure is not a definitive absence: it must reject so sandbox routing
+    // fails closed rather than caching a false "no parent" for the negative TTL.
+    await expect(lookup(sessionId)).rejects.toThrow(/Unable to connect/)
+    await expect(lookup(sessionId)).rejects.toThrow(/Unable to connect/)
+  })
+
+  test('transient failure is not negative-cached: recovery resolves once the host recovers', async () => {
+    const sessionId = 'session-recover'
+    let calls = 0
+    const { client } = createFakeForgeClient({
+      session: {
+        get: async () => {
+          calls++
+          if (calls === 1) throw new ForgeClientError({ kind: 'unavailable', method: 'session.get', message: 'host unavailable' })
+          return { parentID: 'parent-x' }
+        },
+      },
+    })
+    const loop = createMockLoop([])
+
+    const lookup = createParentSessionLookup({
+      client,
+      directory: '/host',
+      loop: loop as any,
+      logger: mockLogger,
+      negativeTtlMs: 100000,
+    })
+
+    await expect(lookup(sessionId)).rejects.toThrow(/host unavailable/)
+    // The failed attempt was not negative-cached, so the very next call retries and succeeds.
+    expect(await lookup(sessionId)).toBe('parent-x')
+  })
+
   test('listActive dirs contribute attempts in order', async () => {
     const sessionId = 'session-dir-test'
     const parentId = 'parent-from-worktree'

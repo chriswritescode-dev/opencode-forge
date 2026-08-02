@@ -4,11 +4,36 @@ import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { PluginConfig } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
-import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo, createFeatureGroupsRepo } from '../src/storage'
+import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo, createFeatureGroupsRepo, createSessionSandboxPreferencesRepo } from '../src/storage'
 
 const TEST_DIR = '/tmp/opencode-manager-memory-test-' + Date.now()
 
 const TEST_PROJECT_ID = 'test-proj-id-' + Date.now()
+
+/**
+ * Builds a plugin `client` whose HTTP transport resolves `session.get` to a session whose
+ * directory is `dir`. The session directory lookup must positively prove ownership before the
+ * controller acts on a shared preference row; a client that cannot resolve a session means the
+ * instance is not its owner. See `createSessionDirectoryLookup` in `src/index.ts`.
+ */
+function sessionResolvingClient(dir: string) {
+  const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === 'string' ? input : (input as Request).url
+    const m = url.match(/\/session\/([^/?]+)/)
+    if (m) {
+      const sessionID = decodeURIComponent(m[1])
+      return new Response(JSON.stringify({ id: sessionID, directory: dir, parentID: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  return { _client: { getConfig: () => ({ fetch: mockFetch }) } }
+}
 
 describe('createForgePlugin', () => {
   let testDir: string
@@ -613,6 +638,364 @@ describe('createForgePlugin', () => {
 
     const logContents = readFileSync(logFile, 'utf-8')
     expect(logContents).toContain('loop.permissions.deny entry "*" is ignored')
+  })
+
+  test('host session sandbox controller is started on init and disposed before DB close', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      // Sandbox routing is disabled so the deterministic unavailable manager is used: ensureRunning
+      // fails closed and stop is a no-op. This keeps the test independent of whether the `sbx` CLI
+      // is installed on the host, while still verifying startup reconcile is awaited before hooks
+      // return and cleanup disposes before the DB closes.
+      sandbox: { mode: 'sbx', enabled: false },
+    }
+
+    // Persist a desired ON so the startup reconciliation has something to act on.
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r-init',
+      enabled: true,
+      sessionId: 'ses-root',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      // The instance must positively prove it owns 'ses-root' (its directory resolves to this
+      // instance's directory) before it may act on the shared preference row.
+      client: sessionResolvingClient(testDir) as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    // Startup reconciliation ran and was awaited before hooks returned: the applied row now
+    // records the desired revision (the container start itself fails closed here since sbx is
+    // unavailable, but the revision still advances, proving start's reconcile completed).
+    let db = initializeDatabase(config.dataDir!)
+    let appliedAfterStart = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
+    expect(appliedAfterStart).not.toBeNull()
+    expect(appliedAfterStart!.revision).toBe('r-init')
+    closeDatabase(db)
+
+    await currentHooks.getCleanup!()
+
+    // Dispose ran before the DB closed: applied OFF is persisted at the desired revision (so a
+    // pending TUI request observes its own acknowledgement), clearing the start-time failure error
+    // to a confirmed-stopped OFF (error: null) which proves dispose actually executed.
+    db = initializeDatabase(config.dataDir!)
+    const appliedAfterCleanup = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
+    expect(appliedAfterCleanup).not.toBeNull()
+    expect(appliedAfterCleanup!.enabled).toBe(false)
+    expect(appliedAfterCleanup!.error).toBeNull()
+    expect(appliedAfterCleanup!.revision).toBe('r-init')
+    closeDatabase(db)
+  })
+
+  test('a transient ancestry lookup failure does not block native tools in tool.execute.before', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx' },
+    }
+
+    const plugin = createForgePlugin(config)
+    // A client whose session.get throws a transient (non-not-found) error makes the loop resolver's
+    // ancestor walk fail, simulating a temporary network/DB failure during tool routing.
+    const failingFetch = async (_input: RequestInfo | URL): Promise<Response> => {
+      throw new Error('connection refused')
+    }
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: { _client: { getConfig: () => ({ fetch: failingFetch }) } } as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    const beforeHook = hooks['tool.execute.before'] as (
+      input: { tool: string; sessionID: string; callID: string },
+      output: { args: unknown },
+    ) => Promise<void>
+
+    // A native host-side tool must not be rejected by a transient loop-ancestry lookup failure.
+    await expect(
+      beforeHook({ tool: 'read', sessionID: 'ses-native', callID: 'c1' }, { args: {} }),
+    ).resolves.toBeUndefined()
+    await expect(
+      beforeHook({ tool: 'edit', sessionID: 'ses-native', callID: 'c2' }, { args: {} }),
+    ).resolves.toBeUndefined()
+    await expect(
+      beforeHook({ tool: 'write', sessionID: 'ses-native', callID: 'c3' }, { args: {} }),
+    ).resolves.toBeUndefined()
+
+    await currentHooks.getCleanup!()
+  })
+
+  test('shell.env retains host behavior for sessions with no sandbox via the unified resolver', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx' },
+    }
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      // The plugin's forged client must resolve session.get as a definitive absence (no parent)
+      // so the unified resolver's ancestor walk stays quiet and does not hit the network.
+      client: sessionResolvingClient(testDir) as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    const shellEnv = hooks['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+
+    // No active loop and no acknowledged host sandbox: the unified resolver returns null and no
+    // container env is injected (no user shell configured either), so the shim falls through.
+    const output = { env: {} as Record<string, string> }
+    await shellEnv({ sessionID: 'ses-unrelated', cwd: testDir }, output)
+    expect(output.env).toEqual({})
+  })
+
+  test('a failed host-sandbox start makes the selected session fail closed while others stay host', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx' },
+    }
+
+    // Persist a desired ON for a selected session. Sandbox routing stays enabled so this exercises
+    // a genuine container-start failure rather than the unavailable-runtime path; `sbx` is forced
+    // off PATH below so the start fails whether or not the CLI is installed on the host.
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r-fail',
+      enabled: true,
+      sessionId: 'ses-selected',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      // The session directory lookup must positively prove this instance owns the selected
+      // session (its directory resolves to this instance's directory) for the fail-closed path to
+      // engage. With a directory-scoped lookup that returns null, the instance is not the owner and
+      // must not act on the shared preference row at all.
+      client: sessionResolvingClient(testDir) as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const originalPath = process.env.PATH
+    process.env.PATH = join(testDir, 'no-such-bin')
+    try {
+      const hooks = await plugin(mockInput as unknown as PluginInput)
+      currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+      const shellEnv = hooks['shell.env'] as (
+        input: { sessionID?: string; cwd?: string },
+        output: { env: Record<string, string> },
+      ) => Promise<void>
+
+      // The selected session's start failed, so bash for it must fail closed (throw) rather than
+      // fall through to the host shell.
+      await expect(shellEnv({ sessionID: 'ses-selected', cwd: testDir }, { env: {} })).rejects.toThrow()
+
+      // An unrelated host session is unaffected and falls through to the host shell.
+      const output = { env: {} as Record<string, string> }
+      await shellEnv({ sessionID: 'ses-unrelated', cwd: testDir }, output)
+      expect(output.env).toEqual({})
+
+      await currentHooks.getCleanup!()
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH
+      else process.env.PATH = originalPath
+    }
+  })
+
+  test('two plugin instances for one project share a single refcounted sandbox controller', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx', enabled: false },
+    }
+
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r-shared',
+      enabled: true,
+      sessionId: 'ses-root',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: sessionResolvingClient(testDir) as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    // OpenCode can instantiate the plugin more than once for the same directory in one process.
+    // A second reconciler would race the first on the same container, so both instances must
+    // resolve to one shared controller.
+    const hooksA = await createForgePlugin(config)(mockInput as unknown as PluginInput)
+    const hooksB = await createForgePlugin(config)(mockInput as unknown as PluginInput)
+    const cleanupA = (hooksA as unknown as { getCleanup: () => Promise<void> }).getCleanup
+    const cleanupB = (hooksB as unknown as { getCleanup: () => Promise<void> }).getCleanup
+
+    // The fail-closed start recorded an error; disposal is what clears it to a confirmed OFF.
+    let db = initializeDatabase(config.dataDir!)
+    expect(createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)?.error).toBeTruthy()
+    closeDatabase(db)
+
+    // Releasing the first instance must not dispose the shared controller while the second still
+    // holds a reference: the acknowledgement stays at the start-time failure.
+    await cleanupA()
+    db = initializeDatabase(config.dataDir!)
+    expect(createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)?.error).toBeTruthy()
+    closeDatabase(db)
+
+    // The last release disposes it, clearing the error to a confirmed-stopped OFF.
+    await cleanupB()
+    db = initializeDatabase(config.dataDir!)
+    const applied = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
+    expect(applied?.enabled).toBe(false)
+    expect(applied?.error).toBeNull()
+    closeDatabase(db)
+  })
+
+  test('unavailable sandbox runtime acknowledges a requested ON as OFF-with-error and blocks the selected session', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx', enabled: false },
+    }
+
+    // Persist a desired ON for a selected session. Sandbox routing is unavailable (disabled), so
+    // startup reconciliation must still create a controller that acknowledges the request as
+    // OFF-with-error at the matching revision and blocks the selected session fail-closed.
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r-unavail',
+      enabled: true,
+      sessionId: 'ses-selected',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: sessionResolvingClient(testDir) as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    // The unavailable runtime acknowledged the requested ON at the matching revision as OFF with
+    // an error, so the TUI sees a definitive server answer rather than a silent host fallback.
+    let db = initializeDatabase(config.dataDir!)
+    const applied = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
+    expect(applied).not.toBeNull()
+    expect(applied!.revision).toBe('r-unavail')
+    expect(applied!.enabled).toBe(false)
+    expect(applied!.error).toBeTruthy()
+    closeDatabase(db)
+
+    const shellEnv = hooks['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+
+    // The selected session fails closed (throws) rather than executing on the host.
+    await expect(shellEnv({ sessionID: 'ses-selected', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
+
+    // An unrelated host session is unaffected and falls through to the host shell.
+    const output = { env: {} as Record<string, string> }
+    await shellEnv({ sessionID: 'ses-unrelated', cwd: testDir }, output)
+    expect(output.env).toEqual({})
+
+    await currentHooks.getCleanup!()
+  })
+
+  test('manager initialization failure still acknowledges a requested ON as OFF-with-error', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      // Sandbox routing is disabled so the deterministic unavailable manager is used (ensureRunning
+      // fails closed, stop is a no-op). This makes the OFF-with-error acknowledgement independent of
+      // whether the `sbx` CLI is installed on the host, exercising the same fail-closed surface as a
+      // manager that fails to initialize.
+      sandbox: { mode: 'sbx', enabled: false },
+    }
+
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r-manager-fail',
+      enabled: true,
+      sessionId: 'ses-selected',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: sessionResolvingClient(testDir) as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    // Regardless of how the manager/shims became unavailable, the requested ON is acknowledged as
+    // OFF-with-error at the matching revision (fail closed).
+    let db = initializeDatabase(config.dataDir!)
+    const applied = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
+    expect(applied).not.toBeNull()
+    expect(applied!.revision).toBe('r-manager-fail')
+    expect(applied!.enabled).toBe(false)
+    expect(applied!.error).toBeTruthy()
+    closeDatabase(db)
+
+    const shellEnv = hooks['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+    await expect(shellEnv({ sessionID: 'ses-selected', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
+    await currentHooks.getCleanup!()
   })
 
 })

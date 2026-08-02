@@ -152,6 +152,7 @@ Notes:
 | `tui.showVersion` | `true` | Show the Forge version in the sidebar title. |
 | `tui.keybinds.executePlan` | `"<leader>f"` | Open the execution dialog. Avoid `<leader>e`, which conflicts with opencode's built-in `editor_open`. |
 | `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
+| `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle host sandbox`, which runs the current session inside a sandbox container. Empty registers the command without a default binding. Requires `sandbox.enabled`. |
 
 ## Dashboard
 

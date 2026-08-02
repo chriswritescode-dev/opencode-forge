@@ -281,8 +281,8 @@ describe('sandbox tool hooks', () => {
     })
   })
 
-  describe('host fallback for absolute out-of-mount paths', () => {
-    test('glob with absolute path outside mount is not intercepted (host fallback)', async () => {
+  describe('fail-closed for absolute out-of-mount paths', () => {
+    test('glob with absolute path outside mount fails closed instead of running on the host', async () => {
       const input = {
         tool: 'glob',
         sessionID: TEST_SESSION_ID,
@@ -298,13 +298,10 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook(input as never, output as never)
-      await afterHook({ ...input, args: output.args } as never, output as never)
-
-      expect(output.output).toBe('HOST_NATIVE')
+      await expect(beforeHook(input as never, output as never)).rejects.toThrow(/outside the sandbox workspace mount/)
     })
 
-    test('grep with absolute path outside mount is not intercepted (host fallback)', async () => {
+    test('grep with absolute path outside mount fails closed instead of running on the host', async () => {
       const input = {
         tool: 'grep',
         sessionID: TEST_SESSION_ID,
@@ -320,10 +317,7 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook(input as never, output as never)
-      await afterHook({ ...input, args: output.args } as never, output as never)
-
-      expect(output.output).toBe('HOST_NATIVE')
+      await expect(beforeHook(input as never, output as never)).rejects.toThrow(/outside the sandbox workspace mount/)
     })
 
     test('grep with relative path is still intercepted', async () => {
@@ -393,6 +387,51 @@ describe('sandbox tool hooks', () => {
       await hook(input as never, output as never)
 
       expect(output.args.command).toBe('echo hi')
+    })
+  })
+
+  describe('fail-closed search restoration', () => {
+    test('resolver errors do not block unrelated (non-glob/grep) tools', async () => {
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => {
+          throw new Error('sandbox unavailable')
+        },
+        logger: mockLogger,
+      })
+      // The resolver would reject, but this hook only handles glob/grep. Native file and
+      // management tools must pass through untouched, never blocked by a restoration failure.
+      for (const tool of ['read', 'edit', 'write', 'bash']) {
+        const input = { tool, sessionID: TEST_SESSION_ID, callID: `${tool}-1` }
+        const output = { args: { filePath: '/tmp/x' } }
+        await expect(hook(input as never, output as never)).resolves.toBeUndefined()
+        expect(output.args.filePath).toBe('/tmp/x')
+      }
+    })
+
+    test('glob fails closed when the sandbox resolver rejects', async () => {
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => {
+          throw new Error('sandbox unavailable')
+        },
+        logger: mockLogger,
+      })
+      const input = { tool: 'glob', sessionID: TEST_SESSION_ID, callID: 'glob-failclosed-1' }
+      const output = { args: { pattern: '*.ts', path: `${TEST_HOST_DIR}/src` } }
+
+      await expect(hook(input as never, output as never)).rejects.toThrow('sandbox unavailable')
+    })
+
+    test('grep fails closed when the sandbox resolver rejects', async () => {
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => {
+          throw new Error('sandbox unavailable')
+        },
+        logger: mockLogger,
+      })
+      const input = { tool: 'grep', sessionID: TEST_SESSION_ID, callID: 'grep-failclosed-1' }
+      const output = { args: { pattern: 'console.log', path: `${TEST_HOST_DIR}/src` } }
+
+      await expect(hook(input as never, output as never)).rejects.toThrow('sandbox unavailable')
     })
   })
 })

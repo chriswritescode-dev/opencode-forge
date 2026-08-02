@@ -1,10 +1,11 @@
 import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
 import { join } from 'path'
 import type { ForgeClient, SessionGetParams } from './client/port'
+import { ForgeClientError } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createSessionSandboxPreferencesRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -21,6 +22,7 @@ import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnin
 import { publishToast } from './utils/toast'
 import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
+import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type SessionSandboxController } from './sandbox/session-controller'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
@@ -32,6 +34,7 @@ import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
+import { createUnifiedSandboxResolver } from './services/unified-sandbox-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from './hooks/forge-session-attach'
 import { createLoopPermissionPatcher } from './hooks/loop-permission'
@@ -119,7 +122,14 @@ export function createParentSessionLookup({
         }
         failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:empty`)
       } catch (err) {
-        failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:${err instanceof Error ? err.message : String(err)}`)
+        // Only definitive absence (a not-found response) is treated as a negative
+        // result. Transient failures (connection/unavailable/request) propagate so
+        // sandbox routing fails closed instead of caching a false "no parent".
+        if (err instanceof ForgeClientError && err.kind === 'not-found') {
+          failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:not-found`)
+          continue
+        }
+        throw err
       }
     }
 
@@ -195,6 +205,65 @@ export function createSessionDirectoryLookup({
   }
 }
 
+
+/**
+ * Process-wide registry of host-session sandbox controllers, keyed by project id.
+ *
+ * OpenCode can instantiate this plugin more than once for the same directory in a single process,
+ * and every instance builds its own database handle, sandbox manager and controller. Two
+ * controllers reconciling the same per-project preference row race on one container: one creates
+ * while the other force-deletes underneath it, which surfaces as `operation in progress`,
+ * `already exists`, `failed to run sandbox container`, or an acknowledgement timeout. The
+ * container and the preference row are both per project, so exactly one reconciler may exist per
+ * project per process; additional instances share it and release it by reference count.
+ */
+type SharedSessionSandboxController = {
+  controller: SessionSandboxController
+  started: Promise<void>
+  refs: number
+  close: () => void
+}
+
+const sharedSessionSandboxControllers = new Map<string, SharedSessionSandboxController>()
+
+/**
+ * Returns the process-wide controller for `projectId`, creating and starting it on first use.
+ * The returned `started` promise is shared, so every caller awaits the same initial reconcile
+ * rather than triggering a second one.
+ */
+function acquireSessionSandboxController(
+  projectId: string,
+  create: () => { controller: SessionSandboxController; close: () => void },
+): SharedSessionSandboxController {
+  const existing = sharedSessionSandboxControllers.get(projectId)
+  if (existing) {
+    existing.refs += 1
+    return existing
+  }
+  const { controller, close } = create()
+  const entry: SharedSessionSandboxController = { controller, started: controller.start(), refs: 1, close }
+  sharedSessionSandboxControllers.set(projectId, entry)
+  return entry
+}
+
+/**
+ * Drops one reference and disposes the controller once the last instance releases it. The
+ * controller owns a dedicated database handle, closed here after disposal, so it can outlive the
+ * instance that happened to create it: instances release before closing their own handles, and a
+ * borrowed handle would otherwise be closed while other instances still hold a reference.
+ */
+async function releaseSessionSandboxController(projectId: string): Promise<void> {
+  const entry = sharedSessionSandboxControllers.get(projectId)
+  if (!entry) return
+  entry.refs -= 1
+  if (entry.refs > 0) return
+  sharedSessionSandboxControllers.delete(projectId)
+  try {
+    await entry.controller.dispose()
+  } finally {
+    entry.close()
+  }
+}
 
 /**
  * Creates an OpenCode plugin instance with loop management and sandboxing.
@@ -410,6 +479,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     let cleanupPromise: Promise<void> | null = null
 
+    // Host-session sandbox controller: reconciles the acknowledged host sandbox preference for
+    // sessions outside any loop. Assigned once a sandbox manager exists; disposed in cleanup.
+    let sessionSandboxController: SessionSandboxController | null = null
+    let sessionSandboxProjectId: string | null = null
+
     const cleanup = (): Promise<void> => {
       if (cleanupPromise) {
         return cleanupPromise
@@ -425,16 +499,36 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         logger.log('Loop: active loops preserved during plugin cleanup')
         
         loopHandler.clearAllRetryTimeouts()
-        
-        closeDatabase(db)
-        logger.log('Plugin cleanup complete')
+
+        // Disposal and DB close must both be exception-safe: a rejected controller disposal (e.g.
+        // a failed container removal or acknowledgement persistence) must never prevent the SQLite
+        // handle from closing. The error is logged and swallowed so cleanup completes and the
+        // idempotent cleanupPromise still resolves.
+        try {
+          // Release rather than dispose: the controller is shared by every plugin instance in this
+          // process for this project, and only the last release may tear it down.
+          if (sessionSandboxProjectId) {
+            await releaseSessionSandboxController(sessionSandboxProjectId)
+          }
+        } catch (err) {
+          logger.error('Error during session sandbox controller disposal', err)
+        } finally {
+          closeDatabase(db)
+          logger.log('Plugin cleanup complete')
+        }
       })()
       return cleanupPromise
     }
 
-    const handleExit = cleanup
     const handleSigint = cleanup
     const handleSigterm = cleanup
+    // The `exit` event fires once the event loop has drained and cannot await asynchronous work,
+    // so it must never run the async disposal (container removal, applied-OFF persistence) — that
+    // work would be cut off mid-flight. The awaited shutdown runs through the
+    // `server.instance.disposed` event and the SIGINT/SIGTERM handlers (which keep the process
+    // alive while their async cleanup completes). This listener is registered so shutdown
+    // bookkeeping is explicit and cleaned up consistently with the other signals.
+    const handleExit = () => {}
 
     process.once('exit', handleExit)
     process.once('SIGINT', handleSigint)
@@ -499,13 +593,57 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sessionLoopResolver,
       logger,
     })
-    // Resolves sandbox context for a session by following parent hops until an
-    // active sandbox loop is found. Returns null if no sandbox is active for
-    // the session or its ancestor.
-    async function resolveSandboxForSession(sessionID: string) {
-      const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
-      return resolveSandboxContextForLoop(sandboxManager, resolved, logger)
+
+    // Host-session sandbox controller: reconciles the acknowledged host sandbox preference for
+    // sessions outside any loop. Always constructed — even when sandbox routing is unavailable
+    // (sandbox disabled, manager init failure, or no shell shim) — so a requested ON is
+    // acknowledged as OFF-with-error and the selected session is blocked fail-closed instead of
+    // silently executing on the host. Its initial reconcile runs before hooks are returned so
+    // acknowledged state is live at startup.
+    // Shared per project across every plugin instance in this process: a second reconciler would
+    // race this one on the same container. Only the first instance constructs and starts one, and
+    // it gets its own database handle so it never depends on that instance's lifetime.
+    const sharedSessionSandbox = acquireSessionSandboxController(projectId, () => {
+      const controllerDb = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
+      return {
+        close: () => closeDatabase(controllerDb),
+        controller: createSessionSandboxController({
+          projectId,
+          directory,
+          preferences: createSessionSandboxPreferencesRepo(controllerDb),
+          sandboxManager: sandboxManager ?? createUnavailableSandboxLifecycleManager(runtime),
+          getParentSessionId: parentSessionLookup,
+          getSessionDirectory: sessionDirectoryLookup,
+          resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+          logger,
+        }),
+      }
+    })
+    sessionSandboxController = sharedSessionSandbox.controller
+    sessionSandboxProjectId = projectId
+    try {
+      await sharedSessionSandbox.started
+    } catch (err) {
+      // Startup must be exception-safe: a rejected controller start (e.g. the initial reconcile
+      // fails on a persistence or session-lookup error) must not leave SQLite or the process
+      // listeners open. Run the idempotent cleanup (which stops the controller and closes the DB)
+      // before rethrowing so the plugin fails closed without leaking resources.
+      logger.error('Session sandbox controller failed to start; cleaning up', err)
+      await cleanup()
+      throw err
     }
+
+    // Unified, loop-first sandbox resolver. Loop resolution always takes precedence: an active
+    // sandbox loop owns its sessions; an active non-sandbox loop forces host (a host preference
+    // cannot override loop/worktree behavior); only sessions with no active loop consult the
+    // acknowledged host-session sandbox. Callers opt into fail-closed behavior via
+    // { throwOnRestoreError: true }.
+    const resolveSandboxForSession = createUnifiedSandboxResolver({
+      resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+      resolveLoopSandbox: (resolved, opts) => resolveSandboxContextForLoop(sandboxManager, resolved, logger, opts),
+      resolveHostSandbox: (sessionID, opts) =>
+        sessionSandboxController ? sessionSandboxController.resolveSandboxForSession(sessionID, opts) : Promise.resolve(null),
+    })
 
     // Spawns an isolated agent session (splitter/architect) seeded with a single text prompt,
     // using the configured auditor model. Single source of truth for group agent bring-up.
@@ -729,8 +867,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }
       })(),
       'shell.env': createShellEnvHook({
-        resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
-        sandboxManager,
+        resolveSandboxForSession,
         getUserConfiguredShell: () => userConfiguredShell,
         logger,
       }),
@@ -764,7 +901,17 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await planApprovalEventHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
-        const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        // Loop bookkeeping (activity recording, permission patching) is best-effort for tool
+        // routing: a transient ancestry/session lookup failure must never reject native file and
+        // management tools (`read`, `edit`, `write`, ...), which are host-side by design.
+        // Sandbox-routed tools (bash/glob/grep) still fail closed through their own resolver
+        // calls, so shell + search isolation is not weakened.
+        let resolved: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>> | null = null
+        try {
+          resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        } catch (err) {
+          logger.debug(`[tool-before] loop resolution failed for session ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        }
         if (resolved) {
           logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
           if (resolved.active) {
@@ -776,7 +923,12 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await sandboxBeforeHook!(input, output)
       },
       'tool.execute.after': async (input, output) => {
-        const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        let resolved: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>> | null = null
+        try {
+          resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        } catch (err) {
+          logger.debug(`[tool-after] loop resolution failed for session ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        }
         if (resolved) {
           logger.log(`[tool-after] ${input.tool} callID=${input.callID} output=${output.output?.slice(0, 200)}`)
           if (resolved.active) {

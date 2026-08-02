@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, readdirSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
@@ -124,5 +124,35 @@ describe('SandboxManager env passthrough file lifecycle', () => {
 
     expect(existsSync(envFile)).toBe(false)
     expect(readdirSync(join(dataDir, 'sandbox-env'))).toHaveLength(0)
+  })
+
+  test('stop clears the active map entry even when the env file cannot be removed', async () => {
+    setEnv('FORGE_TEST_TOKEN', 'abc123')
+    const dataDir = createTempDataDir()
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      dataDir,
+      network: { env: ['FORGE_TEST_TOKEN'] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+    const envFile = manager.getActive('test')?.envFile!
+    expect(existsSync(envFile)).toBe(true)
+
+    // Replace the env file with a non-empty directory so its deletion throws (filesystem access),
+    // while the container removal itself succeeds.
+    rmSync(envFile)
+    mkdirSync(envFile)
+    writeFileSync(join(envFile, 'block'), 'x')
+
+    await expect(manager.stop('test')).resolves.toBeUndefined()
+
+    // The container was removed and the stale in-memory entry is gone despite the env-file failure,
+    // so no fail-closed retries are triggered for an already-removed container.
+    expect(manager.getActive('test')).toBeNull()
   })
 })
