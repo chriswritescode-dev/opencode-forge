@@ -292,7 +292,12 @@ export interface SandboxRuntime {
   allowNetworkHost(host: string): Promise<boolean>
 }
 
-const SBX_DEFAULT_TIMEOUT = 120000
+/**
+ * Upper bound for a single `sbx` invocation, including `sbx create`. Provisioning a microVM
+ * sandbox is far slower than the old container start, so this is also the only correct bound
+ * for anything that waits on a sandbox becoming available (see `waitForSandboxReady`).
+ */
+export const SBX_DEFAULT_TIMEOUT = 120000
 const SBX_TEMPLATE_LOAD_TIMEOUT = 600000
 const SBX_LIST_TIMEOUT = 5000
 const SBX_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox/i

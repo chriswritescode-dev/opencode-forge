@@ -7,18 +7,20 @@
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
+import { SBX_DEFAULT_TIMEOUT } from '../sandbox/sbx'
 
 export interface WaitForSandboxOptions {
   projectId: string
   loopName: string
   dbPath: string
   pollMs?: number       // default 200
-  timeoutMs?: number    // default 15000
+  /** Defaults to the sbx provisioning bound, so the wait never expires while `sbx create` is still allowed to run. */
+  timeoutMs?: number
 }
 
 export type WaitForSandboxResult =
   | { ready: true; containerName: string }
-  | { ready: false; reason: 'timeout' | 'state_missing' | 'not_sandbox_enabled' | 'db_missing' }
+  | { ready: false; reason: 'timeout' | 'state_missing' | 'not_sandbox_enabled' | 'db_missing' | 'error'; error?: string }
 
 /**
  * Waits for a sandbox container to be ready by polling the loops table.
@@ -32,7 +34,7 @@ export type WaitForSandboxResult =
 export async function waitForSandboxReady(opts: WaitForSandboxOptions): Promise<WaitForSandboxResult> {
   const { projectId, loopName, dbPath } = opts
   const pollMs = opts.pollMs ?? 200
-  const timeoutMs = opts.timeoutMs ?? 15000
+  const timeoutMs = opts.timeoutMs ?? SBX_DEFAULT_TIMEOUT
   const startTime = Date.now()
 
   // Check if database exists
@@ -76,9 +78,8 @@ export async function waitForSandboxReady(opts: WaitForSandboxOptions): Promise<
       }
       await new Promise(resolve => setTimeout(resolve, pollMs))
     }
-  } catch {
-    // Any error during polling - return timeout
-    return { ready: false, reason: 'timeout' }
+  } catch (err) {
+    return { ready: false, reason: 'error', error: err instanceof Error ? err.message : String(err) }
   } finally {
     try { db?.close() } catch {}
   }

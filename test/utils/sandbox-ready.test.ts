@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { mkdirSync, rmSync } from 'fs'
+import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { waitForSandboxReady, type WaitForSandboxOptions } from '../../src/utils/sandbox-ready'
 import type { LoopRow } from '../../src/storage'
 
@@ -229,6 +229,21 @@ describe('waitForSandboxReady', () => {
     })
 
     expect(result).toEqual({ ready: true, containerName: 'forge-test-loop' })
+  })
+
+  it('error - reports a read failure as error, not as a timeout', async () => {
+    writeFileSync(dbPath, 'not a sqlite database')
+
+    const result = await waitForSandboxReady({
+      projectId,
+      loopName: 'test-loop',
+      dbPath,
+      pollMs: 50,
+      timeoutMs: 200,
+    })
+
+    expect(result.ready).toBe(false)
+    expect(result).toMatchObject({ reason: 'error' })
   })
 
   it('timeout - returns timeout when container name never appears', async () => {

@@ -735,11 +735,10 @@ export async function attachLoopToSession(
           loopName,
           dbPath,
           pollMs: 200,
-          timeoutMs: 15_000,
         })
 
         if (!waitResult.ready) {
-          deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason})`)
+          deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason}${waitResult.error ? `: ${waitResult.error}` : ''})`)
           try {
             const { createSbxRuntime } = await import('../sandbox/sbx')
             const runtime = createSbxRuntime(deps.logger as unknown as Console)
