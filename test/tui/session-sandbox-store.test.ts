@@ -15,8 +15,8 @@ import {
   readSessionSandboxPreference,
   writeSessionSandboxDesired,
 } from '../../src/tui/session-sandbox-store'
-import { createSessionSandboxPreferencesRepo } from '../../src/storage'
-import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../../src/storage'
+import { createLoopsRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
+import type { LoopRow, SessionSandboxAppliedState, SessionSandboxDesiredState } from '../../src/storage'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const PROJECT_A = 'project-a'
@@ -104,6 +104,44 @@ describe('session-sandbox-store (TUI bridge)', () => {
     test('reads rows for the correct project only', () => {
       repo.setDesired(PROJECT_A, { version: 1 as const, revision: 'r1', enabled: true, sessionId: 'sess-1', requestedAt: 1 })
       expect(readSessionSandboxPreference('project-b', dbPath)).toEqual({ desired: null, applied: null, controller: null, unavailable: false })
+    })
+
+    test('reads sandbox state for running loop sessions', () => {
+      const loop: LoopRow = {
+        projectId: PROJECT_A,
+        loopName: 'sandbox-loop',
+        status: 'running',
+        currentSessionId: 'sess-loop',
+        worktree: true,
+        worktreeDir: '/tmp/worktree',
+        worktreeBranch: 'forge/sandbox-loop',
+        projectDir: '/tmp/project',
+        maxIterations: 10,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: true,
+        sandboxContainer: 'forge-sandbox-loop',
+        startedAt: 1,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: 0,
+        executionVariant: null,
+        auditorVariant: null,
+        kind: 'plan',
+      }
+      createLoopsRepo(db).insert(loop, { lastAuditResult: null })
+
+      expect(readSessionSandboxPreference(PROJECT_A, dbPath).activeLoopSandboxes).toEqual({ 'sess-loop': true })
     })
 
     test('does not create a missing database file', () => {
@@ -342,6 +380,23 @@ describe('session-sandbox-store (TUI bridge)', () => {
       ...overrides,
     })
 
+    test('shows enabled for the current session of a sandboxed running loop', () => {
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: null,
+        applied: null,
+        activeLoopSandboxes: { 'sess-1': true },
+      }, 'sess-1')).toBe('enabled')
+    })
+
+    test('uses loop sandbox state before a stale host acknowledgement', () => {
+      const applied = writeApplied({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null })
+      expect(deriveSessionSandboxDisplayStatus({
+        desired: desired(),
+        applied,
+        activeLoopSandboxes: { 'sess-1': false },
+      }, 'sess-1')).toBe('disabled')
+    })
+
     test('shows loading only for the selected session while acknowledgement is pending', () => {
       const pref = { desired: desired(), applied: null }
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
@@ -418,9 +473,9 @@ describe('session-sandbox-store (TUI bridge)', () => {
       expect(deriveSandboxPollDelayMs({ desired: desired(), applied: settled })).toBe(10_000)
     })
 
-    test('retries an unavailable local DB and backs off when no preference exists', () => {
+    test('retries unavailable state and polls for newly started loops', () => {
       expect(deriveSandboxPollDelayMs({ desired: null, applied: null, unavailable: true })).toBe(5000)
-      expect(deriveSandboxPollDelayMs({ desired: null, applied: null })).toBe(30_000)
+      expect(deriveSandboxPollDelayMs({ desired: null, applied: null })).toBe(5000)
     })
   })
 

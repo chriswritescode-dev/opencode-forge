@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { randomUUID } from 'node:crypto'
 import { resolveForgeDbPath } from '../storage'
+import { createLoopsRepo } from '../storage/repos/loops-repo'
 import { createSessionSandboxPreferencesRepo } from '../storage/repos/session-sandbox-preferences-repo'
 import type { SessionSandboxAppliedState, SessionSandboxControllerState, SessionSandboxDesiredState } from '../storage/repos/session-sandbox-preferences-repo'
 
@@ -32,6 +33,7 @@ export interface SessionSandboxPreference {
   desired: SessionSandboxDesiredState | null
   applied: SessionSandboxAppliedState | null
   controller?: SessionSandboxControllerState | null
+  activeLoopSandboxes?: Record<string, boolean>
   /**
    * True when the read could not reach an initialized `tui_preferences` table for the project
    * (missing database file, uninitialized table, or unreadable/corrupt file). This lets callers
@@ -102,7 +104,7 @@ export type SessionSandboxDisplayStatus = 'enabled' | 'disabled' | 'loading' | '
 export function deriveSandboxPollDelayMs(pref: SessionSandboxPreference): number {
   if (pref.unavailable) return 5000
   if (!isSessionSandboxPreferenceSettled(pref)) return 1500
-  return pref.desired ? 10_000 : 30_000
+  return pref.desired ? 10_000 : 5000
 }
 
 export function deriveSessionSandboxDisplayStatus(
@@ -110,6 +112,9 @@ export function deriveSessionSandboxDisplayStatus(
   sessionId?: string,
 ): SessionSandboxDisplayStatus {
   if (!pref || !sessionId) return 'disabled'
+  if (pref.activeLoopSandboxes && Object.hasOwn(pref.activeLoopSandboxes, sessionId)) {
+    return pref.activeLoopSandboxes[sessionId] ? 'enabled' : 'disabled'
+  }
   const controller = pref.controller
   if (
     controller &&
@@ -143,8 +148,12 @@ export function readSessionSandboxPreference(projectId: string, dbPath?: string)
     if (!db) {
       return { desired: null, applied: null, unavailable: true, unavailableReason: 'database file not found' }
     }
-    const repo = createSessionSandboxPreferencesRepo(db)
-    return { ...repo.getPair(projectId), unavailable: false }
+    const preference = createSessionSandboxPreferencesRepo(db).getPair(projectId)
+    const activeLoops = createLoopsRepo(db).listByStatus(projectId, ['running'])
+    const activeLoopSandboxes = Object.fromEntries(activeLoops.map((loop) => [loop.currentSessionId, loop.sandbox]))
+    return activeLoops.length > 0
+      ? { ...preference, activeLoopSandboxes, unavailable: false }
+      : { ...preference, unavailable: false }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     return { desired: null, applied: null, unavailable: true, unavailableReason: reason }
