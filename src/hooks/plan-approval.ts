@@ -3,6 +3,7 @@ import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
+import { publishToast } from '../utils/toast'
 
 function publishPlanApprovalToast(
   ctx: ToolContext,
@@ -10,19 +11,15 @@ function publishPlanApprovalToast(
   variant: 'success' | 'error' | 'info',
   message: string,
 ): void {
-  ctx.client.tui.publish({
+  publishToast({
+    client: ctx.client,
     directory: ctx.directory,
-    body: {
-      type: 'tui.toast.show',
-      properties: {
-        title: 'Forge plan execution',
-        message,
-        variant,
-        duration: variant === 'error' ? 5000 : 3000,
-      },
-    },
-  }).catch((err) => {
-    ctx.logger.error('Plan approval: failed to publish toast', err)
+    logger: ctx.logger,
+    title: 'Forge plan execution',
+    message,
+    variant,
+    duration: variant === 'error' ? 5000 : 3000,
+    logPrefix: 'Plan approval: failed to publish toast',
   })
 }
 

@@ -10,7 +10,7 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
-import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolveLoopAllowedDirectories } from '../src/constants/loop'
+import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../src/constants/loop'
 import type { Logger, PluginConfig } from '../src/types'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
@@ -168,12 +168,233 @@ describe('Audit session permissions', () => {
 
     // With the ForgeClient port, create params are passed directly (not wrapped in { body })
     const callParams = createCalls[0] as any
-    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(config) }))
+    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset(resolveLoopPermissionOptions(config)))
     expect(callParams.permission).toContainEqual({
       permission: 'external_directory',
       pattern: '*',
       action: 'deny',
     })
+  })
+
+  test('audit session includes configured loop.permissions deny rules', async () => {
+    const createCalls: Array<Record<string, unknown>> = []
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async (input: any) => {
+          createCalls.push(input)
+          return { id: 'audit-session' }
+        },
+        get: async () => ({ id: 'ses_fake_1', permission: null }),
+        status: async () => ({}),
+        promptAsync: async () => {},
+        messages: async () => [
+          {
+            info: { role: 'assistant', finish: 'stop' },
+            parts: [{ type: 'text', text: 'All clear.' }],
+          },
+        ],
+        abort: async () => {},
+        delete: async () => {},
+        update: async () => {},
+      },
+      workspace: {
+        warp: async () => {},
+        list: async () => [],
+        remove: async () => {},
+        status: async () => ({}),
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: async () => {},
+      },
+    })
+
+    const logger: Logger = {
+      log: () => {},
+      error: () => {},
+      debug: () => {},
+    }
+
+    const config: PluginConfig = {
+      executionModel: 'test/model',
+      auditorModel: 'test/auditor',
+      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5, permissions: { deny: ['webfetch'] } },
+    }
+
+    const loopService = (
+      await import('../src/loop/service')
+    ).createLoopService(
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
+      logger,
+      undefined,
+      undefined,
+      undefined,
+      sectionPlansRepo,
+    )
+
+    const loop = createLoop({
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      sectionPlansRepo,
+      projectId: PROJECT_ID,
+      client,
+      logger,
+      getConfig: () => config,
+      sandboxManager: undefined,
+      dataDir: tempDir,
+    })
+
+    const state = makeState({
+      phase: 'coding',
+      sessionId: 'code-session-id',
+      totalSections: 1,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      workspaceId: 'ws-test',
+      worktree: true,
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    expect(createCalls.length).toBeGreaterThan(0)
+
+    const callParams = createCalls[0] as any
+    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset(resolveLoopPermissionOptions(config)))
+    expect(callParams.permission).toContainEqual({ permission: 'webfetch', pattern: '*', action: 'deny' })
+  })
+
+  test('audit session keeps portable rules persisted in remote workspace metadata', async () => {
+    const createCalls: Array<Record<string, unknown>> = []
+
+    // Simulates a remote loop: the server's own config carries no loop.permissions,
+    // but the workspace metadata holds the launching machine's portable deny rule.
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async (input: any) => {
+          createCalls.push(input)
+          return { id: 'audit-session' }
+        },
+        get: async () => ({ id: 'ses_fake_1', permission: null }),
+        status: async () => ({}),
+        promptAsync: async () => {},
+        messages: async () => [
+          {
+            info: { role: 'assistant', finish: 'stop' },
+            parts: [{ type: 'text', text: 'All clear.' }],
+          },
+        ],
+        abort: async () => {},
+        delete: async () => {},
+        update: async () => {},
+      },
+      workspace: {
+        warp: async () => {},
+        list: async () => [
+          {
+            id: 'ws-test',
+            type: 'forge',
+            name: 'test-loop',
+            branch: null,
+            directory: '/tmp/test-worktree',
+            projectID: PROJECT_ID,
+            extra: {
+              permissionRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' }],
+            },
+          },
+        ],
+        remove: async () => {},
+        status: async () => ({}),
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: async () => {},
+      },
+    })
+
+    const logger: Logger = {
+      log: () => {},
+      error: () => {},
+      debug: () => {},
+    }
+
+    const config: PluginConfig = {
+      executionModel: 'test/model',
+      auditorModel: 'test/auditor',
+      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5 },
+    }
+
+    const loopService = (
+      await import('../src/loop/service')
+    ).createLoopService(
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
+      logger,
+      undefined,
+      undefined,
+      undefined,
+      sectionPlansRepo,
+    )
+
+    const loop = createLoop({
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      sectionPlansRepo,
+      projectId: PROJECT_ID,
+      client,
+      logger,
+      getConfig: () => config,
+      sandboxManager: undefined,
+      dataDir: tempDir,
+    })
+
+    const state = makeState({
+      phase: 'coding',
+      sessionId: 'code-session-id',
+      totalSections: 1,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      workspaceId: 'ws-test',
+      worktree: true,
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    expect(createCalls.length).toBeGreaterThan(0)
+
+    const callParams = createCalls[0] as any
+    // Config alone yields no deny; the persisted workspace rule is merged in.
+    expect(resolveLoopPermissionOptions(config).extraRules).toEqual([])
+    expect(callParams.permission).toEqual(
+      buildAuditSessionPermissionRuleset({
+        ...resolveLoopPermissionOptions(config),
+        extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' }],
+      }),
+    )
+    expect(callParams.permission).toContainEqual({ permission: 'webfetch', pattern: '*', action: 'deny' })
   })
 
   test('audit ruleset denies question tool (autonomy preservation)', () => {

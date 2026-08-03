@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { bindSessionToWorkspace, createBuiltinWorktreeWorkspace } from '../../src/workspace/forge-worktree'
+import {
+  bindSessionToWorkspace,
+  createBuiltinWorktreeWorkspace,
+  getForgeWorkspacePermissionRules,
+} from '../../src/workspace/forge-worktree'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
+import { resolveLoopPermissionOptionsForWorkspace } from '../../src/utils/loop-permission-options'
 
 function createMockLogger() {
   return {
@@ -218,6 +223,42 @@ describe('createBuiltinWorktreeWorkspace', () => {
       expect(result.ok).toBe(false)
       if (!result.ok) expect(result.error.reason).toBe('empty-directory')
     })
+  })
+})
+
+describe('portable workspace permissions', () => {
+  it('accepts only safe deny rules', () => {
+    const safeRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    const entry = {
+      extra: {
+        permissionRules: [
+          safeRule,
+          { permission: 'external_directory', pattern: '*', action: 'allow' },
+          { permission: 'question', pattern: '*', action: 'deny' },
+          { permission: 'bash', pattern: '*', action: 'deny' },
+        ],
+      },
+    }
+
+    expect(getForgeWorkspacePermissionRules(entry)).toEqual([safeRule])
+  })
+
+  it('retries workspace permission lookup after a transient failure', async () => {
+    let attempts = 0
+    const safeRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    const { client } = createFakeForgeClient({
+      workspace: {
+        list: async () => {
+          attempts++
+          if (attempts === 1) throw new Error('temporarily unavailable')
+          return [{ id: 'ws-1', extra: { permissionRules: [safeRule] } }]
+        },
+      },
+    })
+
+    expect(await resolveLoopPermissionOptionsForWorkspace(client, undefined, 'ws-1')).not.toHaveProperty('extraRules.0')
+    expect(await resolveLoopPermissionOptionsForWorkspace(client, undefined, 'ws-1')).toMatchObject({ extraRules: [safeRule] })
+    expect(attempts).toBe(2)
   })
 })
 

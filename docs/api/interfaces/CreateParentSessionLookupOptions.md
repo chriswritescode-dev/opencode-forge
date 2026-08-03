@@ -6,7 +6,7 @@
 
 # Interface: CreateParentSessionLookupOptions
 
-Defined in: [index.ts:46](https://github.com/chriswritescode-dev/opencode-forge/blob/79dcf380c47722522908f4164395a5204e7b1330/src/index.ts#L46)
+Defined in: [index.ts:49](https://github.com/chriswritescode-dev/opencode-forge/blob/4781cfd6d6b1994ce6d5de8e795c35f0499fd5fe/src/index.ts#L49)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [index.ts:46](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **client**: `ForgeClient`
 
-Defined in: [index.ts:47](https://github.com/chriswritescode-dev/opencode-forge/blob/79dcf380c47722522908f4164395a5204e7b1330/src/index.ts#L47)
+Defined in: [index.ts:50](https://github.com/chriswritescode-dev/opencode-forge/blob/4781cfd6d6b1994ce6d5de8e795c35f0499fd5fe/src/index.ts#L50)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [index.ts:47](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **directory**: `string`
 
-Defined in: [index.ts:48](https://github.com/chriswritescode-dev/opencode-forge/blob/79dcf380c47722522908f4164395a5204e7b1330/src/index.ts#L48)
+Defined in: [index.ts:51](https://github.com/chriswritescode-dev/opencode-forge/blob/4781cfd6d6b1994ce6d5de8e795c35f0499fd5fe/src/index.ts#L51)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [index.ts:48](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **logger**: `object`
 
-Defined in: [index.ts:50](https://github.com/chriswritescode-dev/opencode-forge/blob/79dcf380c47722522908f4164395a5204e7b1330/src/index.ts#L50)
+Defined in: [index.ts:53](https://github.com/chriswritescode-dev/opencode-forge/blob/4781cfd6d6b1994ce6d5de8e795c35f0499fd5fe/src/index.ts#L53)
 
 #### debug
 
@@ -92,7 +92,7 @@ Defined in: [index.ts:50](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **loop**: `Loop`
 
-Defined in: [index.ts:49](https://github.com/chriswritescode-dev/opencode-forge/blob/79dcf380c47722522908f4164395a5204e7b1330/src/index.ts#L49)
+Defined in: [index.ts:52](https://github.com/chriswritescode-dev/opencode-forge/blob/4781cfd6d6b1994ce6d5de8e795c35f0499fd5fe/src/index.ts#L52)
 
 ***
 
@@ -100,4 +100,4 @@ Defined in: [index.ts:49](https://github.com/chriswritescode-dev/opencode-forge/
 
 > `optional` **negativeTtlMs?**: `number`
 
-Defined in: [index.ts:51](https://github.com/chriswritescode-dev/opencode-forge/blob/79dcf380c47722522908f4164395a5204e7b1330/src/index.ts#L51)
+Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/blob/4781cfd6d6b1994ce6d5de8e795c35f0499fd5fe/src/index.ts#L54)

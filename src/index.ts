@@ -15,7 +15,10 @@ import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
 import { resolveForgeTempDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
-import { MAX_TOTAL_SECTIONS, resolveLoopAllowedDirectories } from './constants/loop'
+import { MAX_TOTAL_SECTIONS } from './constants/loop'
+import { resolveLoopPermissionOptionsForWorkspace } from './utils/loop-permission-options'
+import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnings'
+import { publishToast } from './utils/toast'
 import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
@@ -220,6 +223,21 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const dataDir = config.dataDir || resolveDataDir()
 
+    emitLoopPermissionConfigWarnings(config, dataDir, directory, {
+      logger,
+      onWarnings: (warnings) => {
+        publishToast({
+          client: forgeClient,
+          directory,
+          logger,
+          title: 'Forge loop permissions',
+          message: warnings.join(' '),
+          variant: 'warning',
+          duration: 10_000,
+        })
+      },
+    })
+
     // Shared loop scratch directory, allowed in both worktree-only and sandbox modes. Created here
     // so it exists for host tools (worktree-only) and as a valid bind-mount source (sandbox).
     const forgeTempDir = resolveForgeTempDir(config.loop?.tmpDir)
@@ -278,33 +296,29 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         try {
           const available = await runtime.checkAvailable()
           if (!available.available) {
-            await forgeClient.tui.publish({
-              body: {
-                type: 'tui.toast.show' as const,
-                properties: {
-                  title: 'Sandbox unavailable',
-                  message: describeSbxUnavailable(available),
-                  variant: 'warning' as const,
-                  duration: 10_000,
-                },
-              },
-            }).catch(() => {})
+            publishToast({
+              client: forgeClient,
+              directory,
+              logger,
+              title: 'Sandbox unavailable',
+              message: describeSbxUnavailable(available),
+              variant: 'warning',
+              duration: 10_000,
+            })
             return
           }
           const exists = await runtime.templateExists(sandboxImage)
           if (!exists) {
             logger.log(`Sandbox template "${sandboxImage}" not found — publishing toast`)
-            await forgeClient.tui.publish({
-              body: {
-                type: 'tui.toast.show' as const,
-                properties: {
-                  title: 'Sandbox template not found',
-                  message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}" && docker save ${sandboxImage} -o <tar> && sbx template load <tar>`,
-                  variant: 'warning' as const,
-                  duration: 10_000,
-                },
-              },
-            }).catch(() => {})
+            publishToast({
+              client: forgeClient,
+              directory,
+              logger,
+              title: 'Sandbox template not found',
+              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}" && docker save ${sandboxImage} -o <tar> && sbx template load <tar>`,
+              variant: 'warning',
+              duration: 10_000,
+            })
           }
         } catch (err: unknown) {
           logger.log(`Sandbox image check: ${err instanceof Error ? err.message : String(err)}`)
@@ -479,7 +493,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sessionLoopResolver,
       directory,
       logger,
-      getAllowExternalDirectories: () => resolveLoopAllowedDirectories(config),
+      getPermissionOptions: (workspaceId) => resolveLoopPermissionOptionsForWorkspace(forgeClient, config, workspaceId),
     })
     const sandboxMessageHook = createSandboxMessageHook({
       sessionLoopResolver,

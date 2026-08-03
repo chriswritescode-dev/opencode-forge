@@ -11,6 +11,7 @@
 
 import type { ForgeClient } from '../client/port'
 import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
+import { FORGE_MANAGED_PERMISSIONS, FORGE_REQUIRED_PERMISSIONS, type PermissionRule } from '../constants/loop'
 import {
   classifyWorkspaceCreateThrow,
   workspaceCreateMissingId,
@@ -58,6 +59,33 @@ export function getWorktreeProjectPreconditionError(projectId: string | null): s
 export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
   const loopName = entry.extra?.loopName
   return typeof loopName === 'string' && loopName.length > 0 ? loopName : undefined
+}
+
+export function getForgeWorkspacePermissionRules(entry: Pick<ForgeWorkspaceEntry, 'extra'>): PermissionRule[] {
+  const raw = entry.extra?.permissionRules
+  if (!Array.isArray(raw)) return []
+  return (raw as unknown[]).filter(
+    (r): r is PermissionRule =>
+      typeof r === 'object' && r !== null &&
+      typeof (r as PermissionRule).permission === 'string' &&
+      typeof (r as PermissionRule).pattern === 'string' &&
+      (r as PermissionRule).permission.length > 0 &&
+      (r as PermissionRule).pattern.length > 0 &&
+      (r as PermissionRule).action === 'deny' &&
+      !FORGE_MANAGED_PERMISSIONS.has((r as PermissionRule).permission) &&
+      !((r as PermissionRule).pattern === '*' && FORGE_REQUIRED_PERMISSIONS.has((r as PermissionRule).permission)),
+  )
+}
+
+/**
+ * Looks up a single forge workspace by id. Returns `undefined` when the id is absent.
+ */
+export async function getForgeWorkspaceEntry(
+  client: ForgeClient,
+  workspaceId: string,
+): Promise<ForgeWorkspaceEntry | undefined> {
+  const entries = (await client.workspace.list() ?? []) as ForgeWorkspaceEntry[]
+  return entries.find((entry) => entry.id === workspaceId)
 }
 
 /**
@@ -136,6 +164,8 @@ export async function createBuiltinWorktreeWorkspace(
   options: {
     loopName: string
     directory: string
+    /** Caller-supplied extra fields preserved onto the new workspace (e.g. portable permission rules, git sync refs). */
+    extra?: Record<string, unknown>
   },
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
   statusRegistry?: WorkspaceStatusRegistry,
@@ -147,10 +177,15 @@ export async function createBuiltinWorktreeWorkspace(
   try {
     const _wsStart = Date.now()
     ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)
-    const createParams: { type: string; branch: string | null; extra: { loopName: string; projectDirectory: string; workspaceCreatedAt: number } } = {
+    const createParams: { type: string; branch: string | null; extra: Record<string, unknown> } = {
       type: 'forge',
       branch: null,
-      extra: { loopName: options.loopName, projectDirectory: options.directory, workspaceCreatedAt: Date.now() },
+      extra: {
+        ...options.extra,
+        loopName: options.loopName,
+        projectDirectory: options.directory,
+        workspaceCreatedAt: Date.now(),
+      },
     }
     const workspaceData = await client.workspace.create(createParams)
 

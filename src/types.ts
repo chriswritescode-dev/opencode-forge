@@ -41,6 +41,18 @@ export interface PostActionConfig {
   model?: string
 }
 
+/** A single user-supplied loop permission rule: a bare tool name (shorthand for pattern `*`),
+ *  or an explicit `{ permission, pattern }` object. */
+export type LoopPermissionRuleConfig = string | { permission: string; pattern?: string }
+
+/** User-configured permission rules layered over Forge's structural denies for loop, audit, and
+ *  post-action sessions. Only `deny` entries are supported: an `allow` entry can never grant
+ *  anything the blanket allow-all does not already grant, so it would be dead config. */
+export interface LoopPermissionsConfig {
+  /** Rules denied to the session, layered before Forge's structural denies (which always win). */
+  deny?: LoopPermissionRuleConfig[]
+}
+
 /**
  * Configuration for autonomous loop behavior.
  */
@@ -83,6 +95,14 @@ export interface LoopConfig {
    * omission disables the behavior.
    */
   worktreeOpencodeConfig?: Record<string, unknown>
+  /**
+   * Extra `deny` rules layered over Forge's structural denies for loop, audit, and post-action
+   * sessions. Entries are applied before Forge's structural denies, so a user rule for a permission
+   * that Forge manages is rejected, as is a blanket (`*`) deny of a permission the loop requires;
+   * scoped denies remain honored. Use `allowExternalDirectories` for `external_directory` grants,
+   * which Forge manages for every session.
+   */
+  permissions?: LoopPermissionsConfig
 }
 
 /**

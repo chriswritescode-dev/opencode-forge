@@ -10,7 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
-import { buildLoopPermissionRuleset, resolveLoopAllowedDirectories } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions } from '../../src/constants/loop'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
@@ -360,6 +360,95 @@ describe('handleStartLoop builtin worktree workspace', () => {
         }),
       )
     }
+  })
+
+  test('passes configured loop.permissions deny rules to session.create', async () => {
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_test',
+          directory: '/tmp/wt/abc',
+          branch: 'opencode/abc',
+          type: 'worktree',
+          name: 'opencode/abc',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+      },
+      session: {
+        create: async () => ({ id: 'sess-1' }),
+      },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const configuredConfig = {
+      loop: { enabled: true, permissions: { deny: ['webfetch'] } },
+      executionModel: 'prov/exec',
+      auditorModel: 'prov/aud',
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: configuredConfig,
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: loopService,
+          listActive: (...args: any[]) => loopService.listActive(...args),
+          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+          handleAuditorProviderLimit: async () => false,
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      sandboxManager: mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+      client,
+      pendingTeardowns: mockPendingTeardowns,
+    })
+
+    await service.dispatch(
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nTest.' },
+        lifecycle: { selectSession: false },
+      },
+    )
+
+    expect(client.session.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permission: buildLoopPermissionRuleset(resolveLoopPermissionOptions(configuredConfig as any)),
+      }),
+    )
+    const createArgs = (client.session.create as any).mock.calls[0][0]
+    expect(createArgs.permission).toContainEqual({ permission: 'webfetch', pattern: '*', action: 'deny' })
   })
 
   test('fails and rolls back when sandbox manager present but start throws', async () => {

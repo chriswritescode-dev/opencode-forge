@@ -6,6 +6,6 @@
 
 # Variable: VERSION
 
-> `const` **VERSION**: `"0.7.8"` = `'0.7.8'`
+> `const` **VERSION**: `"0.7.9"` = `'0.7.9'`
 
-Defined in: [version.ts:1](https://github.com/chriswritescode-dev/opencode-forge/blob/79dcf380c47722522908f4164395a5204e7b1330/src/version.ts#L1)
+Defined in: [version.ts:1](https://github.com/chriswritescode-dev/opencode-forge/blob/4781cfd6d6b1994ce6d5de8e795c35f0499fd5fe/src/version.ts#L1)

@@ -164,4 +164,23 @@ describe('Load Plans inline plan is sent as inline even when host session exists
       ),
     ).toBe(false)
   })
+
+  test('bakes configured permissionOptions into session.create when provided', async () => {
+    const permissionOptions = {
+      extraRules: [{ permission: 'some-tool', pattern: '*', action: 'deny' as const }],
+    }
+    const client = await connectForgeProject(mockApi, DIRECTORY, permissionOptions)
+    expect(client).not.toBeNull()
+
+    await client!.plan.execute(SESSION_ID, {
+      mode: 'loop',
+      title: 'My Plan',
+      plan: '# My Plan\n\nFresh content',
+      executionModel: undefined,
+      auditorModel: undefined,
+    })
+
+    const createArgs = mockApi.client.session.create.mock.calls[0][0]
+    expect(createArgs.permission).toEqual(buildLoopPermissionRuleset(permissionOptions))
+  })
 })

@@ -510,6 +510,127 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(newState.iteration).toBe(1)
   })
 
+  test('restart keeps portable permission rules from the previous workspace (no permission widening)', async () => {
+    const portableRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    insertLoop({
+      loopName: 'portable-loop',
+      status: 'errored',
+      terminationReason: 'max_iterations',
+      iteration: 10,
+      worktree: true,
+      workspaceId: 'ws_old',
+    })
+
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'portable-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-portable' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: {
+        create: async () => ({ id: 'ws_new', directory: '/tmp', branch: 'forge/portable-loop' }),
+        list: async () => [
+          {
+            id: 'ws_old',
+            type: 'forge',
+            name: 'portable-loop',
+            branch: null,
+            directory: '/tmp',
+            projectID: PROJECT_ID,
+            extra: {
+              permissionRules: [portableRule],
+              startRef: 'abc123',
+              syncRef: 'refs/forge/portable-loop',
+              gitRemote: 'origin',
+            },
+          },
+        ],
+        remove: async () => {},
+        warp: async () => {},
+        syncList: async () => {},
+      },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+      sync: { start: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      // Remote-like config: no loop.permissions on the server, rules come only from the workspace.
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: 'portable-loop' } },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const sessionCreateArgs = (client.session.create as any).mock.calls[0][0]
+    expect(sessionCreateArgs.permission).toContainEqual(portableRule)
+
+    expect(client.workspace.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extra: {
+          permissionRules: [portableRule],
+          loopName: 'portable-loop',
+          projectDirectory: '/tmp',
+          workspaceCreatedAt: expect.any(Number),
+        },
+      }),
+    )
+  })
+
   test('restart from stall_timeout routes to final_auditing when persisted phase is final_auditing', async () => {
     insertLoop({
       loopName: 'final-audit-loop',

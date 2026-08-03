@@ -1,7 +1,7 @@
 import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 import type { createSessionLoopResolver } from '../services/session-loop-resolver'
-import { buildLoopPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 
 /**
  * Sessions already verified to carry a loop ruleset (or verified to not need
@@ -50,8 +50,8 @@ export interface CreateLoopPermissionPatcherDeps {
   sessionLoopResolver: ReturnType<typeof createSessionLoopResolver>
   directory: string
   logger: Logger
-  /** Resolves the configured external-directory allowlist for loop sessions. */
-  getAllowExternalDirectories?: () => string[] | undefined
+  /** Resolves the configured loop permission ruleset options for a loop session. Workspace-aware so remote/portable rules are applied. */
+  getPermissionOptions?: (workspaceId?: string) => LoopPermissionRulesetOptions | Promise<LoopPermissionRulesetOptions> | undefined
 }
 
 export interface LoopPermissionPatcher {
@@ -69,15 +69,16 @@ export interface LoopPermissionPatcher {
 }
 
 export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDeps): LoopPermissionPatcher {
-  const { client, sessionLoopResolver, directory, logger, getAllowExternalDirectories } = deps
+  const { client, sessionLoopResolver, directory, logger, getPermissionOptions } = deps
 
   async function applyRuleset(input: {
     sessionID: string
     parentID: string
     targetDirectory: string
     loopName: string
+    workspaceId?: string
   }): Promise<void> {
-    const { sessionID, parentID, targetDirectory, loopName } = input
+    const { sessionID, parentID, targetDirectory, loopName, workspaceId } = input
 
     let ruleset: PermissionRule[] | null = null
     let rulesetSource = 'loop-default'
@@ -91,7 +92,14 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
     } catch (err) {
       logger.error(`[loop-permission] failed to fetch parent ${parentID} for inheritance`, err)
     }
-    if (!ruleset) ruleset = buildLoopPermissionRuleset({ allowDirectories: getAllowExternalDirectories?.() })
+    if (!ruleset) {
+      try {
+        ruleset = buildLoopPermissionRuleset((await getPermissionOptions?.(workspaceId)) ?? {})
+      } catch (err) {
+        logger.error(`[loop-permission] failed to resolve permission options for ${sessionID}`, err)
+        ruleset = buildLoopPermissionRuleset()
+      }
+    }
 
     logger.log(
       `[loop-permission] patching loop=${loopName} session=${sessionID} parent=${parentID} ruleset=${rulesetSource}`,
@@ -137,6 +145,7 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
         parentID,
         targetDirectory: info?.directory ?? resolved.worktreeDir ?? directory,
         loopName: resolved.loopName,
+        workspaceId: resolved.workspaceId,
       })
     },
 
@@ -175,6 +184,7 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
         parentID,
         targetDirectory,
         loopName: resolved.loopName,
+        workspaceId: resolved.workspaceId,
       })
     },
   }

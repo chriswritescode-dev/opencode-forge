@@ -520,4 +520,98 @@ describe('executeRemoteLoop', () => {
     expect(createParams.extra.forgeLoop).toBeDefined()
     expect(createParams.extra.forgeLoop.sandboxEnabled).toBe(false)
   })
+
+  // ── loop.permissions config threaded to remote session.create ───────────
+
+  test('surfaces dropped loop.permissions warnings on the remote-launch surface', async () => {
+    const config: PluginConfig = {
+      remotes: [
+        { name: 'server1', url: REMOTE_URL, password: 'sekret' },
+      ],
+      loop: {
+        permissions: { deny: ['*'] },
+      },
+    }
+    const git = happyGit()
+    const { spy: createClient } = createClientSpy()
+    const onWarning = vi.fn()
+
+    const result = await executeRemoteLoop(
+      {
+        remoteName: 'server1',
+        localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
+        title: 'Test Plan',
+        loopName: 'test-loop',
+        plan: '# Test Plan\n\nDo work.',
+      },
+      { config, git, createClient: createClient as any, onWarning },
+    )
+
+    expect('error' in result).toBe(false)
+
+    // The dropped Forge-managed deny rule is surfaced to the user, not dropped silently.
+    expect(onWarning).toHaveBeenCalledTimes(1)
+    expect(onWarning).toHaveBeenCalledWith(
+      expect.stringContaining('loop.permissions.deny entry "*" is ignored'),
+    )
+  })
+
+  test('threads loop.permissions deny rules to remote session.create but omits host external_directory allow rules', async () => {
+    const config: PluginConfig = {
+      remotes: [
+        { name: 'server1', url: REMOTE_URL, password: 'sekret' },
+      ],
+      loop: {
+        allowExternalDirectories: ['/home/user/Obsidian'],
+        permissions: {
+          deny: [{ permission: 'webfetch', pattern: '*' }],
+        },
+      },
+    }
+    const git = happyGit()
+    const { spy: createClient, clients } = createClientSpy()
+
+    const result = await executeRemoteLoop(
+      {
+        remoteName: 'server1',
+        localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
+        title: 'Test Plan',
+        loopName: 'test-loop',
+        plan: '# Test Plan\n\nDo work.',
+      },
+      { config, git, createClient: createClient as any },
+    )
+
+    expect('error' in result).toBe(false)
+
+    const remoteClient = clients[1]
+    const createArgs = (remoteClient.session.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+
+    // Configured deny rule reaches the remote permission array
+    expect(createArgs.permission).toEqual(
+      expect.arrayContaining([
+        { permission: 'webfetch', pattern: '*', action: 'deny' },
+      ]),
+    )
+
+    // No host-specific external_directory allow rule is sent (paths don't exist remotely)
+    const externalAllows = createArgs.permission.filter(
+      (r: { permission: string; action: string }) =>
+        r.permission === 'external_directory' && r.action === 'allow',
+    )
+    expect(externalAllows).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pattern: '/home/user/Obsidian' }),
+      ]),
+    )
+
+    // Portable rules are persisted in workspace metadata so every subsequent
+    // remote session (rotations, audits, post-actions) rebuilds with them.
+    const createParams = (remoteClient.workspace.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(createParams.extra.permissionRules).toEqual([
+      { permission: 'webfetch', pattern: '*', action: 'deny' },
+    ])
+  })
 })

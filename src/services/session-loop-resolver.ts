@@ -18,6 +18,7 @@ export interface ResolvedLoop {
   sandbox?: boolean
   worktree?: boolean
   worktreeDir?: string
+  workspaceId?: string
 }
 
 /**

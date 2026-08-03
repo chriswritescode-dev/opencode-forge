@@ -590,6 +590,31 @@ describe('createForgePlugin', () => {
     expect(logContents).toContain('sandbox.mounts[].container is ignored')
   })
 
+  test('Logs loop.permissions config warnings for a bad config on plugin init', async () => {
+    const logFile = join(testDir, 'forge.log')
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      logging: { enabled: true, file: logFile },
+      loop: { permissions: { deny: ['*'] } },
+    }
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    const logContents = readFileSync(logFile, 'utf-8')
+    expect(logContents).toContain('loop.permissions.deny entry "*" is ignored')
+  })
+
 })
 
 describe('PluginConfig', () => {

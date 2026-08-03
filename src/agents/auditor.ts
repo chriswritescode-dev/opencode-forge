@@ -1,23 +1,11 @@
 import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
 import { hasSectionSummaryMarkers } from '../utils/section-summary'
-import { PLAN_AUTHORING_TOOL_NAMES } from '../constants/loop'
+import { AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, SHARED_STRUCTURAL_DENY_PERMISSIONS } from '../constants/loop'
 
 const AUDITOR_TOOL_EXCLUDES = [
-  'apply_patch',
-  'edit',
-  'write',
-  'multiedit',
-  'plan',
-  'plan_exit',
-  'execute-plan',
-  'execute-goal',
-  'loop-cancel',
-  'loop-status',
-  'launch-group',
-  'group-status',
-  'group-cancel',
-  ...PLAN_AUTHORING_TOOL_NAMES,
+  ...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS,
+  ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
 ]
 
 function buildBasePrompt(promptsDir?: string): string {
@@ -60,4 +48,3 @@ export function buildAuditorLoopAgent(promptsDir?: string): AgentDefinition {
     systemPrompt: buildLoopPrompt(promptsDir),
   }
 }
-

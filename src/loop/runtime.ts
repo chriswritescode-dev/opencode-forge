@@ -17,7 +17,8 @@ import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nex
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, resolveLoopAllowedDirectories } from '../constants/loop'
+import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
+import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
@@ -151,6 +152,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
   const stateLocks = new Map<string, Promise<unknown>>()
+
+  /**
+   * Resolves loop permission-ruleset options for the given state's workspace,
+   * merging the configured `loop.permissions` rules with any portable rules
+   * persisted in the workspace metadata. Delegates to the shared workspace-aware
+   * resolver so every loop construction site derives rules through one path.
+   */
+  function resolveLoopPermissionOptionsForLoop(
+    state: Pick<LoopState, 'workspaceId'>,
+  ): Promise<LoopPermissionRulesetOptions> {
+    return resolveLoopPermissionOptionsForWorkspace(client, getConfig(), state.workspaceId)
+  }
 
   /**
    * Sessions we abort ourselves in `resendAuditPromptWithAuditorModel` to
@@ -344,9 +357,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
-
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
+    const permissionRuleset = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(state))
 
     const createResult = await createLoopSessionWithWorkspace({
       client: client,
@@ -523,7 +535,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!currentState.worktreeDir) return false
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
-    const permission = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
+    const permission = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(currentState))
     const created = await createLoopSessionWithWorkspace({
       client,
       title: formatPostActionSessionTitle(loopName),
@@ -1321,7 +1333,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       auditorModel: auditorChoice.model,
       prompt: finalAuditPrompt,
-      allowDirectories: resolveLoopAllowedDirectories(getConfig()),
+      permissionOptions: await resolveLoopPermissionOptionsForLoop(currentState),
       logger,
     })
     if (!created) {
@@ -1464,7 +1476,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       workspaceId?: string
       auditorModel?: { providerID: string; modelID: string }
       prompt: string
-      allowDirectories?: string[]
+      permissionOptions?: LoopPermissionRulesetOptions
     }, attempts = MAX_RETRIES): Promise<{ auditSessionId: string; boundWorkspaceId?: string; bindFailed: boolean; bindError?: unknown } | null> {
       for (let i = 0; i < attempts; i++) {
         const created = await createAuditSession({ client, ...input, logger })
@@ -1488,7 +1500,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       auditorModel: auditorChoice.model,
       prompt: auditPrompt,
-      allowDirectories: resolveLoopAllowedDirectories(currentConfig),
+      permissionOptions: await resolveLoopPermissionOptionsForLoop(currentState),
     })
 
     if (!created) {

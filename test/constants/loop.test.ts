@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
 import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
@@ -17,6 +17,14 @@ describe('MAX_TOTAL_SECTIONS', () => {
 describe('PLAN_AUTHORING_TOOL_NAMES', () => {
   it('is the single list of plan-authoring tools every deny path derives from', () => {
     expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit'])
+  })
+})
+
+describe('FORGE_MANAGED_PERMISSIONS', () => {
+  it('contains the blanket allow, external_directory, and every structural deny name', () => {
+    for (const permission of ['*', 'external_directory', ...PLAN_AUTHORING_TOOL_NAMES, 'question', 'review-write', 'edit']) {
+      expect(FORGE_MANAGED_PERMISSIONS.has(permission)).toBe(true)
+    }
   })
 })
 
@@ -152,4 +160,92 @@ describe('resolveLoopAllowedDirectories', () => {
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: DEFAULT_FORGE_TMP_DIR, action: 'allow' })
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: `${DEFAULT_FORGE_TMP_DIR}/**`, action: 'allow' })
   })
+})
+
+describe('configured extraRules', () => {
+  const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
+  const CONFIGURED_DENY = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+
+  it('omitted extraRules leaves both rulesets unchanged (backward compatibility)', () => {
+    expect(buildLoopPermissionRuleset({ allowDirectories: [VAULT] })).toEqual(
+      buildLoopPermissionRuleset({ allowDirectories: [VAULT], extraRules: [] }),
+    )
+    expect(buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT] })).toEqual(
+      buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT], extraRules: [] }),
+    )
+  })
+
+  it('inserts a configured rule after the external_directory allow rules and before the first structural deny, in both rulesets', () => {
+    for (const rules of [
+      buildLoopPermissionRuleset({ allowDirectories: [VAULT], extraRules: [CONFIGURED_DENY] }),
+      buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT], extraRules: [CONFIGURED_DENY] }),
+    ]) {
+      expect(rules).toContainEqual(CONFIGURED_DENY)
+      const occurrences = rules.filter(r => r.permission === CONFIGURED_DENY.permission && r.action === 'deny').length
+      expect(occurrences).toBe(1)
+
+      const configuredIdx = rules.findIndex(r => r.permission === 'webfetch' && r.action === 'deny')
+      const lastExternalAllowIdx = rules
+        .map((r, i) => (r.permission === 'external_directory' && r.action === 'allow' ? i : -1))
+        .filter(i => i !== -1)
+        .pop() ?? -1
+      const firstStructuralDenyIdx = rules.findIndex(
+        r => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission) && r.permission !== 'external_directory',
+      )
+      expect(configuredIdx).toBeGreaterThan(lastExternalAllowIdx)
+      expect(configuredIdx).toBeLessThan(firstStructuralDenyIdx)
+    }
+  })
+})
+
+describe('resolveLoopPermissionOptions', () => {
+  it('resolves both the directory list and the parsed rule from config', () => {
+    const config = { loop: { permissions: { deny: ['webfetch'] }, allowExternalDirectories: ['/vault'] } }
+    const options = resolveLoopPermissionOptions(config)
+    expect(options.allowDirectories).toEqual([DEFAULT_FORGE_TMP_DIR, '/vault'])
+    expect(options.extraRules).toEqual([{ permission: 'webfetch', pattern: '*', action: 'deny' }])
+  })
+
+  it('yields empty options when config is undefined', () => {
+    expect(resolveLoopPermissionOptions(undefined)).toEqual({ allowDirectories: [DEFAULT_FORGE_TMP_DIR], extraRules: [] })
+  })
+})
+
+describe('config -> resolveLoopPermissionOptions -> ruleset composition', () => {
+  const structuralDeniesOf = (rules: ReturnType<typeof buildLoopPermissionRuleset>) =>
+    rules.filter((r) => r.action === 'deny' && r.permission !== 'external_directory').map((r) => r.permission)
+
+  for (const build of [buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset]) {
+    it(`${build.name} keeps structural denies last when built from a real config`, () => {
+      const config = { loop: { permissions: { deny: ['webfetch', { permission: 'bash', pattern: 'git push *' }] } } }
+      const rules = build(resolveLoopPermissionOptions(config))
+
+      const configuredIdx = rules.findIndex((r) => r.permission === 'webfetch')
+      const scopedIdx = rules.findIndex((r) => r.permission === 'bash' && r.pattern === 'git push *')
+      expect(configuredIdx).toBeGreaterThan(-1)
+      expect(scopedIdx).toBeGreaterThan(-1)
+
+      // Every structural deny must resolve after the configured rules, so
+      // last-match-wins can never let config override one.
+      const firstStructuralIdx = rules.findIndex(
+        (r) => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission) && r.permission !== 'external_directory',
+      )
+      expect(firstStructuralIdx).toBeGreaterThan(configuredIdx)
+      expect(firstStructuralIdx).toBeGreaterThan(scopedIdx)
+    })
+
+    it(`${build.name} drops a config that tries to undo a structural deny`, () => {
+      const before = structuralDeniesOf(build(resolveLoopPermissionOptions(undefined)))
+      const after = structuralDeniesOf(
+        build(resolveLoopPermissionOptions({ loop: { permissions: { deny: ['question', 'external_directory'] } } })),
+      )
+      expect(after).toEqual(before)
+    })
+
+    it(`${build.name} ignores a blanket deny of a Forge-required tool end to end`, () => {
+      const rules = build(resolveLoopPermissionOptions({ loop: { permissions: { deny: ['bash', 'review-read'] } } }))
+      expect(rules.some((r) => r.permission === 'bash')).toBe(false)
+      expect(rules.some((r) => r.permission === 'review-read')).toBe(false)
+    })
+  }
 })

@@ -3,6 +3,9 @@ import { defaultGitService, type GitService } from './git-service'
 import { createRemoteForgeClient, type RemoteClientOptions } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
+import { resolveRemoteLoopPermissionOptions } from '../constants/loop'
+import { emitLoopPermissionConfigWarnings } from './loop-permission-warnings'
+import { resolveDataDir } from './opencode-paths'
 import { reserveTuiLoopName, launchTuiLoop } from './tui-client'
 
 export interface RemoteLoopRequest {
@@ -118,6 +121,16 @@ export async function executeRemoteLoop(
   const syncRef = forgeSyncRef(finalLoopName)
   debug(`remote-launch: reserved loop name="${finalLoopName}" syncRef="${syncRef}"`)
 
+  // Resolve the portable configured rules once for both the persisted workspace
+  // field and the launch options. Host-specific directory grants stay omitted
+  // because they do not exist on the remote machine.
+  const remotePermissionOptions = resolveRemoteLoopPermissionOptions(deps.config)
+
+  emitLoopPermissionConfigWarnings(deps.config, deps.config.dataDir || resolveDataDir(), req.localDirectory, {
+    logger: { log: debug, error: debug, debug },
+    onWarnings: (warnings) => deps.onWarning?.(warnings.join(' ')),
+  })
+
   // 6. Push HEAD to remote ref
   debug(`remote-launch: pushing HEAD:${syncRef} to gitRemote="${remote.gitRemote}" from "${req.localDirectory}"`)
   const pushResult = git.push(req.localDirectory, remote.gitRemote, `HEAD:${syncRef}`, true)
@@ -145,10 +158,16 @@ export async function executeRemoteLoop(
       startRef: sha,
       syncRef,
       gitRemote: remote.gitRemote,
+      // Persist the portable configured rules so every subsequent session of the
+      // remote loop (rotations, audits, post-actions) keeps them: those sessions
+      // rebuild rulesets from the remote server's own config, which lacks the
+      // launching machine's loop.permissions.
+      permissionRules: remotePermissionOptions.extraRules,
     },
     forgeLoopOverrides: {
       sandboxEnabled: remote.sandbox,
     },
+    permissionOptions: remotePermissionOptions,
     debug,
   })
 
