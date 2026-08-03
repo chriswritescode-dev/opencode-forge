@@ -22,7 +22,30 @@ function sessionResolvingClient(dir: string) {
     const m = url.match(/\/session\/([^/?]+)/)
     if (m) {
       const sessionID = decodeURIComponent(m[1])
-      return new Response(JSON.stringify({ id: sessionID, directory: dir, parentID: null }), {
+      return new Response(JSON.stringify({ id: sessionID, projectID: TEST_PROJECT_ID, directory: dir, parentID: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  return { _client: { getConfig: () => ({ fetch: mockFetch }) } }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function nonResolvingClient() {
+  const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === 'string' ? input : (input as Request).url
+    const m = url.match(/\/session\/([^/?]+)/)
+    if (m) {
+      const sessionID = decodeURIComponent(m[1])
+      return new Response(JSON.stringify({ id: sessionID, directory: null, parentID: null }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -659,7 +682,7 @@ describe('createForgePlugin', () => {
     let releaseFirstLookup!: () => void
     let lookupCount = 0
     const firstLookup = new Promise<Response>((resolve) => {
-      releaseFirstLookup = () => resolve(new Response(JSON.stringify({ id: 'ses-root', directory: testDir, parentID: null }), {
+      releaseFirstLookup = () => resolve(new Response(JSON.stringify({ id: 'ses-root', projectID: TEST_PROJECT_ID, directory: testDir, parentID: null }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
@@ -671,7 +694,7 @@ describe('createForgePlugin', () => {
       lookupCount += 1
       if (lookupCount === 1) return firstLookup
       const sessionID = decodeURIComponent(match[1]!)
-      return new Response(JSON.stringify({ id: sessionID, directory: testDir, parentID: null }), {
+      return new Response(JSON.stringify({ id: sessionID, projectID: TEST_PROJECT_ID, directory: testDir, parentID: null }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -924,6 +947,184 @@ describe('createForgePlugin', () => {
     expect(applied?.enabled).toBe(false)
     expect(applied?.error).toBeNull()
     closeDatabase(db)
+  })
+
+  test('a forge worktree instance initializing first still reconciles the root session via project.worktree', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx', enabled: false },
+    }
+    const projectRoot = join(testDir, 'root')
+    const worktreeDir = join(testDir, 'worktree')
+    mkdirSync(projectRoot, { recursive: true })
+    mkdirSync(worktreeDir, { recursive: true })
+
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r-root',
+      enabled: true,
+      sessionId: 'ses-root',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const worktreeHooks = await createForgePlugin(config)({
+      directory: worktreeDir,
+      worktree: projectRoot,
+      client: sessionResolvingClient(projectRoot) as never,
+      project: { id: TEST_PROJECT_ID, worktree: projectRoot } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    } as unknown as PluginInput)
+    const rootHooks = await createForgePlugin(config)({
+      directory: projectRoot,
+      worktree: projectRoot,
+      client: sessionResolvingClient(projectRoot) as never,
+      project: { id: TEST_PROJECT_ID, worktree: projectRoot } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    } as unknown as PluginInput)
+    currentHooks = rootHooks as { getCleanup?: () => Promise<void> }
+    const cleanupWorktree = (worktreeHooks as unknown as { getCleanup: () => Promise<void> }).getCleanup
+
+    const shellEnv = rootHooks['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+
+    await expect(shellEnv({ sessionID: 'ses-root', cwd: projectRoot }, { env: {} })).rejects.toThrow(/unavailable/)
+
+    let db = initializeDatabase(config.dataDir!)
+    const applied = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
+    closeDatabase(db)
+    expect(applied?.revision).toBe('r-root')
+    expect(applied?.error).toBeTruthy()
+
+    await cleanupWorktree()
+  })
+
+  test('a later forge worktree instance cannot leave a root-session toggle pending', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx', enabled: false },
+    }
+    const projectRoot = join(testDir, 'root')
+    const worktreeDir = join(testDir, 'worktree')
+    mkdirSync(projectRoot, { recursive: true })
+    mkdirSync(worktreeDir, { recursive: true })
+
+    const rootHooks = await createForgePlugin(config)({
+      directory: projectRoot,
+      worktree: projectRoot,
+      client: sessionResolvingClient(projectRoot) as never,
+      project: { id: TEST_PROJECT_ID, worktree: projectRoot } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    } as unknown as PluginInput)
+    const worktreeHooks = await createForgePlugin(config)({
+      directory: worktreeDir,
+      worktree: projectRoot,
+      client: nonResolvingClient() as never,
+      project: { id: TEST_PROJECT_ID, worktree: projectRoot } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    } as unknown as PluginInput)
+    const cleanupRoot = (rootHooks as unknown as { getCleanup: () => Promise<void> }).getCleanup
+    const cleanupWorktree = (worktreeHooks as unknown as { getCleanup: () => Promise<void> }).getCleanup
+    currentHooks = null
+
+    try {
+      const writerDb = initializeDatabase(config.dataDir!)
+      createSessionSandboxPreferencesRepo(writerDb).setDesired(TEST_PROJECT_ID, {
+        version: 1,
+        revision: 'r-root-after-worktree',
+        enabled: true,
+        sessionId: 'ses-root',
+        requestedAt: Date.now(),
+      })
+      closeDatabase(writerDb)
+
+      await sleep(1200)
+
+      const readerDb = initializeDatabase(config.dataDir!)
+      const applied = createSessionSandboxPreferencesRepo(readerDb).getApplied(TEST_PROJECT_ID)
+      closeDatabase(readerDb)
+      expect(applied?.revision).toBe('r-root-after-worktree')
+      expect(applied?.error).toBeTruthy()
+    } finally {
+      await cleanupWorktree()
+      await cleanupRoot()
+    }
+  })
+
+  test('after the creating instance is disposed, a survivor processes a new desired revision without closed-db callback failure', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx', enabled: false },
+    }
+
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r1',
+      enabled: true,
+      sessionId: 'ses-1',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const hooksA = await createForgePlugin(config)({
+      directory: testDir,
+      worktree: testDir,
+      client: nonResolvingClient() as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    } as unknown as PluginInput)
+    const hooksB = await createForgePlugin(config)({
+      directory: testDir,
+      worktree: testDir,
+      client: sessionResolvingClient(testDir) as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    } as unknown as PluginInput)
+    const cleanupA = (hooksA as unknown as { getCleanup: () => Promise<void> }).getCleanup
+    currentHooks = hooksB as unknown as { getCleanup?: () => Promise<void> }
+
+    const shellEnvB = hooksB['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+    await expect(shellEnvB({ sessionID: 'ses-1', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
+
+    await cleanupA()
+
+    const writerDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(writerDb).setDesired(TEST_PROJECT_ID, {
+      version: 1,
+      revision: 'r2',
+      enabled: true,
+      sessionId: 'ses-2',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(writerDb)
+
+    let applied: { revision: string | null; error: string | null } | null = null
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      const pollDb = initializeDatabase(config.dataDir!)
+      const row = createSessionSandboxPreferencesRepo(pollDb).getApplied(TEST_PROJECT_ID)
+      closeDatabase(pollDb)
+      if (row?.revision === 'r2') {
+        applied = { revision: row.revision, error: row.error }
+        break
+      }
+      await sleep(50)
+    }
+    expect(applied?.revision).toBe('r2')
+    expect(applied?.error).toBeTruthy()
   })
 
   test('unavailable sandbox runtime acknowledges a requested ON as OFF-with-error and blocks the selected session', async () => {

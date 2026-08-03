@@ -21,7 +21,7 @@ function unavailableLoopError(loopName: string): Error {
  * Bounded revalidation retries. After an asynchronous loop sandbox restoration a loop may have
  * terminated, changed mode, or been replaced; loop membership is re-checked and re-routed up to
  * this many times so a stale loop context is never returned. A loop that keeps changing identity
- * past this cap falls back to the most recently resolved loop context rather than looping forever.
+ * past this cap fails closed instead of returning a potentially stale loop context.
  */
 const MAX_REVALIDATION_RETRIES = 4
 

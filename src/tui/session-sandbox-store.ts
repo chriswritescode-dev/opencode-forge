@@ -97,7 +97,13 @@ export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference
   return applied.revision === desired.revision
 }
 
-export type SessionSandboxDisplayStatus = 'enabled' | 'disabled' | 'loading'
+export type SessionSandboxDisplayStatus = 'enabled' | 'disabled' | 'loading' | 'failed'
+
+export function deriveSandboxPollDelayMs(pref: SessionSandboxPreference): number {
+  if (pref.unavailable) return 5000
+  if (!isSessionSandboxPreferenceSettled(pref)) return 1500
+  return pref.desired ? 10_000 : 30_000
+}
 
 export function deriveSessionSandboxDisplayStatus(
   pref: SessionSandboxPreference | null,
@@ -111,10 +117,17 @@ export function deriveSessionSandboxDisplayStatus(
     controller.sessionId === sessionId
   ) {
     if (controller.phase === 'loading' && pref.desired?.enabled) return 'loading'
-    if (controller.phase === 'failed') return 'disabled'
+    if (controller.phase === 'failed') return 'failed'
   }
   const acknowledged = deriveSessionSandboxAcknowledged(pref)
   if (acknowledged?.sessionId === sessionId) return 'enabled'
+  if (
+    pref.desired?.sessionId === sessionId &&
+    pref.desired.enabled &&
+    isSessionSandboxPreferenceSettled(pref)
+  ) {
+    return 'failed'
+  }
   if (pref.desired?.sessionId === sessionId && !isSessionSandboxPreferenceSettled(pref)) return 'loading'
   return 'disabled'
 }
@@ -165,16 +178,6 @@ export function writeSessionSandboxDesired(
       // ignore close errors
     }
   }
-}
-
-export interface RequestSessionSandboxStateOptions {
-  projectId: string
-  dbPath?: string
-  sessionId: string
-  enabled: boolean
-  timeoutMs: number
-  pollMs: number
-  signal?: AbortSignal
 }
 
 function createRevision(): string {
@@ -250,27 +253,4 @@ export async function awaitSessionSandboxState(
     await abortableSleep(Math.min(opts.pollMs, opts.timeoutMs - elapsed), opts.signal)
   }
   throw new Error(`Timed out waiting for sandbox acknowledgement after ${opts.timeoutMs}ms`)
-}
-
-/**
- * Writes a fresh desired revision and polls the applied row until the matching
- * revision arrives. Returns the applied state. Throws on a matching `error`, on
- * timeout, or when cancelled via `signal`. Stale applied revisions are ignored.
- */
-export async function requestSessionSandboxState(
-  opts: RequestSessionSandboxStateOptions,
-): Promise<SessionSandboxAppliedState> {
-  // Check cancellation before writing a new desired revision so an already-aborted request never
-  // persists desired state the server may still apply. Otherwise a pre-cancelled request would
-  // reject as cancelled yet leave an orphaned desired row.
-  if (opts.signal?.aborted) throw new Error('Sandbox state request cancelled')
-  const revision = beginSessionSandboxStateRequest(opts.projectId, opts.dbPath, {
-    sessionId: opts.sessionId,
-    enabled: opts.enabled,
-  })
-  return awaitSessionSandboxState(opts.projectId, opts.dbPath, revision, {
-    timeoutMs: opts.timeoutMs,
-    pollMs: opts.pollMs,
-    signal: opts.signal,
-  })
 }

@@ -38,6 +38,7 @@ import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
 import { selectSessionBestEffort } from '../utils/tui-navigation'
+import { findSessionAncestor } from '../utils/session-ancestry'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { parseCoderDecisions } from '../utils/coder-decisions'
@@ -317,23 +318,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (!getParentSessionId) return null
 
-    const seen = new Set<string>([sessionId])
-    let current = sessionId
-    for (let depth = 0; depth < 10; depth++) {
-      const parentId = await getParentSessionId(current)
-      if (!parentId || seen.has(parentId)) break
-      seen.add(parentId)
-
+    return findSessionAncestor(sessionId, getParentSessionId, (parentId) => {
       const parentLoop = loopService.resolveLoopName(parentId)
       if (parentLoop) return parentLoop
-
-      const parentReverse = sessionToLoop.get(parentId)
-      if (parentReverse) return parentReverse
-
-      current = parentId
-    }
-
-    return null
+      return sessionToLoop.get(parentId) ?? null
+    })
   }
 
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
@@ -2354,7 +2343,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      const loopName = await resolveSessionLoopName(eventSessionId)
+      let loopName: string | null = null
+      try {
+        loopName = await resolveSessionLoopName(eventSessionId)
+      } catch (err) {
+        logger.error(`Loop: ancestry lookup failed for error event session=${eventSessionId}, ignoring event`, err)
+        return
+      }
       if (!loopName) return
       await withStateLock(loopName, async () => {
         const state = loopService.getActiveState(loopName)
@@ -2469,7 +2464,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     if (status?.type === 'retry') {
-      const loopName = await resolveSessionLoopName(sessionId)
+      let loopName: string | null = null
+      try {
+        loopName = await resolveSessionLoopName(sessionId)
+      } catch (err) {
+        logger.error(`Loop: ancestry lookup failed for retry status session=${sessionId}, ignoring event`, err)
+        return
+      }
       if (!loopName) return
       const limitReason = classifyProviderLimit({ message: status.message })
       if (!limitReason) {

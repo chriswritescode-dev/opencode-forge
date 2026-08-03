@@ -191,11 +191,13 @@ export function createSandboxManager(
     const orderedGitMounts = [...gitMounts].sort((a, b) => a.hostDir.length - b.hostDir.length)
 
     const sourceProjectDir = config.sourceProjectDir
+    const resolvedSourceProjectDir = sourceProjectDir ? resolve(sourceProjectDir) : undefined
     const hasProjectMount = config.mountProjectReadonly !== false
-      && !!sourceProjectDir
-      && resolve(sourceProjectDir) !== absolute
+      && !!resolvedSourceProjectDir
+      && resolvedSourceProjectDir !== absolute
+      && existsSync(resolvedSourceProjectDir)
     const projectMount: SandboxMount | undefined = hasProjectMount
-      ? { hostDir: resolve(sourceProjectDir!), containerDir: resolve(sourceProjectDir!), readOnly: true }
+      ? { hostDir: resolvedSourceProjectDir, containerDir: resolvedSourceProjectDir, readOnly: true }
       : undefined
 
     const toolOutputMount = resolveToolOutputMount(absolute)

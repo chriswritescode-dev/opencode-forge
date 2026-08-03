@@ -22,7 +22,7 @@ import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnin
 import { publishToast } from './utils/toast'
 import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
-import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type SessionSandboxController } from './sandbox/session-controller'
+import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type ResolveActiveLoopForSession, type SessionSandboxController } from './sandbox/session-controller'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
@@ -59,6 +59,37 @@ export interface CreateParentSessionLookupOptions {
 
 const PARENT_LOOKUP_NEGATIVE_TTL_MS = 15000
 
+type SessionLookupAttempt = { label: string; directory?: string; input: Record<string, unknown> }
+
+function buildSessionLookupAttempts(
+  sessionId: string,
+  directory: string,
+  loop: import('./loop').Loop,
+): SessionLookupAttempt[] {
+  const attempts: SessionLookupAttempt[] = []
+  const seenDirectories = new Set<string>()
+  for (const state of loop.listActive()) {
+    if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
+    seenDirectories.add(state.worktreeDir)
+    const workspaceParam = state.workspaceId ? { workspace: state.workspaceId } : {}
+    attempts.push({
+      label: `loop:${state.loopName}`,
+      directory: state.worktreeDir,
+      input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam },
+    })
+    if (state.workspaceId) {
+      attempts.push({
+        label: `loop-ws:${state.loopName}`,
+        input: { sessionID: sessionId, workspace: state.workspaceId },
+      })
+    }
+  }
+  if (!seenDirectories.has(directory)) {
+    attempts.push({ label: 'host', directory, input: { sessionID: sessionId, directory } })
+  }
+  return attempts
+}
+
 export function createParentSessionLookup({
   client,
   directory,
@@ -80,35 +111,7 @@ export function createParentSessionLookup({
       negativeCache.delete(sessionId)
     }
 
-    const attempts: Array<{ label: string; directory?: string; input: Record<string, unknown> }> = []
-
-    const seenDirectories = new Set<string>()
-    const activeLoops = loop.listActive()
-
-    for (const state of activeLoops) {
-      if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
-      seenDirectories.add(state.worktreeDir)
-      const workspaceParam = state.workspaceId ? { workspace: state.workspaceId } : {}
-      attempts.push({
-        label: `loop:${state.loopName}`,
-        directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam },
-      })
-      if (state.workspaceId) {
-        attempts.push({
-          label: `loop-ws:${state.loopName}`,
-          input: { sessionID: sessionId, workspace: state.workspaceId },
-        })
-      }
-    }
-
-    if (!seenDirectories.has(directory)) {
-      attempts.push({
-        label: 'host',
-        directory,
-        input: { sessionID: sessionId, directory },
-      })
-    }
+    const attempts = buildSessionLookupAttempts(sessionId, directory, loop)
 
     const failures: string[] = []
 
@@ -145,123 +148,142 @@ export interface CreateSessionDirectoryLookupOptions {
   client: ForgeClient
   directory: string
   loop: import('./loop').Loop
+  negativeTtlMs?: number
 }
 
-export function createSessionDirectoryLookup({
+interface SessionSandboxIdentity {
+  projectId: string
+  directory: string
+}
+
+function createSessionIdentityLookup({
   client,
   directory,
   loop,
-}: CreateSessionDirectoryLookupOptions): (sessionId: string) => Promise<string | null> {
-  const cache = new LRUCache<string | null>(500)
+  negativeTtlMs = PARENT_LOOKUP_NEGATIVE_TTL_MS,
+}: CreateSessionDirectoryLookupOptions, requireProjectId = true): (sessionId: string) => Promise<SessionSandboxIdentity | null> {
+  const cache = new LRUCache<SessionSandboxIdentity>(500)
+  const negativeCache = new Map<string, number>()
 
-  return async (sessionId: string): Promise<string | null> => {
+  return async (sessionId: string): Promise<SessionSandboxIdentity | null> => {
     if (cache.has(sessionId)) {
       return cache.get(sessionId) ?? null
     }
 
-    const attempts: Array<{ label: string; directory?: string; input: Record<string, unknown> }> = []
-
-    const seenDirectories = new Set<string>()
-    const activeLoops = loop.listActive()
-
-    for (const state of activeLoops) {
-      if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
-      seenDirectories.add(state.worktreeDir)
-      const workspaceParam = state.workspaceId ? { workspace: state.workspaceId } : {}
-      attempts.push({
-        label: `loop:${state.loopName}`,
-        directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam },
-      })
-      if (state.workspaceId) {
-        attempts.push({
-          label: `loop-ws:${state.loopName}`,
-          input: { sessionID: sessionId, workspace: state.workspaceId },
-        })
-      }
+    const negExpiry = negativeCache.get(sessionId)
+    if (negExpiry !== undefined) {
+      if (negExpiry > Date.now()) return null
+      negativeCache.delete(sessionId)
     }
 
-    if (!seenDirectories.has(directory)) {
-      attempts.push({
-        label: 'host',
-        directory,
-        input: { sessionID: sessionId, directory },
-      })
-    }
-
+    const attempts = buildSessionLookupAttempts(sessionId, directory, loop)
     for (const attempt of attempts) {
       try {
         const session = await client.session.get(attempt.input as SessionGetParams)
-        if (session && session.directory) {
-          cache.set(sessionId, session.directory)
-          return session.directory
+        if (session?.directory && (!requireProjectId || session.projectID)) {
+          const identity = { projectId: session.projectID ?? '', directory: session.directory }
+          negativeCache.delete(sessionId)
+          cache.set(sessionId, identity)
+          return identity
         }
       } catch {
         // fall through to next attempt
       }
     }
 
+    negativeCache.set(sessionId, Date.now() + negativeTtlMs)
     return null
   }
 }
 
+export function createSessionDirectoryLookup(
+  options: CreateSessionDirectoryLookupOptions,
+): (sessionId: string) => Promise<string | null> {
+  const lookup = createSessionIdentityLookup(options, false)
+  return async (sessionId) => (await lookup(sessionId))?.directory ?? null
+}
 
-/**
- * Process-wide registry of host-session sandbox controllers, keyed by project id.
- *
- * OpenCode can instantiate this plugin more than once for the same directory in a single process,
- * and every instance builds its own database handle, sandbox manager and controller. Two
- * controllers reconciling the same per-project preference row race on one container: one creates
- * while the other force-deletes underneath it, which surfaces as `operation in progress`,
- * `already exists`, `failed to run sandbox container`, or an acknowledgement timeout. The
- * container and the preference row are both per project, so exactly one reconciler may exist per
- * project per process; additional instances share it and release it by reference count.
- */
+
+type SessionSandboxProvider = {
+  worktree: boolean
+  getParentSessionId: (sessionId: string) => Promise<string | null>
+  getSessionDirectory: (sessionId: string) => Promise<string | null>
+  getSessionIdentity: (sessionId: string) => Promise<SessionSandboxIdentity | null>
+  resolveActiveLoopForSession: ResolveActiveLoopForSession
+}
+
 type SharedSessionSandboxController = {
   controller: SessionSandboxController
   started: Promise<void>
-  refs: number
+  providerState: {
+    providers: Set<SessionSandboxProvider>
+    current: SessionSandboxProvider
+  }
   close: () => void
 }
 
 const sharedSessionSandboxControllers = new Map<string, SharedSessionSandboxController>()
 
-/**
- * Returns the process-wide controller for `projectId`, creating and starting it on first use.
- * The returned `started` promise is shared, so every caller awaits the same initial reconcile
- * rather than triggering a second one.
- */
+function preferredSessionSandboxProvider(providers: Set<SessionSandboxProvider>): SessionSandboxProvider {
+  return [...providers].find((provider) => !provider.worktree) ?? providers.values().next().value!
+}
+
+function sessionSandboxProviderForwarding(
+  getCurrent: () => SessionSandboxProvider,
+): Pick<SessionSandboxProvider, 'getParentSessionId' | 'getSessionDirectory' | 'getSessionIdentity' | 'resolveActiveLoopForSession'> {
+  return {
+    getParentSessionId: (sessionId) => getCurrent().getParentSessionId(sessionId),
+    getSessionDirectory: (sessionId) => getCurrent().getSessionDirectory(sessionId),
+    getSessionIdentity: (sessionId) => getCurrent().getSessionIdentity(sessionId),
+    resolveActiveLoopForSession: (sessionId) => getCurrent().resolveActiveLoopForSession(sessionId),
+  }
+}
+
 function acquireSessionSandboxController(
   projectId: string,
-  create: () => { controller: SessionSandboxController; close: () => void },
+  provider: SessionSandboxProvider,
+  create: (getCurrent: () => SessionSandboxProvider) => { controller: SessionSandboxController; close: () => void },
 ): SharedSessionSandboxController {
   const existing = sharedSessionSandboxControllers.get(projectId)
   if (existing) {
-    existing.refs += 1
+    existing.providerState.providers.add(provider)
+    existing.providerState.current = preferredSessionSandboxProvider(existing.providerState.providers)
     return existing
   }
-  const { controller, close } = create()
-  const entry: SharedSessionSandboxController = { controller, started: controller.start(), refs: 1, close }
+  const providerState = {
+    providers: new Set([provider]),
+    current: provider,
+  }
+  const { controller, close } = create(() => providerState.current)
+  const entry: SharedSessionSandboxController = {
+    controller,
+    started: controller.start(),
+    providerState,
+    close,
+  }
   sharedSessionSandboxControllers.set(projectId, entry)
   return entry
 }
 
-/**
- * Drops one reference and disposes the controller once the last instance releases it. The
- * controller owns a dedicated database handle, closed here after disposal, so it can outlive the
- * instance that happened to create it: instances release before closing their own handles, and a
- * borrowed handle would otherwise be closed while other instances still hold a reference.
- */
-async function releaseSessionSandboxController(projectId: string): Promise<void> {
+async function releaseSessionSandboxController(
+  projectId: string,
+  provider: SessionSandboxProvider,
+): Promise<void> {
   const entry = sharedSessionSandboxControllers.get(projectId)
-  if (!entry) return
-  entry.refs -= 1
-  if (entry.refs > 0) return
+  if (!entry || !entry.providerState.providers.has(provider)) return
+  if (entry.providerState.providers.size > 1) {
+    entry.providerState.providers.delete(provider)
+    if (entry.providerState.current === provider) {
+      entry.providerState.current = preferredSessionSandboxProvider(entry.providerState.providers)
+    }
+    return
+  }
   sharedSessionSandboxControllers.delete(projectId)
   try {
     await entry.controller.dispose()
   } finally {
     entry.close()
+    entry.providerState.providers.clear()
   }
 }
 
@@ -275,6 +297,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
   return async (input: PluginInput): Promise<Hooks> => {
     const { directory, project } = input
     const projectId = project.id
+    const projectRoot = project.worktree ?? directory
 
     const loggingConfig = config.logging
     const logger = createLogger({
@@ -327,7 +350,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
           tmpDir: forgeTempDir,
-          sourceProjectDir: directory,
+          sourceProjectDir: projectRoot,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
           ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
           ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
@@ -480,6 +503,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     let cleanupPromise: Promise<void> | null = null
 
     let sessionSandboxProjectId: string | null = null
+    let sessionSandboxProvider: SessionSandboxProvider | null = null
 
     const cleanup = (): Promise<void> => {
       if (cleanupPromise) {
@@ -504,8 +528,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         try {
           // Release rather than dispose: the controller is shared by every plugin instance in this
           // process for this project, and only the last release may tear it down.
-          if (sessionSandboxProjectId) {
-            await releaseSessionSandboxController(sessionSandboxProjectId)
+          if (sessionSandboxProjectId && sessionSandboxProvider) {
+            await releaseSessionSandboxController(sessionSandboxProjectId, sessionSandboxProvider)
           }
         } catch (err) {
           logger.error('Error during session sandbox controller disposal', err)
@@ -572,7 +596,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const parentSessionLookup = createParentSessionLookup({ client: forgeClient, directory, loop: loopHandler.loop, logger })
     loopHandler.loop.setParentSessionLookup(parentSessionLookup)
-    const sessionDirectoryLookup = createSessionDirectoryLookup({ client: forgeClient, directory, loop: loopHandler.loop })
+    const sessionIdentityLookup = createSessionIdentityLookup({ client: forgeClient, directory, loop: loopHandler.loop })
+    const sessionDirectoryLookup = async (sessionId: string) => (await sessionIdentityLookup(sessionId))?.directory ?? null
     const sessionLoopResolver = createSessionLoopResolver({
       loop: loopHandler.loop,
       getParentSessionId: parentSessionLookup,
@@ -600,23 +625,33 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // Shared per project across every plugin instance in this process: a second reconciler would
     // race this one on the same container. Only the first instance constructs and starts one, and
     // it gets its own database handle so it never depends on that instance's lifetime.
-    const sharedSessionSandbox = acquireSessionSandboxController(projectId, () => {
+    const hostSessionProvider: SessionSandboxProvider = {
+      worktree: isForgeWorktreeDir(dataDir, directory),
+      getParentSessionId: parentSessionLookup,
+      getSessionDirectory: sessionDirectoryLookup,
+      getSessionIdentity: sessionIdentityLookup,
+      resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+    }
+    const sharedSessionSandbox = acquireSessionSandboxController(projectId, hostSessionProvider, (getCurrent) => {
+      const forwarding = sessionSandboxProviderForwarding(getCurrent)
       const controllerDb = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
       return {
         close: () => closeDatabase(controllerDb),
         controller: createSessionSandboxController({
           projectId,
-          directory,
+          directory: projectRoot,
           preferences: createSessionSandboxPreferencesRepo(controllerDb),
           sandboxManager: sandboxManager ?? createUnavailableSandboxLifecycleManager(runtime),
-          getParentSessionId: parentSessionLookup,
-          getSessionDirectory: sessionDirectoryLookup,
-          resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+          getParentSessionId: forwarding.getParentSessionId,
+          getSessionDirectory: forwarding.getSessionDirectory,
+          getSessionIdentity: forwarding.getSessionIdentity,
+          resolveActiveLoopForSession: forwarding.resolveActiveLoopForSession,
           logger,
         }),
       }
     })
     sessionSandboxProjectId = projectId
+    sessionSandboxProvider = hostSessionProvider
     void sharedSessionSandbox.started.catch((err) => logger.error('Session sandbox controller failed to start', err))
 
     // Unified, loop-first sandbox resolver. Loop resolution always takes precedence: an active

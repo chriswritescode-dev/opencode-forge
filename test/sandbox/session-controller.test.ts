@@ -85,6 +85,7 @@ describe('SessionSandboxController', () => {
     directory?: string
     preferences?: SessionSandboxPreferencesRepo
     getSessionDirectory?: (sid: string) => Promise<string | null>
+    getSessionIdentity?: (sid: string) => Promise<{ projectId: string; directory: string } | null>
     resolveActiveLoopForSession?: (sid: string) => Promise<{ active: boolean; sandbox?: boolean } | null>
     getParentSessionId?: (sid: string) => Promise<string | null>
   } = {}) {
@@ -95,6 +96,7 @@ describe('SessionSandboxController', () => {
       sandboxManager: manager,
       getParentSessionId: overrides.getParentSessionId ?? (async () => null),
       ...(overrides.getSessionDirectory ? { getSessionDirectory: overrides.getSessionDirectory } : {}),
+      ...(overrides.getSessionIdentity ? { getSessionIdentity: overrides.getSessionIdentity } : {}),
       ...(overrides.resolveActiveLoopForSession ? { resolveActiveLoopForSession: overrides.resolveActiveLoopForSession } : {}),
       logger,
       ...(overrides.pollIntervalMs ? { pollIntervalMs: overrides.pollIntervalMs } : {}),
@@ -539,6 +541,26 @@ describe('SessionSandboxController', () => {
 
       expect(repo.getApplied(PROJECT)?.enabled).toBe(true)
       expect(manager.ensureRunningCalls).toHaveLength(1)
+
+      await controller.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('polling backs off after repeated idle reconciliations and resumes when desired state appears', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createController({ pollIntervalMs: 20 })
+      await controller.start()
+
+      await vi.advanceTimersByTimeAsync(80)
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-after-idle' }))
+      await vi.advanceTimersByTimeAsync(199)
+      expect(manager.ensureRunningCalls).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(manager.ensureRunningCalls).toHaveLength(1)
+      expect(repo.getApplied(PROJECT)?.revision).toBe('r-after-idle')
 
       await controller.dispose()
     } finally {
@@ -1037,6 +1059,122 @@ describe('SessionSandboxController', () => {
     // Disposal must not overwrite a shared acknowledgement for a session it does not own.
     await nonOwner.dispose()
     expect(repo.getApplied(PROJECT)).toBeNull()
+  })
+
+  test('a session in a nested directory under the project root is locally owned', async () => {
+    const sessionId = 'session-nested-project'
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-nested', sessionId }))
+    const controller = createController({
+      getSessionDirectory: async () => `${DIRECTORY}/new-hollywood/nh-app`,
+    })
+
+    await controller.start()
+
+    expect(repo.getApplied(PROJECT)).toMatchObject({
+      revision: 'r-nested',
+      enabled: true,
+      sessionId,
+      error: null,
+    })
+    await controller.dispose()
+  })
+
+  test('an owned secondary checkout is mounted from the selected session directory', async () => {
+    const sessionId = 'session-secondary-checkout'
+    const secondaryDirectory = '/abs/path/to/secondary-checkout'
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-secondary', sessionId }))
+    const controller = createController({
+      getSessionIdentity: async () => ({ projectId: PROJECT, directory: secondaryDirectory }),
+    })
+
+    await controller.start()
+
+    expect(repo.getApplied(PROJECT)).toMatchObject({
+      revision: 'r-secondary',
+      enabled: true,
+      sessionId,
+      error: null,
+    })
+    expect(manager.active?.projectDir).toBe(secondaryDirectory)
+    await controller.dispose()
+  })
+
+  test('an unresolved project session is cleaned up and acknowledged off', async () => {
+    const sessionId = 'session-stale'
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-stale', sessionId }))
+    manager.setActive({
+      containerName: 'forge-stale',
+      projectDir: DIRECTORY,
+      startedAt: new Date().toISOString(),
+      mounts: [],
+    })
+    const controller = createController({ getSessionIdentity: async () => null })
+
+    await controller.start()
+
+    expect(manager.stopCalls).toHaveLength(1)
+    expect(repo.getApplied(PROJECT)).toMatchObject({
+      revision: 'r-stale',
+      enabled: false,
+      sessionId,
+      error: expect.stringContaining('could not be resolved'),
+    })
+    await controller.dispose()
+  })
+
+  test('a session from another project is acknowledged off', async () => {
+    const sessionId = 'session-other-project'
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-other-project', sessionId }))
+    const controller = createController({
+      getSessionIdentity: async () => ({ projectId: 'different-project', directory: DIRECTORY }),
+    })
+
+    await controller.start()
+
+    expect(manager.ensureRunningCalls).toEqual([])
+    expect(repo.getApplied(PROJECT)).toMatchObject({
+      revision: 'r-other-project',
+      enabled: false,
+      sessionId,
+      error: expect.stringContaining('different project'),
+    })
+    await controller.dispose()
+  })
+
+  test('switching selected sessions recreates the sandbox with the new checkout', async () => {
+    const oldSessionId = 'session-old'
+    const newSessionId = 'session-new'
+    const newDirectory = '/abs/path/to/new-checkout'
+    repo.setApplied(PROJECT, {
+      version: 1,
+      revision: 'r-old',
+      enabled: true,
+      sessionId: oldSessionId,
+      error: null,
+      appliedAt: Date.now(),
+    })
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-new', sessionId: newSessionId }))
+    manager.setActive({
+      containerName: 'forge-old',
+      projectDir: DIRECTORY,
+      startedAt: new Date().toISOString(),
+      mounts: [],
+    })
+    const controller = createController({
+      getSessionIdentity: async () => ({ projectId: PROJECT, directory: newDirectory }),
+    })
+
+    await controller.start()
+
+    expect(manager.stopCalls).toHaveLength(1)
+    expect(manager.active?.projectDir).toBe(newDirectory)
+    expect(repo.getApplied(PROJECT)).toMatchObject({
+      revision: 'r-new',
+      enabled: true,
+      sessionId: newSessionId,
+      error: null,
+    })
+    await controller.dispose()
   })
 
   test('an instance whose directory lookup cannot resolve a session does not claim it', async () => {
@@ -1850,6 +1988,43 @@ describe('SessionSandboxController', () => {
       controller.resolveSandboxForSession('session-x', { throwOnRestoreError: true }),
     ).rejects.toThrow(/ownership could not be confirmed/)
     await controller.dispose()
+  })
+
+  test('a failed stop during transfer to an uncertain session keeps it blocked fail-closed', async () => {
+    vi.useFakeTimers()
+    try {
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-a', sessionId: ROOT_SESSION }))
+      const controller = createController({
+        pollIntervalMs: 20,
+        getSessionDirectory: async (sid) => (sid === ROOT_SESSION ? DIRECTORY : null),
+      })
+      await controller.start()
+      expect(repo.getApplied(PROJECT)?.enabled).toBe(true)
+
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-b', sessionId: 'session-x' }))
+      let stopFails = true
+      manager.stop = async (key) => {
+        manager.stopCalls.push(key)
+        if (stopFails) throw new Error('transfer removal failed')
+        manager.active = null
+      }
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(1)
+      expect(repo.getApplied(PROJECT)?.revision).toBe('r-a')
+      await expect(
+        controller.resolveSandboxForSession('session-x', { throwOnRestoreError: true }),
+      ).rejects.toThrow(/ownership could not be confirmed/)
+
+      stopFails = false
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(2)
+      expect(repo.getApplied(PROJECT)?.revision).toBe('r-a')
+
+      await controller.dispose()
+      expect(manager.stopCalls).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('a session lookup that never settles cannot hang controller readiness', async () => {

@@ -15,14 +15,14 @@ import { tmpdir } from 'os'
 import { existsSync } from 'fs'
 import { resolveLoopPermissionOptions } from './constants/loop'
 import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnings'
-import { connectForgeProject, resolveTuiProjectId, type ForgeProjectClient } from './utils/tui-client'
+import { connectForgeProject, resolveTuiProjectIdOnce, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import {
   awaitSessionSandboxState,
   beginSessionSandboxStateRequest,
+  deriveSandboxPollDelayMs,
   deriveSessionSandboxDisplayStatus,
   hostSandboxToggleBlocked,
-  isSessionSandboxPreferenceSettled,
   readSessionSandboxPreference,
 } from './tui/session-sandbox-store'
 import type { SessionSandboxPreference } from './tui/session-sandbox-store'
@@ -69,12 +69,18 @@ function SandboxLoadingSpinner(props: { api: TuiPluginApi }) {
 function SandboxStatusText(props: { api: TuiPluginApi; preference: () => SessionSandboxPreference | null; sessionId?: string }) {
   const theme = () => props.api.theme.current
   const status = createMemo(() => deriveSessionSandboxDisplayStatus(props.preference(), props.sessionId))
+  const statusColor = () => {
+    const current = status()
+    if (current === 'enabled') return theme().secondary
+    if (current === 'failed') return theme().error
+    return theme().textMuted
+  }
   // Secondary while the sandbox is actually acknowledged ON, so an active sandbox stands out
   // against the muted status line instead of reading as ordinary chrome.
   return (
     <Show
       when={status() === 'loading'}
-      fallback={<text fg={status() === 'enabled' ? theme().secondary : theme().textMuted}>· SBX {status()}</text>}
+      fallback={<text fg={statusColor()}>· SBX {status()}</text>}
     >
       <box flexDirection="row" gap={1}>
         <text fg={theme().textMuted}>· SBX</text>
@@ -342,7 +348,7 @@ const tui: TuiPlugin = async (api) => {
   let disposed = false
   let retryTimer: ReturnType<typeof setTimeout> | null = null
   let sandboxPollTimer: ReturnType<typeof setTimeout> | null = null
-  let sandboxInitTimer: ReturnType<typeof setTimeout> | null = null
+  let toggleWaiterController: AbortController | null = null
   api.lifecycle.onDispose(() => {
     disposed = true
     if (retryTimer) {
@@ -353,15 +359,45 @@ const tui: TuiPlugin = async (api) => {
       clearTimeout(sandboxPollTimer)
       sandboxPollTimer = null
     }
-    if (sandboxInitTimer) {
-      clearTimeout(sandboxInitTimer)
-      sandboxInitTimer = null
+    if (toggleWaiterController) {
+      toggleWaiterController.abort()
+      toggleWaiterController = null
     }
   })
+
+  const sleepAbortable = (ms: number, signal: AbortSignal): Promise<void> =>
+    new Promise<void>((resolve) => {
+      if (signal.aborted) {
+        resolve()
+        return
+      }
+      const onAbort = (): void => {
+        clearTimeout(timer)
+        resolve()
+      }
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }, ms)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
 
   const [sandboxProjectId, setSandboxProjectId] = createSignal<string | null>(null)
   const [sandboxPreference, setSandboxPreference] = createSignal<SessionSandboxPreference | null>(null)
   let sandboxInitStarted = false
+
+  const preferenceFieldsEqual = (
+    a: SessionSandboxPreference | null,
+    b: SessionSandboxPreference | null,
+  ): boolean => {
+    if (a === b) return true
+    if (!a || !b) return false
+    return (
+      JSON.stringify(a.desired) === JSON.stringify(b.desired) &&
+      JSON.stringify(a.applied) === JSON.stringify(b.applied) &&
+      JSON.stringify(a.controller) === JSON.stringify(b.controller)
+    )
+  }
 
   const refreshSandboxAcknowledgement = (projectId: string): SessionSandboxPreference | null => {
     if (disposed) return null
@@ -372,7 +408,7 @@ const tui: TuiPlugin = async (api) => {
       return null
     }
     const pref = readSessionSandboxPreference(projectId, forgeDbPath)
-    if (!disposed) setSandboxPreference(pref)
+    if (!disposed && !preferenceFieldsEqual(sandboxPreference(), pref)) setSandboxPreference(pref)
     return pref
   }
 
@@ -383,20 +419,14 @@ const tui: TuiPlugin = async (api) => {
   // server applies after the toggle's 15s wait expires — still reaches the
   // sidebar instead of leaving it stale until restart.
   const ensureSandboxPolling = (projectId: string): void => {
-    if (disposed || sandboxPollTimer) return
+    if (disposed || sandboxPollTimer || !opts.sidebar) return
     const step = (): void => {
-      if (disposed) return
+      if (disposed || !opts.sidebar) return
       sandboxPollTimer = null
       if (!isSandboxConfigEnabled(pluginConfig)) return
       const pref = refreshSandboxAcknowledgement(projectId)
       if (!pref) return
-      // Keep polling even after the pair settles at a low frequency so a later server
-      // acknowledgement — e.g. a periodic restore that fails and flips ON into OFF-with-error —
-      // is eventually reflected in the sidebar without a toggle or restart. Poll faster while
-      // unsettled or the local DB is not yet available so a matching acknowledgement is displayed
-      // promptly.
-      const settled = !pref.unavailable && isSessionSandboxPreferenceSettled(pref)
-      sandboxPollTimer = setTimeout(step, settled ? 5000 : 1500)
+      sandboxPollTimer = setTimeout(step, deriveSandboxPollDelayMs(pref))
     }
     step()
   }
@@ -405,19 +435,13 @@ const tui: TuiPlugin = async (api) => {
     if (!api.state.ready || sandboxInitStarted) return
     sandboxInitStarted = true
     void (async () => {
-      // Retry transient project discovery with bounded, disposal-aware polling so a temporarily
-      // failing lookup (or a forge.db that is not yet available) does not permanently leave the
-      // acknowledged state OFF for this process. Polling below also retries unavailable DB reads.
       let projectId: string | null = null
-      while (!disposed && !projectId) {
-        projectId = await resolveTuiProjectId(api, directory)
-        if (disposed || projectId) break
-        await new Promise<void>((resolve) => {
-          sandboxInitTimer = setTimeout(() => {
-            sandboxInitTimer = null
-            resolve()
-          }, 1500)
-        })
+      let delayMs = 1000
+      for (let attempt = 1; attempt <= 4 && !disposed && !projectId; attempt++) {
+        projectId = await resolveTuiProjectIdOnce(api, directory)
+        if (disposed || projectId || attempt === 4) break
+        await sleepAbortable(delayMs, api.lifecycle.signal)
+        delayMs *= 2
       }
       if (disposed) return
       setSandboxProjectId(projectId)
@@ -445,7 +469,7 @@ const tui: TuiPlugin = async (api) => {
     // discovery failure does not permanently disable the toggle for this process.
     let projectId = sandboxProjectId()
     if (!projectId) {
-      projectId = await resolveTuiProjectId(api, directory)
+      projectId = await resolveTuiProjectIdOnce(api, directory)
       if (disposed) return
       setSandboxProjectId(projectId)
     }
@@ -473,6 +497,7 @@ const tui: TuiPlugin = async (api) => {
     const turningOff = desired?.enabled === true && desired.sessionId === sessionId
     const nextEnabled = !turningOff
     let revision: string | null = null
+    let waiterController: AbortController | null = null
     try {
       revision = beginSessionSandboxStateRequest(projectId, forgeDbPath, {
         sessionId,
@@ -487,11 +512,16 @@ const tui: TuiPlugin = async (api) => {
       // Follow this desired revision to its acknowledgement independently of the
       // command timeout, so a late server apply still reaches the sidebar.
       ensureSandboxPolling(projectId)
+      if (toggleWaiterController) toggleWaiterController.abort()
+      waiterController = new AbortController()
+      toggleWaiterController = waiterController
+      const signal = AbortSignal.any([waiterController.signal, api.lifecycle.signal])
       const applied = await awaitSessionSandboxState(projectId, forgeDbPath, revision, {
         timeoutMs: 15_000,
         pollMs: 250,
-        signal: api.lifecycle.signal,
+        signal,
       })
+      if (toggleWaiterController === waiterController) toggleWaiterController = null
       if (disposed) return
       // Re-read the authoritative desired/applied pair before publishing state or
       // success. A superseded acknowledgement (a newer toggle already moved the
@@ -506,6 +536,7 @@ const tui: TuiPlugin = async (api) => {
         })
       }
     } catch (err) {
+      if (waiterController && toggleWaiterController === waiterController) toggleWaiterController = null
       if (disposed) return
       // The failed request may have superseded a prior acknowledged state with a
       // new desired revision that never got applied. Re-read the authoritative
@@ -516,7 +547,12 @@ const tui: TuiPlugin = async (api) => {
       // false failure long after the latest request succeeded.
       if (pref?.desired && revision && pref.desired.revision !== revision) return
       const message = err instanceof Error ? err.message : String(err)
-      api.ui.toast({ message: `Sandbox toggle failed: ${message}`, variant: 'error', duration: 6000 })
+      const guidance = nextEnabled ? 'Toggle off, then on to retry.' : 'Toggle again to retry disabling.'
+      api.ui.toast({
+        message: `Sandbox toggle failed: ${message}. ${guidance}`,
+        variant: 'error',
+        duration: 6000,
+      })
     }
   }
 

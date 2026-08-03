@@ -157,7 +157,7 @@ describe('SandboxManager custom mounts', () => {
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      sourceProjectDir: '/main-project',
+      sourceProjectDir: '/tmp',
       customMounts: [{ host: tmpCustom, readonly: false }],
     }
 
@@ -167,11 +167,11 @@ describe('SandboxManager custom mounts', () => {
     const active = manager.getActive('test')
     expect(active?.mounts).toHaveLength(3)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
-    expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/main-project', readOnly: true })
+    expect(active?.mounts[1]).toEqual({ hostDir: '/tmp', containerDir: '/tmp', readOnly: true })
     expect(active?.mounts[2]).toEqual({ hostDir: resolve(tmpCustom), containerDir: resolve(tmpCustom), readOnly: false })
 
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
-    expect(workspaces).toContainEqual({ hostDir: '/main-project', readOnly: true })
+    expect(workspaces).toContainEqual({ hostDir: '/tmp', readOnly: true })
     expect(workspaces).toContainEqual({ hostDir: resolve(tmpCustom), readOnly: false })
   })
 })

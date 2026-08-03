@@ -440,6 +440,25 @@ export async function resolveTuiProjectId(api: TuiPluginApi, directory?: string)
   return projectId
 }
 
+const projectIdFlights = new WeakMap<object, Map<string, Promise<string | null>>>()
+
+export function resolveTuiProjectIdOnce(api: TuiPluginApi, directory?: string): Promise<string | null> {
+  const key = directory ?? ''
+  let flights = projectIdFlights.get(api)
+  if (!flights) {
+    flights = new Map()
+    projectIdFlights.set(api, flights)
+  }
+  const existing = flights.get(key)
+  if (existing) return existing
+  const flight = resolveTuiProjectId(api, directory).finally(() => {
+    flights.delete(key)
+    if (flights.size === 0) projectIdFlights.delete(api)
+  })
+  flights.set(key, flight)
+  return flight
+}
+
 export async function connectForgeProject(
   api: TuiPluginApi,
   directory?: string,
@@ -454,7 +473,7 @@ export async function connectForgeProject(
 
   let projectId: string | null = null
   try {
-    projectId = await resolveTuiProjectId(api, directory)
+    projectId = await resolveTuiProjectIdOnce(api, directory)
   } catch {
     projectId = null
   }

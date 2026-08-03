@@ -100,12 +100,7 @@ interface PreferenceRow {
 }
 
 export function createSessionSandboxPreferencesRepo(db: Database): SessionSandboxPreferencesRepo {
-  const getDesiredStmt = db.prepare(`
-    SELECT data FROM tui_preferences
-    WHERE project_id = ? AND key = ?
-  `)
-
-  const getAppliedStmt = db.prepare(`
+  const getStmt = db.prepare(`
     SELECT data FROM tui_preferences
     WHERE project_id = ? AND key = ?
   `)
@@ -121,40 +116,26 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
 
   const now = () => Date.now()
 
-  function readDesired(projectId: string): SessionSandboxDesiredState | null {
-    const row = getDesiredStmt.get(projectId, SESSION_SANDBOX_DESIRED_KEY) as PreferenceRow | null
+  function readState<T>(projectId: string, key: string, parse: (value: unknown) => T | null): T | null {
+    const row = getStmt.get(projectId, key) as PreferenceRow | null
     if (!row) return null
-    let parsed: unknown
     try {
-      parsed = JSON.parse(row.data)
+      return parse(JSON.parse(row.data))
     } catch {
       return null
     }
-    return parseDesired(parsed)
+  }
+
+  function readDesired(projectId: string): SessionSandboxDesiredState | null {
+    return readState(projectId, SESSION_SANDBOX_DESIRED_KEY, parseDesired)
   }
 
   function readApplied(projectId: string): SessionSandboxAppliedState | null {
-    const row = getAppliedStmt.get(projectId, SESSION_SANDBOX_APPLIED_KEY) as PreferenceRow | null
-    if (!row) return null
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(row.data)
-    } catch {
-      return null
-    }
-    return parseApplied(parsed)
+    return readState(projectId, SESSION_SANDBOX_APPLIED_KEY, parseApplied)
   }
 
   function readControllerState(projectId: string): SessionSandboxControllerState | null {
-    const row = getAppliedStmt.get(projectId, SESSION_SANDBOX_CONTROLLER_KEY) as PreferenceRow | null
-    if (!row) return null
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(row.data)
-    } catch {
-      return null
-    }
-    return parseControllerState(parsed)
+    return readState(projectId, SESSION_SANDBOX_CONTROLLER_KEY, parseControllerState)
   }
 
   return {

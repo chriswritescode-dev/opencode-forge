@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { resolve } from 'path'
+import { isAbsolute, relative, resolve, sep } from 'path'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
 import type { SandboxContext } from './context'
 import type { SandboxRuntime } from './sbx'
 import type { ActiveSandbox } from './manager'
+import { findSessionAncestor } from '../utils/session-ancestry'
 
 export const DEFAULT_POLL_INTERVAL_MS = 500
 
@@ -19,17 +20,17 @@ export const DEFAULT_POLL_INTERVAL_MS = 500
 export const OWNERSHIP_LOOKUP_TIMEOUT_MS = 5_000
 
 /** Error recorded on the applied row when a host sandbox is refused for an active loop session. */
-export const LOOP_SESSION_REFUSED_ERROR = 'host sandbox cannot be enabled for an active loop session'
+const LOOP_SESSION_REFUSED_ERROR = 'host sandbox cannot be enabled for an active loop session'
 
 /**
  * Error used when the host-session sandbox runtime is unavailable (sandbox disabled, manager
  * initialization failed, or no shell shim). A requested ON is acknowledged as OFF with this
  * error and the selected session is blocked fail-closed rather than running on the host.
  */
-export const UNAVAILABLE_SANDBOX_ERROR = 'host-session sandbox is unavailable (sandbox runtime not initialized)'
+const UNAVAILABLE_SANDBOX_ERROR = 'host-session sandbox is unavailable (sandbox runtime not initialized)'
 
 /** Error recorded on the applied row when an ON request carries no session to bind. */
-export const MISSING_SESSION_ERROR = 'host sandbox cannot be enabled without a session'
+const MISSING_SESSION_ERROR = 'host sandbox cannot be enabled without a session'
 
 /**
  * Minimum surface of `SandboxManager` the controller relies on. Kept narrow so the
@@ -69,6 +70,7 @@ export interface SessionSandboxControllerDeps {
   preferences: SessionSandboxPreferencesRepo
   sandboxManager: SessionSandboxLifecycleManager
   getParentSessionId(sessionId: string): Promise<string | null>
+  getSessionIdentity?(sessionId: string): Promise<{ projectId: string; directory: string } | null>
   /**
    * Resolves the directory owning a session. Used to gate reconciliation so only the plugin
    * instance that owns the requested session acts on the shared preference rows (loop-worktree
@@ -97,14 +99,9 @@ export interface SessionSandboxController {
   dispose(): Promise<void>
 }
 
-/**
- * Maximum number of ancestor hops to walk when matching a session to the acknowledged
- * root session, mirroring `session-loop-resolver` so deeply nested sub-agents resolve.
- */
-const MAX_PARENT_DEPTH = 10
-
 /** Cap on reconcile re-runs within a single tick when the desired revision keeps moving. */
 const MAX_SUPERSEDE_ITERATIONS = 8
+const MAX_FAST_IDLE_POLLS = 4
 
 /**
  * Derives the logical manager key for a project. This is a stable, non-final key passed to
@@ -192,7 +189,9 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
    * revision is still processed normally.
    */
   let pendingCleanupRevision: string | null = null
-  let intervalId: ReturnType<typeof setInterval> | null = null
+  let selectedProjectDirectory: string | null = null
+  let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let idlePolls = 0
   let reconciling = false
   let disposed = false
   let startPromise: Promise<void> | null = null
@@ -265,7 +264,19 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
    * while resolution returns null (host fallback). Uncertain ownership therefore fails closed.
    */
   async function resolveOwnership(sessionId: string | null): Promise<'local' | 'foreign' | 'uncertain'> {
-    if (sessionId == null || !deps.getSessionDirectory) return 'local'
+    if (sessionId == null) return 'local'
+    if (deps.getSessionIdentity) {
+      try {
+        const identity = await withOwnershipLookupTimeout(() => deps.getSessionIdentity!(sessionId))
+        if (!identity) return 'uncertain'
+        if (identity.projectId !== projectId) return 'foreign'
+        selectedProjectDirectory = identity.directory
+        return 'local'
+      } catch {
+        return 'uncertain'
+      }
+    }
+    if (!deps.getSessionDirectory) return 'local'
     const lookup = deps.getSessionDirectory
     let dir: string | null
     try {
@@ -276,7 +287,21 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       return 'uncertain'
     }
     if (!dir) return 'uncertain'
-    return resolve(dir) === resolve(directory) ? 'local' : 'foreign'
+    const relativeDirectory = relative(resolve(directory), resolve(dir))
+    const local = relativeDirectory !== '..' &&
+      !relativeDirectory.startsWith(`..${sep}`) &&
+      !isAbsolute(relativeDirectory)
+    if (local) selectedProjectDirectory = dir
+    return local ? 'local' : 'foreign'
+  }
+
+  async function readLocallyOwnedDesired(): Promise<SessionSandboxDesiredState | null> {
+    try {
+      const desired = preferences.getDesired(projectId)
+      return desired && (await resolveOwnership(desired.sessionId)) === 'local' ? desired : null
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -286,16 +311,9 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   async function isWithinSession(root: string, sessionId: string): Promise<boolean> {
     if (!root || !sessionId) return false
     if (sessionId === root) return true
-    const seen = new Set<string>([sessionId])
-    let current = sessionId
-    for (let depth = 0; depth < MAX_PARENT_DEPTH; depth++) {
-      const parent = await deps.getParentSessionId(current)
-      if (!parent || seen.has(parent)) break
-      seen.add(parent)
-      if (parent === root) return true
-      current = parent
-    }
-    return false
+    return (await findSessionAncestor(sessionId, deps.getParentSessionId, (parentId) => (
+      parentId === root ? true : null
+    ))) ?? false
   }
 
   /**
@@ -447,6 +465,31 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     // disposal stop the manager key, which only the owner may do.
     const ownership = await resolveOwnership(desired.sessionId)
     if (ownership !== 'local') {
+      if (deps.getSessionIdentity) {
+        const stopped = await bestEffortStop()
+        hostActive = !stopped
+        pendingCleanup = !stopped
+        pendingCleanupRevision = !stopped ? desired.revision : null
+        lastValidatedRevision = null
+        acknowledgedSessionId = null
+        acknowledgedRevision = null
+        const ownershipError = ownership === 'foreign'
+          ? 'Host sandbox session belongs to a different project'
+          : 'Host sandbox session could not be resolved for this project'
+        const error = desired.enabled || !stopped ? ownershipError : null
+        failedSelection = desired.enabled && desired.sessionId
+          ? { sessionId: desired.sessionId, error: ownershipError }
+          : null
+        writeApplied({
+          version: 1,
+          revision: desired.revision,
+          enabled: false,
+          sessionId: desired.sessionId,
+          error,
+          appliedAt: Date.now(),
+        })
+        return desired.revision
+      }
       // Only remove a container this instance actually started. The manager key is derived from
       // the project id, so every instance of this project resolves the same container: a
       // pre-existing container for that key belongs to whichever instance owns the session, and
@@ -455,6 +498,13 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       // still be live, so retain retryable ownership (hostActive true) and let the next reconcile
       // tick retry removal rather than orphaning a container the new owner will never see. The
       // foreign acknowledgement is never overwritten.
+      const uncertainFailedSelection =
+        ownership === 'uncertain' && desired.enabled && desired.sessionId
+          ? {
+              sessionId: desired.sessionId,
+              error: 'Host sandbox ownership could not be confirmed for the selected session',
+            }
+          : null
       if (hostActive) {
         try {
           await sandboxManager.stop(managerKey)
@@ -470,7 +520,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
           lastValidatedRevision = null
           acknowledgedSessionId = null
           acknowledgedRevision = null
-          failedSelection = null
+          failedSelection = uncertainFailedSelection
           return desired.revision
         }
         hostActive = false
@@ -481,15 +531,37 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       // owns the selected session (e.g. a transient directory-lookup failure), so blocking host
       // fallback is safer than running tools on the host while the shared ON row is left untouched.
       // Re-evaluated on the next reconcile tick once ownership can be confirmed.
-      if (ownership === 'uncertain' && desired.enabled && desired.sessionId) {
-        failedSelection = {
-          sessionId: desired.sessionId,
-          error: 'Host sandbox ownership could not be confirmed for the selected session',
-        }
-      } else {
-        failedSelection = null
-      }
+      failedSelection = uncertainFailedSelection
       return desired.revision
+    }
+
+    if (
+      desired.enabled &&
+      desired.sessionId != null &&
+      applied?.enabled &&
+      applied.sessionId != null &&
+      applied.sessionId !== desired.sessionId
+    ) {
+      const stopped = await bestEffortStop()
+      hostActive = !stopped
+      pendingCleanup = !stopped
+      pendingCleanupRevision = !stopped ? desired.revision : null
+      lastValidatedRevision = null
+      acknowledgedSessionId = null
+      acknowledgedRevision = null
+      if (!stopped) {
+        const error = 'Failed to remove the previous host sandbox before switching sessions'
+        failedSelection = desired.sessionId ? { sessionId: desired.sessionId, error } : null
+        writeApplied({
+          version: 1,
+          revision: desired.revision,
+          enabled: false,
+          sessionId: desired.sessionId,
+          error,
+          appliedAt: Date.now(),
+        })
+        return desired.revision
+      }
     }
 
     // Ownership is confirmed local from here. A matching successful persisted ON (applied at the
@@ -591,7 +663,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         // call ensureRunning on every reconcile tick.
         if (lastValidatedRevision !== desired.revision) {
           try {
-            await sandboxManager.ensureRunning(managerKey, directory)
+            await sandboxManager.ensureRunning(managerKey, selectedProjectDirectory ?? directory)
             lastValidatedRevision = desired.revision
           } catch (err) {
             // A persisted-ON restore that partially creates the container and then fails must run
@@ -719,7 +791,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         }
       }
       try {
-        await sandboxManager.ensureRunning(managerKey, directory)
+        await sandboxManager.ensureRunning(managerKey, selectedProjectDirectory ?? directory)
       } catch (err) {
         await handleFailedOnStart(desired, desired.sessionId, err instanceof Error ? err.message : String(err))
         return desired.revision
@@ -810,7 +882,21 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       logger.error(`[session-sandbox] reconcile failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       reconciling = false
+      schedulePoll()
     }
+  }
+
+  function schedulePoll(): void {
+    if (disposed || pollTimer !== null) return
+    const desired = preferences.getDesired(projectId)
+    const active = hostActive || pendingCleanup || (desired?.enabled === true && failedSelection === null)
+    if (active) idlePolls = 0
+    const fast = active || idlePolls < MAX_FAST_IDLE_POLLS
+    if (!active) idlePolls += 1
+    pollTimer = setTimeout(() => {
+      pollTimer = null
+      void tick()
+    }, fast ? pollIntervalMs : pollIntervalMs * 10)
   }
 
   async function resolveSandboxForSession(
@@ -859,7 +945,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         return null
       }
       try {
-        await sandboxManager.ensureRunning(managerKey, directory)
+        await sandboxManager.ensureRunning(managerKey, selectedProjectDirectory ?? directory)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         logger.log(`[session-sandbox] ensureRunning failed during restore: ${msg}`)
@@ -939,11 +1025,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         }
         if (disposed) return
         writeControllerState('ready')
-        if (intervalId === null) {
-          intervalId = setInterval(() => {
-            void tick()
-          }, pollIntervalMs)
-        }
+        schedulePoll()
       })()
       startPromise = starting
       void starting.catch(() => {
@@ -965,9 +1047,9 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       // Mark disposed eagerly (before the serialized body) so any in-flight resolution or
       // reconciliation revalidates against it and returns null rather than restoring a container.
       disposed = true
-      if (intervalId !== null) {
-        clearInterval(intervalId)
-        intervalId = null
+      if (pollTimer !== null) {
+        clearTimeout(pollTimer)
+        pollTimer = null
       }
       disposePromise = serialized(async () => {
         // Stop this controller's own container before any fallible bookkeeping, so a transient DB
@@ -989,15 +1071,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
             // owns the current desired session so a non-owner cannot overwrite another instance's
             // shared acknowledgement; the actual owner observes the live container on its own poll.
             const msg = err instanceof Error ? err.message : String(err)
-            let desired: SessionSandboxDesiredState | null = null
-            let owned = false
-            try {
-              desired = preferences.getDesired(projectId)
-              owned = desired != null && (await resolveOwnership(desired.sessionId)) === 'local'
-            } catch {
-              // A failed read must not mask the stop failure; we simply skip the failure write.
-            }
-            if (owned && desired) {
+            const desired = await readLocallyOwnedDesired()
+            if (desired) {
               writeApplied({
                 version: 1,
                 revision: desired.enabled ? freshRevision() : desired.revision,
@@ -1018,16 +1093,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         // a settled applied OFF is re-acted to start the container and acknowledge ON again. Skip
         // the write when this instance does not own the requested session so it cannot overwrite
         // another instance's acknowledgement for a shared project DB.
-        let desired: SessionSandboxDesiredState | null = null
-        let owned = false
-        try {
-          desired = preferences.getDesired(projectId)
-          owned = desired != null && (await resolveOwnership(desired.sessionId)) === 'local'
-        } catch {
-          // A transient bookkeeping failure after the container is confirmed stopped must not
-          // abort disposal; the container is already removed, so the applied row is left as-is.
-        }
-        if (owned && desired) {
+        const desired = await readLocallyOwnedDesired()
+        if (desired) {
           writeApplied({
             version: 1,
             revision: desired.revision,

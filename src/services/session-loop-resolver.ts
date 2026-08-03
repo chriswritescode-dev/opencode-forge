@@ -1,6 +1,7 @@
 import type { Logger } from '../types'
 import type { LoopService } from '../loop/service'
 import { resolve } from 'path'
+import { findSessionAncestor } from '../utils/session-ancestry'
 
 export interface SessionLoopResolverDeps {
   loop: {
@@ -21,14 +22,6 @@ export interface ResolvedLoop {
   workspaceId?: string
 }
 
-/**
- * Maximum number of ancestor hops to walk when resolving a session to its loop.
- * Sub-agents can spawn further sub-agents (e.g. a post-action `pr-review` skill
- * launching change-agents), producing a chain several levels deep. The cap plus
- * the cycle guard bound the work and prevent runaway lookups.
- */
-const MAX_PARENT_DEPTH = 10
-
 export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
   resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null>
 } {
@@ -48,13 +41,8 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
       // session at the top of their chain. The immediate parent of such a
       // session is itself a sub-agent with no loop name, so a single hop is not
       // enough.
-      const seen = new Set<string>([sessionId])
       let firstParentId: string | null = null
-      let current = sessionId
-      for (let depth = 0; depth < MAX_PARENT_DEPTH; depth++) {
-        const parentId = await deps.getParentSessionId(current)
-        if (!parentId || seen.has(parentId)) break
-        seen.add(parentId)
+      const ancestorState = await findSessionAncestor(sessionId, deps.getParentSessionId, (parentId, depth) => {
         if (depth === 0) firstParentId = parentId
 
         deps.logger.debug(
@@ -67,9 +55,9 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
           deps.logger.log(`[session-resolver] session=${sessionId} resolved via ancestor=${parentId} depth=${depth} loop=${parentState.loopName}`)
           return parentState
         }
-
-        current = parentId
-      }
+        return null
+      })
+      if (ancestorState) return ancestorState
 
       if (firstParentId && deps.getSessionDirectory) {
         const dir = await deps.getSessionDirectory(sessionId)

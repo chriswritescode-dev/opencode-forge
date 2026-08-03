@@ -7,13 +7,13 @@ import { tmpdir } from 'os'
 import {
   awaitSessionSandboxState,
   beginSessionSandboxStateRequest,
+  deriveSandboxPollDelayMs,
   deriveSessionSandboxAcknowledged,
   deriveSessionSandboxDisplayStatus,
   hostSandboxToggleBlocked,
   isSessionSandboxPreferenceSettled,
   readSessionSandboxPreference,
   writeSessionSandboxDesired,
-  requestSessionSandboxState,
 } from '../../src/tui/session-sandbox-store'
 import { createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../../src/storage'
@@ -373,167 +373,54 @@ describe('session-sandbox-store (TUI bridge)', () => {
       expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
     })
 
-    test('shows disabled after acknowledgement fails or turns the sandbox off', () => {
+    test('shows failed for a settled desired ON that was applied OFF or with an error', () => {
+      const off = writeApplied({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: null })
+      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: off }, 'sess-1')).toBe('failed')
       const errored = writeApplied({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: 'unavailable' })
-      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: errored }, 'sess-1')).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: errored }, 'sess-1')).toBe('failed')
+      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: off }, 'sess-other')).toBe('disabled')
+    })
+
+    test('shows failed for a matching failed controller state', () => {
+      const errored = writeApplied({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: 'unavailable' })
+      const pref = {
+        desired: desired(),
+        applied: errored,
+        controller: { version: 1 as const, phase: 'failed' as const, revision: 'r1', sessionId: 'sess-1' },
+      }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('failed')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
+    })
+
+    test('shows disabled for a clean settled OFF and for no persisted state', () => {
+      const off = writeApplied({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: null })
+      expect(deriveSessionSandboxDisplayStatus({ desired: desired({ enabled: false }), applied: off }, 'sess-1')).toBe('disabled')
       expect(deriveSessionSandboxDisplayStatus(null, 'sess-1')).toBe('disabled')
     })
   })
 
-  describe('requestSessionSandboxState', () => {
-    test('writes desired and resolves on the matching applied revision', async () => {
-      const promise = requestSessionSandboxState({
-        projectId: PROJECT_A,
-        dbPath,
-        sessionId: 'sess-1',
-        enabled: true,
-        timeoutMs: 2000,
-        pollMs: 10,
-      })
-
-      const { desired } = readSessionSandboxPreference(PROJECT_A, dbPath)
-      expect(desired).not.toBeNull()
-      expect(desired!.enabled).toBe(true)
-      expect(desired!.sessionId).toBe('sess-1')
-
-      writeApplied({ revision: desired!.revision, enabled: true, error: null })
-
-      const applied = await promise
-      expect(applied.revision).toBe(desired!.revision)
-      expect(applied.enabled).toBe(true)
-      expect(applied.error).toBeNull()
+  describe('deriveSandboxPollDelayMs', () => {
+    const desired = (overrides: Partial<SessionSandboxDesiredState> = {}) => ({
+      version: 1 as const,
+      revision: 'r1',
+      enabled: true,
+      sessionId: 'sess-1',
+      requestedAt: 1,
+      ...overrides,
     })
 
-    test('ignores a stale applied revision and only resolves on the matching one', async () => {
-      // A stale ON acknowledgement for a different revision must not falsely resolve.
-      writeApplied({ revision: 'stale-rev', enabled: true, error: null })
-
-      const promise = requestSessionSandboxState({
-        projectId: PROJECT_A,
-        dbPath,
-        sessionId: 'sess-1',
-        enabled: true,
-        timeoutMs: 2000,
-        pollMs: 10,
-      })
-
-      const { desired } = readSessionSandboxPreference(PROJECT_A, dbPath)
-      writeApplied({ revision: desired!.revision, enabled: true, error: null })
-
-      const applied = await promise
-      expect(applied.revision).toBe(desired!.revision)
+    test('polls promptly while a desired revision is pending', () => {
+      expect(deriveSandboxPollDelayMs({ desired: desired(), applied: null })).toBe(1500)
     })
 
-    test('throws the server error when a matching applied row carries an error', async () => {
-      const promise = requestSessionSandboxState({
-        projectId: PROJECT_A,
-        dbPath,
-        sessionId: 'sess-1',
-        enabled: true,
-        timeoutMs: 2000,
-        pollMs: 10,
-      })
-
-      const { desired } = readSessionSandboxPreference(PROJECT_A, dbPath)
-      writeApplied({ revision: desired!.revision, enabled: false, error: 'sbx failed to start' })
-
-      await expect(promise).rejects.toThrow('sbx failed to start')
+    test('backs off once the pair settles', () => {
+      const settled = writeApplied({ revision: 'r1', enabled: true, error: null })
+      expect(deriveSandboxPollDelayMs({ desired: desired(), applied: settled })).toBe(10_000)
     })
 
-    test('throws on timeout when no matching applied row arrives', async () => {
-      await expect(
-        requestSessionSandboxState({
-          projectId: PROJECT_A,
-          dbPath,
-          sessionId: 'sess-1',
-          enabled: true,
-          timeoutMs: 60,
-          pollMs: 10,
-        }),
-      ).rejects.toThrow(/Timed out/)
-    })
-
-    test('resolves an acknowledgement that arrives during the final poll sleep', async () => {
-      // pollMs >= timeoutMs: a single bounded sleep spans the whole window, and the
-      // acknowledgement lands mid-sleep. The waiter must still read it before declaring timeout.
-      const promise = requestSessionSandboxState({
-        projectId: PROJECT_A,
-        dbPath,
-        sessionId: 'sess-1',
-        enabled: true,
-        timeoutMs: 100,
-        pollMs: 10_000,
-      })
-      const { desired } = readSessionSandboxPreference(PROJECT_A, dbPath)
-      setTimeout(() => {
-        writeApplied({ revision: desired!.revision, enabled: true, error: null })
-      }, 50)
-      const applied = await promise
-      expect(applied.revision).toBe(desired!.revision)
-      expect(applied.enabled).toBe(true)
-    })
-
-    test('rejects a matching applied row carrying an empty-string error', async () => {
-      // `error: ''` is a valid non-null error; it must reject rather than report success.
-      const promise = requestSessionSandboxState({
-        projectId: PROJECT_A,
-        dbPath,
-        sessionId: 'sess-1',
-        enabled: true,
-        timeoutMs: 2000,
-        pollMs: 10,
-      })
-      const { desired } = readSessionSandboxPreference(PROJECT_A, dbPath)
-      writeApplied({ revision: desired!.revision, enabled: false, error: '' })
-      await expect(promise).rejects.toThrow()
-    })
-
-    test('rejects immediately when the signal is already aborted before any read', async () => {
-      const controller = new AbortController()
-      controller.abort()
-      await expect(
-        requestSessionSandboxState({
-          projectId: PROJECT_A,
-          dbPath,
-          sessionId: 'sess-1',
-          enabled: true,
-          timeoutMs: 2000,
-          pollMs: 10,
-          signal: controller.signal,
-        }),
-      ).rejects.toThrow(/cancelled/i)
-      // A pre-cancelled request must not persist a desired revision the server could still apply.
-      expect(readSessionSandboxPreference(PROJECT_A, dbPath).desired).toBeNull()
-    })
-
-    test('caps each poll sleep to the remaining deadline when pollMs exceeds timeoutMs', async () => {
-      const start = Date.now()
-      await expect(
-        requestSessionSandboxState({
-          projectId: PROJECT_A,
-          dbPath,
-          sessionId: 'sess-1',
-          enabled: true,
-          timeoutMs: 100,
-          pollMs: 10_000,
-        }),
-      ).rejects.toThrow(/Timed out/)
-      expect(Date.now() - start).toBeLessThan(1000)
-    })
-
-    test('throws when the poll is cancelled via signal', async () => {
-      const controller = new AbortController()
-      const promise = requestSessionSandboxState({
-        projectId: PROJECT_A,
-        dbPath,
-        sessionId: 'sess-1',
-        enabled: true,
-        timeoutMs: 2000,
-        pollMs: 10,
-        signal: controller.signal,
-      })
-      controller.abort()
-      await expect(promise).rejects.toThrow(/cancelled/i)
+    test('retries an unavailable local DB and backs off when no preference exists', () => {
+      expect(deriveSandboxPollDelayMs({ desired: null, applied: null, unavailable: true })).toBe(5000)
+      expect(deriveSandboxPollDelayMs({ desired: null, applied: null })).toBe(30_000)
     })
   })
 
@@ -556,6 +443,56 @@ describe('session-sandbox-store (TUI bridge)', () => {
       const applied = await promise
       expect(applied.revision).toBe(revision)
       expect(applied.enabled).toBe(false)
+    })
+
+    test('ignores stale applied state until the requested revision arrives', async () => {
+      writeApplied({ revision: 'stale', enabled: true, error: null })
+      const revision = beginSessionSandboxStateRequest(PROJECT_A, dbPath, { sessionId: 'sess-1', enabled: true })
+      const promise = awaitSessionSandboxState(PROJECT_A, dbPath, revision, { timeoutMs: 2000, pollMs: 10 })
+      writeApplied({ revision, enabled: true, error: null })
+      await expect(promise).resolves.toMatchObject({ revision, enabled: true })
+    })
+
+    test('rejects matching applied errors including an empty string', async () => {
+      const revision = beginSessionSandboxStateRequest(PROJECT_A, dbPath, { sessionId: 'sess-1', enabled: true })
+      const promise = awaitSessionSandboxState(PROJECT_A, dbPath, revision, { timeoutMs: 2000, pollMs: 10 })
+      writeApplied({ revision, enabled: false, error: '' })
+      await expect(promise).rejects.toThrow()
+    })
+
+    test('times out when no matching applied revision arrives', async () => {
+      const revision = beginSessionSandboxStateRequest(PROJECT_A, dbPath, { sessionId: 'sess-1', enabled: true })
+      await expect(
+        awaitSessionSandboxState(PROJECT_A, dbPath, revision, { timeoutMs: 60, pollMs: 10 }),
+      ).rejects.toThrow(/Timed out/)
+    })
+
+    test('reads an acknowledgement that arrives during the final bounded sleep', async () => {
+      const revision = beginSessionSandboxStateRequest(PROJECT_A, dbPath, { sessionId: 'sess-1', enabled: true })
+      const promise = awaitSessionSandboxState(PROJECT_A, dbPath, revision, { timeoutMs: 100, pollMs: 10_000 })
+      setTimeout(() => writeApplied({ revision, enabled: true, error: null }), 50)
+      await expect(promise).resolves.toMatchObject({ revision, enabled: true })
+    })
+
+    test('caps poll sleep to the remaining timeout', async () => {
+      const revision = beginSessionSandboxStateRequest(PROJECT_A, dbPath, { sessionId: 'sess-1', enabled: true })
+      const start = Date.now()
+      await expect(
+        awaitSessionSandboxState(PROJECT_A, dbPath, revision, { timeoutMs: 100, pollMs: 10_000 }),
+      ).rejects.toThrow(/Timed out/)
+      expect(Date.now() - start).toBeLessThan(1000)
+    })
+
+    test('rejects when polling is cancelled', async () => {
+      const revision = beginSessionSandboxStateRequest(PROJECT_A, dbPath, { sessionId: 'sess-1', enabled: true })
+      const controller = new AbortController()
+      const promise = awaitSessionSandboxState(PROJECT_A, dbPath, revision, {
+        timeoutMs: 2000,
+        pollMs: 10,
+        signal: controller.signal,
+      })
+      controller.abort()
+      await expect(promise).rejects.toThrow(/cancelled/i)
     })
   })
 })
