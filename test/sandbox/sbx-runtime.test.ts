@@ -189,8 +189,8 @@ describe('sandbox list', () => {
       ],
     })
     expect(parseSbxSandboxList(stdout)).toEqual([
-      { name: 'forge-a', running: true },
-      { name: 'forge-b', running: false },
+      { name: 'forge-a', status: 'running', running: true },
+      { name: 'forge-b', status: 'stopped', running: false },
     ])
   })
 
@@ -200,8 +200,8 @@ describe('sandbox list', () => {
       { name: 'forge-b', status: 'stopped' },
     ])
     expect(parseSbxSandboxList(stdout)).toEqual([
-      { name: 'forge-a', running: true },
-      { name: 'forge-b', running: false },
+      { name: 'forge-a', status: 'running', running: true },
+      { name: 'forge-b', status: 'stopped', running: false },
     ])
   })
 
@@ -395,18 +395,64 @@ describe('runtime', () => {
     await expect(rt.removeSandbox('forge-a')).rejects.toThrow('Failed to remove sandbox')
   })
 
-  test('isRunning reflects the parsed list and filters by name', async () => {
+  test('getSandboxState reports running, and missing for an absent name', async () => {
     const stdout = JSON.stringify({ sandboxes: [{ name: 'forge-a', status: 'running' }] })
     const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
-    await expect(rt.isRunning('forge-a')).resolves.toBe(true)
-    await expect(rt.isRunning('forge-b')).resolves.toBe(false)
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('running')
+    await expect(rt.getSandboxState('forge-b')).resolves.toBe('missing')
   })
 
-  test('isRunning returns false on a failing ls', async () => {
+  test('getSandboxState reports an idle-suspended sandbox as stopped, not missing', async () => {
+    const stdout = JSON.stringify({ sandboxes: [{ name: 'forge-a', status: 'stopped' }] })
+    const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
+    const rt = createSbxRuntime(logger, { run: runner })
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('stopped')
+  })
+
+  test('getSandboxState reports unknown on a failing ls rather than claiming missing', async () => {
     const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
-    await expect(rt.isRunning('forge-a')).resolves.toBe(false)
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
+  })
+
+  test('getSandboxState reports unknown when the ls invocation throws', async () => {
+    const { runner } = recordingRunner(() => { throw new Error('sbx exploded') })
+    const rt = createSbxRuntime(logger, { run: runner })
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
+  })
+
+  test('getSandboxState reports unknown when a successful ls emits unparseable output', async () => {
+    // A truncated or schema-changed payload must never be read as "the sandbox is gone",
+    // or the caller would destroy or duplicate a live sandbox.
+    const { runner } = recordingRunner(() => ({ stdout: '{"sandboxes":[{"name":"forg', stderr: '', exitCode: 0 }))
+    const rt = createSbxRuntime(logger, { run: runner })
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
+  })
+
+  test('getSandboxState reports unknown for valid JSON in an unrecognized shape', async () => {
+    // An error object or a future nested schema is a failed inventory read, not an empty inventory
+    const { runner } = recordingRunner(() => ({ stdout: JSON.stringify({ error: 'daemon down' }), stderr: '', exitCode: 0 }))
+    const rt = createSbxRuntime(logger, { run: runner })
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
+  })
+
+  test('getSandboxState reports unknown for a valid JSON scalar', async () => {
+    const { runner } = recordingRunner(() => ({ stdout: '123', stderr: '', exitCode: 0 }))
+    const rt = createSbxRuntime(logger, { run: runner })
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
+  })
+
+  test('getSandboxState reports missing when a successful ls returns an empty list', async () => {
+    const { runner } = recordingRunner(() => ({ stdout: JSON.stringify({ sandboxes: [] }), stderr: '', exitCode: 0 }))
+    const rt = createSbxRuntime(logger, { run: runner })
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('missing')
+  })
+
+  test('getSandboxState treats empty output as an empty list so a missing sandbox can still be created', async () => {
+    const { runner } = recordingRunner(() => ({ stdout: '', stderr: '', exitCode: 0 }))
+    const rt = createSbxRuntime(logger, { run: runner })
+    await expect(rt.getSandboxState('forge-a')).resolves.toBe('missing')
   })
 
   test('listSandboxesByPrefix filters parsed names by prefix', async () => {

@@ -83,7 +83,7 @@ describe('resolveSandboxContextForLoop', () => {
   })
 
   it('returns null after ensureRunning failure unless configured to throw', async () => {
-    const logger = { log: vi.fn() }
+    const logger = { log: vi.fn(), error: vi.fn() }
     const manager = {
       runtime: {} as never,
       restore: vi.fn(),
@@ -99,7 +99,7 @@ describe('resolveSandboxContextForLoop', () => {
     }, logger)
 
     expect(context).toBeNull()
-    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('docker unavailable'))
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('docker unavailable'))
     await expect(resolveSandboxContextForLoop(manager, {
       loopName: 'loop',
       active: true,

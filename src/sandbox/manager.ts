@@ -109,7 +109,6 @@ export interface SandboxManager {
   getActive(worktreeName: string): ActiveSandbox | null
   isActive(worktreeName: string): boolean
   isLive(worktreeName: string): Promise<boolean>
-  isLiveByName(worktreeName: string): Promise<boolean>
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
@@ -144,6 +143,7 @@ export function createSandboxManager(
 ): SandboxManager {
   const activeSandboxes = new Map<string, ActiveSandbox>()
   const lastLivenessCheck = new Map<string, number>()
+  const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
   let runtimeAvailableCache: { value: SbxAvailability; at: number } | null = null
   let imageReady = false
@@ -336,6 +336,22 @@ export function createSandboxManager(
     }
   }
 
+  /**
+   * Single point that records a usable sandbox in the active map, shared by the adopt path in
+   * `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins so adopting a
+   * sandbox never resets the time it actually came up.
+   */
+  function registerActiveSandbox(worktreeName: string, containerName: string, projectDir: string, startedAt?: string): void {
+    const active = activeSandboxes.get(worktreeName)
+    activeSandboxes.set(worktreeName, {
+      containerName,
+      projectDir: resolve(projectDir),
+      startedAt: active?.startedAt ?? startedAt ?? new Date().toISOString(),
+      mounts: buildMountPlan(projectDir).mounts,
+      envFile: writeEnvPassthroughFile(containerName),
+    })
+  }
+
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
     await ensureRuntimeAvailable()
     await ensureTemplate()
@@ -344,16 +360,10 @@ export function createSandboxManager(
     const containerName = runtime.sandboxContainerName(worktreeName)
 
     const absoluteProjectDir = resolve(projectDir)
-    const running = await runtime.isRunning(containerName)
-    if (running) {
-      logger.log(`Sandbox ${containerName} already running`)
-      activeSandboxes.set(worktreeName, {
-        containerName,
-        projectDir: absoluteProjectDir,
-        startedAt: startedAt ?? new Date().toISOString(),
-        mounts: buildMountPlan(projectDir).mounts,
-        envFile: writeEnvPassthroughFile(containerName),
-      })
+    const state = await runtime.getSandboxState(containerName)
+    if (state !== 'missing') {
+      logger.log(`Sandbox ${containerName} already exists (${state}), adopting`)
+      registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       return { containerName }
     }
 
@@ -419,6 +429,11 @@ export function createSandboxManager(
     return activeSandboxes.has(worktreeName)
   }
 
+  /**
+   * A `stopped` sandbox is live: `sbx` suspends idle microVMs and `sbx exec` resumes them in
+   * place. Only a confirmed-`missing` sandbox invalidates the map entry — `unknown` means the
+   * status query failed and is not evidence the sandbox is gone.
+   */
   async function isLive(worktreeName: string): Promise<boolean> {
     const active = activeSandboxes.get(worktreeName)
     if (!active) {
@@ -426,20 +441,15 @@ export function createSandboxManager(
     }
 
     const containerName = active.containerName
-    const running = await runtime.isRunning(containerName)
+    const state = await runtime.getSandboxState(containerName)
 
-    if (!running) {
-      logger.log(`Sandbox: sandbox ${containerName} not found as running, removing stale map entry for ${worktreeName}`)
+    if (state === 'missing') {
+      logger.log(`Sandbox: sandbox ${containerName} no longer exists, removing stale map entry for ${worktreeName}`)
       activeSandboxes.delete(worktreeName)
       return false
     }
 
     return true
-  }
-
-  async function isLiveByName(worktreeName: string): Promise<boolean> {
-    const containerName = runtime.sandboxContainerName(worktreeName)
-    return runtime.isRunning(containerName)
   }
 
   async function cleanupOrphans(preserveWorktrees?: string[]): Promise<number> {
@@ -481,6 +491,35 @@ export function createSandboxManager(
     await ensureRunning(worktreeName, projectDir, startedAt)
   }
 
+  /**
+   * Single decision point for "is this worktree's sandbox usable?", shared by the mapped and
+   * unmapped paths. `running` and `stopped` are both usable — `sbx` suspends idle microVMs to
+   * `stopped` and `sbx exec` resumes them in place, so recreating one would needlessly destroy
+   * container-local state. `unknown` means the status query failed and says nothing about the
+   * sandbox, so an existing entry is kept as-is (without refreshing the liveness timestamp, so
+   * the next call re-checks) and only a confirmed-`missing` sandbox is created.
+   */
+  async function resolveUsableSandbox(worktreeName: string, projectDir: string, startedAt?: string): Promise<string> {
+    const active = activeSandboxes.get(worktreeName)
+    const containerName = active?.containerName ?? runtime.sandboxContainerName(worktreeName)
+    const state = await runtime.getSandboxState(containerName)
+
+    if (state === 'running' || state === 'stopped') {
+      registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
+      lastLivenessCheck.set(worktreeName, Date.now())
+      return containerName
+    }
+
+    if (state === 'unknown' && active) {
+      logger.log(`Sandbox: state of ${containerName} is unknown, keeping ${worktreeName} unchanged`)
+      return active.containerName
+    }
+
+    const result = await start(worktreeName, projectDir, startedAt)
+    lastLivenessCheck.set(worktreeName, Date.now())
+    return result.containerName
+  }
+
   async function ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string> {
     const active = activeSandboxes.get(worktreeName)
     const lastCheck = lastLivenessCheck.get(worktreeName)
@@ -490,49 +529,15 @@ export function createSandboxManager(
       return active.containerName
     }
 
-    if (active) {
-      const running = await runtime.isRunning(active.containerName)
-      if (running) {
-        activeSandboxes.set(worktreeName, {
-          ...active,
-          projectDir: resolve(projectDir),
-          mounts: buildMountPlan(projectDir).mounts,
-          envFile: writeEnvPassthroughFile(active.containerName),
-        })
-        lastLivenessCheck.set(worktreeName, Date.now())
-        return active.containerName
-      }
-      logger.log(`Sandbox: sandbox ${active.containerName} is not running, recreating for ${worktreeName}`)
-      activeSandboxes.delete(worktreeName)
-      await runtime.removeSandbox(active.containerName)
+    // Single-flight per worktree: concurrent callers would otherwise each run the create path and
+    // race `sbx`, which answers the loser with `409 Conflict ... has an operation in progress`.
+    const inFlight = ensureRunningInFlight.get(worktreeName)
+    if (inFlight) return inFlight
 
-      const result = await start(worktreeName, projectDir, startedAt)
-      lastLivenessCheck.set(worktreeName, Date.now())
-      return result.containerName
-    }
-
-    const containerName = runtime.sandboxContainerName(worktreeName)
-    const running = await runtime.isRunning(containerName)
-    if (running) {
-      const absoluteProjectDir = resolve(projectDir)
-      const { mounts } = buildMountPlan(projectDir)
-      const activeEntry: ActiveSandbox = {
-        containerName,
-        projectDir: absoluteProjectDir,
-        startedAt: startedAt ?? new Date().toISOString(),
-        mounts,
-        envFile: writeEnvPassthroughFile(containerName),
-      }
-      activeSandboxes.set(worktreeName, activeEntry)
-      lastLivenessCheck.set(worktreeName, Date.now())
-      return containerName
-    }
-
-    await runtime.removeSandbox(containerName)
-
-    const runningResult = await start(worktreeName, projectDir, startedAt)
-    lastLivenessCheck.set(worktreeName, Date.now())
-    return runningResult.containerName
+    const pending = resolveUsableSandbox(worktreeName, projectDir, startedAt)
+      .finally(() => ensureRunningInFlight.delete(worktreeName))
+    ensureRunningInFlight.set(worktreeName, pending)
+    return pending
   }
 
   return {
@@ -542,7 +547,6 @@ export function createSandboxManager(
     getActive,
     isActive,
     isLive,
-    isLiveByName,
     cleanupOrphans,
     restore,
     ensureRunning,

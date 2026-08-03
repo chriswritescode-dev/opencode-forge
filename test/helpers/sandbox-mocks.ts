@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { SandboxWorkspace, SandboxRuntime } from '../../src/sandbox/sbx'
+import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/sbx'
 import type { SandboxResources } from '../../src/types'
 
 /**
@@ -14,6 +14,7 @@ export interface MockSandboxRuntime extends SandboxRuntime {
   getRemoveSandboxCalls(): string[]
   setSandboxes(newSandboxes: string[]): void
   setRunning(name: string, running: boolean): void
+  setSandboxState(name: string, state: SandboxState): void
   setAvailable(available: boolean): void
   setTemplateExists(exists: boolean): void
   setRemoveThrow(shouldThrow: boolean): void
@@ -29,7 +30,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
   > = []
   const removeSandboxCalls: string[] = []
   let sandboxes = ['forge-foo', 'forge-bar']
-  let runningSandboxes = new Set<string>()
+  const sandboxStates = new Map<string, SandboxState>()
   let shouldBeAvailable = true
   let shouldTemplateExist = true
   let shouldRemoveThrow = false
@@ -46,7 +47,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       opts?: { template?: string; resources?: SandboxResources },
     ) => {
       createSandboxCalls.push([name, workspaces, opts])
-      runningSandboxes.add(name)
+      sandboxStates.set(name, 'running')
     },
     removeSandbox: async (name: string) => {
       removeSandboxCalls.push(name)
@@ -56,7 +57,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     },
     exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     execPipe: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-    isRunning: async (name: string) => runningSandboxes.has(name),
+    getSandboxState: async (name: string) => sandboxStates.get(name) ?? 'missing',
     sandboxContainerName: (worktreeName: string) => `forge-${worktreeName}`,
     listSandboxesByPrefix: async (prefix: string) => sandboxes.filter((n) => n.startsWith(prefix)),
     allowNetworkHost: async () => true,
@@ -66,7 +67,10 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       sandboxes = newSandboxes
     },
     setRunning: (name: string, running: boolean) => {
-      if (running) runningSandboxes.add(name); else runningSandboxes.delete(name)
+      if (running) sandboxStates.set(name, 'running'); else sandboxStates.delete(name)
+    },
+    setSandboxState: (name: string, state: SandboxState) => {
+      sandboxStates.set(name, state)
     },
     setAvailable: (available: boolean) => {
       shouldBeAvailable = available

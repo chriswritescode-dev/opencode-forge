@@ -26,6 +26,7 @@ function makeFakeLoopService(): LoopService {
     findMatchByName: vi.fn(() => ({ match: null, candidates: [] })),
     getStallTimeoutMs: vi.fn(() => 60_000),
     getMaxConsecutiveStalls: vi.fn(() => 5),
+    getBusyStallTimeoutMs: vi.fn(() => 900_000),
     terminateAll: vi.fn(() => Promise.resolve()),
     hasOutstandingFindings: vi.fn(() => false),
     getOutstandingFindings: vi.fn(() => []),

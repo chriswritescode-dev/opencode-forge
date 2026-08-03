@@ -118,9 +118,10 @@ export function buildSbxCreateArgs(
   return args
 }
 
-/** A single sandbox reported by `sbx ls --json`, with its liveness derived from status. */
+/** A single sandbox reported by `sbx ls --json`, with the raw status and liveness derived from it. */
 export interface SbxSandboxEntry {
   name: string
+  status: string
   running: boolean
 }
 
@@ -129,18 +130,30 @@ export interface SbxSandboxEntry {
  * pinned, so this is defensive: `JSON.parse` failures return `[]`; it accepts either a bare
  * array or an object whose first array-valued property holds the entries (covers the observed
  * `{"sandboxes":[]}` shape without hardcoding the key). For each element it reads `name` from
- * `name`/`Name`/`sandbox` and the status from `status`/`Status`/`state`/`State`; `running` is
- * true only when the lowercased status starts with `running`. Entries without a non-empty
- * string name are dropped.
+ * `name`/`Name`/`sandbox` and the raw status from `status`/`Status`/`state`/`State` (kept on the
+ * entry so callers can tell a suspended sandbox from a dead one); `running` is true only when the
+ * lowercased status starts with `running`. Entries without a non-empty string name are dropped.
  */
 export function parseSbxSandboxList(stdout: string): SbxSandboxEntry[] {
+  return parseSbxSandboxListOrNull(stdout) ?? []
+}
+
+/**
+ * Same parse as `parseSbxSandboxList` but distinguishes "parsed, nothing matched" from "could not
+ * parse at all", which `getSandboxState` needs: a `sbx ls` that exits 0 while emitting truncated or
+ * schema-changed output says nothing about the sandbox, and reporting `missing` there would let a
+ * caller destroy or duplicate a live sandbox. Empty output is a legitimately empty list, not a
+ * parse failure, so a genuinely absent sandbox can still be created.
+ */
+function parseSbxSandboxListOrNull(stdout: string): SbxSandboxEntry[] | null {
+  if (stdout.trim() === '') return []
   let data: unknown
   try {
     data = JSON.parse(stdout)
   } catch {
-    return []
+    return null
   }
-  let entries: unknown[] = []
+  let entries: unknown[] | null = null
   if (Array.isArray(data)) {
     entries = data
   } else if (data && typeof data === 'object') {
@@ -151,6 +164,10 @@ export function parseSbxSandboxList(stdout: string): SbxSandboxEntry[] {
       }
     }
   }
+  // Valid JSON in an unrecognized shape (an error object, a scalar, a future nested schema) is a
+  // failure to read the inventory, not an empty inventory. Reporting it as an empty list would let
+  // callers conclude `missing` and destroy or duplicate a live sandbox.
+  if (!entries) return null
   const out: SbxSandboxEntry[] = []
   for (const raw of entries) {
     if (!raw || typeof raw !== 'object') continue
@@ -165,7 +182,7 @@ export function parseSbxSandboxList(stdout: string): SbxSandboxEntry[] {
       : typeof entry.state === 'string' ? entry.state
       : typeof entry.State === 'string' ? entry.State
       : ''
-    out.push({ name, running: status.toLowerCase().startsWith('running') })
+    out.push({ name, status, running: status.toLowerCase().startsWith('running') })
   }
   return out
 }
@@ -277,6 +294,13 @@ export interface SandboxExecOpts {
   envFile?: string
 }
 
+/**
+ * Lifecycle state of a named sandbox. `stopped` is a normal suspended microVM that `sbx exec`
+ * resumes in place, so it must never be treated as gone. `unknown` means the status query itself
+ * failed and carries no information about the sandbox — callers must not destroy anything on it.
+ */
+export type SandboxState = 'running' | 'stopped' | 'missing' | 'unknown'
+
 /** Runtime facade over the `sbx` CLI — the sandbox analog of the old Docker driver. */
 export interface SandboxRuntime {
   checkAvailable(): Promise<SbxAvailability>
@@ -286,7 +310,7 @@ export interface SandboxRuntime {
   removeSandbox(name: string): Promise<void>
   exec(name: string, command: string, opts?: SandboxExecOpts): Promise<CommandResult>
   execPipe(name: string, command: string, stdin: string, opts?: { timeout?: number; abort?: AbortSignal; envFile?: string }): Promise<CommandResult>
-  isRunning(name: string): Promise<boolean>
+  getSandboxState(name: string): Promise<SandboxState>
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
   allowNetworkHost(host: string): Promise<boolean>
@@ -374,14 +398,19 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
     return run(args, { timeout: opts?.timeout ?? SBX_DEFAULT_TIMEOUT, stdin, abort: opts?.abort })
   }
 
-  async function isRunning(name: string): Promise<boolean> {
+  async function getSandboxState(name: string): Promise<SandboxState> {
+    let result: CommandResult
     try {
-      const result = await run(['ls', '--json'], { timeout: SBX_LIST_TIMEOUT })
-      if (result.exitCode !== 0) return false
-      return parseSbxSandboxList(result.stdout).some((e) => e.name === name && e.running)
+      result = await run(['ls', '--json'], { timeout: SBX_LIST_TIMEOUT })
     } catch {
-      return false
+      return 'unknown'
     }
+    if (result.exitCode !== 0) return 'unknown'
+    const entries = parseSbxSandboxListOrNull(result.stdout)
+    if (!entries) return 'unknown'
+    const entry = entries.find((e) => e.name === name)
+    if (!entry) return 'missing'
+    return entry.running ? 'running' : 'stopped'
   }
 
   async function listSandboxesByPrefix(prefix: string): Promise<string[]> {
@@ -413,7 +442,7 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
     removeSandbox,
     exec,
     execPipe,
-    isRunning,
+    getSandboxState,
     sandboxContainerName,
     listSandboxesByPrefix,
     allowNetworkHost,

@@ -49,12 +49,11 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const theme = () => props.api.theme.current
 
   // Shared plugin log file so remote-launch traces land alongside plugin logs.
-  // clearOnInit:false prevents this TUI-side logger from wiping the plugin's log.
   const logger = untrack(() => createLogger({
     enabled: pluginConfig.logging?.enabled ?? false,
     file: pluginConfig.logging?.file || resolveLogPath(),
     debug: pluginConfig.logging?.debug ?? false,
-  }, { clearOnInit: false }))
+  }))
 
   const openCodeDefaultModel = () => props.api.state.config?.model ?? ''
 

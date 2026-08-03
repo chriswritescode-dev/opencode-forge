@@ -954,6 +954,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
+   * Abort a session's in-flight message so a replacement prompt can be sent on the
+   * SAME session, and mark the abort as internally initiated so the resulting
+   * AbortError event is consumed rather than treated as an audit failure or a user
+   * abort. The marker is added only once the abort succeeds: a rejected abort
+   * (session already idle) emits no AbortError, so leaving a marker would suppress a
+   * later genuine abort of the replacement prompt. After settling, the idle-gate and
+   * in-flight guard are cleared because they must not reject the resend.
+   */
+  async function abortForInternalResend(loopName: string, sessionId: string): Promise<void> {
+    try {
+      await client.session.abort({ sessionID: sessionId })
+      internalFallbackAborts.set(sessionId, (internalFallbackAborts.get(sessionId) ?? 0) + 1)
+    } catch {
+      // Session may already be idle.
+    }
+    await new Promise((r) => setTimeout(r, AUDITOR_FALLBACK_SETTLE_MS))
+
+    clearPromptPending(loopName, logger)
+    clearPromptInFlight(loopName)
+  }
+
+  /**
    * Abort the current audit session (it may be mid-retry when the provider limit
    * arrives via `session.status`), settle, then re-dispatch the audit prompt on the
    * SAME session using the fallback auditor model choice. `createAuditSession`
@@ -961,22 +983,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * next prompt without creating a new session.
    */
   async function resendAuditPromptWithAuditorModel(loopName: string, state: LoopState): Promise<{ error?: unknown }> {
-    // Abort the retrying session, then mark this abort as internally initiated
-    // so the resulting AbortError event is consumed rather than treated as an
-    // audit failure. The marker is added only once the abort succeeds: a rejected
-    // abort (session already idle) emits no AbortError, so leaving a marker would
-    // suppress a later genuine abort of the replacement prompt.
-    try {
-      await client.session.abort({ sessionID: state.sessionId })
-      internalFallbackAborts.set(state.sessionId, (internalFallbackAborts.get(state.sessionId) ?? 0) + 1)
-    } catch {
-      // Session may already be idle.
-    }
-    await new Promise((r) => setTimeout(r, AUDITOR_FALLBACK_SETTLE_MS))
-
-    // The idle-gate / in-flight guard must not reject the resend.
-    clearPromptPending(loopName, logger)
-    clearPromptInFlight(loopName)
+    await abortForInternalResend(loopName, state.sessionId)
 
     const promptText = state.phase === 'final_auditing' ? loopService.buildFinalAuditPrompt(state) : loopService.buildAuditPrompt(state)
     const choice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
@@ -1226,6 +1233,45 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
+   * Recovery for a session wedged in `busy` with no tool activity: abort the stuck
+   * message and continue on the SAME session, preserving its conversation. The abort
+   * goes through `abortForInternalResend` so the AbortError is not misread as an audit
+   * failure or a user abort.
+   */
+  async function nudgeStuckSession(
+    loopName: string,
+    _state: LoopState,
+    context: LoopWatchdogRecoveryContext,
+  ): Promise<void> {
+    await withStateLock(loopName, async () => {
+      const fresh = loopService.getActiveState(loopName)
+      if (!fresh?.active) return
+
+      logger.error(`Loop: nudging wedged session ${fresh.sessionId} for ${loopName} (phase=${fresh.phase}, busy=${context.elapsedMs}ms, stall #${context.stallCount})`)
+
+      try {
+        await abortForInternalResend(loopName, fresh.sessionId)
+
+        const isAuditor = isAuditorPhase(fresh.phase)
+        const choice = isAuditor ? resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger) : undefined
+        await sendPromptWithRetryRecovery({
+          loopName,
+          sessionId: fresh.sessionId,
+          promptText: 'Continue where you left off.',
+          agent: isAuditor ? 'auditor-loop' : 'code',
+          model: choice ? choice.model : resolveLoopModel(getConfig(), loopService, loopName),
+          variant: choice ? choice.variant : fresh.executionVariant,
+          errorContext: 'busy-stall continue nudge',
+          errorState: fresh,
+          activityTag: 'busy-stall-nudge',
+        })
+      } catch (err) {
+        await handlePromptError(loopName, fresh, 'busy-stall continue nudge', err)
+      }
+    })
+  }
+
+  /**
    * Atomically check active state and terminate inside the state lock.
    * Prevents duplicate side-effects when the watchdog and runtime detect the
    * same provider limit concurrently — the second caller sees the loop
@@ -1244,6 +1290,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     client,
     logger,
     recover: recoverWatchdogStall,
+    nudge: nudgeStuckSession,
     terminate: tryTerminateLoop,
     handleAuditorProviderLimit: (loopName: string, limitReason: string) =>
       withStateLock(loopName, () => handleAuditorProviderLimit(loopName, limitReason)),
@@ -2253,6 +2300,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function tick(event: LoopEvent): Promise<void> {
+    // Streamed content proves the provider stream is alive even while no tool runs,
+    // which is the only progress signal a purely-thinking model emits. Fires once per
+    // streaming delta, so this stays the first and cheapest branch.
+    if (event.type === 'message.part.updated') {
+      const part = event.properties?.part as { sessionID?: string } | undefined
+      const sessionId = part?.sessionID ?? (event.properties?.sessionID as string | undefined)
+      if (sessionId) watchdog.recordSessionContent(sessionId)
+      return
+    }
+
     if (event.type === 'worktree.failed') {
       const message = event.properties?.message as string
       const directory = event.properties?.directory as string

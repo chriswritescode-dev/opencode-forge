@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { createLoopWatchdog } from '../src/hooks/watchdog'
 import type { LoopState } from '../src/loop/state'
 import { createFakeForgeClient } from './helpers/fake-client'
@@ -40,11 +40,13 @@ function wait(ms: number): Promise<void> {
 function createMockLoopService(overrides?: {
   getActiveState?: () => LoopState | null
   resolveLoopName?: (sessionId: string) => string | null
+  getBusyStallTimeoutMs?: () => number
 }) {
   return {
     getActiveState: overrides?.getActiveState ?? (() => getState()),
     getStallTimeoutMs: () => 10,
     getMaxConsecutiveStalls: () => 3,
+    getBusyStallTimeoutMs: overrides?.getBusyStallTimeoutMs ?? (() => 900_000),
     resolveLoopName: overrides?.resolveLoopName ?? ((sessionId: string) =>
       sessionId === 'coding-session' || sessionId === 'audit-session' ? 'test-loop' : null),
   }
@@ -73,6 +75,7 @@ describe('createLoopWatchdog', () => {
       },
       client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
       logger,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -110,6 +113,7 @@ describe('createLoopWatchdog', () => {
         'audit-session': { type: 'busy' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -150,6 +154,7 @@ describe('createLoopWatchdog', () => {
         'unrelated-session': { type: 'busy' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -186,6 +191,7 @@ describe('createLoopWatchdog', () => {
         'coding-session': { type: 'retry', message: 'retrying request', attempt: 1, next: 1000 },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -221,6 +227,7 @@ describe('createLoopWatchdog', () => {
         'coding-session': { type: 'retry', attempt: 3, message: 'usage limit reached' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -262,6 +269,7 @@ describe('createLoopWatchdog', () => {
         'coding-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async () => {},
       terminate: async (_ln, state, reason) => {
         terminateCalls.push(reason)
@@ -308,6 +316,7 @@ describe('createLoopWatchdog', () => {
         }
       }),
       logger,
+      nudge: vi.fn(),
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -344,6 +353,7 @@ describe('createLoopWatchdog', () => {
         'coding-session': { type: 'retry', message: 'overloaded, retrying' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -381,6 +391,7 @@ describe('createLoopWatchdog', () => {
       logger,
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -426,6 +437,7 @@ describe('createLoopWatchdog', () => {
       logger,
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -458,6 +470,7 @@ describe('createLoopWatchdog', () => {
       },
       client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
+      nudge: vi.fn(),
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
@@ -493,6 +506,7 @@ describe('createLoopWatchdog', () => {
         'audit-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -533,6 +547,7 @@ describe('createLoopWatchdog', () => {
         'audit-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -573,6 +588,7 @@ describe('createLoopWatchdog', () => {
         'audit-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -609,6 +625,7 @@ describe('createLoopWatchdog', () => {
         'coding-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -653,6 +670,7 @@ describe('createLoopWatchdog', () => {
         'child-session': { type: 'retry', attempt: 1, message: 'usage limit reached' },
       })),
       logger,
+      nudge: vi.fn(),
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
@@ -675,6 +693,356 @@ describe('createLoopWatchdog', () => {
       kind: 'provider_limit',
       message: expect.stringContaining('usage limit'),
     })
+
+    watchdog.stop(loopName)
+  })
+
+  it('nudges a session stuck busy with no activity past busyStallTimeoutMs', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+    const recoverCalls: unknown[] = []
+    const terminateCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 30,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
+      logger,
+      nudge: async (ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+        watchdog.stop(ln)
+      },
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(120)
+
+    expect(nudgeCalls.length).toBe(1)
+    expect(nudgeCalls[0]).toMatchObject({ reason: 'busy_no_progress', status: 'busy', stallCount: 1 })
+    expect((nudgeCalls[0] as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(30)
+    expect(recoverCalls.length).toBe(0)
+    expect(terminateCalls.length).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('does not nudge while busy stays under busyStallTimeoutMs', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+    const recoverCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 10_000,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(120)
+
+    expect(nudgeCalls.length).toBe(0)
+    expect(recoverCalls.length).toBe(0)
+    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('recordActivity during a busy stretch resets the busy ceiling', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+    let recording = true
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 30,
+        }),
+      },
+      client: createMockClient(async () => {
+        if (recording) watchdog.recordActivity('test-loop', 'tool-after:edit')
+        return { 'coding-session': { type: 'busy', message: 'working' } }
+      }),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      recover: async () => {},
+      terminate: async () => {},
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(150)
+
+    // Real tool activity kept resetting the ceiling, so the busy stretch never matured
+    expect(nudgeCalls.length).toBe(0)
+
+    // Once activity stops, the same busy stream does mature into a nudge
+    recording = false
+    await wait(150)
+    expect(nudgeCalls.length).toBeGreaterThanOrEqual(1)
+
+    watchdog.stop(loopName)
+  })
+
+  it('streamed content (thinking) during a busy stretch resets the busy ceiling', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+    let streaming = true
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 30,
+        }),
+      },
+      client: createMockClient(async () => {
+        if (streaming) watchdog.recordSessionContent('coding-session')
+        return { 'coding-session': { type: 'busy', message: 'thinking' } }
+      }),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      recover: async () => {},
+      terminate: async () => {},
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(150)
+
+    // Reasoning deltas emit no tool calls, but they prove the stream is alive
+    expect(nudgeCalls.length).toBe(0)
+
+    // Once the stream goes quiet, the busy stretch matures into a nudge
+    streaming = false
+    await wait(150)
+    expect(nudgeCalls.length).toBeGreaterThanOrEqual(1)
+
+    watchdog.stop(loopName)
+  })
+
+  it('counts streamed content from a child session of the same loop', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+    let streaming = true
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 30,
+        }),
+      },
+      client: createMockClient(async () => {
+        if (streaming) watchdog.recordSessionContent('audit-session')
+        return {
+          'coding-session': { type: 'busy' },
+          'audit-session': { type: 'busy' },
+        }
+      }),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      recover: async () => {},
+      terminate: async () => {},
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(150)
+
+    // A thinking subagent keeps the whole loop alive
+    expect(nudgeCalls.length).toBe(0)
+
+    streaming = false
+    await wait(150)
+    expect(nudgeCalls.length).toBeGreaterThanOrEqual(1)
+
+    watchdog.stop(loopName)
+  })
+
+  it('honors a busyStallTimeoutMs lower than stallTimeoutMs instead of coarsening it', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 20,
+        }),
+        // Deliberately coarser than the busy ceiling: polling must follow the finer of the two
+        getStallTimeoutMs: () => 200,
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'busy' } })),
+      logger,
+      nudge: async (ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+        watchdog.stop(ln)
+      },
+      recover: async () => {},
+      terminate: async () => {},
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+
+    // Well under two stall timeouts: with stall-timeout-only polling this would still be 0
+    await wait(320)
+
+    expect(nudgeCalls.length).toBe(1)
+
+    watchdog.stop(loopName)
+  })
+
+  it('ignores streamed content from a session outside the loop', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 30,
+        }),
+      },
+      client: createMockClient(async () => {
+        watchdog.recordSessionContent('unrelated-session')
+        return { 'coding-session': { type: 'busy' } }
+      }),
+      logger,
+      nudge: async (ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+        watchdog.stop(ln)
+      },
+      recover: async () => {},
+      terminate: async () => {},
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(120)
+
+    expect(nudgeCalls.length).toBe(1)
+
+    watchdog.stop(loopName)
+  })
+
+  it('disables nudging when busyStallTimeoutMs is 0', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+    const recoverCalls: unknown[] = []
+    const terminateCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 0,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(150)
+
+    expect(nudgeCalls.length).toBe(0)
+    expect(recoverCalls.length).toBe(0)
+    expect(terminateCalls.length).toBe(0)
+    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('escalates repeated busy_no_progress stalls to termination', async () => {
+    const stateRef = { current: createState() }
+    const nudgeCalls: unknown[] = []
+    const recoverCalls: unknown[] = []
+    const terminateCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getBusyStallTimeoutMs: () => 10,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
+      logger,
+      nudge: async (_ln, _s, ctx) => {
+        nudgeCalls.push(ctx)
+      },
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(200)
+
+    // maxConsecutiveStalls is 3: two nudges, then the third stall terminates
+    expect(nudgeCalls.length).toBe(2)
+    expect((nudgeCalls[0] as { stallCount: number }).stallCount).toBe(1)
+    expect((nudgeCalls[1] as { stallCount: number }).stallCount).toBe(2)
+    expect(recoverCalls.length).toBe(0)
+    expect(terminateCalls).toEqual([{ kind: 'stall_timeout' }])
 
     watchdog.stop(loopName)
   })

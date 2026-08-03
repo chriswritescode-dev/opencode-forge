@@ -15,7 +15,7 @@ describe('SandboxManager caching', () => {
     mockRuntime = createMockSandboxRuntime()
     mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => available)
     mockRuntime.templateExists = vi.fn(async () => true)
-    mockRuntime.isRunning = vi.fn(async () => false)
+    mockRuntime.getSandboxState = vi.fn(async () => 'missing' as const)
     mockLogger = createMockLogger()
   })
 
@@ -24,7 +24,7 @@ describe('SandboxManager caching', () => {
   })
 
   it('should cache checkAvailable and latch templateExists across two start() calls', async () => {
-    mockRuntime.isRunning = vi.fn()
+    mockRuntime.getSandboxState = vi.fn()
       .mockImplementationOnce(async () => false)
       .mockImplementationOnce(async () => true)
 
@@ -57,7 +57,7 @@ describe('SandboxManager caching', () => {
   })
 
   it('should not call checkAvailable or templateExists when restore delegates to start and cache is warm', async () => {
-    mockRuntime.isRunning = vi.fn(async () => false)
+    mockRuntime.getSandboxState = vi.fn(async () => 'missing' as const)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)
@@ -66,7 +66,7 @@ describe('SandboxManager caching', () => {
     expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
     expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
 
-    mockRuntime.isRunning = vi.fn(async () => false)
+    mockRuntime.getSandboxState = vi.fn(async () => 'missing' as const)
     await manager.restore('other-wt', '/tmp/project', new Date().toISOString())
 
     expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
