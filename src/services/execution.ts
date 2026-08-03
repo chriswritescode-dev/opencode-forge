@@ -1757,8 +1757,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
-    const permissionRuleset = buildLoopPermissionRuleset(permissionOptions)
     // Pre-lock snapshot used as the rollback target only when the loop is
     // already stopped (no active under-lock state to re-fetch). For active
     // loops we refresh this from the authoritative under-lock state below,
@@ -1853,6 +1851,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return { ok: false, error: 'Loop implementation already completed; post-action is disabled — nothing to restart.' }
       }
 
+      const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
+      const permissionRuleset = buildLoopPermissionRuleset(permissionOptions)
+
       stoppedState.iteration = 1
 
       // Create new session for restart
@@ -1861,11 +1862,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.worktree) {
         const { createBuiltinWorktreeWorkspace, getForgeWorkspaceEntry } = await import('../workspace/forge-worktree')
-        const previousEntry = stoppedState.workspaceId ? await getForgeWorkspaceEntry(deps.client, stoppedState.workspaceId) : undefined
+        const previousEntry = stoppedState.workspaceId
+          ? await getForgeWorkspaceEntry(deps.client, stoppedState.workspaceId).catch(() => undefined)
+          : undefined
+        const preservedExtra = Object.fromEntries(
+          Object.entries(previousEntry?.extra ?? {}).filter(([key]) => !['startRef', 'syncRef', 'gitRemote'].includes(key)),
+        )
         const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
-          extra: previousEntry?.extra ?? undefined,
+          extra: preservedExtra,
         }, deps.logger, deps.workspaceStatusRegistry)
         if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
         const ws = wsResult.workspace

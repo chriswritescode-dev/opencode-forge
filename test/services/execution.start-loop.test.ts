@@ -447,6 +447,8 @@ describe('handleStartLoop builtin worktree workspace', () => {
         permission: buildLoopPermissionRuleset(resolveLoopPermissionOptions(configuredConfig as any)),
       }),
     )
+    const createArgs = (client.session.create as any).mock.calls[0][0]
+    expect(createArgs.permission).toContainEqual({ permission: 'webfetch', pattern: '*', action: 'deny' })
   })
 
   test('fails and rolls back when sandbox manager present but start throws', async () => {

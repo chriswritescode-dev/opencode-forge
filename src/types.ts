@@ -98,8 +98,9 @@ export interface LoopConfig {
   /**
    * Extra `deny` rules layered over Forge's structural denies for loop, audit, and post-action
    * sessions. Entries are applied before Forge's structural denies, so a user rule for a permission
-   * that Forge manages or that the loop requires is rejected. Use `external_directory` allow entries
-   * via `allowExternalDirectories` instead, which Forge manages for every session.
+   * that Forge manages is rejected, as is a blanket (`*`) deny of a permission the loop requires;
+   * scoped denies remain honored. Use `allowExternalDirectories` for `external_directory` grants,
+   * which Forge manages for every session.
    */
   permissions?: LoopPermissionsConfig
 }

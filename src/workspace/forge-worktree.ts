@@ -11,7 +11,7 @@
 
 import type { ForgeClient } from '../client/port'
 import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
-import type { PermissionRule } from '../constants/loop'
+import { FORGE_MANAGED_PERMISSIONS, FORGE_REQUIRED_PERMISSIONS, type PermissionRule } from '../constants/loop'
 import {
   classifyWorkspaceCreateThrow,
   workspaceCreateMissingId,
@@ -69,24 +69,23 @@ export function getForgeWorkspacePermissionRules(entry: Pick<ForgeWorkspaceEntry
       typeof r === 'object' && r !== null &&
       typeof (r as PermissionRule).permission === 'string' &&
       typeof (r as PermissionRule).pattern === 'string' &&
-      ((r as PermissionRule).action === 'allow' || (r as PermissionRule).action === 'deny'),
+      (r as PermissionRule).permission.length > 0 &&
+      (r as PermissionRule).pattern.length > 0 &&
+      (r as PermissionRule).action === 'deny' &&
+      !FORGE_MANAGED_PERMISSIONS.has((r as PermissionRule).permission) &&
+      !((r as PermissionRule).pattern === '*' && FORGE_REQUIRED_PERMISSIONS.has((r as PermissionRule).permission)),
   )
 }
 
 /**
- * Looks up a single forge workspace by id. Returns `undefined` when the id is
- * absent or the workspace list cannot be read (e.g. server restart race).
+ * Looks up a single forge workspace by id. Returns `undefined` when the id is absent.
  */
 export async function getForgeWorkspaceEntry(
   client: ForgeClient,
   workspaceId: string,
 ): Promise<ForgeWorkspaceEntry | undefined> {
-  try {
-    const entries = (await client.workspace.list() ?? []) as ForgeWorkspaceEntry[]
-    return entries.find((entry) => entry.id === workspaceId)
-  } catch {
-    return undefined
-  }
+  const entries = (await client.workspace.list() ?? []) as ForgeWorkspaceEntry[]
+  return entries.find((entry) => entry.id === workspaceId)
 }
 
 /**

@@ -479,6 +479,7 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
   function makePatcher(overrides: {
     sessions?: Record<string, { parentID?: string; permission?: unknown }>
     resolve?: () => Promise<unknown>
+    getPermissionOptions?: () => Promise<never>
   }) {
     const sessions = overrides.sessions ?? {}
     const mockGet = vi.fn(async ({ sessionID }: { sessionID: string }) => {
@@ -495,8 +496,9 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
       sessionLoopResolver: { resolveActiveLoopForSession: mockResolve } as any,
       directory: '/repo',
       logger,
+      getPermissionOptions: overrides.getPermissionOptions,
     })
-    return { patcher, mockGet, mockUpdate, mockResolve }
+    return { patcher, mockGet, mockUpdate, mockResolve, logger }
   }
 
   test('patches an unpatched subagent session inside an active loop', async () => {
@@ -598,6 +600,28 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
     })
   })
 
+  test('applies the loop-default ruleset when permission option resolution fails', async () => {
+    const { patcher, mockUpdate, logger } = makePatcher({
+      sessions: {
+        'child-session': { parentID: 'other-subagent', permission: [] },
+        'other-subagent': { permission: [] },
+      },
+      getPermissionOptions: async () => { throw new Error('lookup failed') },
+    })
+
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+
+    expect(mockUpdate).toHaveBeenCalledWith({
+      sessionID: 'child-session',
+      directory: '/repo/.worktrees/active-loop',
+      permission: buildLoopPermissionRuleset(),
+    })
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('failed to resolve permission options'),
+      expect.any(Error),
+    )
+  })
+
   test('fallback path applies portable rules from the workspace when parent inheritance is unavailable', async () => {
     const portableRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
     const mockGet = vi.fn(async ({ sessionID }: { sessionID: string }) => {
@@ -628,6 +652,7 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
 
     await patcher.ensurePatched({ sessionID: 'child-session' })
 
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
     const updateArgs = (mockUpdate as any).mock.calls[0][0]
     expect(updateArgs.permission).toContainEqual(portableRule)
   })

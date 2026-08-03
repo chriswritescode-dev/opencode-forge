@@ -5,7 +5,7 @@ import { AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, SHARED_STRUCTURAL_DENY_PERMISSI
 
 const AUDITOR_TOOL_EXCLUDES = [
   ...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS,
-  ...SHARED_STRUCTURAL_DENY_PERMISSIONS.filter((name) => name !== 'question'),
+  ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
 ]
 
 function buildBasePrompt(promptsDir?: string): string {
@@ -48,4 +48,3 @@ export function buildAuditorLoopAgent(promptsDir?: string): AgentDefinition {
     systemPrompt: buildLoopPrompt(promptsDir),
   }
 }
-

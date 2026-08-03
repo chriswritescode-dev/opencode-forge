@@ -21,15 +21,14 @@ async function readWorkspacePortableRules(
   }
   const cached = perClient.get(workspaceId)
   if (cached) return cached
-  let rules: PermissionRule[]
   try {
     const entry = await getForgeWorkspaceEntry(client, workspaceId)
-    rules = entry ? getForgeWorkspacePermissionRules(entry) : []
+    const rules = entry ? getForgeWorkspacePermissionRules(entry) : []
+    perClient.set(workspaceId, rules)
+    return rules
   } catch {
-    rules = []
+    return []
   }
-  perClient.set(workspaceId, rules)
-  return rules
 }
 
 /**

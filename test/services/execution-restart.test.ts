@@ -619,16 +619,14 @@ describe('handleLoopRestart from stall_timeout', () => {
     const sessionCreateArgs = (client.session.create as any).mock.calls[0][0]
     expect(sessionCreateArgs.permission).toContainEqual(portableRule)
 
-    // The new workspace forwards the previous workspace's preserved extra fields
-    // (permissionRules plus git sync refs), so the restarted loop keeps them.
     expect(client.workspace.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        extra: expect.objectContaining({
+        extra: {
           permissionRules: [portableRule],
-          startRef: 'abc123',
-          syncRef: 'refs/forge/portable-loop',
-          gitRemote: 'origin',
-        }),
+          loopName: 'portable-loop',
+          projectDirectory: '/tmp',
+          workspaceCreatedAt: expect.any(Number),
+        },
       }),
     )
   })

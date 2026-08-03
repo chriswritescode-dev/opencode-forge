@@ -357,9 +357,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(state))
-
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
+    const permissionRuleset = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(state))
 
     const createResult = await createLoopSessionWithWorkspace({
       client: client,

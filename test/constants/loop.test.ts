@@ -189,7 +189,9 @@ describe('configured extraRules', () => {
         .map((r, i) => (r.permission === 'external_directory' && r.action === 'allow' ? i : -1))
         .filter(i => i !== -1)
         .pop() ?? -1
-      const firstStructuralDenyIdx = rules.findIndex(r => r.permission === 'review-write' || r.permission === 'edit')
+      const firstStructuralDenyIdx = rules.findIndex(
+        r => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission) && r.permission !== 'external_directory',
+      )
       expect(configuredIdx).toBeGreaterThan(lastExternalAllowIdx)
       expect(configuredIdx).toBeLessThan(firstStructuralDenyIdx)
     }

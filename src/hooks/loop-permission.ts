@@ -92,7 +92,14 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
     } catch (err) {
       logger.error(`[loop-permission] failed to fetch parent ${parentID} for inheritance`, err)
     }
-    if (!ruleset) ruleset = buildLoopPermissionRuleset((await getPermissionOptions?.(workspaceId)) ?? {})
+    if (!ruleset) {
+      try {
+        ruleset = buildLoopPermissionRuleset((await getPermissionOptions?.(workspaceId)) ?? {})
+      } catch (err) {
+        logger.error(`[loop-permission] failed to resolve permission options for ${sessionID}`, err)
+        ruleset = buildLoopPermissionRuleset()
+      }
+    }
 
     logger.log(
       `[loop-permission] patching loop=${loopName} session=${sessionID} parent=${parentID} ruleset=${rulesetSource}`,
