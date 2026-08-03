@@ -8,6 +8,17 @@ import type { ActiveSandbox } from './manager'
 
 export const DEFAULT_POLL_INTERVAL_MS = 500
 
+/**
+ * Cap on a single session-directory lookup during ownership resolution.
+ *
+ * The lookup is an HTTP call to the OpenCode server, and the startup reconcile that performs it is
+ * awaited before the plugin returns its hooks. A persisted desired ON names a session from the
+ * previous run, so after a restart the lookup targets a session the freshly-booting server may not
+ * answer for; without a bound, plugin initialization blocks forever and the TUI never renders.
+ * Exceeding this resolves to `uncertain`, which already fails closed.
+ */
+export const OWNERSHIP_LOOKUP_TIMEOUT_MS = 5_000
+
 /** Error recorded on the applied row when a host sandbox is refused for an active loop session. */
 export const LOOP_SESSION_REFUSED_ERROR = 'host sandbox cannot be enabled for an active loop session'
 
@@ -111,6 +122,25 @@ export function deriveManagerKey(projectId: string): string {
 
 function freshRevision(): string {
   return randomUUID()
+}
+
+/**
+ * Rejects when `run` has not settled within {@link OWNERSHIP_LOOKUP_TIMEOUT_MS}. The underlying
+ * request is not cancellable, so this only stops waiting on it; the timer is always cleared so a
+ * pending timeout cannot keep the process alive.
+ */
+async function withOwnershipLookupTimeout<T>(run: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('session directory lookup timed out')), OWNERSHIP_LOOKUP_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 /**
@@ -227,9 +257,12 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
    */
   async function resolveOwnership(sessionId: string | null): Promise<'local' | 'foreign' | 'uncertain'> {
     if (sessionId == null || !deps.getSessionDirectory) return 'local'
+    const lookup = deps.getSessionDirectory
     let dir: string | null
     try {
-      dir = await deps.getSessionDirectory(sessionId)
+      // Bounded: this runs inside the startup reconcile that plugin initialization awaits, so a
+      // lookup that never settles would hang the whole plugin rather than just this decision.
+      dir = await withOwnershipLookupTimeout(() => lookup(sessionId))
     } catch {
       return 'uncertain'
     }

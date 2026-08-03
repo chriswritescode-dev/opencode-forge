@@ -58,7 +58,9 @@ function SandboxStatusText(props: { api: TuiPluginApi; applied: () => SessionSan
     const applied = props.applied()
     return !!applied && applied.enabled === true && applied.error == null && applied.sessionId === props.sessionId
   })
-  return <text fg={theme().textMuted}>· SBX = {on() ? 'on' : 'off'}</text>
+  // Secondary while the sandbox is actually acknowledged ON, so an active sandbox stands out
+  // against the muted status line instead of reading as ordinary chrome.
+  return <text fg={on() ? theme().secondary : theme().textMuted}>· SBX {on() ? 'enabled' : 'disabled'}</text>
 }
 
 function ForgeSidebarStatus(props: {

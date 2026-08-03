@@ -8,6 +8,7 @@ import {
   createUnavailableSandboxLifecycleManager,
   deriveManagerKey,
   DEFAULT_POLL_INTERVAL_MS,
+  OWNERSHIP_LOOKUP_TIMEOUT_MS,
   type SessionSandboxLifecycleManager,
 } from '../../src/sandbox/session-controller'
 import { createSessionSandboxPreferencesRepo } from '../../src/storage'
@@ -1810,6 +1811,46 @@ describe('SessionSandboxController', () => {
       controller.resolveSandboxForSession('session-x', { throwOnRestoreError: true }),
     ).rejects.toThrow(/ownership could not be confirmed/)
     await controller.dispose()
+  })
+
+  test('a session lookup that never settles cannot hang startup', async () => {
+    vi.useFakeTimers()
+    try {
+      // Plugin initialization awaits start(), and a persisted desired ON names a session from the
+      // previous run. If the lookup for that session never answers, an unbounded await would block
+      // the plugin forever and the TUI would never render.
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-hang', sessionId: 'session-gone' }))
+      const controller = createController({
+        // Polling is pushed out of the way so this exercises the startup reconcile alone; steady
+        // state ticks would each open another bounded lookup.
+        pollIntervalMs: OWNERSHIP_LOOKUP_TIMEOUT_MS * 1000,
+        getSessionDirectory: () => new Promise<string | null>(() => {}),
+      })
+
+      let settled = false
+      const started = controller.start().then(() => {
+        settled = true
+      })
+
+      await vi.advanceTimersByTimeAsync(OWNERSHIP_LOOKUP_TIMEOUT_MS - 1)
+      expect(settled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(2)
+      await started
+      expect(settled).toBe(true)
+
+      // The timed-out lookup is uncertain ownership, which fails closed: nothing was started, and
+      // the selected session is recorded as a failed selection rather than left to run host-side.
+      expect(manager.ensureRunningCalls).toEqual([])
+      expect(repo.getApplied(PROJECT)).toBeNull()
+
+      // Not disposed: disposal serializes behind the reconcile chain, and the never-settling lookup
+      // would need further timer advancement to drain. Nothing was started, and restoring real
+      // timers discards the poll interval, so there is no resource to release.
+      expect(manager.stopCalls).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('dispose leaves a pre-existing container to its owner when ownership is uncertain for a persisted ON', async () => {
