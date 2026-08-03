@@ -395,7 +395,8 @@ const tui: TuiPlugin = async (api) => {
     return (
       JSON.stringify(a.desired) === JSON.stringify(b.desired) &&
       JSON.stringify(a.applied) === JSON.stringify(b.applied) &&
-      JSON.stringify(a.controller) === JSON.stringify(b.controller)
+      JSON.stringify(a.controller) === JSON.stringify(b.controller) &&
+      JSON.stringify(a.activeLoopSandboxes) === JSON.stringify(b.activeLoopSandboxes)
     )
   }
 

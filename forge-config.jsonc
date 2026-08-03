@@ -48,6 +48,7 @@
     "cleanupWorktree": false,
     "stallTimeoutMs": 60000,
     "maxConsecutiveStalls": 5,  // 0 = disabled; default 5
+    "busyStallTimeoutMs": 900000,  // busy with no tool activity or streamed content → abort + continue; 0 = disabled
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
       "enabled": false,

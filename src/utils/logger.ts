@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'fs'
 import { dirname } from 'path'
 import type { LoggingConfig } from '../types'
 import { slugifyText } from './format'
@@ -17,26 +17,31 @@ function ensureLogDir(filePath: string): void {
   }
 }
 
+function rotateLogFile(filePath: string): void {
+  const backupPath = filePath + '.old'
+  // No truncating write after the rename: `appendFileSync` recreates the file on the next write.
+  // Recreating it here would erase whatever another process appended in the gap, and many
+  // processes share this file. A losing concurrent rename throws ENOENT and is swallowed by the
+  // caller, which is the intended outcome — the file it wanted to rotate is already rotated.
+  renameSync(filePath, backupPath)
+}
+
 function checkFileSize(filePath: string): void {
   try {
     const stats = statSync(filePath)
     if (stats.size > MAX_LOG_FILE_SIZE) {
-      const backupPath = filePath + '.old'
-      renameSync(filePath, backupPath)
-      writeFileSync(filePath, '', 'utf-8')
+      rotateLogFile(filePath)
     }
   } catch {
     // File doesn't exist yet, ignore
   }
 }
 
-export function createLogger(config: LoggingConfig, options?: { clearOnInit?: boolean }) {
+export function createLogger(config: LoggingConfig) {
   const isEnabled = config.enabled
   const isDebug = config.debug ?? false
-  const clearOnInit = options?.clearOnInit ?? true
-  // Distinguishes concurrent logger instances inside a single process. Without it, two plugin
-  // instances in the same pid are indistinguishable from one instance repeating work, and
-  // clearOnInit erases the earlier instance's init line so the duplication is invisible.
+  // Distinguishes concurrent logger instances inside a single process, and together with the pid
+  // it separates the interleaved output of the many processes that share one log file.
   const instanceId = Math.random().toString(36).slice(2, 8)
 
   if (!isEnabled) {
@@ -50,12 +55,11 @@ export function createLogger(config: LoggingConfig, options?: { clearOnInit?: bo
   const filePath = config.file
   ensureLogDir(filePath)
 
-  // Clear log file on new loads. A secondary logger (e.g. the TUI process
-  // sharing the plugin's log file) must pass clearOnInit:false so it appends
-  // rather than wiping entries written by the primary plugin logger.
-  if (clearOnInit && existsSync(filePath)) {
-    writeFileSync(filePath, '', 'utf-8')
-  }
+  // Deliberately nothing happens to the existing log here. Many processes load this plugin and
+  // share one log file, so any per-init truncate or rotate destroys the window a restart was
+  // meant to preserve: truncating erases it outright, and rotating clobbers `.old` once per
+  // process start, leaving only the sliver written between the last two inits. Appending is the
+  // only behavior that survives concurrent starts; `checkFileSize` still bounds growth.
 
   function formatArg(arg: unknown): string {
     if (arg === null) return 'null'

@@ -27,7 +27,7 @@ export interface SandboxContextManager {
 export async function resolveSandboxContextForLoop(
   sandboxManager: SandboxContextManager | null | undefined,
   state: SandboxLoopContextState | null | undefined,
-  logger?: Pick<Console, 'log'>,
+  logger?: Pick<Console, 'log' | 'error'>,
   opts?: { throwOnRestoreError?: boolean },
 ): Promise<SandboxContext | null> {
   if (!state?.active || !state.sandbox || !sandboxManager) return null
@@ -36,7 +36,7 @@ export async function resolveSandboxContextForLoop(
     try {
       await sandboxManager.ensureRunning(state.loopName, state.worktreeDir)
     } catch (err) {
-      logger?.log(`[sandbox] ensureRunning failed for loop=${state.loopName}: ${err instanceof Error ? err.message : String(err)}`)
+      logger?.error(`[sandbox] ensureRunning failed for loop=${state.loopName}: ${err instanceof Error ? err.message : String(err)}`)
       if (opts?.throwOnRestoreError) throw err
       return null
     }

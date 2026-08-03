@@ -71,6 +71,8 @@ export interface LoopConfig {
   postAction?: PostActionConfig
   /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
   maxConsecutiveStalls?: number
+  /** Time in ms a loop session may stay busy with no tool activity before the watchdog aborts the wedged message and sends a continue prompt. 0 = disabled (default: 900000). */
+  busyStallTimeoutMs?: number
   /**
    * Absolute directory paths that loop, audit, and post-action sessions may read despite
    * worktree isolation (e.g. an Obsidian vault). Each entry is granted via `external_directory`

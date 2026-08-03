@@ -463,6 +463,94 @@ describe('SandboxManager', () => {
       // Stale map entry should have been removed
       expect(manager.isActive('test')).toBe(false)
     })
+
+    test('keeps an idle-suspended (stopped) sandbox live instead of evicting it', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      await manager.start('test', '/path')
+      mockRuntime.setSandboxState('forge-test', 'stopped')
+
+      // sbx suspends idle microVMs; exec resumes them, so stopped is not dead
+      expect(await manager.isLive('test')).toBe(true)
+      expect(manager.isActive('test')).toBe(true)
+    })
+
+    test('keeps the map entry when the state query fails (unknown)', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      await manager.start('test', '/path')
+      mockRuntime.setSandboxState('forge-test', 'unknown')
+
+      // `unknown` is not evidence the sandbox is gone
+      expect(await manager.isLive('test')).toBe(true)
+      expect(manager.isActive('test')).toBe(true)
+    })
+  })
+
+  describe('start adopts pre-existing sandboxes', () => {
+    test('adopts a stopped sandbox instead of creating a duplicate (409 source)', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      mockRuntime.setSandboxState('forge-test', 'stopped')
+
+      const result = await manager.start('test', '/path')
+
+      expect(result.containerName).toBe('forge-test')
+      // Creating over an existing sandbox is what sbx answers with 409 Conflict
+      expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
+      expect(mockRuntime.getRemoveSandboxCalls()).toHaveLength(0)
+      expect(manager.isActive('test')).toBe(true)
+    })
+
+    test('does not create when the state query fails (unknown)', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      mockRuntime.setSandboxState('forge-test', 'unknown')
+
+      await manager.start('test', '/path')
+
+      expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
+      expect(mockRuntime.getRemoveSandboxCalls()).toHaveLength(0)
+    })
+
+    test('creates only when the sandbox is confirmed missing', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      await manager.start('test', '/path')
+
+      expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(1)
+      expect(mockRuntime.getCreateSandboxCalls()[0][0]).toBe('forge-test')
+    })
   })
 
   describe('buildSandboxWorkspaces', () => {

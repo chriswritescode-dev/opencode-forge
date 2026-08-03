@@ -3,11 +3,13 @@ import { classifyProviderLimit } from '../loop/provider-limit'
 import { isAuditorPhase } from '../utils/loop-helpers'
 import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
+import { LRUCache } from '../utils/lru-cache'
 
 export type LoopWatchdogStallReason =
   | 'non_busy_status'
   | 'missing_status'
   | 'status_error'
+  | 'busy_no_progress'
 
 export interface LoopWatchdogStallInfo {
   consecutiveStalls: number
@@ -31,6 +33,12 @@ export interface LoopWatchdog {
   stop(loopName: string): void
   clearAll(): void
   recordActivity(loopName: string, source?: string): void
+  /**
+   * Records that streamed content (reasoning, text, tool state) arrived for a session.
+   * Called per streaming delta, so it must stay O(1) and side-effect free: no loop
+   * resolution and no logging. The busy check resolves sessions to loops itself.
+   */
+  recordSessionContent(sessionId: string): void
   getStallInfo(loopName: string): LoopWatchdogStallInfo | null
 }
 
@@ -53,10 +61,16 @@ function formatError(err: unknown): string {
 }
 
 export function createLoopWatchdog(input: {
-  loopService: Pick<LoopService, 'getActiveState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'resolveLoopName'>
+  loopService: Pick<LoopService, 'getActiveState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'getBusyStallTimeoutMs' | 'resolveLoopName'>
   client: ForgeClient
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
+  /**
+   * Recovery for a session wedged in `busy`: abort the stuck message and send a
+   * continue prompt on the SAME session. Unlike `recover`, which re-dispatches
+   * the whole phase, the session and its conversation are kept intact.
+   */
+  nudge(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
   terminate(loopName: string, state: LoopState, reason: TerminationReason): Promise<void>
   /** Routes an auditor provider limit into the fallback chain. Returns true when absorbed (do not terminate), false when the caller must terminate. */
   handleAuditorProviderLimit?: (loopName: string, limitReason: string) => Promise<boolean>
@@ -69,6 +83,8 @@ export function createLoopWatchdog(input: {
   const lastActivityTime = new Map<string, number>()
   const stallWatchdogs = new Map<string, NodeJS.Timeout>()
   const consecutiveStalls = new Map<string, number>()
+  const busySince = new Map<string, number>()
+  const lastContentBySession = new LRUCache<number>(500)
   const watchdogRunning = new Map<string, boolean>()
   const stallDetails = new Map<string, {
     reason: LoopWatchdogStallReason
@@ -84,6 +100,7 @@ export function createLoopWatchdog(input: {
   function resetActivity(loopName: string, source: string): void {
     lastActivityTime.set(loopName, Date.now())
     consecutiveStalls.set(loopName, 0)
+    busySince.delete(loopName)
     stallDetails.delete(loopName)
     input.logger.debug(`Loop watchdog: activity for ${loopName} from ${source}, resetting timer`)
   }
@@ -148,7 +165,8 @@ export function createLoopWatchdog(input: {
       input.logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, reason=${reason}, status=${status ?? 'missing'}, elapsed=${elapsedMs}ms), re-triggering`)
     }
 
-    await input.recover(loopName, state, {
+    const action = reason === 'busy_no_progress' ? input.nudge : input.recover
+    await action(loopName, state, {
       reason,
       status,
       error: contextWithoutCount.error,
@@ -163,6 +181,19 @@ export function createLoopWatchdog(input: {
     consecutiveStalls.set(loopName, 0)
 
     const stallTimeout = input.loopService.getStallTimeoutMs()
+    // A busy ceiling below the stall timeout would otherwise only ever be evaluated once per
+    // stall timeout, silently coarsening the configured value. Poll at the finer of the two and
+    // keep every stall decision gated on `stallReady` so stall semantics are unchanged.
+    const configuredBusyTimeout = input.loopService.getBusyStallTimeoutMs()
+    const pollIntervalMs = configuredBusyTimeout > 0
+      ? Math.min(stallTimeout, configuredBusyTimeout)
+      : stallTimeout
+    // Only a ceiling finer than the stall timeout needs polling before `stallReady`; requiring a
+    // `busySince` entry first would delay the very first busy observation by a full stall timeout,
+    // making the effective nudge time stallTimeout + busyTimeout. When the ceiling is coarser
+    // (the default 15min vs 60s) the stall-timeout cadence already resolves it, so nothing extra
+    // is polled.
+    const pollBeforeStallReady = configuredBusyTimeout > 0 && configuredBusyTimeout < stallTimeout
 
     const interval = setInterval(async () => {
       if (watchdogRunning.get(loopName)) return
@@ -172,7 +203,8 @@ export function createLoopWatchdog(input: {
         if (!lastActivity) return
 
         const elapsed = Date.now() - lastActivity
-        if (elapsed < stallTimeout) return
+        const stallReady = elapsed >= stallTimeout
+        if (!stallReady && !pollBeforeStallReady) return
 
         const state = input.loopService.getActiveState(loopName)
         if (!state?.active) {
@@ -183,6 +215,7 @@ export function createLoopWatchdog(input: {
         const statusResult = await getStatusWithRetry(state.worktreeDir, statusRetryAttempts, statusRetryBackoffMs)
 
         if (!statusResult.ok) {
+          if (!stallReady) return
           input.logger.error(`Loop watchdog: failed to check session status after retries for ${loopName}, treating as stall`, statusResult.error)
           await handleStall(loopName, state, {
             reason: 'status_error',
@@ -198,6 +231,7 @@ export function createLoopWatchdog(input: {
           : (input.loopService.resolveLoopName(state.sessionId) ?? loopName)
         let anyBusy = false
         let anyRetrying = false
+        let latestContentAt = 0
         for (const [sid, snap] of Object.entries(statusResult.data)) {
           const snapshot = snap as SessionStatusSnapshot
           if (snapshot.type !== 'busy' && snapshot.type !== 'retry') continue
@@ -208,6 +242,8 @@ export function createLoopWatchdog(input: {
 
           if (snapshot.type === 'busy') {
             anyBusy = true
+            const contentAt = lastContentBySession.get(sid)
+            if (contentAt !== undefined && contentAt > latestContentAt) latestContentAt = contentAt
             // Continue scanning: a provider-limit retry in another session takes precedence
           }
 
@@ -235,8 +271,33 @@ export function createLoopWatchdog(input: {
         }
 
         if (anyBusy) {
-          resetActivity(loopName, 'status:busy')
-          input.logger.debug(`Loop watchdog: loop ${loopName} remains busy (main or child session), resetting timer`)
+          // `busy` only means "not finished"; it is never evidence of progress, so it
+          // must not reset the stall counters here. Only real activity may clear
+          // consecutiveStalls/busySince. Bound the busy stretch instead, measured from
+          // the last evidence the stream was alive: either the start of the busy
+          // stretch or the newest streamed content (reasoning included). A model that
+          // only thinks emits no tool calls, so without the content signal a long
+          // reasoning stretch would be indistinguishable from a wedged stream.
+          const busyTimeout = input.loopService.getBusyStallTimeoutMs()
+          const since = busySince.get(loopName)
+          if (since === undefined) {
+            busySince.set(loopName, Date.now())
+          } else {
+            const lastProgressAt = Math.max(since, latestContentAt)
+            const busyElapsed = Date.now() - lastProgressAt
+            if (busyTimeout > 0 && busyElapsed >= busyTimeout) {
+              busySince.set(loopName, Date.now())
+              input.logger.error(`Loop watchdog: loop ${loopName} busy with no activity for ${busyElapsed}ms (ceiling ${busyTimeout}ms), nudging session`)
+              await handleStall(loopName, state, {
+                reason: 'busy_no_progress',
+                status: 'busy',
+                elapsedMs: busyElapsed,
+              })
+              return
+            }
+          }
+          lastActivityTime.set(loopName, Date.now())
+          input.logger.debug(`Loop watchdog: loop ${loopName} remains busy (main or child session), awaiting activity`)
           return
         }
 
@@ -245,6 +306,8 @@ export function createLoopWatchdog(input: {
           input.logger.debug(`Loop watchdog: provider retry in progress for ${loopName}, resetting timer`)
           return
         }
+
+        if (!stallReady) return
 
         const status = statusResult.data[state.sessionId]?.type
 
@@ -256,10 +319,10 @@ export function createLoopWatchdog(input: {
       } finally {
         watchdogRunning.set(loopName, false)
       }
-    }, stallTimeout)
+    }, pollIntervalMs)
 
     stallWatchdogs.set(loopName, interval)
-    input.logger.log(`Loop watchdog: started for loop ${loopName} (timeout: ${stallTimeout}ms)`)
+    input.logger.log(`Loop watchdog: started for loop ${loopName} (timeout: ${stallTimeout}ms, poll: ${pollIntervalMs}ms)`)
   }
 
   function stop(loopName: string): void {
@@ -270,6 +333,7 @@ export function createLoopWatchdog(input: {
     }
     lastActivityTime.delete(loopName)
     consecutiveStalls.delete(loopName)
+    busySince.delete(loopName)
     watchdogRunning.delete(loopName)
     stallDetails.delete(loopName)
   }
@@ -281,6 +345,8 @@ export function createLoopWatchdog(input: {
     stallWatchdogs.clear()
     lastActivityTime.clear()
     consecutiveStalls.clear()
+    busySince.clear()
+    lastContentBySession.clear()
     watchdogRunning.clear()
     stallDetails.clear()
   }
@@ -290,6 +356,10 @@ export function createLoopWatchdog(input: {
     const state = input.loopService.getActiveState(loopName)
     if (!state?.active) return
     resetActivity(loopName, source)
+  }
+
+  function recordSessionContent(sessionId: string): void {
+    lastContentBySession.set(sessionId, Date.now())
   }
 
   function getStallInfo(loopName: string): LoopWatchdogStallInfo | null {
@@ -311,6 +381,7 @@ export function createLoopWatchdog(input: {
     stop,
     clearAll,
     recordActivity,
+    recordSessionContent,
     getStallInfo,
   }
 }

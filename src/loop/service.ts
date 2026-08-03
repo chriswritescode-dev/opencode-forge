@@ -28,6 +28,7 @@ import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5
+const BUSY_STALL_TIMEOUT_MS = 900_000
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
@@ -60,6 +61,7 @@ export interface LoopService {
   findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
+  getBusyStallTimeoutMs(): number
   terminateAll(): Promise<void>
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
@@ -336,6 +338,10 @@ export function createLoopService(
 
   function getMaxConsecutiveStalls(): number {
     return loopConfig?.maxConsecutiveStalls ?? MAX_CONSECUTIVE_STALLS
+  }
+
+  function getBusyStallTimeoutMs(): number {
+    return loopConfig?.busyStallTimeoutMs ?? BUSY_STALL_TIMEOUT_MS
   }
 
   async function terminateAll(): Promise<void> {
@@ -855,6 +861,7 @@ export function createLoopService(
     findMatchByName,
     getStallTimeoutMs,
     getMaxConsecutiveStalls,
+    getBusyStallTimeoutMs,
     terminateAll,
     hasOutstandingFindings,
     getOutstandingFindings,
