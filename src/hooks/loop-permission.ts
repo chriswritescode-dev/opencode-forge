@@ -130,7 +130,13 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
       const parentID = info?.parentID
       if (!sessionID || !parentID) return
 
-      const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+      let resolved: ResolvedLoop | null
+      try {
+        resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+      } catch (err) {
+        logger.error(`[loop-permission] ancestry lookup failed for ${sessionID}, skipping patch`, err)
+        return
+      }
       if (!resolved?.active) return
 
       if (PATCHED_SESSIONS.has(sessionID)) {
@@ -153,9 +159,17 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
       const { sessionID } = input
       if (!sessionID || PATCHED_SESSIONS.has(sessionID)) return
 
-      const resolved = input.resolved !== undefined
-        ? input.resolved
-        : await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+      let resolved: ResolvedLoop | null
+      if (input.resolved !== undefined) {
+        resolved = input.resolved
+      } else {
+        try {
+          resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+        } catch (err) {
+          logger.error(`[loop-permission] ancestry lookup failed for ${sessionID}, skipping fallback patch`, err)
+          return
+        }
+      }
       if (!resolved?.active) return
 
       const targetDirectory = resolved.worktreeDir ?? directory

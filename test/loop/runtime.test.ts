@@ -2935,6 +2935,35 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(abortCalls.length).toBe(0)
     })
 
+    test('transient ancestry lookup rejection does not reject retry status handling and leaves loop running', async () => {
+      const fake = createFakeForgeClient()
+      const { loop, calls, logs } = createRuntime({
+        client: fake.client,
+        getParentSessionId: async () => { throw new Error('transient ancestry failure') },
+      })
+      const codingSessionId = 'coding-session-id'
+      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      await expect(
+        loop.tick({
+          type: 'session.status',
+          properties: {
+            sessionID: 'child-session-id',
+            status: { type: 'retry', attempt: 1, message: 'You have reached your usage limit', next: 60000 },
+          },
+        }),
+      ).resolves.toBeUndefined()
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(0)
+      expect(logs.some(l => l.level === 'error' && l.message.includes('ancestry lookup failed'))).toBe(true)
+    })
+
     test('persisted assistant error with usage-limit text terminates as provider_limit', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -4239,6 +4268,34 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       const abortCalls = calls.filter(c => c.method === 'session.abort')
       expect(abortCalls.length).toBe(0)
+    })
+
+    test('transient ancestry lookup rejection does not reject session.error handling and leaves loop running', async () => {
+      const fake = createFakeForgeClient()
+      const { loop, calls, logs } = createRuntime({
+        client: fake.client,
+        getParentSessionId: async () => { throw new Error('transient ancestry failure') },
+      })
+      const state = makeState({ sessionId: 'coding-session-id', phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      await expect(
+        loop.tick({
+          type: 'session.error',
+          properties: {
+            sessionID: 'child-session-id',
+            error: { name: 'ProviderAuthError', data: { message: 'You have reached your usage limit' } },
+          },
+        }),
+      ).resolves.toBeUndefined()
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(0)
+      expect(logs.some(l => l.level === 'error' && l.message.includes('ancestry lookup failed'))).toBe(true)
     })
   })
 

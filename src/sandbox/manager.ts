@@ -191,11 +191,13 @@ export function createSandboxManager(
     const orderedGitMounts = [...gitMounts].sort((a, b) => a.hostDir.length - b.hostDir.length)
 
     const sourceProjectDir = config.sourceProjectDir
+    const resolvedSourceProjectDir = sourceProjectDir ? resolve(sourceProjectDir) : undefined
     const hasProjectMount = config.mountProjectReadonly !== false
-      && !!sourceProjectDir
-      && resolve(sourceProjectDir) !== absolute
+      && !!resolvedSourceProjectDir
+      && resolvedSourceProjectDir !== absolute
+      && existsSync(resolvedSourceProjectDir)
     const projectMount: SandboxMount | undefined = hasProjectMount
-      ? { hostDir: resolve(sourceProjectDir!), containerDir: resolve(sourceProjectDir!), readOnly: true }
+      ? { hostDir: resolvedSourceProjectDir, containerDir: resolvedSourceProjectDir, readOnly: true }
       : undefined
 
     const toolOutputMount = resolveToolOutputMount(absolute)
@@ -382,16 +384,31 @@ export function createSandboxManager(
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
 
+    // Cleanup (env file, in-memory map entry) always runs; the removal failure is rethrown so
+    // callers that own the container lifecycle (e.g. the session-sandbox controller) can observe
+    // that the container may still be live instead of recording a successful stop.
+    let removalError: unknown = null
     try {
       await runtime.removeSandbox(containerName)
       logger.log(`Sandbox ${containerName} removed`)
     } catch (err) {
+      removalError = err
       const errMsg = err instanceof Error ? err.message : String(err)
       logger.log(`Sandbox ${containerName} removal: ${errMsg}`)
     } finally {
-      if (active?.envFile) rmSync(active.envFile, { force: true })
+      // Cleanup of the in-memory map entry must never be skipped: an env-file deletion failure
+      // must not leave stale manager state that would trigger indefinite fail-closed retries for a
+      // container that was already removed.
+      if (active?.envFile) {
+        try {
+          rmSync(active.envFile, { force: true })
+        } catch (err) {
+          logger.log(`Sandbox: failed to remove env file ${active.envFile}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
       activeSandboxes.delete(worktreeName)
     }
+    if (removalError) throw removalError
   }
 
   function getActive(worktreeName: string): ActiveSandbox | null {

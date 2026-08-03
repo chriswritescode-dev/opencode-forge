@@ -6,7 +6,7 @@ import { executeSandboxGlob, executeSandboxGrep } from '../sandbox/exec-fs'
 import { isInsideAnyMount } from '../sandbox/path'
 
 interface SandboxToolHookDeps {
-  resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
+  resolveSandboxForSession: (sessionID: string, opts?: { throwOnRestoreError?: boolean }) => Promise<SandboxContext | null>
   logger: Logger
 }
 
@@ -20,7 +20,15 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches upstream Hooks type
     output: { args: any },
   ) => {
-    const sandbox = await deps.resolveSandboxForSession(input.sessionID)
+    // This hook only intercepts search tools. Return before any resolution so a fail-closed
+    // resolver error can never block native file or management tools (`read`, `edit`, `write`,
+    // bash, etc.), preserving the shell + search isolation scope.
+    if (input.tool !== 'glob' && input.tool !== 'grep') return
+
+    // Request fail-closed resolution exactly as bash does: when an acknowledged sandbox cannot be
+    // restored (or the selected session's start failed), the resolver throws and the tool call
+    // fails rather than silently searching the host checkout.
+    const sandbox = await deps.resolveSandboxForSession(input.sessionID, { throwOnRestoreError: true })
     if (!sandbox) {
       deps.logger.debug(`[sandbox-hook] no sandbox for session ${input.sessionID} tool=${input.tool}`)
       return
@@ -35,8 +43,10 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
       isAbsolute(requestedPath) &&
       !isInsideAnyMount(requestedPath, mounts)
     ) {
-      deps.logger.debug(`[sandbox-hook] ${input.tool} path '${requestedPath}' is outside the workspace mount; deferring to host execution`)
-      return
+      // Fail closed: an absolute search path outside the sandbox mounts must not silently fall
+      // back to host execution, which would violate the shell + search isolation scope. Throwing
+      // blocks the search rather than running it on the host.
+      throw new Error(`Refusing to run ${input.tool} outside the sandbox workspace mount: ${requestedPath}`)
     }
 
     if (input.tool === 'glob') {

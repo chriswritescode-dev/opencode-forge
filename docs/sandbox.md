@@ -1,6 +1,6 @@
 # Sandbox
 
-Forge can run loop iterations inside an isolated `sbx` sandbox while keeping the loop worktree mounted at its identical host path for fast host/sandbox file sharing.
+Forge can run loop iterations or one selected host session inside an isolated `sbx` sandbox while keeping the active project directory mounted at its identical host path for fast host/sandbox file sharing.
 
 See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](loop-system.md).
 
@@ -23,9 +23,9 @@ The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a
 
 ## How It Works
 
-1. Forge creates an isolated git worktree for the loop.
-2. If sandboxing is enabled and the `sbx` daemon is available, Forge creates one sandbox for that loop.
-3. The worktree and the read-only source project (when `sandbox.mountProjectReadonly` is enabled) are each mounted at their identical host path, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
+1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI.
+2. Forge creates one sandbox per loop, or one project-scoped host-session sandbox shared by plugin instances in the process.
+3. The active directory and the read-only source project (when `sandbox.mountProjectReadonly` is enabled) are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
 4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work.
 
 The read-only project mount is dropped whenever the worktree's git directories live inside the source project (the default forge layout), so `sandbox.mountProjectReadonly` is effectively inert there.
@@ -37,14 +37,14 @@ Sandbox loops use opencode's native `bash` tool — streaming output, truncation
 > Requires opencode >= 1.15.5 (the session-aware `shell.env` plugin hook). Enforced via the `engines.opencode` field in Forge's package.json: older opencode versions refuse to load the plugin instead of silently running sandbox loop commands on the host.
 
 1. Forge points opencode's `shell` config at a generated shim (`<dataDir>/forge-shell`).
-2. On every bash tool call, Forge's `shell.env` hook resolves the session to its loop. Sessions belonging to an active sandbox loop (including Task-tool subagents) get `FORGE_SANDBOX_CONTAINER` injected; the shim then runs the command via `sbx exec -w "$PWD" <sandbox> bash`.
-3. All other sessions get no container env, and the shim execs the host shell unchanged (respecting a user-configured `shell` via `FORGE_HOST_SHELL`).
+2. On every bash tool call, Forge's `shell.env` hook resolves the session. Sessions belonging to an active sandbox loop, or to the acknowledged host-session selection, get `FORGE_SANDBOX_CONTAINER` injected; descendants such as Task-tool subagents inherit the same routing. The shim then runs the command via `sbx exec -w "$PWD" <sandbox> bash`.
+3. Sessions with no expected sandbox get no container env, and the shim execs the host shell unchanged (respecting a user-configured `shell` via `FORGE_HOST_SHELL`). Active loop routing always takes precedence over host-session preference.
 
 The shim fails closed: if the sandbox is expected but `sbx exec` fails (or the loop sandbox cannot be restored), the command errors — it never silently runs on the host.
 
 ## Tool Behavior
 
-| Tool category | Behavior in sandbox loop |
+| Tool category | Behavior in a sandboxed session |
 |---|---|
 | Shell | Native `bash` tool, executed inside the loop sandbox via the shell shim. |
 | Search tools | `glob` and `grep` route through the `sbx exec` execution hooks. |

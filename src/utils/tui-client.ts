@@ -407,26 +407,18 @@ export async function selectTuiSession(api: TuiPluginApi, client: ForgeClient, s
   }
 }
 
-export async function connectForgeProject(
-  api: TuiPluginApi,
-  directory?: string,
-  permissionOptions?: LoopPermissionRulesetOptions,
-  dbPath?: string,
-): Promise<ForgeProjectClient | null> {
-  tuiDebug(`connect start directory=${directory ?? 'none'}`)
-
-  // Single client path: every SDK call in this project client goes through the
-  // typed ForgeClient port wrapping the TUI's v2 client.
+/**
+ * Single shared project ID discovery used by {@link connectForgeProject} and the
+ * sandbox TUI initialization. Prefers OpenCode's directory-scoped
+ * `project.current` (which handles multi-checkout repos where extra checkouts
+ * live in `sandboxes` and an exact `worktree === dir` list match would fail),
+ * falling back to `project.list`.
+ */
+export async function resolveTuiProjectId(api: TuiPluginApi, directory?: string): Promise<string | null> {
   const client = createForgeClient(api.client)
 
-  let projectId: string | null = null
-
+  let projectId: string | null
   try {
-    // Prefer OpenCode's own directory-scoped resolution. project.current handles
-    // multi-checkout repos (same project id, different worktree paths): the
-    // project row keeps only the first-registered checkout in `worktree` while
-    // additional checkouts land in `sandboxes`, so an exact `worktree === dir`
-    // match on the list silently fails for the secondary checkout.
     const current = await client.project.current(directory ? { directory } : undefined)
     projectId = current?.id ?? null
   } catch {
@@ -443,6 +435,47 @@ export async function connectForgeProject(
     } catch {
       projectId = null
     }
+  }
+
+  return projectId
+}
+
+const projectIdFlights = new WeakMap<object, Map<string, Promise<string | null>>>()
+
+export function resolveTuiProjectIdOnce(api: TuiPluginApi, directory?: string): Promise<string | null> {
+  const key = directory ?? ''
+  let flights = projectIdFlights.get(api)
+  if (!flights) {
+    flights = new Map()
+    projectIdFlights.set(api, flights)
+  }
+  const existing = flights.get(key)
+  if (existing) return existing
+  const flight = resolveTuiProjectId(api, directory).finally(() => {
+    flights.delete(key)
+    if (flights.size === 0) projectIdFlights.delete(api)
+  })
+  flights.set(key, flight)
+  return flight
+}
+
+export async function connectForgeProject(
+  api: TuiPluginApi,
+  directory?: string,
+  permissionOptions?: LoopPermissionRulesetOptions,
+  dbPath?: string,
+): Promise<ForgeProjectClient | null> {
+  tuiDebug(`connect start directory=${directory ?? 'none'}`)
+
+  // Single client path: every SDK call in this project client goes through the
+  // typed ForgeClient port wrapping the TUI's v2 client.
+  const client = createForgeClient(api.client)
+
+  let projectId: string | null = null
+  try {
+    projectId = await resolveTuiProjectIdOnce(api, directory)
+  } catch {
+    projectId = null
   }
 
   if (!projectId) {

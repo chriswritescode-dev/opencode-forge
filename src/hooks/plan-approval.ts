@@ -137,9 +137,13 @@ export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBloc
     input: { tool: string; sessionID: string; callID: string },
     _output: { args: unknown }
   ) => {
+    // Only tools that can be blocked during a loop require loop-state resolution. Resolving the
+    // ancestor chain for every tool lets a transient session lookup failure reject host-side
+    // native tools (read/edit/write, etc.) that never consult loop state. Non-blocked tools
+    // return before any resolution.
+    if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
     const state = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
     if (!state?.active) return
-    if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
 
     logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
 
@@ -155,7 +159,12 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
     input: { tool: string; sessionID: string; callID: string; args: unknown },
     output: { title: string; output: string; metadata: unknown }
   ) => {
-    const blockedState = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
+    // Resolve loop state only for tools that can be blocked during a loop, so a transient session
+    // lookup failure never rejects host-side native tools that ignore loop state.
+    let blockedState: { active?: boolean; loopName?: string; phase?: string } | null = null
+    if (input.tool in LOOP_BLOCKED_TOOLS) {
+      blockedState = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
+    }
     if (blockedState?.active && input.tool in LOOP_BLOCKED_TOOLS) {
       logger.log(`Loop: blocked ${input.tool} tool in ${blockedState.phase} phase for session ${input.sessionID}`)
       output.title = 'Tool blocked'

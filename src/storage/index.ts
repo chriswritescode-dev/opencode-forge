@@ -23,3 +23,6 @@ export type { PlanRow } from './repos/plans-repo'
 
 export { createFeatureGroupsRepo } from './repos/feature-groups-repo'
 export type { FeatureGroupRow, GroupFeatureRow } from './repos/feature-groups-repo'
+
+export { createSessionSandboxPreferencesRepo, SESSION_SANDBOX_DESIRED_KEY, SESSION_SANDBOX_APPLIED_KEY, SESSION_SANDBOX_CONTROLLER_KEY } from './repos/session-sandbox-preferences-repo'
+export type { SessionSandboxDesiredState, SessionSandboxAppliedState, SessionSandboxPreferencesRepo } from './repos/session-sandbox-preferences-repo'

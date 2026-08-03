@@ -173,4 +173,23 @@ describe('SandboxManager.ensureRunning', () => {
     // createSandbox should NOT have been called again
     expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(1)
   })
+
+  it('stop rethrows a removal failure but still clears the active map entry', async () => {
+    const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
+
+    mockRuntime.isRunning = vi.fn(async () => false)
+    await manager.ensureRunning('test-wt', '/tmp/project')
+    expect(manager.isActive('test-wt')).toBe(true)
+
+    // Runtime removal fails: the container may still be live, so stop() must surface the failure
+    // (callers that own the lifecycle can record it) while still cleaning up the in-memory entry.
+    mockRuntime.removeSandbox = vi.fn(async () => {
+      throw new Error('container removal failed')
+    })
+
+    await expect(manager.stop('test-wt')).rejects.toThrow(/container removal failed/)
+    // Cleanup is preserved: the stale map entry is gone even though removal failed.
+    expect(manager.isActive('test-wt')).toBe(false)
+  })
 })

@@ -152,6 +152,9 @@ Notes:
 | `tui.showVersion` | `true` | Show the Forge version in the sidebar title. |
 | `tui.keybinds.executePlan` | `"<leader>f"` | Open the execution dialog. Avoid `<leader>e`, which conflicts with opencode's built-in `editor_open`. |
 | `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
+| `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle host sandbox`, which enables or disables the project host-session sandbox for the current session. Empty registers the command without a default binding. Requires `sandbox.enabled`. |
+
+The host-session sandbox applies only to sessions outside active loops. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. `bash`, `glob`, and `grep` route through the sandbox; file tools remain host-side. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
 
 ## Dashboard
 

@@ -2,33 +2,30 @@ import { describe, test, expect, vi } from 'vitest'
 import { createShellEnvHook } from '../../src/hooks/shell-env'
 import { SHIM_ENV_CONTAINER, SHIM_ENV_ENV_FILE, SHIM_ENV_HOST_SHELL } from '../../src/sandbox/shell-shim'
 import type { Logger } from '../../src/types'
+import type { SandboxContext } from '../../src/sandbox/context'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-function makeSandboxManager(
-  active: { containerName: string; projectDir: string; envFile?: string } | null,
-  opts?: { ensureRunningError?: Error },
-) {
+function makeSandboxContext(overrides: Partial<SandboxContext> = {}): SandboxContext {
   return {
-    docker: {} as never,
-    restore: vi.fn(async () => {}),
-    getActive: vi.fn(() => (active ? { ...active, mounts: [] } : null)),
-    ensureRunning: vi.fn(async () => {
-      if (opts?.ensureRunningError) throw opts.ensureRunningError
-      return active?.containerName ?? ''
-    }),
+    runtime: {} as never,
+    containerName: 'forge-loop-a',
+    hostDir: '/wt',
+    mounts: [],
+    ...overrides,
   }
 }
 
 describe('createShellEnvHook', () => {
-  test('injects container and env file for an active sandbox loop session', async () => {
+  test('injects container and env file when a sandbox context is resolved', async () => {
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: vi.fn(async () => ({ loopName: 'loop-a', active: true, sandbox: true, worktreeDir: '/wt' })),
-      sandboxManager: makeSandboxManager({
-        containerName: 'forge-loop-a',
-        projectDir: '/wt',
-        envFile: '/data/forge/sandbox-env/forge-loop-a.env',
-      }),
+      resolveSandboxForSession: vi.fn(async () =>
+        makeSandboxContext({
+          containerName: 'forge-loop-a',
+          hostDir: '/wt',
+          envFile: '/data/forge/sandbox-env/forge-loop-a.env',
+        }),
+      ),
       getUserConfiguredShell: () => undefined,
       logger,
     })
@@ -43,8 +40,7 @@ describe('createShellEnvHook', () => {
 
   test('injects container without an env-file variable when the sandbox has none', async () => {
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: vi.fn(async () => ({ loopName: 'loop-a', active: true, sandbox: true, worktreeDir: '/wt' })),
-      sandboxManager: makeSandboxManager({ containerName: 'forge-loop-a', projectDir: '/wt' }),
+      resolveSandboxForSession: vi.fn(async () => makeSandboxContext({ containerName: 'forge-loop-a', hostDir: '/wt' })),
       getUserConfiguredShell: () => undefined,
       logger,
     })
@@ -56,10 +52,9 @@ describe('createShellEnvHook', () => {
     expect(output.env[SHIM_ENV_ENV_FILE]).toBeUndefined()
   })
 
-  test('injects nothing container-related for a non-loop session', async () => {
+  test('injects nothing container-related when no sandbox is resolved', async () => {
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: vi.fn(async () => null),
-      sandboxManager: makeSandboxManager({ containerName: 'forge-x', projectDir: '/wt' }),
+      resolveSandboxForSession: vi.fn(async () => null),
       getUserConfiguredShell: () => undefined,
       logger,
     })
@@ -72,8 +67,7 @@ describe('createShellEnvHook', () => {
 
   test('restores the user-configured shell for non-sandbox sessions', async () => {
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: vi.fn(async () => null),
-      sandboxManager: null,
+      resolveSandboxForSession: vi.fn(async () => null),
       getUserConfiguredShell: () => '/opt/homebrew/bin/fish',
       logger,
     })
@@ -87,8 +81,7 @@ describe('createShellEnvHook', () => {
 
   test('worktree-only loop sessions fall through to the host shell branch', async () => {
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: vi.fn(async () => ({ loopName: 'loop-b', active: true, sandbox: false })),
-      sandboxManager: makeSandboxManager(null),
+      resolveSandboxForSession: vi.fn(async () => null),
       getUserConfiguredShell: () => undefined,
       logger,
     })
@@ -99,10 +92,11 @@ describe('createShellEnvHook', () => {
     expect(output.env).toEqual({})
   })
 
-  test('fails closed when the sandbox container cannot be resolved for an active sandbox loop', async () => {
+  test('propagates a resolver rejection when the expected sandbox cannot be resolved', async () => {
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: vi.fn(async () => ({ loopName: 'loop-c', active: true, sandbox: true, worktreeDir: '/wt' })),
-      sandboxManager: makeSandboxManager(null),
+      resolveSandboxForSession: vi.fn(async () => {
+        throw new Error('Sandbox container for loop "loop-c" is unavailable; refusing to run the command on the host.')
+      }),
       getUserConfiguredShell: () => '/bin/zsh',
       logger,
     })
@@ -112,10 +106,11 @@ describe('createShellEnvHook', () => {
     expect(output.env).toEqual({})
   })
 
-  test('fails closed when container restore throws', async () => {
+  test('propagates a resolver rejection when container restore throws', async () => {
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: vi.fn(async () => ({ loopName: 'loop-d', active: true, sandbox: true, worktreeDir: '/wt' })),
-      sandboxManager: makeSandboxManager({ containerName: 'forge-loop-d', projectDir: '/wt' }, { ensureRunningError: new Error('docker down') }),
+      resolveSandboxForSession: vi.fn(async () => {
+        throw new Error('docker down')
+      }),
       getUserConfiguredShell: () => undefined,
       logger,
     })
@@ -125,11 +120,24 @@ describe('createShellEnvHook', () => {
     expect(output.env).toEqual({})
   })
 
+  test('requests fail-closed resolution with throwOnRestoreError', async () => {
+    const resolve = vi.fn(async () => null)
+    const hook = createShellEnvHook({
+      resolveSandboxForSession: resolve,
+      getUserConfiguredShell: () => undefined,
+      logger,
+    })
+    const output = { env: {} as Record<string, string> }
+
+    await hook({ cwd: '/wt', sessionID: 'ses_5' }, output)
+
+    expect(resolve).toHaveBeenCalledWith('ses_5', { throwOnRestoreError: true })
+  })
+
   test('no sessionID falls through to host shell handling', async () => {
     const resolve = vi.fn(async () => null)
     const hook = createShellEnvHook({
-      resolveActiveLoopForSession: resolve,
-      sandboxManager: null,
+      resolveSandboxForSession: resolve,
       getUserConfiguredShell: () => '/bin/bash',
       logger,
     })

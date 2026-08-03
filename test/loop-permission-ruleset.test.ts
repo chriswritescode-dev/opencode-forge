@@ -466,6 +466,37 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
 
     expect(mockUpdate).toHaveBeenCalledTimes(1)
   })
+
+  test('transient ancestry lookup rejection does not reject onSessionCreated and skips patching', async () => {
+    const mockGet = vi.fn(async () => ({}))
+    const mockUpdate = vi.fn(async () => {})
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+
+    const hook = createLoopPermissionPatcher({
+      client: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: vi.fn(async () => { throw new Error('transient ancestry failure') }),
+      } as any,
+      directory: '/repo',
+      logger,
+    })
+
+    await expect(
+      hook.onSessionCreated({
+        event: {
+          type: 'session.created',
+          properties: { info: { id: 'child-session', parentID: 'parent-session' } },
+        },
+      }),
+    ).resolves.toBeUndefined()
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('ancestry lookup failed'),
+      expect.any(Error),
+    )
+    expect(mockGet).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
 })
 
 describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
@@ -655,5 +686,29 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
     expect(mockUpdate).toHaveBeenCalledTimes(1)
     const updateArgs = (mockUpdate as any).mock.calls[0][0]
     expect(updateArgs.permission).toContainEqual(portableRule)
+  })
+
+  test('transient ancestry lookup rejection does not reject ensurePatched and skips patching', async () => {
+    const mockGet = vi.fn(async () => ({}))
+    const mockUpdate = vi.fn(async () => {})
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+
+    const patcher = createLoopPermissionPatcher({
+      client: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: vi.fn(async () => { throw new Error('transient ancestry failure') }),
+      } as any,
+      directory: '/repo',
+      logger,
+    })
+
+    await expect(patcher.ensurePatched({ sessionID: 'child-session' })).resolves.toBeUndefined()
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('ancestry lookup failed'),
+      expect.any(Error),
+    )
+    expect(mockGet).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
   })
 })

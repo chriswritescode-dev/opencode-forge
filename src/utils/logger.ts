@@ -34,6 +34,10 @@ export function createLogger(config: LoggingConfig, options?: { clearOnInit?: bo
   const isEnabled = config.enabled
   const isDebug = config.debug ?? false
   const clearOnInit = options?.clearOnInit ?? true
+  // Distinguishes concurrent logger instances inside a single process. Without it, two plugin
+  // instances in the same pid are indistinguishable from one instance repeating work, and
+  // clearOnInit erases the earlier instance's init line so the duplication is invisible.
+  const instanceId = Math.random().toString(36).slice(2, 8)
 
   if (!isEnabled) {
     return {
@@ -74,7 +78,10 @@ export function createLogger(config: LoggingConfig, options?: { clearOnInit?: bo
 
     const timestamp = new Date().toISOString()
     const formattedArgs = args.length > 0 ? ' ' + args.map(formatArg).join(' ') : ''
-    const line = `${timestamp} ${level} ${PREFIX} ${message}${formattedArgs}\n`
+    // Every opencode instance on this machine shares one log file, so lines are only attributable
+    // to a process if each one carries its pid. Without it, concurrent work by two instances is
+    // indistinguishable from one instance repeating itself.
+    const line = `${timestamp} ${level} ${PREFIX}[${process.pid}:${instanceId}] ${message}${formattedArgs}\n`
 
     try {
       appendFileSync(filePath, line, 'utf-8')

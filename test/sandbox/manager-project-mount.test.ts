@@ -8,7 +8,7 @@ describe('SandboxManager project mount', () => {
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      sourceProjectDir: '/home/user/main-project',
+      sourceProjectDir: '/tmp',
       mountProjectReadonly: true,
     }
 
@@ -18,7 +18,7 @@ describe('SandboxManager project mount', () => {
     const calls = runtime.getCreateSandboxCalls()
     expect(calls.length).toBe(1)
     const workspaces = calls[0][1]
-    expect(workspaces).toContainEqual({ hostDir: '/home/user/main-project', readOnly: true })
+    expect(workspaces).toContainEqual({ hostDir: '/tmp', readOnly: true })
   })
 
   test('does not add project mount when mountProjectReadonly is false', async () => {
@@ -69,12 +69,28 @@ describe('SandboxManager project mount', () => {
     expect(workspaces).toHaveLength(1)
   })
 
+  test('does not pass a stale source project directory to sbx', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const manager = createSandboxManager(runtime, {
+      image: 'oc-forge-sandbox:latest',
+      sourceProjectDir: '/definitely/missing/source-project',
+      mountProjectReadonly: true,
+    }, logger)
+
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()[0][1]).toEqual([
+      { hostDir: '/home/user/worktrees/feature', readOnly: undefined },
+    ])
+  })
+
   test('mounts list on active sandbox includes both worktree and project mounts', async () => {
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      sourceProjectDir: '/main-project',
+      sourceProjectDir: '/tmp',
       mountProjectReadonly: true,
     }
 
@@ -84,7 +100,7 @@ describe('SandboxManager project mount', () => {
     const active = manager.getActive('test')
     expect(active?.mounts).toHaveLength(2)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
-    expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/main-project', readOnly: true })
+    expect(active?.mounts[1]).toEqual({ hostDir: '/tmp', containerDir: '/tmp', readOnly: true })
   })
 
   test('mounts list only has worktree mount when project mount is disabled', async () => {
@@ -110,7 +126,7 @@ describe('SandboxManager project mount', () => {
       const logger = createMockLogger()
       const config: SandboxManagerConfig = {
         image: 'oc-forge-sandbox:latest',
-        sourceProjectDir: '/main-project',
+        sourceProjectDir: '/tmp',
         mountProjectReadonly: true,
       }
 
@@ -129,7 +145,7 @@ describe('SandboxManager project mount', () => {
       const active = manager.getActive('test')
       expect(active?.mounts).toHaveLength(2)
       expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
-      expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/main-project', readOnly: true })
+      expect(active?.mounts[1]).toEqual({ hostDir: '/tmp', containerDir: '/tmp', readOnly: true })
     })
 
     test('start() with already-running sandbox does not add project mount when disabled', async () => {
@@ -137,7 +153,7 @@ describe('SandboxManager project mount', () => {
       const logger = createMockLogger()
       const config: SandboxManagerConfig = {
         image: 'oc-forge-sandbox:latest',
-        sourceProjectDir: '/main-project',
+        sourceProjectDir: '/tmp',
         mountProjectReadonly: false,
       }
 
@@ -156,7 +172,7 @@ describe('SandboxManager project mount', () => {
       const logger = createMockLogger()
       const config: SandboxManagerConfig = {
         image: 'oc-forge-sandbox:latest',
-        sourceProjectDir: '/main-project',
+        sourceProjectDir: '/tmp',
         mountProjectReadonly: true,
       }
 
@@ -172,7 +188,7 @@ describe('SandboxManager project mount', () => {
       const active = manager.getActive('foo')
       expect(active?.mounts).toHaveLength(2)
       expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
-      expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/main-project', readOnly: true })
+      expect(active?.mounts[1]).toEqual({ hostDir: '/tmp', containerDir: '/tmp', readOnly: true })
     })
 
     test('restore() with already-running sandbox does not add project mount when disabled', async () => {

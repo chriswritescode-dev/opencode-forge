@@ -386,4 +386,29 @@ describe('createSessionDirectoryLookup', () => {
 
     expect(client.session.get).toHaveBeenCalledTimes(1)
   })
+
+  it('negative result is cached for the configured TTL', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client } = createFakeForgeClient({
+        session: { get: async () => { throw notFoundErr() } },
+      })
+      const lookup = createSessionDirectoryLookup({
+        client,
+        directory: '/host',
+        loop: createMockLoop([]) as any,
+        negativeTtlMs: 100,
+      })
+
+      await expect(lookup('ses-missing')).resolves.toBeNull()
+      await expect(lookup('ses-missing')).resolves.toBeNull()
+      expect(client.session.get).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(101)
+      await expect(lookup('ses-missing')).resolves.toBeNull()
+      expect(client.session.get).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

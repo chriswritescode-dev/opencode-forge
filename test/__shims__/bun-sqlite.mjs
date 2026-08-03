@@ -3,11 +3,24 @@ import BetterSqlite3 from 'better-sqlite3'
 class Database extends BetterSqlite3 {
   /**
    * @param {string | Buffer} pathOrHandle  Database file path.
-   * @param {{ readonly?: boolean } | undefined} options
-   *        Bun-compatible options object (readonly is forwarded to
-   *        better-sqlite3).
+   * @param {{ readonly?: boolean, create?: boolean, readwrite?: boolean } | undefined} options
+   *        Bun-compatible options object, translated to better-sqlite3 semantics.
+   *
+   * bun:sqlite derives SQLite open flags from these options, so an options object that implies
+   * neither READONLY nor READWRITE (for example `{ create: false }`) is rejected at runtime.
+   * better-sqlite3 has unrelated option semantics and would silently accept it, so the same
+   * validation is reproduced here; otherwise a call that always throws under Bun passes in tests.
    */
   constructor(pathOrHandle, options) {
+    if (options !== null && typeof options === 'object') {
+      const readonly = options.readonly === true
+      const readwrite = options.readwrite === true || options.create === true
+      if (!readonly && !readwrite) {
+        throw new Error('flags must include SQLITE_OPEN_READONLY or SQLITE_OPEN_READWRITE')
+      }
+      super(pathOrHandle, { readonly, fileMustExist: options.create !== true })
+      return
+    }
     super(pathOrHandle, options)
   }
 

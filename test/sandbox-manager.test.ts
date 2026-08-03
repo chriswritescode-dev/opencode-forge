@@ -305,7 +305,9 @@ describe('SandboxManager', () => {
       )
 
       await manager.start('test', '/path')
-      await manager.stop('test')
+      // Removal failure is surfaced (the container may still be live) so lifecycle owners can
+      // record it, while cleanup still clears the stale in-memory map entry.
+      await expect(manager.stop('test')).rejects.toThrow(/Failed to remove sandbox/)
 
       expect(manager.isActive('test')).toBe(false)
     })
