@@ -7,6 +7,7 @@ import {
   createSessionSandboxPreferencesRepo,
   SESSION_SANDBOX_DESIRED_KEY,
   SESSION_SANDBOX_APPLIED_KEY,
+  SESSION_SANDBOX_CONTROLLER_KEY,
 } from '../src/storage'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 
@@ -91,6 +92,19 @@ describe('SessionSandboxPreferencesRepo', () => {
     })
   })
 
+  describe('controller state round-trip', () => {
+    test('returns null when nothing stored', () => {
+      expect(repo.getControllerState(PROJECT_A)).toBeNull()
+    })
+
+    test('round-trips controller readiness', () => {
+      const state = { version: 1 as const, phase: 'loading' as const, revision: 'rev-1', sessionId: 'sess-1' }
+      repo.setControllerState(PROJECT_A, state)
+      expect(repo.getControllerState(PROJECT_A)).toEqual(state)
+      expect(repo.getPair(PROJECT_A).controller).toEqual(state)
+    })
+  })
+
   describe('key independence', () => {
     test('desired and applied do not overwrite each other', () => {
       const desired = makeDesired({ revision: 'd1' })
@@ -141,6 +155,11 @@ describe('SessionSandboxPreferencesRepo', () => {
       writeRaw(PROJECT_A, SESSION_SANDBOX_APPLIED_KEY, 'nope')
       expect(repo.getDesired(PROJECT_A)).toBeNull()
       expect(repo.getApplied(PROJECT_A)).toBeNull()
+    })
+
+    test('rejects malformed controller state', () => {
+      writeRaw(PROJECT_A, SESSION_SANDBOX_CONTROLLER_KEY, JSON.stringify({ version: 1, phase: 'unknown', revision: 'rev-1', sessionId: 'sess-1' }))
+      expect(repo.getControllerState(PROJECT_A)).toBeNull()
     })
 
     test('treats wrong version as absent', () => {

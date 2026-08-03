@@ -11,11 +11,10 @@ export const DEFAULT_POLL_INTERVAL_MS = 500
 /**
  * Cap on a single session-directory lookup during ownership resolution.
  *
- * The lookup is an HTTP call to the OpenCode server, and the startup reconcile that performs it is
- * awaited before the plugin returns its hooks. A persisted desired ON names a session from the
- * previous run, so after a restart the lookup targets a session the freshly-booting server may not
- * answer for; without a bound, plugin initialization blocks forever and the TUI never renders.
- * Exceeding this resolves to `uncertain`, which already fails closed.
+ * The lookup is an HTTP call to the OpenCode server. A persisted desired ON names a session from
+ * the previous run, so after a restart the lookup targets a session the freshly-booting server may
+ * not answer for; without a bound, host sandbox resolution blocks forever. Exceeding this resolves
+ * to `uncertain`, which already fails closed.
  */
 export const OWNERSHIP_LOOKUP_TIMEOUT_MS = 5_000
 
@@ -214,6 +213,16 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     return run
   }
 
+  function writeControllerState(phase: 'loading' | 'ready' | 'failed'): void {
+    const desired = preferences.getDesired(projectId)
+    preferences.setControllerState(projectId, {
+      version: 1,
+      phase,
+      revision: desired?.revision ?? null,
+      sessionId: desired?.sessionId ?? null,
+    })
+  }
+
   function bind(sessionId: string | null, revision: string | null = null): void {
     acknowledgedSessionId = sessionId
     hostActive = sessionId !== null
@@ -260,8 +269,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     const lookup = deps.getSessionDirectory
     let dir: string | null
     try {
-      // Bounded: this runs inside the startup reconcile that plugin initialization awaits, so a
-      // lookup that never settles would hang the whole plugin rather than just this decision.
+      // Bounded so a lookup that never settles cannot indefinitely block controller readiness and
+      // every host sandbox resolution waiting on it.
       dir = await withOwnershipLookupTimeout(() => lookup(sessionId))
     } catch {
       return 'uncertain'
@@ -916,21 +925,31 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       // Single-flight: concurrent or repeated calls share one start, so exactly one interval is
       // ever installed and every caller waits for the initial reconciliation to complete.
       if (startPromise) return startPromise
-      startPromise = (async () => {
-        // Startup reconciliation must not swallow errors: if persisted desired state cannot be
-        // reconciled (e.g. a transient DB or session-lookup failure), the caller (plugin startup)
-        // fails closed rather than returning with an ON indicator but no restored runtime binding,
-        // which would leave selected tools executing host-side. Steady-state ticks below swallow
-        // errors and retry on the next interval.
-        if (!disposed) await serialized(() => reconcile())
+      const starting = (async () => {
+        try {
+          writeControllerState('loading')
+          if (!disposed) await serialized(() => reconcile())
+        } catch (err) {
+          try {
+            writeControllerState('failed')
+          } catch (stateErr) {
+            logger.log(`[session-sandbox] failed to persist controller failure state: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`)
+          }
+          throw err
+        }
         if (disposed) return
+        writeControllerState('ready')
         if (intervalId === null) {
           intervalId = setInterval(() => {
             void tick()
           }, pollIntervalMs)
         }
       })()
-      return startPromise
+      startPromise = starting
+      void starting.catch(() => {
+        if (startPromise === starting) startPromise = null
+      })
+      return starting
     },
 
     resolveSandboxForSession,
@@ -1025,4 +1044,3 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     },
   }
 }
-

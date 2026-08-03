@@ -194,6 +194,8 @@ describe('SessionSandboxController', () => {
         if (s.enabled) throw new Error('SQLITE_BUSY: database is locked')
         repo.setApplied(p, s)
       },
+      getControllerState: (p) => repo.getControllerState(p),
+      setControllerState: (p, s) => repo.setControllerState(p, s),
       getPair: (p) => repo.getPair(p),
     }
     const controller = createController({ preferences: wrappedRepo })
@@ -757,17 +759,54 @@ describe('SessionSandboxController', () => {
       await vi.advanceTimersByTimeAsync(0)
       expect(resolved).toBe(false)
       expect(manager.ensureRunningCalls).toHaveLength(1)
+      expect(repo.getControllerState(PROJECT)).toEqual({
+        version: 1,
+        phase: 'loading',
+        revision: 'r-single-start',
+        sessionId: ROOT_SESSION,
+      })
 
       gate.resolve(`forge-${MANAGER_KEY}`)
       await Promise.all([s1, s2, s3])
       expect(resolved).toBe(true)
       expect(manager.ensureRunningCalls).toHaveLength(1)
       expect(repo.getApplied(PROJECT)?.enabled).toBe(true)
+      expect(repo.getControllerState(PROJECT)?.phase).toBe('ready')
 
       await controller.dispose()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  test('a rejected start can be retried without creating a second controller', async () => {
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-retry-start' }))
+    let failLoadingWrite = true
+    const wrappedRepo: SessionSandboxPreferencesRepo = {
+      getDesired: (p) => repo.getDesired(p),
+      setDesired: (p, s) => repo.setDesired(p, s),
+      getApplied: (p) => repo.getApplied(p),
+      setApplied: (p, s) => repo.setApplied(p, s),
+      getControllerState: (p) => repo.getControllerState(p),
+      setControllerState: (p, s) => {
+        if (s.phase === 'loading' && failLoadingWrite) {
+          failLoadingWrite = false
+          throw new Error('SQLITE_BUSY: database is locked')
+        }
+        repo.setControllerState(p, s)
+      },
+      getPair: (p) => repo.getPair(p),
+    }
+    const controller = createController({ preferences: wrappedRepo })
+
+    await expect(controller.start()).rejects.toThrow(/SQLITE_BUSY/)
+    expect(repo.getControllerState(PROJECT)?.phase).toBe('failed')
+
+    await expect(controller.start()).resolves.toBeUndefined()
+    expect(repo.getControllerState(PROJECT)?.phase).toBe('ready')
+    expect(manager.ensureRunningCalls).toEqual([MANAGER_KEY])
+
+    await controller.dispose()
   })
 
   test('concurrent dispose calls await the same cleanup and stop the container once', async () => {
@@ -1813,12 +1852,11 @@ describe('SessionSandboxController', () => {
     await controller.dispose()
   })
 
-  test('a session lookup that never settles cannot hang startup', async () => {
+  test('a session lookup that never settles cannot hang controller readiness', async () => {
     vi.useFakeTimers()
     try {
-      // Plugin initialization awaits start(), and a persisted desired ON names a session from the
-      // previous run. If the lookup for that session never answers, an unbounded await would block
-      // the plugin forever and the TUI would never render.
+      // A persisted desired ON names a session from the previous run. If the lookup for that
+      // session never answers, an unbounded await would block every host sandbox resolution.
       repo.setDesired(PROJECT, makeDesired({ revision: 'r-hang', sessionId: 'session-gone' }))
       const controller = createController({
         // Polling is pushed out of the way so this exercises the startup reconcile alone; steady

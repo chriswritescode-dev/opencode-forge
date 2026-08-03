@@ -8,6 +8,7 @@ import {
   awaitSessionSandboxState,
   beginSessionSandboxStateRequest,
   deriveSessionSandboxAcknowledged,
+  deriveSessionSandboxDisplayStatus,
   hostSandboxToggleBlocked,
   isSessionSandboxPreferenceSettled,
   readSessionSandboxPreference,
@@ -102,7 +103,7 @@ describe('session-sandbox-store (TUI bridge)', () => {
 
     test('reads rows for the correct project only', () => {
       repo.setDesired(PROJECT_A, { version: 1 as const, revision: 'r1', enabled: true, sessionId: 'sess-1', requestedAt: 1 })
-      expect(readSessionSandboxPreference('project-b', dbPath)).toEqual({ desired: null, applied: null, unavailable: false })
+      expect(readSessionSandboxPreference('project-b', dbPath)).toEqual({ desired: null, applied: null, controller: null, unavailable: false })
     })
 
     test('does not create a missing database file', () => {
@@ -141,7 +142,7 @@ describe('session-sandbox-store (TUI bridge)', () => {
       const initialized = new Database(path)
       setupLoopsTestDb(initialized)
       initialized.close()
-      expect(readSessionSandboxPreference(PROJECT_A, path)).toEqual({ desired: null, applied: null, unavailable: false })
+      expect(readSessionSandboxPreference(PROJECT_A, path)).toEqual({ desired: null, applied: null, controller: null, unavailable: false })
     })
 
     test('assembles desired and applied from one snapshot despite an intervening desired write', async () => {
@@ -328,6 +329,54 @@ describe('session-sandbox-store (TUI bridge)', () => {
       expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: off })).toBe(true)
       const errored = writeApplied({ revision: 'r1', enabled: false, error: 'sbx failed to start' })
       expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: errored })).toBe(true)
+    })
+  })
+
+  describe('deriveSessionSandboxDisplayStatus', () => {
+    const desired = (overrides: Partial<SessionSandboxDesiredState> = {}) => ({
+      version: 1 as const,
+      revision: 'r1',
+      enabled: true,
+      sessionId: 'sess-1',
+      requestedAt: 1,
+      ...overrides,
+    })
+
+    test('shows loading only for the selected session while acknowledgement is pending', () => {
+      const pref = { desired: desired(), applied: null }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
+    })
+
+    test('shows enabled only for a matching acknowledged session', () => {
+      const applied = writeApplied({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null })
+      const pref = { desired: desired(), applied }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('enabled')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
+    })
+
+    test('shows loading while startup revalidates a previously acknowledged sandbox', () => {
+      const applied = writeApplied({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null })
+      const pref = {
+        desired: desired(),
+        applied,
+        controller: { version: 1 as const, phase: 'loading' as const, revision: 'r1', sessionId: 'sess-1' },
+      }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-other')).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus({ ...pref, controller: { ...pref.controller, phase: 'ready' } }, 'sess-1')).toBe('enabled')
+    })
+
+    test('shows loading while a newer disable request supersedes acknowledged ON', () => {
+      const staleOn = writeApplied({ revision: 'r1', enabled: true, sessionId: 'sess-1', error: null })
+      const pref = { desired: desired({ revision: 'r2', enabled: false }), applied: staleOn }
+      expect(deriveSessionSandboxDisplayStatus(pref, 'sess-1')).toBe('loading')
+    })
+
+    test('shows disabled after acknowledgement fails or turns the sandbox off', () => {
+      const errored = writeApplied({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: 'unavailable' })
+      expect(deriveSessionSandboxDisplayStatus({ desired: desired(), applied: errored }, 'sess-1')).toBe('disabled')
+      expect(deriveSessionSandboxDisplayStatus(null, 'sess-1')).toBe('disabled')
     })
   })
 

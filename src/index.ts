@@ -479,9 +479,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     let cleanupPromise: Promise<void> | null = null
 
-    // Host-session sandbox controller: reconciles the acknowledged host sandbox preference for
-    // sessions outside any loop. Assigned once a sandbox manager exists; disposed in cleanup.
-    let sessionSandboxController: SessionSandboxController | null = null
     let sessionSandboxProjectId: string | null = null
 
     const cleanup = (): Promise<void> => {
@@ -598,8 +595,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // sessions outside any loop. Always constructed — even when sandbox routing is unavailable
     // (sandbox disabled, manager init failure, or no shell shim) — so a requested ON is
     // acknowledged as OFF-with-error and the selected session is blocked fail-closed instead of
-    // silently executing on the host. Its initial reconcile runs before hooks are returned so
-    // acknowledged state is live at startup.
+    // silently executing on the host. Its initial reconcile starts in the background; host sandbox
+    // resolution waits for it before deciding whether a session may run on the host.
     // Shared per project across every plugin instance in this process: a second reconciler would
     // race this one on the same container. Only the first instance constructs and starts one, and
     // it gets its own database handle so it never depends on that instance's lifetime.
@@ -619,19 +616,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }),
       }
     })
-    sessionSandboxController = sharedSessionSandbox.controller
     sessionSandboxProjectId = projectId
-    try {
-      await sharedSessionSandbox.started
-    } catch (err) {
-      // Startup must be exception-safe: a rejected controller start (e.g. the initial reconcile
-      // fails on a persistence or session-lookup error) must not leave SQLite or the process
-      // listeners open. Run the idempotent cleanup (which stops the controller and closes the DB)
-      // before rethrowing so the plugin fails closed without leaking resources.
-      logger.error('Session sandbox controller failed to start; cleaning up', err)
-      await cleanup()
-      throw err
-    }
+    void sharedSessionSandbox.started.catch((err) => logger.error('Session sandbox controller failed to start', err))
 
     // Unified, loop-first sandbox resolver. Loop resolution always takes precedence: an active
     // sandbox loop owns its sessions; an active non-sandbox loop forces host (a host preference
@@ -641,8 +627,10 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const resolveSandboxForSession = createUnifiedSandboxResolver({
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
       resolveLoopSandbox: (resolved, opts) => resolveSandboxContextForLoop(sandboxManager, resolved, logger, opts),
-      resolveHostSandbox: (sessionID, opts) =>
-        sessionSandboxController ? sessionSandboxController.resolveSandboxForSession(sessionID, opts) : Promise.resolve(null),
+      resolveHostSandbox: async (sessionID, opts) => {
+        await sharedSessionSandbox.controller.start()
+        return sharedSessionSandbox.controller.resolveSandboxForSession(sessionID, opts)
+      },
     })
 
     // Spawns an isolated agent session (splitter/architect) seeded with a single text prompt,

@@ -3,7 +3,7 @@ import { existsSync } from 'fs'
 import { randomUUID } from 'node:crypto'
 import { resolveForgeDbPath } from '../storage'
 import { createSessionSandboxPreferencesRepo } from '../storage/repos/session-sandbox-preferences-repo'
-import type { SessionSandboxAppliedState, SessionSandboxDesiredState } from '../storage/repos/session-sandbox-preferences-repo'
+import type { SessionSandboxAppliedState, SessionSandboxControllerState, SessionSandboxDesiredState } from '../storage/repos/session-sandbox-preferences-repo'
 
 /**
  * Opens the local forge database for a bounded TUI operation. Returns null when
@@ -31,6 +31,7 @@ function openForgeDb(dbPathOverride?: string): Database | null {
 export interface SessionSandboxPreference {
   desired: SessionSandboxDesiredState | null
   applied: SessionSandboxAppliedState | null
+  controller?: SessionSandboxControllerState | null
   /**
    * True when the read could not reach an initialized `tui_preferences` table for the project
    * (missing database file, uninitialized table, or unreadable/corrupt file). This lets callers
@@ -94,6 +95,28 @@ export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference
   if (!desired) return true
   if (!applied) return false
   return applied.revision === desired.revision
+}
+
+export type SessionSandboxDisplayStatus = 'enabled' | 'disabled' | 'loading'
+
+export function deriveSessionSandboxDisplayStatus(
+  pref: SessionSandboxPreference | null,
+  sessionId?: string,
+): SessionSandboxDisplayStatus {
+  if (!pref || !sessionId) return 'disabled'
+  const controller = pref.controller
+  if (
+    controller &&
+    controller.revision === pref.desired?.revision &&
+    controller.sessionId === sessionId
+  ) {
+    if (controller.phase === 'loading' && pref.desired?.enabled) return 'loading'
+    if (controller.phase === 'failed') return 'disabled'
+  }
+  const acknowledged = deriveSessionSandboxAcknowledged(pref)
+  if (acknowledged?.sessionId === sessionId) return 'enabled'
+  if (pref.desired?.sessionId === sessionId && !isSessionSandboxPreferenceSettled(pref)) return 'loading'
+  return 'disabled'
 }
 
 /**

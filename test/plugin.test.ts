@@ -640,17 +640,12 @@ describe('createForgePlugin', () => {
     expect(logContents).toContain('loop.permissions.deny entry "*" is ignored')
   })
 
-  test('host session sandbox controller is started on init and disposed before DB close', async () => {
+  test('host session sandbox startup does not block init and routing waits fail-closed', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      // Sandbox routing is disabled so the deterministic unavailable manager is used: ensureRunning
-      // fails closed and stop is a no-op. This keeps the test independent of whether the `sbx` CLI
-      // is installed on the host, while still verifying startup reconcile is awaited before hooks
-      // return and cleanup disposes before the DB closes.
       sandbox: { mode: 'sbx', enabled: false },
     }
 
-    // Persist a desired ON so the startup reconciliation has something to act on.
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
       version: 1,
@@ -661,13 +656,31 @@ describe('createForgePlugin', () => {
     })
     closeDatabase(setupDb)
 
+    let releaseFirstLookup!: () => void
+    let lookupCount = 0
+    const firstLookup = new Promise<Response>((resolve) => {
+      releaseFirstLookup = () => resolve(new Response(JSON.stringify({ id: 'ses-root', directory: testDir, parentID: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === 'string' ? input : (input as Request).url
+      const match = url.match(/\/session\/([^/?]+)/)
+      if (!match) return new Response(JSON.stringify({}), { status: 200 })
+      lookupCount += 1
+      if (lookupCount === 1) return firstLookup
+      const sessionID = decodeURIComponent(match[1]!)
+      return new Response(JSON.stringify({ id: sessionID, directory: testDir, parentID: null }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     const plugin = createForgePlugin(config)
     const mockInput = {
       directory: testDir,
       worktree: testDir,
-      // The instance must positively prove it owns 'ses-root' (its directory resolves to this
-      // instance's directory) before it may act on the shared preference row.
-      client: sessionResolvingClient(testDir) as never,
+      client: { _client: { getConfig: () => ({ fetch: mockFetch }) } } as never,
       project: { id: TEST_PROJECT_ID } as never,
       serverUrl: new URL('http://localhost:5551'),
       $: {} as never,
@@ -676,20 +689,38 @@ describe('createForgePlugin', () => {
     const hooks = await plugin(mockInput as unknown as PluginInput)
     currentHooks = hooks as { getCleanup?: () => Promise<void> }
 
-    // Startup reconciliation ran and was awaited before hooks returned: the applied row now
-    // records the desired revision (the container start itself fails closed here since sbx is
-    // unavailable, but the revision still advances, proving start's reconcile completed).
     let db = initializeDatabase(config.dataDir!)
-    let appliedAfterStart = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
-    expect(appliedAfterStart).not.toBeNull()
-    expect(appliedAfterStart!.revision).toBe('r-init')
+    let preferences = createSessionSandboxPreferencesRepo(db)
+    expect(preferences.getApplied(TEST_PROJECT_ID)).toBeNull()
+    expect(preferences.getControllerState(TEST_PROJECT_ID)?.phase).toBe('loading')
+    closeDatabase(db)
+
+    const shellEnv = hooks['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+    let routingSettled = false
+    const routing = shellEnv({ sessionID: 'ses-root', cwd: testDir }, { env: {} }).then(
+      () => null,
+      (err: unknown) => err,
+    ).finally(() => {
+      routingSettled = true
+    })
+    await Promise.resolve()
+    expect(routingSettled).toBe(false)
+
+    releaseFirstLookup()
+    expect(await routing).toBeInstanceOf(Error)
+
+    db = initializeDatabase(config.dataDir!)
+    preferences = createSessionSandboxPreferencesRepo(db)
+    const appliedAfterStart = preferences.getApplied(TEST_PROJECT_ID)
+    expect(appliedAfterStart?.revision).toBe('r-init')
+    expect(preferences.getControllerState(TEST_PROJECT_ID)?.phase).toBe('ready')
     closeDatabase(db)
 
     await currentHooks.getCleanup!()
 
-    // Dispose ran before the DB closed: applied OFF is persisted at the desired revision (so a
-    // pending TUI request observes its own acknowledgement), clearing the start-time failure error
-    // to a confirmed-stopped OFF (error: null) which proves dispose actually executed.
     db = initializeDatabase(config.dataDir!)
     const appliedAfterCleanup = createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)
     expect(appliedAfterCleanup).not.toBeNull()
@@ -868,6 +899,12 @@ describe('createForgePlugin', () => {
     const cleanupA = (hooksA as unknown as { getCleanup: () => Promise<void> }).getCleanup
     const cleanupB = (hooksB as unknown as { getCleanup: () => Promise<void> }).getCleanup
 
+    const shellEnv = hooksB['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+    await expect(shellEnv({ sessionID: 'ses-root', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
+
     // The fail-closed start recorded an error; disposal is what clears it to a confirmed OFF.
     let db = initializeDatabase(config.dataDir!)
     expect(createSessionSandboxPreferencesRepo(db).getApplied(TEST_PROJECT_ID)?.error).toBeTruthy()
@@ -921,6 +958,12 @@ describe('createForgePlugin', () => {
     const hooks = await plugin(mockInput as unknown as PluginInput)
     currentHooks = hooks as { getCleanup?: () => Promise<void> }
 
+    const shellEnv = hooks['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+    await expect(shellEnv({ sessionID: 'ses-selected', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
+
     // The unavailable runtime acknowledged the requested ON at the matching revision as OFF with
     // an error, so the TUI sees a definitive server answer rather than a silent host fallback.
     let db = initializeDatabase(config.dataDir!)
@@ -930,14 +973,6 @@ describe('createForgePlugin', () => {
     expect(applied!.enabled).toBe(false)
     expect(applied!.error).toBeTruthy()
     closeDatabase(db)
-
-    const shellEnv = hooks['shell.env'] as (
-      input: { sessionID?: string; cwd?: string },
-      output: { env: Record<string, string> },
-    ) => Promise<void>
-
-    // The selected session fails closed (throws) rather than executing on the host.
-    await expect(shellEnv({ sessionID: 'ses-selected', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
 
     // An unrelated host session is unaffected and falls through to the host shell.
     const output = { env: {} as Record<string, string> }
@@ -980,6 +1015,12 @@ describe('createForgePlugin', () => {
     const hooks = await plugin(mockInput as unknown as PluginInput)
     currentHooks = hooks as { getCleanup?: () => Promise<void> }
 
+    const shellEnv = hooks['shell.env'] as (
+      input: { sessionID?: string; cwd?: string },
+      output: { env: Record<string, string> },
+    ) => Promise<void>
+    await expect(shellEnv({ sessionID: 'ses-selected', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
+
     // Regardless of how the manager/shims became unavailable, the requested ON is acknowledged as
     // OFF-with-error at the matching revision (fail closed).
     let db = initializeDatabase(config.dataDir!)
@@ -990,11 +1031,6 @@ describe('createForgePlugin', () => {
     expect(applied!.error).toBeTruthy()
     closeDatabase(db)
 
-    const shellEnv = hooks['shell.env'] as (
-      input: { sessionID?: string; cwd?: string },
-      output: { env: Record<string, string> },
-    ) => Promise<void>
-    await expect(shellEnv({ sessionID: 'ses-selected', cwd: testDir }, { env: {} })).rejects.toThrow(/unavailable/)
     await currentHooks.getCleanup!()
   })
 

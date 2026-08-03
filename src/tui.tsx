@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
-import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
 import { loadPluginConfig, resolveBundledContainerDir } from './setup'
 import { resolveForgeDbPath, resolveDataDir } from './storage'
@@ -20,13 +20,12 @@ import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan
 import {
   awaitSessionSandboxState,
   beginSessionSandboxStateRequest,
-  deriveSessionSandboxAcknowledged,
+  deriveSessionSandboxDisplayStatus,
   hostSandboxToggleBlocked,
   isSessionSandboxPreferenceSettled,
   readSessionSandboxPreference,
 } from './tui/session-sandbox-store'
 import type { SessionSandboxPreference } from './tui/session-sandbox-store'
-import type { SessionSandboxAppliedState } from './storage'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { describeDashboardBinding } from './dashboard/config'
@@ -52,22 +51,44 @@ type TuiOptions = {
 
 type ForgeConnectionStatus = 'connecting' | 'connected' | 'unavailable'
 
-function SandboxStatusText(props: { api: TuiPluginApi; applied: () => SessionSandboxAppliedState | null; sessionId?: string }) {
-  const theme = () => props.api.theme.current
-  const on = createMemo(() => {
-    const applied = props.applied()
-    return !!applied && applied.enabled === true && applied.error == null && applied.sessionId === props.sessionId
+const SBX_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+function SandboxLoadingSpinner(props: { api: TuiPluginApi }) {
+  const [frame, setFrame] = createSignal(0)
+  const animationsEnabled = () => props.api.kv.get('animations_enabled', true)
+
+  createEffect(() => {
+    if (!animationsEnabled()) return
+    const timer = setInterval(() => setFrame((current) => (current + 1) % SBX_SPINNER_FRAMES.length), 80)
+    onCleanup(() => clearInterval(timer))
   })
+
+  return <text fg={props.api.theme.current.textMuted}>{animationsEnabled() ? SBX_SPINNER_FRAMES[frame()] : '⋯'}</text>
+}
+
+function SandboxStatusText(props: { api: TuiPluginApi; preference: () => SessionSandboxPreference | null; sessionId?: string }) {
+  const theme = () => props.api.theme.current
+  const status = createMemo(() => deriveSessionSandboxDisplayStatus(props.preference(), props.sessionId))
   // Secondary while the sandbox is actually acknowledged ON, so an active sandbox stands out
   // against the muted status line instead of reading as ordinary chrome.
-  return <text fg={on() ? theme().secondary : theme().textMuted}>· SBX {on() ? 'enabled' : 'disabled'}</text>
+  return (
+    <Show
+      when={status() === 'loading'}
+      fallback={<text fg={status() === 'enabled' ? theme().secondary : theme().textMuted}>· SBX {status()}</text>}
+    >
+      <box flexDirection="row" gap={1}>
+        <text fg={theme().textMuted}>· SBX</text>
+        <SandboxLoadingSpinner api={props.api} />
+      </box>
+    </Show>
+  )
 }
 
 function ForgeSidebarStatus(props: {
   api: TuiPluginApi
   opts: TuiOptions
   status: () => ForgeConnectionStatus
-  applied: () => SessionSandboxAppliedState | null
+  preference: () => SessionSandboxPreference | null
   sessionId?: string
 }) {
   const theme = () => props.api.theme.current
@@ -81,7 +102,7 @@ function ForgeSidebarStatus(props: {
           <text fg={theme().text}>
             <b>{title()}</b>
           </text>
-          <SandboxStatusText api={props.api} applied={props.applied} sessionId={props.sessionId} />
+          <SandboxStatusText api={props.api} preference={props.preference} sessionId={props.sessionId} />
           <text fg={theme().textMuted}>· {statusText()}</text>
         </box>
       </box>
@@ -96,7 +117,7 @@ function SidebarContainer(props: {
   pluginConfig: PluginConfig
   opts: TuiOptions
   status: () => ForgeConnectionStatus
-  applied: () => SessionSandboxAppliedState | null
+  preference: () => SessionSandboxPreference | null
   sessionId?: string
 }) {
   const currentClient = createMemo(() => props.client())
@@ -104,9 +125,9 @@ function SidebarContainer(props: {
   return (
     <Show
       when={currentClient()}
-      fallback={<ForgeSidebarStatus api={props.api} opts={props.opts} status={props.status} applied={props.applied} sessionId={props.sessionId} />}
+      fallback={<ForgeSidebarStatus api={props.api} opts={props.opts} status={props.status} preference={props.preference} sessionId={props.sessionId} />}
     >
-      {(client) => <Sidebar api={props.api} client={client()} cache={props.cache} pluginConfig={props.pluginConfig} opts={props.opts} applied={props.applied} sessionId={props.sessionId} />}
+      {(client) => <Sidebar api={props.api} client={client()} cache={props.cache} pluginConfig={props.pluginConfig} opts={props.opts} preference={props.preference} sessionId={props.sessionId} />}
     </Show>
   )
 }
@@ -117,7 +138,7 @@ function Sidebar(props: {
   cache: () => ExecutionContextCache | null
   pluginConfig: PluginConfig
   opts: TuiOptions
-  applied: () => SessionSandboxAppliedState | null
+  preference: () => SessionSandboxPreference | null
   sessionId?: string
 }) {
   const theme = () => props.api.theme.current
@@ -133,7 +154,7 @@ function Sidebar(props: {
           <text fg={theme().text}>
             <b>{title()}</b>
           </text>
-          <SandboxStatusText api={props.api} applied={props.applied} sessionId={props.sessionId} />
+          <SandboxStatusText api={props.api} preference={props.preference} sessionId={props.sessionId} />
         </box>
       </box>
     </Show>
@@ -338,12 +359,8 @@ const tui: TuiPlugin = async (api) => {
     }
   })
 
-  // Host-sandbox acknowledgement state for the current project. Initialized
-  // once `api.state.ready` so the toggle command works with the sidebar
-  // disabled. ON is trusted only when the desired/applied revisions match,
-  // both target the same session, and applied carries no error.
   const [sandboxProjectId, setSandboxProjectId] = createSignal<string | null>(null)
-  const [sandboxApplied, setSandboxApplied] = createSignal<SessionSandboxAppliedState | null>(null)
+  const [sandboxPreference, setSandboxPreference] = createSignal<SessionSandboxPreference | null>(null)
   let sandboxInitStarted = false
 
   const refreshSandboxAcknowledgement = (projectId: string): SessionSandboxPreference | null => {
@@ -351,11 +368,11 @@ const tui: TuiPlugin = async (api) => {
     // When sandboxing is disabled by configuration the server never constructs a
     // reconciler or uses that sandbox, so any persisted ON must not be displayed.
     if (!isSandboxConfigEnabled(pluginConfig)) {
-      if (!disposed) setSandboxApplied(null)
+      if (!disposed) setSandboxPreference(null)
       return null
     }
     const pref = readSessionSandboxPreference(projectId, forgeDbPath)
-    if (!disposed) setSandboxApplied(deriveSessionSandboxAcknowledged(pref))
+    if (!disposed) setSandboxPreference(pref)
     return pref
   }
 
@@ -785,7 +802,7 @@ const tui: TuiPlugin = async (api) => {
           pluginConfig={pluginConfig}
           opts={opts}
           status={connectionStatus}
-          applied={sandboxApplied}
+          preference={sandboxPreference}
           sessionId={slotProps.session_id}
         />
       },
