@@ -1001,6 +1001,60 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return { error }
   }
 
+  type AuditorFallbackOutcome =
+    | { kind: 'advanced' }
+    | { kind: 'concurrent' }
+    | { kind: 'exhausted' }
+    | { kind: 'failed' }
+
+  async function advanceAuditorFallback(
+    loopName: string,
+    state: LoopState,
+    reason: string,
+  ): Promise<AuditorFallbackOutcome> {
+    const chain = buildAuditorModelChain(getConfig(), state)
+    let from = state.auditorFallbackIndex ?? 0
+    let current: LoopState = state
+    while (true) {
+      const next = nextAuditorFallbackIndex(chain, from)
+      if (next === null) {
+        logger.error(`Loop: auditor fallback chain exhausted for ${loopName} (${reason})`)
+        return { kind: 'exhausted' }
+      }
+
+      const committed = loopService.advanceAuditorFallbackIndex(loopName, from, next)
+      if (committed === null) {
+        // Another detection path already advanced; never double-prompt.
+        logger.log(`Loop: auditor fallback already advanced for ${loopName}, skipping re-dispatch`)
+        return { kind: 'concurrent' }
+      }
+
+      // Record this session as coalesced so companion signals for the same
+      // failed prompt are absorbed above rather than advancing again.
+      coalescedLimitSessions.set(loopName, state.sessionId)
+
+      current = { ...current, auditorFallbackIndex: committed }
+      if (!current.active || !isAuditorPhase(current.phase)) return { kind: 'concurrent' }
+
+      logger.log(`Loop: auditor fallback for ${loopName} (${reason}) → auditor fallback #${committed}`)
+
+      const { error } = await resendAuditPromptWithAuditorModel(loopName, current)
+      if (!error) return { kind: 'advanced' }
+      if (error instanceof ConcurrentPromptError) return { kind: 'concurrent' }
+
+      if (classifyProviderLimit(extractErrorSignal(error)) !== null) {
+        const rechecked = loopService.getActiveState(loopName)
+        if (!rechecked?.active) return { kind: 'concurrent' }
+        current = rechecked
+        from = next
+        continue
+      }
+
+      logger.error(`Loop: auditor fallback re-dispatch failed for ${loopName}`, error)
+      return { kind: 'failed' }
+    }
+  }
+
   /**
    * Single choke point for "auditor provider limit → fallback or terminate".
    * Returns `true` when the limit was absorbed (caller must `return` without
@@ -1011,7 +1065,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     limitReason: string,
     opts?: { eventSessionId?: string; eventType?: 'status' | 'error' },
   ): Promise<boolean> {
-    let state = loopService.getActiveState(loopName)
+    const state = loopService.getActiveState(loopName)
     if (!state?.active || !isAuditorPhase(state.phase)) return false
     if (opts?.eventSessionId && opts.eventSessionId !== state.sessionId) return false
 
@@ -1031,45 +1085,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
-    const chain = buildAuditorModelChain(getConfig(), state)
-    let from = state.auditorFallbackIndex ?? 0
-    while (true) {
-      const next = nextAuditorFallbackIndex(chain, from)
-      if (next === null) {
-        logger.error(`Loop: auditor fallback chain exhausted for ${loopName} (${limitReason})`)
-        return false
-      }
-
-      const committed = loopService.advanceAuditorFallbackIndex(loopName, from, next)
-      if (committed === null) {
-        // Another detection path already advanced; never double-prompt.
-        logger.log(`Loop: auditor fallback already advanced for ${loopName}, skipping re-dispatch`)
-        return true
-      }
-
-      // Record this session as coalesced so companion signals for the same
-      // failed prompt are absorbed above rather than advancing again.
-      coalescedLimitSessions.set(loopName, state.sessionId)
-
-      state = { ...state, auditorFallbackIndex: committed }
-      if (!state?.active || !isAuditorPhase(state.phase)) return true
-
-      logger.log(`Loop: auditor provider limit for ${loopName} (${limitReason}) → auditor fallback #${committed}`)
-
-      const { error } = await resendAuditPromptWithAuditorModel(loopName, state)
-      if (!error) return true
-      if (error instanceof ConcurrentPromptError) return true
-
-      if (classifyProviderLimit(extractErrorSignal(error)) !== null) {
-        state = loopService.getActiveState(loopName)
-        if (!state?.active) return true
-        from = next
-        continue
-      }
-
-      logger.error(`Loop: auditor fallback re-dispatch failed for ${loopName}`, error)
-      return false
-    }
+    const outcome = await advanceAuditorFallback(loopName, state, limitReason)
+    if (outcome.kind === 'exhausted' || outcome.kind === 'failed') return false
+    return true
   }
 
   async function handlePromptError(loopName: string, _state: LoopState, context: string, err: unknown, retryFn?: () => Promise<void>): Promise<void> {
@@ -1250,6 +1268,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: nudging wedged session ${fresh.sessionId} for ${loopName} (phase=${fresh.phase}, busy=${context.elapsedMs}ms, stall #${context.stallCount})`)
 
       try {
+        if (isAuditorPhase(fresh.phase)) {
+          const outcome = await advanceAuditorFallback(loopName, fresh, 'busy stall (no progress)')
+          if (outcome.kind === 'advanced' || outcome.kind === 'concurrent') return
+        }
+
         await abortForInternalResend(loopName, fresh.sessionId)
 
         const isAuditor = isAuditorPhase(fresh.phase)
@@ -1263,7 +1286,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           variant: choice ? choice.variant : fresh.executionVariant,
           errorContext: 'busy-stall continue nudge',
           errorState: fresh,
-          activityTag: 'busy-stall-nudge',
         })
       } catch (err) {
         await handlePromptError(loopName, fresh, 'busy-stall continue nudge', err)

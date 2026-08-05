@@ -1708,6 +1708,158 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
   })
 
+  describe('watchdog busy-stall recovery routes wedged auditor sessions through the fallback chain', () => {
+    function createWatchdogLoop(
+      config: PluginConfig,
+      client: ForgeClient,
+      loopCfg: LoopConfig,
+      logs: Array<{ level: string; message: string }>,
+    ): Loop {
+      const logger: Logger = {
+        log: (msg: string) => logs.push({ level: 'log', message: msg }),
+        error: (msg: string) => logs.push({ level: 'error', message: msg }),
+        debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
+      }
+      loopService = createLoopService(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        PROJECT_ID,
+        { log: () => {}, error: () => {}, debug: () => {} },
+        loopCfg,
+        undefined,
+        sectionPlansRepo,
+      )
+      const loop = createLoop({
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        sectionPlansRepo,
+        projectId: PROJECT_ID,
+        client,
+        logger,
+        getConfig: () => config,
+        sandboxManager: undefined,
+        dataDir: tempDir,
+        loopConfig: loopCfg,
+      })
+      currentLoop = loop
+      return loop
+    }
+
+    async function stopWatchdogAndDrain(loop: Loop, loopName: string): Promise<void> {
+      loop.clearLoopTimers(loopName)
+      await new Promise(resolve => setTimeout(resolve, 400))
+    }
+
+    test('a wedged auditing session is aborted and re-dispatched on the next fallback model instead of a generic continue nudge', async () => {
+      let fallbackDispatched = false
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          status: async () => {
+            if (fallbackDispatched) return {}
+            return { 'loop-session-id': { type: 'busy' } }
+          },
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'auditor-2') {
+              fallbackDispatched = true
+            }
+          },
+        },
+      })
+      const logs: Array<{ level: string; message: string }> = []
+      const loop = createWatchdogLoop(
+        { ...mockConfig, auditorFallbackModels: ['fb/auditor-2'] },
+        client,
+        { stallTimeoutMs: 10_000, busyStallTimeoutMs: 30, maxConsecutiveStalls: 100 },
+        logs,
+      )
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      loop.startWatchdog(state.loopName)
+      await new Promise(resolve => setTimeout(resolve, 600))
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+      expect((auditorCalls[0].params as any).parts?.[0]?.text).not.toBe('Continue where you left off.')
+
+      await stopWatchdogAndDrain(loop, state.loopName)
+    })
+
+    test('a wedged coding session receives bounded generic continue nudges on the code agent', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          status: async () => ({ 'loop-session-id': { type: 'busy' } }),
+        },
+      })
+      const logs: Array<{ level: string; message: string }> = []
+      const loop = createWatchdogLoop(
+        { ...mockConfig },
+        client,
+        { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
+        logs,
+      )
+
+      const state = makeState({ phase: 'coding', totalSections: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      loop.startWatchdog(state.loopName)
+      await new Promise(resolve => setTimeout(resolve, 1500))
+
+      const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codeCalls.length).toBeGreaterThanOrEqual(1)
+      expect((codeCalls[0].params as any).parts?.[0]?.text).toBe('Continue where you left off.')
+      expect((codeCalls[0].params as any).model).toEqual({ providerID: 'test', modelID: 'model' })
+      expect(loopService.getAnyState(state.loopName)?.terminationReason).toBe('stall_timeout')
+
+      await stopWatchdogAndDrain(loop, state.loopName)
+    })
+
+    test('a wedged auditor with no remaining fallback is nudged with a generic continue that keeps the stall counter climbing until termination', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          status: async () => ({ 'loop-session-id': { type: 'busy' } }),
+        },
+      })
+      const logs: Array<{ level: string; message: string }> = []
+      const loop = createWatchdogLoop(
+        { ...mockConfig },
+        client,
+        { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
+        logs,
+      )
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      loop.startWatchdog(state.loopName)
+      await new Promise(resolve => setTimeout(resolve, 1500))
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.terminationReason).toBe('stall_timeout')
+
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls.length).toBeGreaterThan(0)
+      expect((auditorCalls[0].params as any).parts?.[0]?.text).toBe('Continue where you left off.')
+
+      await stopWatchdogAndDrain(loop, state.loopName)
+    })
+  })
+
   describe('in-flight prompt guard', () => {
     test('rejects audit prompt while code prompt in-flight', async () => {
       markPromptInFlight('test-loop', 'other-session-id', 'code')
