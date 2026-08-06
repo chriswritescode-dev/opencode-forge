@@ -27,7 +27,7 @@ function assertWritableSession(ctx: ToolContext, sessionID: string): string | nu
  * Wraps `normalizePastedPlanText` and maps its reasons to user-facing messages
  * for the `plan-write` tool. Returns the normalized body on success.
  */
-function normalizeFragment(content: string): { ok: true; text: string } | { ok: false; message: string } {
+function normalizePlanContent(content: string): { ok: true; text: string } | { ok: false; message: string } {
   const result = normalizePastedPlanText(content)
   if (result.ok) {
     return { ok: true, text: result.planText }
@@ -51,64 +51,47 @@ function writeAndReport(
   sessionID: string,
   planText: string,
   prefix?: string,
-  sectionDetail?: 'all' | 'latest',
 ): string {
   const result = writeSessionPlanContent(
     { plansRepo: ctx.plansRepo, projectId: ctx.projectId, directory: ctx.directory, logger: ctx.logger },
     sessionID,
     planText,
   )
-  return `${prefix ?? ''}${formatPlanStructureSummary(summarizePlanStructure(result.planText), { sectionDetail })}`
+  return `${prefix ?? ''}${formatPlanStructureSummary(summarizePlanStructure(result.planText))}`
 }
 
 export function createPlanAuthoringTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   return {
     'plan-write': tool({
       description:
-        'Create, overwrite, or append to the implementation plan stored for the current session. This is the plan of record used by execute-plan and by the plan approval flow. Author long plans incrementally with append instead of emitting the whole plan in chat.',
+        'Create or overwrite the implementation plan stored for the current session, like the Write tool with the plan as the implicit target. This is the plan of record used by execute-plan and the approval flow. Use plan-edit for incremental additions and revisions instead of rewriting or emitting the full plan in chat.',
       args: {
         content: z
           .string()
-          .min(1)
           .describe(
             'Stored plan markdown. Use <!-- forge-section --> markers before each ## Phase heading.',
-          ),
-        append: z
-          .boolean()
-          .optional()
-          .describe(
-            'Append to the existing stored plan instead of replacing it. Two newlines are inserted between the existing content and the new fragment. Creates the plan when none exists.',
           ),
       },
       execute: async (args, context) => {
         const guard = assertWritableSession(ctx, context.sessionID)
         if (guard) return guard
 
-        const normalized = normalizeFragment(args.content)
+        const normalized = normalizePlanContent(args.content)
         if (!normalized.ok) return `plan-write failed: ${normalized.message}`
 
-        let next: string
-        if (args.append) {
-          const existing = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
-          next = existing ? `${existing.content.trimEnd()}\n\n${normalized.text}` : normalized.text
-        } else {
-          next = normalized.text
-        }
-
         ctx.logger.log(
-          `plan-write: ${args.append ? 'appended to' : 'wrote'} plan for session ${context.sessionID} (${next.length} chars)`,
+          `plan-write: wrote plan for session ${context.sessionID} (${normalized.text.length} chars)`,
         )
-        return writeAndReport(ctx, context.sessionID, next, undefined, args.append ? 'latest' : 'all')
+        return writeAndReport(ctx, context.sessionID, normalized.text)
       },
     }),
 
     'plan-edit': tool({
       description:
-        'Edit the implementation plan stored for the current session by exact string replacement, the same way the Edit tool edits a file. Use plan-read to get the current text before editing. Do not include plan-read\'s "N: " line-number prefixes in oldString.',
+        'Edit the implementation plan stored for the current session by exact string replacement, the same way the Edit tool edits a file. This supports small revisions, insertions, and deletions without rewriting the full plan. Use plan-read to get the current text before editing. Do not include plan-read\'s "N: " line-number prefixes in oldString.',
       args: {
         oldString: z
           .string()
-          .min(1)
           .describe('Exact text to replace, including indentation. Must match exactly once unless replaceAll is true.'),
         newString: z.string().describe('Replacement text. Must differ from oldString.'),
         replaceAll: z
@@ -120,13 +103,23 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, Retur
         const guard = assertWritableSession(ctx, context.sessionID)
         if (guard) return guard
 
+        if (args.oldString === args.newString) {
+          return 'plan-edit failed: oldString and newString are identical.'
+        }
+
         const existing = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
         if (!existing) {
+          if (args.oldString === '') {
+            const normalized = normalizePlanContent(args.newString)
+            if (!normalized.ok) return `plan-edit failed: ${normalized.message}`
+            ctx.logger.log(`plan-edit: created plan for session ${context.sessionID} (${normalized.text.length} chars)`)
+            return writeAndReport(ctx, context.sessionID, normalized.text, 'Created plan.\n')
+          }
           return 'plan-edit failed: no plan stored for this session. Use plan-write to create it first.'
         }
 
-        if (args.oldString === args.newString) {
-          return 'plan-edit failed: oldString and newString are identical.'
+        if (args.oldString === '') {
+          return 'plan-edit failed: oldString cannot be empty when editing an existing plan. Provide the exact text to replace, or use plan-write for an intentional full-plan replacement.'
         }
 
         const parts = existing.content.split(args.oldString)

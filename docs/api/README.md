@@ -329,7 +329,7 @@ Plan with a smart model, execute with a fast model. The architect agent research
 
 ### How Plans Work
 
-The architect is read-only and authors the plan into SQL storage for the current session with `plan-write`, using `append: true` for long plans and `plan-edit` for revisions. Every write returns a structure report with line and character counts, the detected `Loop Name:`, decomposed phases, and actionable warnings. A warning-free plan has an Objective, canonical loop name, correctly placed phase markers, every required phase subsection, trailing Decisions/Conventions/Key Context blocks, no section-cap overflow, and no detected host-absolute paths.
+The architect is read-only and authors the plan into SQL storage for the current session with file-like plan tools: `plan-read` reads it, `plan-write` creates or replaces it, and `plan-edit` performs exact replacements, insertions, and deletions. Multi-phase plans are built incrementally with `plan-edit` rather than emitted or rewritten in one large call. Every write or edit returns a structure report with line and character counts, the detected `Loop Name:`, decomposed phases, and actionable warnings. A warning-free plan has an Objective, canonical loop name, correctly placed phase markers, every required phase subsection, trailing Decisions/Conventions/Key Context blocks, no section-cap overflow, and no detected host-absolute paths.
 
 The stored plan is the source of truth for execution: `execute-plan`, the approval hook, and the TUI dialog all read it, and a marker-free assistant message can never replay an older chat plan over a newer tool-authored one. Programmatic access is via the `plan-read` tool.
 

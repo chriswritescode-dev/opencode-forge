@@ -891,12 +891,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     // Create new session
     let sessionId: string
+    let sessionWorkspaceId: string | undefined
     try {
       const session = await deps.client.session.create({
         title: sessionTitle,
         directory: ctx.directory,
       })
       sessionId = session.id
+      sessionWorkspaceId = session.workspaceID
     } catch (err) {
       deps.logger.error('handlePlanNewSession: failed to create session', err)
       return fail('internal_error', 500, 'Failed to create session')
@@ -905,7 +907,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     // Navigate TUI if requested with early timing
     if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming === 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId }).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: sessionWorkspaceId }).catch((err: unknown) => {
         deps.logger.error('handlePlanNewSession: failed to navigate TUI (early)', err as Error)
       })
     }
@@ -936,7 +938,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       // Return to source session if requested
       if (command.lifecycle?.returnToSourceOnPromptFailure && ctx.sourceSessionId) {
-        selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
+        selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId, workspace: sessionWorkspaceId }).catch((err: unknown) => {
           deps.logger.error('handlePlanNewSession: failed to return to source session', err as Error)
         })
       }
@@ -946,7 +948,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     // Navigate TUI if requested with default/post-prompt timing
     if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming !== 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId }).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: sessionWorkspaceId }).catch((err: unknown) => {
         deps.logger.error('handlePlanNewSession: failed to navigate TUI', err as Error)
       })
     }

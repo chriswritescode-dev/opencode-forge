@@ -101,6 +101,24 @@ describe('plan-read', () => {
     expect(lines.length).toBe(3)
   })
 
+  test('defaults to the same 2000-line limit as Read', async () => {
+    plansRepo.writeForSession(
+      'test-project',
+      'test-session',
+      Array.from({ length: 2002 }, (_, index) => `line ${index + 1}`).join('\n'),
+    )
+
+    const result = await tools['plan-read'].execute(
+      {},
+      { sessionID: 'test-session', directory: TEST_DIR } as any,
+    )
+
+    const lines = String(result).split('\n').filter((line) => line.match(/^\d+:/))
+    expect(lines).toHaveLength(2000)
+    expect(result).toContain('2000: line 2000')
+    expect(result).not.toContain('2001: line 2001')
+  })
+
   test('searches by pattern', async () => {
     const result = await tools['plan-read'].execute(
       { pattern: 'Phase' },
