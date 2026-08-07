@@ -23,18 +23,6 @@ export interface PromptContext {
   getFindingRecurrence(loopName?: string): Map<string, number>
 }
 
-/**
- * Sandbox context note injected into the system prompt of every session belonging to an
- * active sandbox loop — including subagent sessions spawned via the Task tool — by
- * `createSandboxMessageHook`. Centralizing it here (rather than appending to each loop/audit
- * prompt body) ensures subagents, which never see the loop prompt text, still receive the
- * container context. Single source of truth.
- */
-export const SANDBOX_CONTEXT_NOTE = [
-  '[Sandbox] This loop runs inside a container: bash tool commands execute in the loop container, not on the host. OS-specific commands or tools may differ from the host system.',
-  'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
-].join('\n')
-
 function formatSectionsSummary(digest: SectionDigestEntry[]): string {
   return digest.map(s => {
     let parts = `## Section ${s.index + 1}: ${s.title}`

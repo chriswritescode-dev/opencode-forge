@@ -614,11 +614,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
       getPermissionOptions: (workspaceId) => resolveLoopPermissionOptionsForWorkspace(forgeClient, config, workspaceId),
     })
-    const sandboxMessageHook = createSandboxMessageHook({
-      sessionLoopResolver,
-      logger,
-    })
-
     // Host-session sandbox controller: reconciles the acknowledged host sandbox preference for
     // sessions outside any loop. Always constructed — even when sandbox routing is unavailable
     // (sandbox disabled, manager init failure, or no shell shim) — so a requested ON is
@@ -669,6 +664,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await sharedSessionSandbox.controller.start()
         return sharedSessionSandbox.controller.resolveSandboxForSession(sessionID, opts)
       },
+    })
+
+    // Tells the agent its tool calls run in a container. Driven by the same resolver as bash so
+    // the note appears for sandbox loops, their subagents, and host-sandbox sessions alike.
+    const sandboxMessageHook = createSandboxMessageHook({
+      resolveSandboxForSession: (sessionID) => resolveSandboxForSession(sessionID),
+      logger,
     })
 
     // Spawns an isolated agent session (splitter/architect) seeded with a single text prompt,
