@@ -1877,3 +1877,100 @@ describe('handleStartGoal creates dedicated code session', () => {
     db.close()
   })
 })
+
+describe('handlePlanNewSession workspace forwarding', () => {
+  let db: Database
+  let loopsRepo: LoopsRepo
+  let plansRepo: PlansRepo
+  let reviewFindingsRepo: ReviewFindingsRepo
+  let sectionPlansRepo: SectionPlansRepo
+
+  const noopFn = () => {}
+
+  beforeEach(() => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-new-session-test-'))
+    db = new Database(join(tempDir, 'test.db'))
+    setupLoopsTestDb(db)
+
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
+  })
+
+  test('forwards the created session workspaceID to tui.selectSession and promptAsync', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session-id', workspaceID: 'ws_test' }),
+        promptAsync: async () => {},
+      },
+      tui: {
+        selectSession: async () => {},
+      },
+    })
+
+    const loopService = createLoopService(
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
+      mockLogger,
+      undefined,
+      undefined,
+      sectionPlansRepo,
+    )
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: loopService,
+          listActive: (...args: any[]) => loopService.listActive(...args),
+          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+          handleAuditorProviderLimit: async () => false,
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+      client,
+      pendingTeardowns: mockPendingTeardowns,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'plan.execute.newSession' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
+        lifecycle: { selectSession: true, selectSessionTiming: 'after-prompt' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(client.tui.selectSession).toHaveBeenCalledWith({ directory: '/tmp/test', sessionID: 'new-session-id', workspace: 'ws_test' })
+    expect(client.session.promptAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionID: 'new-session-id', workspace: 'ws_test' }),
+    )
+
+    db.close()
+  })
+})

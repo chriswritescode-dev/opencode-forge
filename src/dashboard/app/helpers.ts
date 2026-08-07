@@ -365,6 +365,10 @@ export function formatFindingCount(count: number, noun: string): string {
   return count + ' ' + noun + (count === 1 ? '' : 's')
 }
 
+export function formatSectionNumber(index: number): string {
+  return String(index + 1)
+}
+
 /** Clamps current/total to a 0–100 fill percentage, guarding non-positive totals. */
 export function clampPercent(current: number, total: number): number {
   if (!total || total <= 0) return 0
@@ -518,6 +522,10 @@ export function formatSectionDuration(
   if (!startedAt) return ''
   const seconds = computeElapsedSeconds(startedAt, completedAt ?? undefined)
   return seconds > 0 ? formatDuration(seconds) : ''
+}
+
+export function formatSpanDuration(ms: number): string {
+  return ms >= 1000 ? formatDuration(Math.floor(ms / 1000)) : ms + 'ms'
 }
 
 /** Relative-time label like "2m ago", "3h ago", "2d ago", "Jan 14-2026 3:45 PM". */
@@ -691,6 +699,41 @@ export function summarizePhaseTotals(spans: PhaseSpan[]): Record<string, number>
   return out
 }
 
+/** Single source of human phase display text; unknown phases pass through. */
+const PHASE_LABELS: Record<string, string> = {
+  coding: 'Coding',
+  auditing: 'Auditing',
+  final_auditing: 'Final audit',
+  final_audit_fix: 'Final audit fix',
+  post_action: 'Post-action',
+}
+
+export function phaseLabel(phase: string): string {
+  if (phase === '') return 'Unknown'
+  return PHASE_LABELS[phase] ?? phase
+}
+
+export interface PhaseLegendRow {
+  phase: string
+  label: string
+  durationMs: number
+  pct: number
+}
+
+/** Legend rows for the non-empty phases of a span set, longest first. */
+export function phaseLegendRows(spans: PhaseSpan[]): PhaseLegendRow[] {
+  const totals = summarizePhaseTotals(spans)
+  const rows: PhaseLegendRow[] = Object.keys(totals).map(phase => ({
+    phase,
+    label: phaseLabel(phase),
+    durationMs: totals[phase],
+    pct: 0,
+  }))
+  const totalMs = rows.reduce((sum, r) => sum + r.durationMs, 0)
+  for (const r of rows) r.pct = totalMs > 0 ? Math.round((r.durationMs / totalMs) * 100) : 0
+  return rows.sort((a, b) => b.durationMs - a.durationMs)
+}
+
 interface TimelineEvent {
   transition: LoopTransitionRow
   elapsedMs: number | null
@@ -740,4 +783,71 @@ export function computeTimelineEvents(
   }
   out.reverse()
   return out
+}
+
+export interface AmendmentSummary {
+  count: number
+  lastAt: number | null
+  lastSection: number | null
+}
+
+/**
+ * Count and newest-amendment stamp for a loop's amendment set. The repo orders
+ * rows by `id ASC`, so the newest row is not necessarily the last array element
+ * when `createdAt` values interleave; equal timestamps tie-break toward the
+ * higher id (insertion order).
+ */
+export function summarizeAmendments(amendments: DashboardLoop['amendments']): AmendmentSummary {
+  if (amendments.length === 0) return { count: 0, lastAt: null, lastSection: null }
+  let newest = amendments[0]
+  for (const a of amendments) {
+    if (a.createdAt > newest.createdAt || (a.createdAt === newest.createdAt && a.id > newest.id)) {
+      newest = a
+    }
+  }
+  return { count: amendments.length, lastAt: newest.createdAt, lastSection: newest.appliedAtSection }
+}
+
+/** Distinct section indexes amended at least once, in first-seen order. */
+export function amendedSectionIndexes(amendments: DashboardLoop['amendments']): Set<number> {
+  const out = new Set<number>()
+  for (const a of amendments) out.add(a.appliedAtSection)
+  return out
+}
+
+export type TimelineEntry =
+  | { kind: 'transition'; transition: LoopTransitionRow; elapsedMs: number | null }
+  | { kind: 'amendment'; amendment: DashboardLoop['amendments'][number]; elapsedMs: null }
+
+/**
+ * One newest-first timeline combining loop transitions and plan amendments.
+ * Transition elapsed math is delegated to `computeTimelineEvents` (the single
+ * source of the elapsed rules); amendments carry no elapsed measurement.
+ * Equal timestamps order transition-before-amendment so an adjustment reads
+ * after the transition it triggered.
+ */
+export function mergeTimelineEntries(
+  transitions: LoopTransitionRow[],
+  amendments: DashboardLoop['amendments'],
+  startedAt: number,
+  truncated: boolean,
+): TimelineEntry[] {
+  const entries: TimelineEntry[] = [
+    ...computeTimelineEvents(transitions, startedAt, truncated).map(e => ({
+      kind: 'transition' as const,
+      transition: e.transition,
+      elapsedMs: e.elapsedMs,
+    })),
+    ...amendments.map(a => ({ kind: 'amendment' as const, amendment: a, elapsedMs: null })),
+  ]
+  entries.sort((a, b) => {
+    const ta = a.kind === 'transition' ? a.transition.createdAt : a.amendment.createdAt
+    const tb = b.kind === 'transition' ? b.transition.createdAt : b.amendment.createdAt
+    if (tb !== ta) return tb - ta
+    if (a.kind !== b.kind) return a.kind === 'transition' ? -1 : 1
+    const idA = a.kind === 'transition' ? a.transition.id : a.amendment.id
+    const idB = b.kind === 'transition' ? b.transition.id : b.amendment.id
+    return idB - idA
+  })
+  return entries
 }

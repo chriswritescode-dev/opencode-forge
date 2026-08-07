@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   summarizePlanStructure,
   formatPlanStructureSummary,
+  findSectionsForLineRange,
 } from '../src/utils/plan-structure'
 import { MAX_TOTAL_SECTIONS } from '../src/constants/loop'
 
@@ -304,7 +305,7 @@ describe('formatPlanStructureSummary', () => {
       lines: 10,
       characters: 100,
       sectionMarkers: 1,
-      sections: [{ index: 0, title: 'Phase 1' }],
+      sections: [{ index: 0, title: 'Phase 1', startLine: 0, endLine: 1 }],
       loopName: 'foo',
       warnings: [],
     }
@@ -329,11 +330,81 @@ describe('formatPlanStructureSummary', () => {
     expect(formatted).toContain('exceed the cap of 24')
   })
 
-  test('can render only the latest section for incremental writes', () => {
+  test('can render only the focused sections for incremental edits', () => {
     const summary = summarizePlanStructure(completePlan(3))
-    const formatted = formatPlanStructureSummary(summary, { sectionDetail: 'latest' })
-    expect(formatted).toContain('Sections (3); latest: 3. Phase 3: Implement behavior')
-    expect(formatted).not.toContain('1. Phase 1')
-    expect(formatted).not.toContain('2. Phase 2')
+    const formatted = formatPlanStructureSummary(summary, { sectionIndexes: [1] })
+    expect(formatted).toContain('Sections (3):')
+    expect(formatted).toContain('  2. Phase 2: Implement behavior')
+    expect(formatted).not.toContain('  1. Phase 1')
+    expect(formatted).not.toContain('  3. Phase 3')
+  })
+
+  test('renders the full outline when no focused indexes are given', () => {
+    const summary = summarizePlanStructure(completePlan(3))
+    const formatted = formatPlanStructureSummary(summary)
+    expect(formatted).toContain('Sections (3):')
+    expect(formatted).toContain('  1. Phase 1: Implement behavior')
+    expect(formatted).toContain('  2. Phase 2: Implement behavior')
+    expect(formatted).toContain('  3. Phase 3: Implement behavior')
+  })
+
+  test('renders only the count line when focused indexes match no sections', () => {
+    const summary = summarizePlanStructure(completePlan(3))
+    const formatted = formatPlanStructureSummary(summary, { sectionIndexes: [99] })
+    expect(formatted).toContain('Sections (3):')
+    expect(formatted).not.toMatch(/^\s+\d+\./m)
+  })
+
+  test('renders only the count line for an empty focused index list', () => {
+    const summary = summarizePlanStructure(completePlan(3))
+    const formatted = formatPlanStructureSummary(summary, { sectionIndexes: [] })
+    expect(formatted).toContain('Sections (3):')
+    expect(formatted).not.toMatch(/^\s+\d+\./m)
+  })
+})
+
+describe('findSectionsForLineRange', () => {
+  test('summary sections carry the produced line ranges', () => {
+    const summary = summarizePlanStructure(completePlan(2))
+    expect(summary.sections[0].startLine).toBeGreaterThanOrEqual(0)
+    expect(summary.sections[0].endLine).toBeGreaterThan(summary.sections[0].startLine)
+    expect(summary.sections[1].startLine).toBe(summary.sections[0].endLine + 1)
+  })
+
+  test('maps a line inside a section to that section', () => {
+    const plan = completePlan(3)
+    const summary = summarizePlanStructure(plan)
+    const first = summary.sections[0]
+    const matched = findSectionsForLineRange(plan, first.startLine, first.startLine + 1)
+    expect(matched.map((s) => s.index)).toEqual([0])
+    expect(matched[0].title).toBe(first.title)
+  })
+
+  test('returns an empty list for preamble and trailing content', () => {
+    const plan = completePlan(2)
+    expect(findSectionsForLineRange(plan, 0, 1)).toEqual([])
+    const lineCount = plan.split('\n').length
+    expect(findSectionsForLineRange(plan, lineCount - 1, lineCount)).toEqual([])
+  })
+
+  test('uses produced section indexes, not marker ordinals, when an empty-body marker precedes a real section', () => {
+    const plan = [
+      '<!-- forge-section -->',
+      '<!-- forge-section -->',
+      '## Phase Real',
+      'body',
+    ].join('\n')
+    const matched = findSectionsForLineRange(plan, 3, 4)
+    expect(matched.map((s) => s.index)).toEqual([0])
+    expect(matched.map((s) => s.title)).toEqual(['Phase Real'])
+  })
+
+  test('returns every produced section a range spans', () => {
+    const plan = completePlan(3)
+    const summary = summarizePlanStructure(plan)
+    const first = summary.sections[0]
+    const last = summary.sections[2]
+    const matched = findSectionsForLineRange(plan, first.startLine, last.endLine)
+    expect(matched.map((s) => s.index)).toEqual([0, 1, 2])
   })
 })

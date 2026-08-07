@@ -101,6 +101,61 @@ describe('plan-read', () => {
     expect(lines.length).toBe(3)
   })
 
+  test('defaults to the same 2000-line limit as Read', async () => {
+    plansRepo.writeForSession(
+      'test-project',
+      'test-session',
+      Array.from({ length: 2002 }, (_, index) => `line ${index + 1}`).join('\n'),
+    )
+
+    const result = await tools['plan-read'].execute(
+      {},
+      { sessionID: 'test-session', directory: TEST_DIR } as any,
+    )
+
+    const lines = String(result).split('\n').filter((line) => line.match(/^\d+:/))
+    expect(lines).toHaveLength(2000)
+    expect(result).toContain('2000: line 2000')
+    expect(result).not.toContain('2001: line 2001')
+  })
+
+  test('emits a truncation notice with the next offset when the window does not reach the end', async () => {
+    plansRepo.writeForSession(
+      'test-project',
+      'test-session',
+      Array.from({ length: 25 }, (_, index) => `line ${index + 1}`).join('\n'),
+    )
+
+    const result = await tools['plan-read'].execute(
+      { offset: 1, limit: 10 },
+      { sessionID: 'test-session', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('(25 lines total)')
+    expect(result).toContain('1: line 1')
+    expect(result).toContain('10: line 10')
+    expect(result).toContain('Showing lines 1-10 of 25')
+    expect(result).toContain('Use offset=11 to continue.')
+  })
+
+  test('emits no truncation notice when the window ends exactly at the last line', async () => {
+    plansRepo.writeForSession(
+      'test-project',
+      'test-session',
+      Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join('\n'),
+    )
+
+    const result = await tools['plan-read'].execute(
+      { offset: 1, limit: 10 },
+      { sessionID: 'test-session', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('10: line 10')
+    expect(result).toContain('(10 lines total)')
+    expect(result).not.toContain('Showing lines')
+    expect(result).not.toContain('continue.')
+  })
+
   test('searches by pattern', async () => {
     const result = await tools['plan-read'].execute(
       { pattern: 'Phase' },
@@ -276,9 +331,9 @@ describe('plan-read with recent plans', () => {
     expect(result).not.toContain('Other Project')
   })
 
-  test('lists recent project plans respects limit', async () => {
+  test('lists recent project plans respects count', async () => {
     const result = await tools['plan-read'].execute(
-      { recent: true, limit: 1 },
+      { recent: true, count: 1 },
       { sessionID: 'test-session', directory: TEST_DIR } as any
     )
 
@@ -286,9 +341,38 @@ describe('plan-read with recent plans', () => {
     expect(result).toContain('(1 found)')
   })
 
+  test('recent list uses count and ignores limit', async () => {
+    plansRepo.writeForSession('test-project', 'session-c', '# Session Plan C')
+    plansRepo.writeForSession('test-project', 'session-d', '# Session Plan D')
+    plansRepo.writeForSession('test-project', 'session-e', '# Session Plan E')
+
+    const result = await tools['plan-read'].execute(
+      { recent: true, count: 2, limit: 1 },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Recent plans for project')
+    expect(result).toContain('(2 found)')
+    expect(result).not.toContain('(5 found)')
+  })
+
+  test('recent search uses count and ignores limit', async () => {
+    plansRepo.writeForSession('test-project', 'session-c', '# Session Plan C\nfeature search match')
+    plansRepo.writeForSession('test-project', 'session-d', '# Session Plan D\nfeature search match')
+    plansRepo.writeForSession('test-project', 'session-e', '# Session Plan E\nfeature search match')
+
+    const result = await tools['plan-read'].execute(
+      { recent: true, pattern: 'feature', count: 2, limit: 1 },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Found 2 recent plan match(es) for /feature/.')
+    expect(result).not.toContain('Found 3')
+  })
+
   test('searches recent project plans with pattern', async () => {
     const result = await tools['plan-read'].execute(
-      { recent: true, pattern: 'auth|login', limit: 10 },
+      { recent: true, pattern: 'auth|login', count: 10 },
       { sessionID: 'test-session', directory: TEST_DIR } as any
     )
 

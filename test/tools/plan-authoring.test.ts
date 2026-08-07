@@ -105,6 +105,11 @@ describe('plan-write', () => {
     db.close()
   })
 
+  test('describes the same create-or-overwrite interaction as Write', () => {
+    expect(tools['plan-write'].description).toContain('like the Write tool')
+    expect(tools['plan-write'].description).toContain('Use plan-edit for incremental additions and revisions')
+  })
+
   test('writes normalized plan content to the session row', async () => {
     const content = `# Plan
 
@@ -125,6 +130,8 @@ Loop Name: my-loop
 
     expect(result).toContain('Plan stored:')
     expect(result).toContain('Sections (2):')
+    expect(result).toContain('  1. Phase 1')
+    expect(result).toContain('  2. Phase 2')
 
     const row = plansRepo.getForSession('test-project', 'sess-1')
     expect(row).not.toBeNull()
@@ -153,48 +160,6 @@ ${body}
     const row = plansRepo.getForSession('test-project', 'sess-1')
     expect(row!.content).toBe(body.trim())
     expect(row!.content).not.toContain('forge-plan:')
-  })
-
-  test('append: true concatenates existing content with two newlines', async () => {
-    const existing = `# Plan
-
-<!-- forge-section -->
-## Phase 1
-- do one`
-    plansRepo.writeForSession('test-project', 'sess-1', existing)
-
-    const fragment = `<!-- forge-section -->
-## Phase 2
-- do two`
-
-    const result = await tools['plan-write'].execute(
-      { content: fragment, append: true },
-      { sessionID: 'sess-1', directory: TEST_DIR } as any,
-    )
-
-    expect(result).toContain('Plan stored:')
-    expect(result).toContain('Sections (2); latest: 2. Phase 2')
-    expect(result).not.toContain('1. Phase 1')
-    const row = plansRepo.getForSession('test-project', 'sess-1')
-    expect(row!.content).toBe(`${existing}\n\n${fragment.trim()}`)
-  })
-
-  test('append: true creates the row when none exists', async () => {
-    const fragment = `# Fresh Plan
-
-<!-- forge-section -->
-## Phase 1
-- do one`
-
-    const result = await tools['plan-write'].execute(
-      { content: fragment, append: true },
-      { sessionID: 'sess-1', directory: TEST_DIR } as any,
-    )
-
-    expect(result).toContain('Plan stored:')
-    const row = plansRepo.getForSession('test-project', 'sess-1')
-    expect(row).not.toBeNull()
-    expect(row!.content).toBe(fragment.trim())
   })
 
   test('from a running-loop session performs no write and names the loop', async () => {
@@ -301,6 +266,66 @@ describe('plan-edit', () => {
     expect(row!.content).toContain('- do two')
   })
 
+  test('reports only the edited section on a multi-section plan', async () => {
+    plansRepo.writeForSession('test-project', 'sess-1', BASE_PLAN)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '- do one', newString: '- do one (revised)' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Sections (2):')
+    expect(result).toContain('  1. Phase 1')
+    expect(result).not.toContain('  2. Phase 2')
+  })
+
+  test('replaceAll spanning two sections reports both touched sections', async () => {
+    plansRepo.writeForSession('test-project', 'sess-1', BASE_PLAN)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '- do', newString: '- revised', replaceAll: true },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Replaced 2 occurrence(s).')
+    expect(result).toContain('Sections (2):')
+    expect(result).toContain('  1. Phase 1')
+    expect(result).toContain('  2. Phase 2')
+  })
+
+  test('an edit in the preamble reports the count with no per-section lines', async () => {
+    plansRepo.writeForSession('test-project', 'sess-1', BASE_PLAN)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '# Plan', newString: '# Plan (updated)' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Sections (2):')
+    expect(result).not.toMatch(/^\s+\d+\./m)
+  })
+
+  test('an edit in trailing content reports the count with no per-section lines', async () => {
+    const content = `# Plan
+
+<!-- forge-section -->
+## Phase 1
+- do one
+
+## Decisions
+- None.
+`
+    plansRepo.writeForSession('test-project', 'sess-1', content)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '- None.', newString: '- None (revised).' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Sections (1):')
+    expect(result).not.toMatch(/^\s+\d+\./m)
+  })
+
   test('a 3-occurrence oldString without replaceAll performs no write and names 3', async () => {
     const content = `# Plan\n\nline\nline\nline\n`
     plansRepo.writeForSession('test-project', 'sess-1', content)
@@ -359,6 +384,28 @@ describe('plan-edit', () => {
 
     expect(result).toBe('plan-edit failed: no plan stored for this session. Use plan-write to create it first.')
     expect(plansRepo.getForSession('test-project', 'sess-empty')).toBeNull()
+  })
+
+  test('an empty oldString creates a missing plan like Edit creates a missing file', async () => {
+    const result = await tools['plan-edit'].execute(
+      { oldString: '', newString: '# New plan' },
+      { sessionID: 'sess-empty', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Created plan.')
+    expect(plansRepo.getForSession('test-project', 'sess-empty')!.content).toBe('# New plan')
+  })
+
+  test('an empty oldString cannot replace an existing plan', async () => {
+    plansRepo.writeForSession('test-project', 'sess-1', BASE_PLAN)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '', newString: '# Replacement' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('oldString cannot be empty when editing an existing plan')
+    expect(plansRepo.getForSession('test-project', 'sess-1')!.content).toBe(BASE_PLAN)
   })
 
   test('editing with oldString === newString performs no write and returns the corresponding message', async () => {

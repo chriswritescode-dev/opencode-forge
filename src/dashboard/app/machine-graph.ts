@@ -219,7 +219,7 @@ export function LoopMachineGraph(props: {
     <svg class="mg-svg" viewBox="0 0 720 220" preserveAspectRatio="xMidYMid meet">
       <defs>
         <marker id="mg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--cancelled)"></path>
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--fg-muted)"></path>
         </marker>
       </defs>
 

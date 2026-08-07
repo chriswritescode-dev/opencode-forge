@@ -9,10 +9,11 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
 
   return {
     'plan-read': tool({
-      description: 'Read the plan for the current session or loop, or list/search recent project plans.',
+      description: 'Read the plan for the current session or loop with the same offset and limit options as the Read tool, or list/search recent project plans.',
       args: {
-        offset: z.number().optional().describe('Line number to start from (1-indexed)'),
-        limit: z.number().optional().describe('Maximum number of lines to return'),
+        offset: z.number().int().nonnegative().optional().describe('When reading a plan: the line number to start reading from (1-indexed)'),
+        limit: z.number().int().nonnegative().optional().describe('When reading a plan: the maximum number of lines to read (defaults to 2000)'),
+        count: z.number().int().nonnegative().optional().describe('When recent is true: the number of recent plans to list or search (defaults to 20, capped at 100)'),
         pattern: z.string().optional().describe('Regex pattern to search for in plan content'),
         loop_name: z.string().optional().describe('Optional loop name to read plan:{loop_name} directly instead of resolving from the current session'),
         session_id: z.string().optional().describe('Explicit session ID to read plan from'),
@@ -27,7 +28,7 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
             } catch (e) {
               return `Invalid regex pattern: ${(e as Error).message}`
             }
-            const matches = plansRepo.searchRecent(projectId, regex, { limit: args.limit })
+            const matches = plansRepo.searchRecent(projectId, regex, { limit: args.count })
             if (matches.length === 0) {
               return 'No matching recent plans found'
             }
@@ -47,7 +48,7 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
             })
             return `Found ${matches.length} recent plan match(es) for /${args.pattern}/.\n${rows.join('\n')}`
           }
-          const results = plansRepo.listRecent(projectId, { limit: args.limit })
+          const results = plansRepo.listRecent(projectId, { limit: args.count })
           if (results.length === 0) {
             return 'No recent plans found'
           }
@@ -110,22 +111,22 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
         const lines = content.split('\n')
         const totalLines = lines.length
 
-        let resultLines = lines
-        if (args.offset !== undefined) {
-          const startIdx = args.offset - 1
-          resultLines = resultLines.slice(Math.max(0, startIdx))
-        }
-        if (args.limit !== undefined) {
-          resultLines = resultLines.slice(0, args.limit)
-        }
+        const offset = args.offset || 1
+        const limit = args.limit ?? 2000
+        const resultLines = lines.slice(offset - 1, offset - 1 + limit)
 
         const numberedLines = resultLines.map((line, i) => {
-          const originalLineNum = args.offset !== undefined ? args.offset + i : i + 1
-          return `${originalLineNum}: ${line}`
+          return `${offset + i}: ${line}`
         })
 
         const header = `(${totalLines} lines total)`
-        return `${header}\n${numberedLines.join('\n')}`
+        const output = `${header}\n${numberedLines.join('\n')}`
+        if (offset - 1 + limit < totalLines) {
+          const last = offset + resultLines.length - 1
+          const next = last + 1
+          return `${output}\n(Showing lines ${offset}-${last} of ${totalLines}. Use offset=${next} to continue.)`
+        }
+        return output
       },
     }),
   }

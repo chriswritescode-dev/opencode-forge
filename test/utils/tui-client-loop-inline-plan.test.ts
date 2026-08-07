@@ -65,7 +65,7 @@ describe('Load Plans inline plan is sent as inline even when host session exists
         },
         session: {
           create: vi.fn().mockImplementation(async (args: any) => ({
-            data: { id: 'sess_new' },
+            data: { id: 'sess_new', workspaceID: 'ws_test' },
           })),
           promptAsync: vi.fn().mockResolvedValue({ data: {} }),
         },
@@ -142,6 +142,32 @@ describe('Load Plans inline plan is sent as inline even when host session exists
     expect(promptArgs.parts[0].text).toContain('## Section plan\n## First Section\nDo first work.')
     expect(promptArgs.parts[0].text).not.toContain('Second Section')
     expect(promptArgs.parts[0].text).not.toContain('forge-plan:start')
+  })
+
+  test('plan.execute({ mode: "new-session" }) returns the created session workspaceId', async () => {
+    const client = await connectForgeProject(mockApi, DIRECTORY)
+    expect(client).not.toBeNull()
+
+    const result = await client!.plan.execute(
+      SESSION_ID,
+      {
+        mode: 'new-session',
+        title: 'My Plan',
+        plan: '# My Plan\n\nFresh content',
+        executionModel: undefined,
+        auditorModel: undefined,
+      },
+    )
+
+    expect(result).not.toBeNull()
+    if (result && 'sessionId' in result) {
+      expect(result.sessionId).toBe('sess_new')
+      expect(result.workspaceId).toBe('ws_test')
+    }
+    expect(mockApi.client.session.create).toHaveBeenCalledWith({
+      title: 'My Plan',
+      directory: DIRECTORY,
+    })
   })
 
   test('bakes the loop permission ruleset (no sh/bash rules) into session.create', async () => {
