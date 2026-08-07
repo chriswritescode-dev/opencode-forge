@@ -365,6 +365,10 @@ export function formatFindingCount(count: number, noun: string): string {
   return count + ' ' + noun + (count === 1 ? '' : 's')
 }
 
+export function formatSectionNumber(index: number): string {
+  return String(index + 1)
+}
+
 /** Clamps current/total to a 0–100 fill percentage, guarding non-positive totals. */
 export function clampPercent(current: number, total: number): number {
   if (!total || total <= 0) return 0
@@ -518,6 +522,10 @@ export function formatSectionDuration(
   if (!startedAt) return ''
   const seconds = computeElapsedSeconds(startedAt, completedAt ?? undefined)
   return seconds > 0 ? formatDuration(seconds) : ''
+}
+
+export function formatSpanDuration(ms: number): string {
+  return ms >= 1000 ? formatDuration(Math.floor(ms / 1000)) : ms + 'ms'
 }
 
 /** Relative-time label like "2m ago", "3h ago", "2d ago", "Jan 14-2026 3:45 PM". */
@@ -692,7 +700,7 @@ export function summarizePhaseTotals(spans: PhaseSpan[]): Record<string, number>
 }
 
 /** Single source of human phase display text; unknown phases pass through. */
-export const PHASE_LABELS: Record<string, string> = {
+const PHASE_LABELS: Record<string, string> = {
   coding: 'Coding',
   auditing: 'Auditing',
   final_auditing: 'Final audit',

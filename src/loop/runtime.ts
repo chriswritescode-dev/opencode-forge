@@ -16,6 +16,7 @@ import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecove
 import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
+import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
 import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
@@ -76,6 +77,15 @@ export interface LoopRuntimeDeps {
   loopService?: LoopService
   /** Optional parent-session lookup for ancestor-aware session→loop resolution (child/subagent support). */
   getParentSessionId?: (sessionId: string) => Promise<string | null>
+  /**
+   * This plugin instance's own directory. Several plugin instances can share one
+   * process, each bound to a different directory, and opencode delivers a session's
+   * events only to the instance bound to that session's directory. A loop may
+   * therefore be supervised only by the instance whose directory is the loop's
+   * worktree; any other instance is blind to its progress. Omitted in tests, which
+   * disables the ownership gate.
+   */
+  directory?: string
 }
 
 export interface StartLoopInput {
@@ -153,6 +163,19 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
   const stateLocks = new Map<string, Promise<unknown>>()
+
+  const instanceDirectory = deps.directory ? canonicalizePath(deps.directory) : null
+
+  /**
+   * Whether this plugin instance may supervise the loop living in `worktreeDir`.
+   * Only the instance bound to that directory receives the loop's session events,
+   * so any other instance would be judging progress it cannot observe. Returns
+   * true when no directory was supplied, which keeps tests ungated.
+   */
+  function ownsLoopWorktree(worktreeDir: string): boolean {
+    if (instanceDirectory === null) return true
+    return canonicalizePath(worktreeDir) === instanceDirectory
+  }
 
   /**
    * Resolves loop permission-ruleset options for the given state's workspace,
@@ -2375,6 +2398,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         await withStateLock(loopName, async () => {
           const state = loopService.getActiveState(loopName)
           if (!state?.active) return
+          // An instance that does not own the worktree never nudges this loop, so it
+          // also never holds the internal-abort marker that distinguishes a forge
+          // resend from a real user abort. Terminating here would kill a live loop on
+          // another instance's abort. Ownership is checked before the marker so the
+          // owner still consumes its own aborts normally.
+          if (!ownsLoopWorktree(state.worktreeDir)) {
+            logger.log(`Loop: ignoring aborted event for ${loopName}; worktree ${state.worktreeDir} is owned by another instance`)
+            return
+          }
           // Consume an abort we initiated ourselves to re-dispatch the audit
           // prompt on a fallback model. The fallback prompt was already sent on
           // this same session, so its AbortError must not be treated as an audit
@@ -2909,6 +2941,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function startWatchdog(name: string): void {
+    const state = loopService.getActiveState(name)
+    if (state && !ownsLoopWorktree(state.worktreeDir)) {
+      logger.log(`Loop: skipping watchdog for ${name}; instance directory ${instanceDirectory} does not own worktree ${state.worktreeDir}`)
+      return
+    }
     watchdog.start(name)
   }
 

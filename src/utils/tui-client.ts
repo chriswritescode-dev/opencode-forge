@@ -19,7 +19,7 @@ import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-erro
 import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
-import { extractPlanExecutionMetadata, sanitizeLoopName } from './plan-execution'
+import { extractPlanExecutionMetadata, sanitizeLoopName, createPlanExecutionSession } from './plan-execution'
 import { createForgeClient } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import { fetchLatestPlanForSession } from './plan-from-messages'
@@ -508,19 +508,19 @@ export async function connectForgeProject(
 
       if (req.mode === 'new-session') {
         try {
-          const session = await client.session.create({
+          const { sessionId, workspaceId } = await createPlanExecutionSession(client, {
             title: req.title.length > 60 ? `${req.title.substring(0, 57)}...` : req.title,
             directory,
           })
           const modelVariant = buildPromptModelSelection(parsedModel, req.executionVariant)
           await client.session.promptAsync({
-            sessionID: session.id,
+            sessionID: sessionId,
             directory,
             agent: 'code',
             ...modelVariant,
             parts: [{ type: 'text' as const, text: req.plan }],
           })
-          return { sessionId: session.id }
+          return { sessionId, workspaceId }
         } catch {
           return null
         }

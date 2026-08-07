@@ -491,7 +491,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory)
 
     const promptsDir = resolvePromptsDir()
     const agents = buildAgents(promptsDir)

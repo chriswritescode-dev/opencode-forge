@@ -12,11 +12,13 @@ import {
   splitFindings,
   findingsLevel,
   formatFindingCount,
+  formatSectionNumber,
   clampPercent,
   formatFinding,
   formatModelUsage,
   formatTokenCount,
   formatUsageCost,
+  formatSpanDuration,
   tokenBreakdownSegments,
   modelUsageBars,
   roleUsageBars,
@@ -126,6 +128,24 @@ function mockAmendment(overrides: Partial<PlanAmendmentRow> = {}): PlanAmendment
     sectionsBefore: '[]',
     sectionsAfter: '[]',
     createdAt: 100,
+    ...overrides,
+  }
+}
+
+function makeTransition(overrides: Partial<LoopTransitionRow> = {}): LoopTransitionRow {
+  return {
+    id: 1,
+    projectId: 'p1',
+    loopName: 'loop-a',
+    eventType: 'phase',
+    transitionKind: 'phase',
+    fromPhase: 'coding',
+    toPhase: 'auditing',
+    status: null,
+    reason: null,
+    iteration: 1,
+    sectionIndex: null,
+    createdAt: 0,
     ...overrides,
   }
 }
@@ -783,6 +803,32 @@ describe('clampPercent', () => {
 })
 
 // ---------------------------------------------------------------------------
+// formatSectionNumber
+// ---------------------------------------------------------------------------
+
+describe('formatSectionNumber', () => {
+  test('converts 0-based stored indexes to 1-based display strings', () => {
+    expect(formatSectionNumber(0)).toBe('1')
+    expect(formatSectionNumber(1)).toBe('2')
+    expect(formatSectionNumber(4)).toBe('5')
+  })
+})
+
+describe('formatSpanDuration', () => {
+  test('keeps sub-second spans as raw milliseconds', () => {
+    expect(formatSpanDuration(0)).toBe('0ms')
+    expect(formatSpanDuration(500)).toBe('500ms')
+    expect(formatSpanDuration(999)).toBe('999ms')
+  })
+
+  test('formats spans of one second or more with the duration helper', () => {
+    expect(formatSpanDuration(1000)).toBe('1s')
+    expect(formatSpanDuration(90_000)).toBe('1m 30s')
+    expect(formatSpanDuration(3_600_000)).toBe('1h 0m')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // formatFinding
 // ---------------------------------------------------------------------------
 
@@ -1125,24 +1171,6 @@ describe('renderMarkdown', () => {
 // ---------------------------------------------------------------------------
 
 describe('computePhaseSpans', () => {
-  function makeTransition(overrides: Partial<LoopTransitionRow> = {}): LoopTransitionRow {
-    return {
-      id: 1,
-      projectId: 'p1',
-      loopName: 'loop-a',
-      eventType: 'phase',
-      transitionKind: 'phase',
-      fromPhase: 'coding',
-      toPhase: 'auditing',
-      status: null,
-      reason: null,
-      iteration: 1,
-      sectionIndex: null,
-      createdAt: 0,
-      ...overrides,
-    }
-  }
-
   test('empty transitions on a running loop yield one open span ending at now', () => {
     const startedAt = 1700000000000
     const now = startedAt + 5000
@@ -1596,24 +1624,6 @@ describe('phaseLegendRows', () => {
 // ---------------------------------------------------------------------------
 
 describe('computeTimelineEvents', () => {
-  function makeTransition(overrides: Partial<LoopTransitionRow> = {}): LoopTransitionRow {
-    return {
-      id: 1,
-      projectId: 'p1',
-      loopName: 'loop-a',
-      eventType: 'phase',
-      transitionKind: 'phase',
-      fromPhase: 'coding',
-      toPhase: 'auditing',
-      status: null,
-      reason: null,
-      iteration: 1,
-      sectionIndex: null,
-      createdAt: 0,
-      ...overrides,
-    }
-  }
-
   test('returns events newest first', () => {
     const startedAt = 1700000000000
     const t1 = makeTransition({ id: 1, createdAt: startedAt + 1000 })
@@ -1866,24 +1876,6 @@ describe('amendedSectionIndexes', () => {
 })
 
 describe('mergeTimelineEntries', () => {
-  function makeTransition(overrides: Partial<LoopTransitionRow> = {}): LoopTransitionRow {
-    return {
-      id: 1,
-      projectId: 'p1',
-      loopName: 'loop-a',
-      eventType: 'phase',
-      transitionKind: 'phase',
-      fromPhase: 'coding',
-      toPhase: 'auditing',
-      status: null,
-      reason: null,
-      iteration: 1,
-      sectionIndex: null,
-      createdAt: 0,
-      ...overrides,
-    }
-  }
-
   test('merges transitions and amendments into one newest-first timeline, sorting an in-between amendment between its transitions', () => {
     const startedAt = 1700000000000
     const t1 = makeTransition({ id: 1, createdAt: startedAt + 1000, fromPhase: 'coding', toPhase: 'auditing' })

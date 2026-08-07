@@ -468,6 +468,42 @@ describe('dashboard App fine-grained reactivity', () => {
     expect(container.querySelector('.section-body')).toBeFalsy()
   })
 
+  test('the section list shows 1-based numbers while selection stays keyed by the 0-based index', async () => {
+    window.location.hash = '#p1/loop/loop-a/sections'
+    const section = (sectionIndex: number, title: string): any => ({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      sectionIndex,
+      title,
+      content: 'PLAN ' + title,
+      status: 'completed',
+      attempts: 0,
+      summaryDone: null,
+      summaryDeviations: null,
+      summaryFollowUps: null,
+      startedAt: 1700000000000,
+      completedAt: 1700000500000,
+      createdAt: 1700000000000,
+    })
+    payload = makePayload({
+      dashLoop: {
+        sections: [section(0, 'Section A'), section(1, 'Section B'), section(2, 'Section C')],
+      },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rows = Array.from(container.querySelectorAll('.section-list-row')) as HTMLElement[]
+    expect(rows.map(r => r.querySelector('.section-index')!.textContent)).toEqual(['#1', '#2', '#3'])
+
+    rows[1].click()
+    await flush()
+
+    const title = container.querySelector('.section-drill-title') as HTMLElement
+    expect(title.querySelector('.section-index')!.textContent).toBe('#2')
+    expect(title.querySelector('.section-title')!.textContent).toBe('Section B')
+  })
+
   test('renders usage graphs (stacked token bar + per-model cost bars)', async () => {
     window.location.hash = '#p1/loop/loop-a/usage'
     payload = makePayload({
@@ -501,7 +537,7 @@ describe('dashboard App fine-grained reactivity', () => {
     expect((segs[0] as HTMLElement).style.width).toBe('50%')
 
     // Legend shows all five types with compact values
-    const legend = container.querySelector('.usage-legend')
+    const legend = container.querySelector('.tab-body[data-tab="usage"] .legend')
     expect(legend).toBeTruthy()
     expect(legend!.textContent).toContain('Input')
     expect(legend!.textContent).toContain('Cache W')
@@ -547,13 +583,15 @@ describe('dashboard App fine-grained reactivity', () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    // Findings banner sits in the header title row (still the single
-    // .ldh-findings element in the header).
-    const banner = container.querySelector('.loop-detail-header .ldh-findings') as HTMLElement
-    expect(banner).toBeTruthy()
-    expect(banner.textContent).toContain('1 bug')
-    expect(banner.textContent).toContain('1 warning')
-    expect(banner.classList.contains('ldh-findings-bug')).toBe(true)
+    // The findings summary sits in the Findings metric cell of the primary
+    // strip, carrying the severity tone on the cell border.
+    const findings = Array.from(container.querySelectorAll('.loop-detail-header .ldh-primary .ldh-cell'))
+      .find(cell => cell.querySelector('.ldh-cell-label')?.textContent === 'Findings') as HTMLElement
+    expect(findings).toBeTruthy()
+    const value = findings.querySelector('.ldh-cell-value') as HTMLElement
+    expect(value.textContent).toContain('1 bug')
+    expect(value.textContent).toContain('1 warning')
+    expect(findings.classList.contains('ldh-cell-bug')).toBe(true)
 
     // Grouped stat grids keep the scalar facts (Messages) but no longer
     // duplicate token/cost numbers now centralized in the usage graphs.
@@ -572,7 +610,7 @@ describe('dashboard App fine-grained reactivity', () => {
     const usage = container.querySelector('.tab-body[data-tab="usage"] .usage-group')!
     expect(usage).toBeTruthy()
     expect(usage.querySelector('.usage-stack')).toBeTruthy()
-    expect(usage.querySelector('.usage-legend')).toBeTruthy()
+    expect(usage.querySelector('.legend')).toBeTruthy()
     expect(usage.querySelector('.usage-model-fill')).toBeTruthy()
     expect(usage.textContent).toContain('$')
     // No standalone Usage block remains a direct child of .loop-detail.
@@ -584,10 +622,12 @@ describe('dashboard App fine-grained reactivity', () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    const banner = container.querySelector('.loop-detail-header .ldh-findings') as HTMLElement
-    expect(banner).toBeTruthy()
-    expect(banner.textContent).toBe('No findings')
-    expect(banner.classList.contains('ldh-findings-clean')).toBe(true)
+    const findings = Array.from(container.querySelectorAll('.loop-detail-header .ldh-primary .ldh-cell'))
+      .find(cell => cell.querySelector('.ldh-cell-label')?.textContent === 'Findings') as HTMLElement
+    expect(findings).toBeTruthy()
+    const value = findings.querySelector('.ldh-cell-value') as HTMLElement
+    expect(value.textContent).toBe('No findings')
+    expect(findings.classList.contains('ldh-cell-clean')).toBe(true)
   })
 
   test('filter bar reflects updated per-repo counts after a poll', async () => {
@@ -1273,7 +1313,7 @@ describe('dashboard App plan amendments panel', () => {
     expect(rows.length).toBe(3)
     const flagged = rows.filter(r => r.querySelector('.section-adjusted'))
     expect(flagged.length).toBe(1)
-    expect(flagged[0].querySelector('.section-index')!.textContent).toBe('#1')
+    expect(flagged[0].querySelector('.section-index')!.textContent).toBe('#2')
     expect(flagged[0].querySelector('.section-adjusted')!.textContent).toBe('adjusted')
   })
 })
@@ -2709,12 +2749,12 @@ describe('dashboard App overview tab content', () => {
 
     const primary = container.querySelector('.loop-detail-header .ldh-primary') as HTMLElement
     expect(primary).toBeTruthy()
-    expect(Array.from(primary.querySelectorAll('.ldh-metric-label')).map(l => l.textContent))
+    expect(Array.from(primary.querySelectorAll('.ldh-cell-label')).map(l => l.textContent))
       .toEqual(['Duration', 'Cost', 'Iterations', 'Sections', 'Findings'])
 
     // The Sections metric is absent when the loop has no section breakdown.
     await poll(makePayload({ loop: { totalSections: 0 } }))
-    expect(Array.from(primary.querySelectorAll('.ldh-metric-label')).map(l => l.textContent))
+    expect(Array.from(primary.querySelectorAll('.ldh-cell-label')).map(l => l.textContent))
       .toEqual(['Duration', 'Cost', 'Iterations', 'Findings'])
   })
 
@@ -2761,15 +2801,15 @@ describe('dashboard App overview tab content', () => {
     await flush()
 
     const header = container.querySelector('.loop-detail-header') as HTMLElement
-    const modelStat = Array.from(header.querySelectorAll('.ldh-stat')).find(s =>
-      s.querySelector('.ldh-stat-label')?.textContent === 'Execution model') as HTMLElement
-    const value = modelStat.querySelector('.ldh-stat-value') as HTMLElement
+    const modelStat = Array.from(header.querySelectorAll('.ldh-cell-stat')).find(s =>
+      s.querySelector('.ldh-cell-label')?.textContent === 'Execution model') as HTMLElement
+    const value = modelStat.querySelector('.ldh-cell-value') as HTMLElement
     expect(value.textContent).toBe('GreatScott/GLM-4.7-turbo-preview-2026')
     expect(value.title).toBe('GreatScott/GLM-4.7-turbo-preview-2026')
   })
 
-  // The overview summarises findings exactly once, through the styled
-  // .ldh-findings badge in LoopDetailHeader.
+  // The overview summarises findings exactly once, through the Findings
+  // metric cell in LoopDetailHeader.
   test('overview summarises findings once with bug and warning counts', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
@@ -2785,24 +2825,26 @@ describe('dashboard App overview tab content', () => {
     await flush()
 
     const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const badges = Array.from(overviewBody.querySelectorAll('.ldh-findings')) as HTMLElement[]
-    expect(badges).toHaveLength(1)
-    expect(badges[0].classList.contains('ldh-findings-bug')).toBe(true)
-    expect(badges[0].textContent).toContain('2 bugs')
-    expect(badges[0].textContent).toContain('1 warning')
+    const findings = Array.from(overviewBody.querySelectorAll('.ldh-cell'))
+      .find(cell => cell.querySelector('.ldh-cell-label')?.textContent === 'Findings') as HTMLElement
+    expect(findings).toBeTruthy()
+    expect(findings.classList.contains('ldh-cell-bug')).toBe(true)
+    expect(findings.querySelector('.ldh-cell-value')!.textContent).toContain('2 bugs')
+    expect(findings.querySelector('.ldh-cell-value')!.textContent).toContain('1 warning')
   })
 
-  test('overview with no findings renders a clean findings badge', async () => {
+  test('overview with no findings renders a clean findings cell', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({ findings: [] })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
     const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const badges = Array.from(overviewBody.querySelectorAll('.ldh-findings')) as HTMLElement[]
-    expect(badges).toHaveLength(1)
-    expect(badges[0].classList.contains('ldh-findings-clean')).toBe(true)
-    expect(badges[0].textContent).toContain('No findings')
+    const findings = Array.from(overviewBody.querySelectorAll('.ldh-cell'))
+      .find(cell => cell.querySelector('.ldh-cell-label')?.textContent === 'Findings') as HTMLElement
+    expect(findings).toBeTruthy()
+    expect(findings.classList.contains('ldh-cell-clean')).toBe(true)
+    expect(findings.querySelector('.ldh-cell-value')!.textContent).toContain('No findings')
   })
 
   test('overview with warnings only renders the warning count and no bug count', async () => {
@@ -2818,9 +2860,10 @@ describe('dashboard App overview tab content', () => {
     await flush()
 
     const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const badge = overviewBody.querySelector('.ldh-findings') as HTMLElement
-    expect(badge.classList.contains('ldh-findings-warn')).toBe(true)
-    expect(badge.textContent).toContain('1 warning')
+    const findings = Array.from(overviewBody.querySelectorAll('.ldh-cell'))
+      .find(cell => cell.querySelector('.ldh-cell-label')?.textContent === 'Findings') as HTMLElement
+    expect(findings.classList.contains('ldh-cell-warn')).toBe(true)
+    expect(findings.querySelector('.ldh-cell-value')!.textContent).toContain('1 warning')
     expect(overviewBody.textContent).not.toContain('0 bug')
   })
 
@@ -3185,9 +3228,9 @@ describe('dashboard App timeline tab', () => {
     // Truncation indicator must not appear: the prior terminal proves the
     // pre-startedAt history exists, not that it was dropped.
     expect(body.querySelector('.phase-truncated')).toBeNull()
-    const legendItems = Array.from(body.querySelectorAll('.phase-legend-item')) as HTMLElement[]
+    const legendItems = Array.from(body.querySelectorAll('.legend-item')) as HTMLElement[]
     expect(legendItems.length).toBe(1)
-    expect(legendItems[0].querySelector('.phase-totals-dot')?.getAttribute('data-phase')).toBe('final_auditing')
+    expect(legendItems[0].querySelector('.legend-dot')?.getAttribute('data-phase')).toBe('final_auditing')
   })
 
   test('timeline event list renders 20 rows plus an expander when 100 transitions are present', async () => {
@@ -3243,7 +3286,7 @@ describe('dashboard App timeline tab', () => {
     // It is the first child of the timeline tab, above the phase bar.
     const timeline = body.querySelector('.timeline-tab') as HTMLElement
     expect(timeline.firstElementChild).toBe(graph)
-    const phaseBar = timeline.querySelector('.phase-bar, .phase-legend') as HTMLElement
+    const phaseBar = timeline.querySelector('.phase-bar, .legend') as HTMLElement
     expect(graph.compareDocumentPosition(phaseBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
@@ -3282,7 +3325,7 @@ describe('dashboard App timeline tab', () => {
       await flush()
 
       const body = container.querySelector('.tab-body[data-tab="timeline"]') as HTMLElement
-      const valueBefore = (body.querySelector('.phase-legend-value') as HTMLElement)?.textContent ?? ''
+      const valueBefore = (body.querySelector('.legend-value') as HTMLElement)?.textContent ?? ''
       // Open auditing span = 8s - 3s = 5s.
       expect(valueBefore).toContain('5s')
 
@@ -3295,7 +3338,7 @@ describe('dashboard App timeline tab', () => {
       spy.mockReturnValue(startedAt + 18000)
       await poll(payload)
 
-      const valueAfter = (body.querySelector('.phase-legend-value') as HTMLElement)?.textContent ?? ''
+      const valueAfter = (body.querySelector('.legend-value') as HTMLElement)?.textContent ?? ''
       // Open auditing span now = 18s - 3s = 15s.
       expect(valueAfter).toContain('15s')
       expect(valueAfter).not.toBe(valueBefore)
@@ -3341,7 +3384,7 @@ describe('dashboard App timeline tab', () => {
 
     // Totals exclude coding entirely: the only rows are auditing and final_auditing,
     // rendered with their human labels.
-    const totalLabels = Array.from(body.querySelectorAll('.phase-legend-label')).map(el => el.textContent?.trim() ?? '')
+    const totalLabels = Array.from(body.querySelectorAll('.legend-label')).map(el => el.textContent?.trim() ?? '')
     expect(totalLabels).not.toContain('coding')
     expect(totalLabels).toContain('Auditing')
     expect(totalLabels).toContain('Final audit')
@@ -3362,19 +3405,19 @@ describe('dashboard App timeline tab', () => {
     await flush()
 
     const body = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const legend = body.querySelector('.phase-legend') as HTMLElement
+    const legend = body.querySelector('.legend.legend-phase') as HTMLElement
     expect(legend).toBeTruthy()
     // The legend immediately follows the phase bar, rendering one row per phase.
     const bar = body.querySelector('.phase-bar') as HTMLElement
     expect(bar.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    const items = Array.from(body.querySelectorAll('.phase-legend-item')) as HTMLElement[]
+    const items = Array.from(body.querySelectorAll('.legend-item')) as HTMLElement[]
     expect(items).toHaveLength(2)
-    const labels = items.map(el => (el.querySelector('.phase-legend-label') as HTMLElement)?.textContent?.trim() ?? '')
+    const labels = items.map(el => (el.querySelector('.legend-label') as HTMLElement)?.textContent?.trim() ?? '')
     expect(labels).toEqual(expect.arrayContaining(['Coding', 'Auditing']))
     // Longest phase first: the open auditing span outlasts the closed coding span.
     expect(labels[0]).toBe('Auditing')
     // Each item still carries the phase key on its dot for the color rule.
-    expect(items.map(el => (el.querySelector('.phase-totals-dot') as HTMLElement)?.dataset.phase))
+    expect(items.map(el => (el.querySelector('.legend-dot') as HTMLElement)?.dataset.phase))
       .toEqual(['auditing', 'coding'])
   })
 

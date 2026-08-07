@@ -96,7 +96,7 @@ export function decomposePlanSections(planText: string, opts?: { maxSections?: n
       }
     }
 
-    sections.push({ index: sections.length, title, content })
+    sections.push({ index: sections.length, title, content, startLine, endLine })
   }
 
   return { sections, markerCount: markerIndices.length }

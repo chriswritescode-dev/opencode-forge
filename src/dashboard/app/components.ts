@@ -10,9 +10,11 @@ import {
   featureStageClass,
   fmtTime,
   formatSectionDuration,
+  formatSpanDuration,
   splitFindings,
   findingsLevel,
   formatFindingCount,
+  formatSectionNumber,
   clampPercent,
   formatFinding,
   formatModelUsage,
@@ -135,7 +137,7 @@ export function FilterBar(props: {
 
 // ── Timestamp ─────────────────────────────────────────────────────────────
 
-export function Timestamp(props: { generatedAt: () => number }) {
+function Timestamp(props: { generatedAt: () => number }) {
   return html`<div class="timestamp">${() => {
     const t = props.generatedAt()
     return t > 0 ? `Last updated: ${new Date(t).toLocaleString()}` : ''
@@ -441,11 +443,11 @@ function ListCapNotice(props: { shown: () => number; total: () => number; noun: 
   </div>`
 }
 
-function MiniMeter(props: { current: () => number; total: () => number }) {
+function MiniMeter(props: { current: () => number; total: () => number; formatCurrent?: (n: number) => string }) {
   const pct = () => clampPercent(props.current(), props.total())
   return html`<span class="lt-meter-cell">
     <span class="lt-meter"><span class="lt-meter-fill" style=${() => 'width:' + pct() + '%'}></span></span>
-    <span class="lt-meter-text">${() => props.current()}/${() => props.total()}</span>
+    <span class="lt-meter-text">${() => (props.formatCurrent ? props.formatCurrent(props.current()) : String(props.current()))}/${() => props.total()}</span>
   </span>`
 }
 
@@ -469,7 +471,7 @@ function PhaseBar(props: {
       return s.map(sp => {
         const pct = tot > 0 ? (sp.durationMs / tot) * 100 : 0
         const cls = 'phase-seg' + (sp.open ? ' phase-seg-open' : '')
-        const dur = sp.durationMs >= 1000 ? formatDuration(Math.floor(sp.durationMs / 1000)) : sp.durationMs + 'ms'
+        const dur = formatSpanDuration(sp.durationMs)
         return html`<div class=${cls} data-phase=${sp.phase} title=${phaseLabel(sp.phase) + ' · ' + dur} style=${'width:' + pct + '%'}></div>`
       })
     }}
@@ -479,15 +481,29 @@ function PhaseBar(props: {
 // Shared legend under a phase bar: one row per non-empty phase, longest first,
 // with the dot color, human label, and duration + share. Empty span sets render
 // an empty container so the layout position is stable across polls.
-function PhaseLegend(props: { spans: () => PhaseSpan[] }) {
-  const rows = createMemo(() => phaseLegendRows(props.spans()))
-  return html`<div class="phase-legend">
-    ${() => rows().map(row => html`<div class="phase-legend-item">
-      <span class="phase-totals-dot" data-phase=${row.phase}></span>
-      <span class="phase-legend-label">${row.label}</span>
-      <span class="phase-legend-value">${() => (row.durationMs >= 1000 ? formatDuration(Math.floor(row.durationMs / 1000)) : row.durationMs + 'ms')} · ${row.pct}%</span>
+function Legend(props: {
+  items: () => Array<{ label: string; value: string; color?: string; phase?: string }>
+  phase?: boolean
+}) {
+  return html`<div class=${() => 'legend' + (props.phase ? ' legend-phase' : '')}>
+    ${() => props.items().map(item => html`<div class="legend-item">
+      <span class="legend-dot" data-phase=${item.phase ?? ''} style=${item.color ? 'background:' + item.color : ''}></span>
+      <span class="legend-label">${item.label}</span>
+      <span class="legend-value">${item.value}</span>
     </div>`)}
   </div>`
+}
+
+function PhaseLegend(props: { spans: () => PhaseSpan[] }) {
+  const rows = createMemo(() => phaseLegendRows(props.spans()))
+  return Legend({
+    phase: true,
+    items: () => rows().map(row => ({
+      phase: row.phase,
+      label: row.label,
+      value: formatSpanDuration(row.durationMs) + ' · ' + row.pct + '%',
+    })),
+  })
 }
 
 // Single entry point for a loop's phase spans. `now` is only read while the
@@ -543,7 +559,7 @@ function LoopTableRow(props: { dashLoop: DashboardLoop; now: () => number; onOpe
     <td data-col="span" class="lt-phase-bar">${() => PhaseBar({ spans, variant: 'sm' })}</td>
     <td data-col="iter">${MiniMeter({ current: () => lp().iteration, total: () => lp().maxIterations })}</td>
     <td data-col="sections">${() => (lp().totalSections > 0
-      ? MiniMeter({ current: () => lp().currentSectionIndex, total: () => lp().totalSections })
+      ? MiniMeter({ current: () => lp().currentSectionIndex, total: () => lp().totalSections, formatCurrent: formatSectionNumber })
       : html`<span class="dim">—</span>`)}</td>
     <td data-col="findings" class="lt-findings">${() => {
       const c = counts()
@@ -691,7 +707,7 @@ function SectionListRow(props: { sec: DashboardSection; onOpen: () => void; adju
   const sec = props.sec
   const duration = createMemo(() => formatSectionDuration(sec.startedAt, sec.completedAt))
   return html`<div class=${() => 'section-list-row section-item-' + sec.status} onclick=${props.onOpen}>
-    <span class="section-index">#${sec.sectionIndex}</span>
+    <span class="section-index">#${formatSectionNumber(sec.sectionIndex)}</span>
     <span class="section-title">${() => sec.title}</span>
     <span class=${() => sectionStatusClass(sec.status)}>${() => sec.status}</span>
     ${() => (props.adjusted() ? html`<span class="section-adjusted">adjusted</span>` : '')}
@@ -724,7 +740,7 @@ function SectionsPanel(props: {
         return html`<div class="section-drill">
           <div class="back-to-sections" onclick=${() => setSelected(null)}>← Back to sections</div>
           <div class="section-drill-title">
-            <span class="section-index">#${sec.sectionIndex}</span>
+            <span class="section-index">#${formatSectionNumber(sec.sectionIndex)}</span>
             <span class="section-title">${() => sec.title}</span>
             <span class=${() => sectionStatusClass(sec.status)}>${() => sec.status}</span>
           </div>
@@ -748,19 +764,20 @@ function SectionsPanel(props: {
 // A labeled stat cell (label above value). The value is read through an
 // accessor so it updates in place on polls without rebuilding the cell.
 // An optional title accessor surfaces long model/branch values on hover.
-function LoopDetailStat(props: { label: string; value: () => string; title?: () => string }): Node {
-  return html`<div class="ldh-stat">
-    <span class="ldh-stat-label">${props.label}</span>
-    <span class="ldh-stat-value" title=${() => props.title ? props.title() : ''}>${() => props.value()}</span>
-  </div>` as Node
-}
-
-// A headline metric cell for the primary strip. `tone` maps to the findings
-// severity tier so the cell border carries the same signal as the badge.
-function LoopDetailMetric(props: { label: string; value: () => string; tone?: () => string }): Node {
-  return html`<div class=${() => 'ldh-metric' + (props.tone ? ' ldh-metric-' + props.tone() : '')}>
-    <span class="ldh-metric-label">${props.label}</span>
-    <span class="ldh-metric-value">${() => props.value()}</span>
+function LoopDetailCell(props: {
+  label: string
+  value: () => string
+  title?: () => string
+  tone?: () => string
+  size?: 'stat' | 'metric'
+}): Node {
+  const cls = () => 'ldh-cell'
+    + (props.size === 'stat' ? ' ldh-cell-stat' : '')
+    + (props.tone ? ' ldh-cell-' + props.tone() : '')
+  const valueCls = () => 'ldh-cell-value' + (props.size === 'stat' ? ' ldh-cell-value-stat' : '')
+  return html`<div class=${cls}>
+    <span class="ldh-cell-label">${props.label}</span>
+    <span class=${valueCls} title=${() => props.title ? props.title() : ''}>${() => props.value()}</span>
   </div>` as Node
 }
 
@@ -774,12 +791,12 @@ function LoopDetailStatGroup(props: { label: string; children: Node[] }): Node {
 
 // A progress bar with a count, clamped to 0–100%. Both current and total are
 // accessors so the fill width tracks live loop updates.
-function LoopDetailProgress(props: { label: string; current: () => number; total: () => number }) {
+function LoopDetailProgress(props: { label: string; current: () => number; total: () => number; formatCurrent?: (n: number) => string }) {
   const pct = () => clampPercent(props.current(), props.total())
   return html`<div class="ldh-bar-group">
     <div class="ldh-bar-head">
       <span class="ldh-bar-label">${props.label}</span>
-      <span class="ldh-bar-count">${() => props.current()} / ${() => props.total()}</span>
+      <span class="ldh-bar-count">${() => (props.formatCurrent ? props.formatCurrent(props.current()) : String(props.current()))} / ${() => props.total()}</span>
     </div>
     <div class="ldh-bar-track">
       <div class="ldh-bar-fill" style=${() => 'width:' + pct() + '%'}></div>
@@ -821,12 +838,12 @@ function LoopDetailHeader(props: {
   // Messages when usage arrives); the stat values update in place through
   // their accessors, so this memo only rebuilds on membership changes.
   const groups = createMemo(() => {
-    const timing: Node[] = [LoopDetailStat({ label: 'Started', value: () => fmtTime(lp().startedAt) })]
-    if (hasCompletedAt()) timing.push(LoopDetailStat({ label: 'Completed', value: () => fmtTime(lp().completedAt) }))
+    const timing: Node[] = [LoopDetailCell({ label: 'Started', value: () => fmtTime(lp().startedAt), size: 'stat' })]
+    if (hasCompletedAt()) timing.push(LoopDetailCell({ label: 'Completed', value: () => fmtTime(lp().completedAt), size: 'stat' }))
 
     const models: Node[] = [
-      LoopDetailStat({ label: 'Execution model', value: () => lp().executionModel ?? '—', title: () => lp().executionModel ?? '' }),
-      LoopDetailStat({
+      LoopDetailCell({ label: 'Execution model', value: () => lp().executionModel ?? '—', title: () => lp().executionModel ?? '', size: 'stat' }),
+      LoopDetailCell({
         label: 'Auditor model',
         value: () => {
           const base = lp().auditorModel ?? '—'
@@ -834,17 +851,18 @@ function LoopDetailHeader(props: {
           return fallbackIndex > 0 ? `${base} (fallback ${fallbackIndex})` : base
         },
         title: () => lp().auditorModel ?? '',
+        size: 'stat',
       }),
     ]
 
     const env: Node[] = [
-      LoopDetailStat({ label: 'Branch', value: () => lp().worktreeBranch ?? '—', title: () => lp().worktreeBranch ?? '' }),
-      LoopDetailStat({ label: 'Sandbox', value: () => (lp().sandbox ? 'on' : 'off') }),
-      LoopDetailStat({ label: 'Kind', value: () => lp().kind ?? '—' }),
-      LoopDetailStat({ label: 'Audits', value: () => String(lp().auditCount) }),
-      LoopDetailStat({ label: 'Errors', value: () => String(lp().errorCount) }),
+      LoopDetailCell({ label: 'Branch', value: () => lp().worktreeBranch ?? '—', title: () => lp().worktreeBranch ?? '', size: 'stat' }),
+      LoopDetailCell({ label: 'Sandbox', value: () => (lp().sandbox ? 'on' : 'off'), size: 'stat' }),
+      LoopDetailCell({ label: 'Kind', value: () => lp().kind ?? '—', size: 'stat' }),
+      LoopDetailCell({ label: 'Audits', value: () => String(lp().auditCount), size: 'stat' }),
+      LoopDetailCell({ label: 'Errors', value: () => String(lp().errorCount), size: 'stat' }),
     ]
-    if (hasUsage()) env.push(LoopDetailStat({ label: 'Messages', value: () => String(props.dashLoop.usage!.totalMessageCount) }))
+    if (hasUsage()) env.push(LoopDetailCell({ label: 'Messages', value: () => String(props.dashLoop.usage!.totalMessageCount), size: 'stat' }))
 
     return [
       LoopDetailStatGroup({ label: 'Timing', children: timing }),
@@ -857,29 +875,28 @@ function LoopDetailHeader(props: {
     <div class="ldh-top">
       <span class=${() => statusClass(lp().status)}>${() => lp().status}</span>
       <h3 class="ldh-name">${() => lp().loopName}</h3>
-      <span class=${() => 'ldh-findings ldh-findings-' + level()}>${() => findingsSummary()}</span>
       ${() => (amendmentsSummary().count > 0
         ? html`<button
             class="ldh-amendments"
             onclick=${() => props.onSelectTab('plan')}
-          >${() => 'Plan adjusted ' + amendmentsSummary().count + '× · last ' + formatRelativeTime(amendmentsSummary().lastAt) + ' @ section ' + (amendmentsSummary().lastSection! + 1)}</button>`
+          >${() => 'Plan adjusted ' + amendmentsSummary().count + '× · last ' + formatRelativeTime(amendmentsSummary().lastAt) + ' @ section ' + formatSectionNumber(amendmentsSummary().lastSection!)}</button>`
         : '')}
       ${() => (isLive() ? html`<span class="ldh-phase">${phaseLabel(lp().phase)}</span>` : '')}
     </div>
 
     <div class="ldh-primary">
-      ${LoopDetailMetric({ label: 'Duration', value: () => dl().duration || '—' })}
-      ${LoopDetailMetric({ label: 'Cost', value: () => (hasUsage() ? formatUsageCost(props.dashLoop.usage!.totalCost) : '—') })}
-      ${LoopDetailMetric({ label: 'Iterations', value: () => lp().iteration + ' / ' + lp().maxIterations })}
-      ${() => (hasSectionsTotal() ? LoopDetailMetric({ label: 'Sections', value: () => lp().currentSectionIndex + ' / ' + lp().totalSections }) : '')}
-      ${LoopDetailMetric({ label: 'Findings', value: () => findingsSummary(), tone: () => level() })}
+      ${LoopDetailCell({ label: 'Duration', value: () => dl().duration || '—' })}
+      ${LoopDetailCell({ label: 'Cost', value: () => (hasUsage() ? formatUsageCost(props.dashLoop.usage!.totalCost) : '—') })}
+      ${LoopDetailCell({ label: 'Iterations', value: () => lp().iteration + ' / ' + lp().maxIterations })}
+      ${() => (hasSectionsTotal() ? LoopDetailCell({ label: 'Sections', value: () => formatSectionNumber(lp().currentSectionIndex) + ' / ' + lp().totalSections }) : '')}
+      ${LoopDetailCell({ label: 'Findings', value: () => findingsSummary(), tone: () => level() })}
     </div>
 
     <div class="ldh-bars">
       ${LoopDetailProgress({ label: 'Iterations', current: () => lp().iteration, total: () => lp().maxIterations })}
       ${() =>
         hasSectionsTotal()
-          ? LoopDetailProgress({ label: 'Sections', current: () => lp().currentSectionIndex, total: () => lp().totalSections })
+          ? LoopDetailProgress({ label: 'Sections', current: () => lp().currentSectionIndex, total: () => lp().totalSections, formatCurrent: formatSectionNumber })
           : ''}
     </div>
 
@@ -940,16 +957,13 @@ function LoopUsage(props: {
               : '',
           )}
       </div>
-      <div class="usage-legend">
-        ${() =>
-          segments().map(
-            seg => html`<div class="usage-legend-item">
-              <span class="usage-legend-dot" style=${'background:' + seg.color}></span>
-              <span class="usage-legend-label">${seg.label}</span>
-              <span class="usage-legend-value">${formatTokenCount(seg.value)}</span>
-            </div>`,
-          )}
-      </div>
+      ${Legend({
+        items: () => segments().map(seg => ({
+          color: seg.color,
+          label: seg.label,
+          value: formatTokenCount(seg.value),
+        })),
+      })}
     </div>
 
     ${() =>
@@ -1006,7 +1020,7 @@ function AmendmentRow(props: {
   return html`<div class="amendment-row">
     <div class="amendment-head" onclick=${props.onToggle}>
       <span class="amendment-time">${() => formatRelativeTime(a.createdAt)}</span>
-      <span class="amendment-section">applied @ section ${() => a.appliedAtSection + 1}</span>
+      <span class="amendment-section">${() => 'applied @ section ' + formatSectionNumber(a.appliedAtSection)}</span>
       <span class="amendment-source">${() => a.source}</span>
       <span class="amendment-rationale">${() => a.rationale}</span>
       <span class="amendment-caret">${() => (props.expanded() ? '▾' : '▸')}</span>
@@ -1104,7 +1118,7 @@ function TimelineEventRow(props: {
     <span class="tl-event-flow">${phaseLabel(t.fromPhase)} → ${phaseLabel(flowTarget)}</span>
     <span class="tl-event-kind">${t.transitionKind}</span>
     <span class="tl-event-iter">iter ${t.iteration}</span>
-    <span class="tl-event-section">${() => (t.sectionIndex === null ? '—' : 'sect ' + (t.sectionIndex + 1))}</span>
+    <span class="tl-event-section">${() => (t.sectionIndex === null ? '—' : 'sect ' + formatSectionNumber(t.sectionIndex))}</span>
     <span class="tl-event-elapsed">${() => (elapsedSec === null ? '—' : elapsedSec > 0 ? formatDuration(elapsedSec) : '0s')}</span>
   </div>`
 }
@@ -1117,7 +1131,7 @@ function TimelineAmendmentRow(props: { amendment: NonNullable<DashboardLoop['ame
   return html`<div class="tl-amendment">
     <span class="tl-event-time">${formatRelativeTime(a.createdAt)}</span>
     <span class="tl-amendment-kind">plan adjusted</span>
-    <span class="tl-amendment-section">${() => 'section ' + (a.appliedAtSection + 1)}</span>
+    <span class="tl-amendment-section">${() => 'section ' + formatSectionNumber(a.appliedAtSection)}</span>
     <span class="tl-amendment-rationale">${() => a.rationale}</span>
   </div>`
 }
@@ -1188,7 +1202,7 @@ function groupFindingsBySection(findings: DashboardLoop['findings']): Array<{ ke
   })
   return order.map(k => ({
     key: k,
-    label: k === null ? 'cross-section' : 'sect ' + (k + 1),
+    label: k === null ? 'cross-section' : 'sect ' + formatSectionNumber(k),
     rows: map.get(k)!,
   }))
 }

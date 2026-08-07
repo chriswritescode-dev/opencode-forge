@@ -24,6 +24,37 @@ function staticAppClassNames(): string[] {
   return [...tokens].sort()
 }
 
+function stylesheet(html: string): string {
+  return html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+}
+
+function rootBlock(style: string): string {
+  return style.slice(style.indexOf(':root'), style.indexOf('}', style.indexOf(':root')))
+}
+
+function rootTokens(style: string): Map<string, string> {
+  const root = rootBlock(style)
+  const resolved = new Map<string, string>()
+  for (const match of root.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
+    resolved.set(`--${match[1]}`, match[2].trim())
+  }
+  return resolved
+}
+
+function mediaBlock(style: string, query: string): string {
+  const start = style.indexOf(query)
+  if (start === -1) return ''
+  const open = style.indexOf('{', start)
+  let depth = 1
+  let i = open + 1
+  while (i < style.length && depth > 0) {
+    if (style[i] === '{') depth++
+    else if (style[i] === '}') depth--
+    i++
+  }
+  return style.slice(start, i)
+}
+
 /**
  * Layout wrappers, semantic hooks, and test selectors that deliberately carry
  * no rule of their own. Everything else must be styled: render.ts holds the
@@ -76,7 +107,7 @@ describe('renderDashboardHtml', () => {
 
   test('every static class the app emits has a rule in the stylesheet', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(0, html.indexOf('</style>'))
+    const style = stylesheet(html)
     const unstyled = staticAppClassNames().filter(
       cls => !UNSTYLED_BY_DESIGN.has(cls) && !style.match(new RegExp(`\\.${cls}(?![\\w-])`)),
     )
@@ -93,7 +124,7 @@ describe('renderDashboardHtml', () => {
 
   test('the markdown body renders at full height instead of scrolling internally', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
     const start = style.indexOf('.markdown-body')
     const rule = style.slice(start, style.indexOf('}', start))
 
@@ -104,7 +135,7 @@ describe('renderDashboardHtml', () => {
 
   test('markdown headings use the accent color to stand out from body text', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
     for (const level of ['h1', 'h2', 'h3', 'h4']) {
       const start = style.indexOf(`.markdown-content ${level} `)
       expect(start).toBeGreaterThan(0)
@@ -129,7 +160,7 @@ describe('renderDashboardHtml', () => {
 
   test('defines design tokens and contains no literal hex outside :root', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
     expect(style).toContain('--bg-0:')
     expect(style).toContain('--accent:')
     expect(style).toContain('--ph-coding:')
@@ -139,22 +170,22 @@ describe('renderDashboardHtml', () => {
 
   test('every font-family outside :root resolves through a token', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
     const afterRoot = style.slice(style.indexOf('}', style.indexOf(':root')))
     expect(afterRoot).not.toMatch(/font-family:\s*(?!\s*var\()/)
   })
 
   test('sub-1rem font sizes resolve through the type scale', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
     const afterRoot = style.slice(style.indexOf('}', style.indexOf(':root')))
     expect(afterRoot).not.toMatch(/font-size:\s*0\.\d+rem/)
   })
 
   test('the type scale and spacing scale are fully consumed', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
-    const root = style.slice(style.indexOf(':root'), style.indexOf('}', style.indexOf(':root')))
+    const style = stylesheet(html)
+    const root = rootBlock(style)
     const declared = new Set([...root.matchAll(/--((?:fs|sp)-[a-zA-Z0-9-]+):/g)].map(m => `--${m[1]}`))
     const afterRoot = style.slice(style.indexOf('}', style.indexOf(':root')))
     const unreferenced = [...declared].filter(name => !afterRoot.includes(`var(${name})`))
@@ -164,8 +195,8 @@ describe('renderDashboardHtml', () => {
 
   test('the stylesheet defines no unreferenced custom properties', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
-    const root = style.slice(style.indexOf(':root'), style.indexOf('}', style.indexOf(':root')))
+    const style = stylesheet(html)
+    const root = rootBlock(style)
     const declared = new Set([...root.matchAll(/--([a-zA-Z0-9-]+):/g)].map(m => `--${m[1]}`))
     // References include the inlined app bundle, which sets inline styles
     // through var() tokens (e.g. the usage-stack segments).
@@ -177,7 +208,7 @@ describe('renderDashboardHtml', () => {
 
   test('status and phase families are distinct tokens', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
     for (const token of [
       '--status-running', '--status-ok', '--status-error',
       '--status-attention', '--status-idle', '--fg-muted',
@@ -185,11 +216,7 @@ describe('renderDashboardHtml', () => {
     ]) {
       expect(style).toContain(`${token}:`)
     }
-    const root = style.slice(style.indexOf(':root'), style.indexOf('}', style.indexOf(':root')))
-    const resolved = new Map<string, string>()
-    for (const match of root.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
-      resolved.set(`--${match[1]}`, match[2].trim())
-    }
+    const resolved = rootTokens(style)
     const resolve = (name: string, seen: Set<string> = new Set()): string => {
       if (seen.has(name)) return ''
       seen.add(name)
@@ -198,14 +225,19 @@ describe('renderDashboardHtml', () => {
       return ref ? resolve(ref[1], seen) : value ?? ''
     }
     const phaseTokens = ['--ph-coding', '--ph-auditing', '--ph-final-auditing', '--ph-final-audit-fix', '--ph-post-action']
-    const literals = phaseTokens.map(name => resolve(name))
+    const phaseLiterals = phaseTokens.map(name => resolve(name))
+    expect(new Set(phaseLiterals).size).toBe(phaseTokens.length)
 
-    expect(new Set(literals).size).toBe(phaseTokens.length)
+    const statusTokens = ['--status-running', '--status-ok', '--status-error', '--status-attention', '--status-idle']
+    const statusLiterals = statusTokens.map(name => resolve(name))
+    expect(new Set(statusLiterals).size).toBe(statusTokens.length)
+
+    expect(new Set([...statusTokens, ...phaseTokens]).size).toBe(statusTokens.length + phaseTokens.length)
   })
 
   test('the app bar is sticky above page content and below popovers', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
 
     const barStart = style.indexOf('.app-bar')
     const barRule = style.slice(barStart, style.indexOf('}', barStart))
@@ -217,11 +249,7 @@ describe('renderDashboardHtml', () => {
     const pickerRule = style.slice(pickerStart, style.indexOf('}', pickerStart))
     expect(pickerRule).toContain('var(--z-popover)')
 
-    const root = style.slice(style.indexOf(':root'), style.indexOf('}', style.indexOf(':root')))
-    const resolved = new Map<string, string>()
-    for (const match of root.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
-      resolved.set(`--${match[1]}`, match[2].trim())
-    }
+    const resolved = rootTokens(style)
     const appBarZ = Number(resolved.get('--z-app-bar'))
     const popoverZ = Number(resolved.get('--z-popover'))
     expect(Number.isFinite(appBarZ)).toBe(true)
@@ -231,19 +259,19 @@ describe('renderDashboardHtml', () => {
 
   test('no ancestor of the sticky app bar clips overflow', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
 
     for (const sel of ['body', '.forge-app', '.forge-shell']) {
       const re = new RegExp(`(?:^|\\n)\\s*${sel.replace('.', '\\.')}\\s*\\{([^}]*)\\}`)
       const match = re.exec(style)
       expect(match, `${sel} rule not found`).toBeTruthy()
-      expect(match![1]).not.toContain('overflow')
+      expect(match![1]).not.toMatch(/overflow(?:-x|-y)?:\s*(?!visible)/)
     }
   })
 
   test('the section nav and tab bar stick directly beneath the app bar', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
 
     for (const sel of ['.section-nav', '.tab-bar']) {
       const start = style.indexOf(sel)
@@ -255,11 +283,7 @@ describe('renderDashboardHtml', () => {
       expect(rule).toContain('background: var(--bg-0)')
     }
 
-    const root = style.slice(style.indexOf(':root'), style.indexOf('}', style.indexOf(':root')))
-    const resolved = new Map<string, string>()
-    for (const match of root.matchAll(/--([a-zA-Z0-9-]+):\s*([^;]+);/g)) {
-      resolved.set(`--${match[1]}`, match[2].trim())
-    }
+    const resolved = rootTokens(style)
     const subnavZ = Number(resolved.get('--z-subnav'))
     const appBarZ = Number(resolved.get('--z-app-bar'))
     const popoverZ = Number(resolved.get('--z-popover'))
@@ -275,13 +299,13 @@ describe('renderDashboardHtml', () => {
       const re = new RegExp(`(?:^|\\n)\\s*${sel.replace('.', '\\.')}\\s*\\{([^}]*)\\}`)
       const match = re.exec(style)
       expect(match, `${sel} rule not found`).toBeTruthy()
-      expect(match![1]).not.toContain('overflow')
+      expect(match![1]).not.toMatch(/overflow(?:-x|-y)?:\s*(?!visible)/)
     }
   })
 
   test('the load-error message is inset with the shell gutter', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
 
     const start = style.indexOf('.error-text')
     const rule = style.slice(start, style.indexOf('}', start))
@@ -290,7 +314,7 @@ describe('renderDashboardHtml', () => {
 
   test('the loop table drops low-priority columns on narrow viewports', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
 
     const media1100 = style.indexOf('@media (max-width: 1100px)')
     expect(media1100).toBeGreaterThan(0)
@@ -302,10 +326,11 @@ describe('renderDashboardHtml', () => {
 
     const media820 = style.indexOf('@media (max-width: 820px)')
     expect(media820).toBeGreaterThan(media1100)
-    const block820 = style.slice(media820, style.indexOf('}', media820))
+    const block820 = mediaBlock(style, '@media (max-width: 820px)')
     expect(block820).toContain('[data-col="phase"]')
     expect(block820).toContain('[data-col="updated"]')
     expect(block820).toContain('display: none')
+    expect(block820).toMatch(/:root\s*\{\s*--app-bar-h:/)
     // Columns that must always remain visible are never hidden at either breakpoint.
     for (const col of ['status', 'loop', 'findings', 'cost', 'duration']) {
       expect(style).not.toContain(`[data-col="${col}"] { display: none`)
@@ -314,7 +339,7 @@ describe('renderDashboardHtml', () => {
 
   test('the loop table zebra striping keeps hover feedback and mono cells inherit the table size', () => {
     const html = renderDashboardHtml()
-    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const style = stylesheet(html)
 
     // Equal-specificity zebra rules must precede hover so the hover state wins.
     const evenIdx = style.indexOf('.lt-row:nth-child(even)')
@@ -333,5 +358,21 @@ describe('renderDashboardHtml', () => {
     expect(monoIdx).toBeGreaterThan(0)
     const monoRule = style.slice(monoIdx, style.indexOf('}', monoIdx))
     expect(monoRule).not.toContain('font-size')
+  })
+
+  test('section status colours win over the row border shorthand by coming after .section-list-row', () => {
+    const html = renderDashboardHtml()
+    const style = stylesheet(html)
+
+    const rowStart = style.indexOf('.section-list-row')
+    expect(rowStart).toBeGreaterThan(0)
+    const rowRule = style.slice(rowStart, style.indexOf('}', rowStart))
+    expect(rowRule).toContain('border-left:')
+
+    for (const status of ['pending', 'in_progress', 'completed', 'failed']) {
+      const itemStart = style.indexOf('.section-item-' + status)
+      expect(itemStart).toBeGreaterThan(0)
+      expect(itemStart).toBeGreaterThan(rowStart)
+    }
   })
 })
