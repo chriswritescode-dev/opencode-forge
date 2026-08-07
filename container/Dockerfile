@@ -21,17 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# pnpm via corepack, pinned and pre-activated into a world-readable/writable
-# cache so the container can run as an arbitrary host UID without downloading
-# pnpm at runtime.
+# pnpm via corepack, pre-activated into a world-readable/writable cache so the
+# container can run as an arbitrary host UID without downloading pnpm at runtime.
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable \
-    && corepack prepare pnpm@10.28.1 --activate \
+    && corepack prepare pnpm@latest --activate \
     && chmod -R 0777 /opt/corepack
 
 # bun installed to a world-accessible location. The default installer targets
@@ -59,6 +58,7 @@ ENV HOME=/opt/forge \
     XDG_CACHE_HOME=/opt/forge/.cache \
     XDG_DATA_HOME=/opt/forge/.local/share \
     PNPM_HOME=/opt/forge/.local/share/pnpm \
+    PATH=/opt/forge/.local/share/pnpm:$PATH \
     npm_config_cache=/opt/forge/.npm \
     npm_config_store_dir=/opt/forge/.local/share/pnpm/store
 RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.npm \
@@ -76,7 +76,17 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.np
 # agent to relocate the store onto the sbx-mounted project directory (huge, slow file transfers).
 # Re-asserting 0777 here, as the last build step that touches /opt/forge, keeps the store
 # writable by any exec UID. Any future build step that runs pnpm as root must do the same.
-RUN corepack pnpm add -g fallow@2.101.0 --global-bin-dir /usr/local/bin \
+ARG INSTALL_BROWSER_CONTROL=false
+
+RUN corepack pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
+    && if [ "$INSTALL_BROWSER_CONTROL" = "true" ]; then \
+      corepack pnpm add -g @opencode-ai/browser-control@latest --global-bin-dir /usr/local/bin \
+      && package_root="$(corepack pnpm root -g)/@opencode-ai/browser-control" \
+      && package_modules="$(dirname "$(dirname "$(readlink -f "$package_root")")")" \
+      && node "$package_modules/playwright-core/cli.js" install --with-deps chromium \
+      && ln -s "$package_root/extension/dist" /opt/browser-control-extension \
+      && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$package_modules/playwright-core/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium; \
+    fi \
     && chmod -R 0777 /opt/forge
 
 # Allow git to operate on the sbx-mounted project directory regardless of owner UID.

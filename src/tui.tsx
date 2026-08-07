@@ -8,7 +8,7 @@ import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
 import { createSbxRuntime } from './sandbox/sbx'
-import { buildAndLoadSandboxTemplate } from './sandbox/template'
+import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE } from './sandbox/template'
 import { runCommand } from './sandbox/process'
 import { isSandboxConfigEnabled } from './sandbox/context'
 import { tmpdir } from 'os'
@@ -236,6 +236,7 @@ function SandboxBuildDialog(props: {
   api: TuiPluginApi
   buildContextDir: string
   image: string
+  browserControl: boolean
 }) {
   const theme = () => props.api.theme.current
 
@@ -251,7 +252,7 @@ function SandboxBuildDialog(props: {
         loadTemplate: (tar) => createSbxRuntime(logger).loadTemplate(tar),
         logger,
         tmpDir: tmpdir(),
-      })
+      }, { browserControl: props.browserControl })
       props.api.ui.toast({
         message: `Sandbox template ${props.image} built and loaded successfully`,
         variant: 'success',
@@ -281,6 +282,9 @@ function SandboxBuildDialog(props: {
       </box>
       <box paddingBottom={1}>
         <text fg={theme().textMuted}>Context: {props.buildContextDir}</text>
+      </box>
+      <box paddingBottom={1}>
+        <text fg={theme().textMuted}>Browser Control: {props.browserControl ? 'included' : 'excluded'}</text>
       </box>
 
       <box paddingTop={1} paddingX={1} flexShrink={0}>
@@ -610,7 +614,8 @@ const tui: TuiPlugin = async (api) => {
 
   const runBuildSandboxImage = () => {
     const buildContextDir = resolveBundledContainerDir()
-    const image = pluginConfig.sandbox?.image ?? 'oc-forge-sandbox:latest'
+    const image = pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
+    const browserControl = pluginConfig.sandbox?.imageFeatures?.browserControl === true
 
     api.ui.dialog.setSize('medium')
     api.ui.dialog.replace(() => (
@@ -618,6 +623,7 @@ const tui: TuiPlugin = async (api) => {
         api={api}
         buildContextDir={buildContextDir}
         image={image}
+        browserControl={browserControl}
       />
     ))
   }

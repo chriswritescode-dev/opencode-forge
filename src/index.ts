@@ -22,6 +22,7 @@ import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnin
 import { publishToast } from './utils/toast'
 import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
+import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from './sandbox/template'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type ResolveActiveLoopForSession, type SessionSandboxController } from './sandbox/session-controller'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
@@ -346,7 +347,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     } else {
       try {
         sandboxManager = createSandboxManager(runtime, {
-          image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
+          image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
           dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
           tmpDir: forgeTempDir,
@@ -355,6 +356,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
           ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
           buildContextDir: resolveBundledContainerDir(),
+          browserControl: config.sandbox?.imageFeatures?.browserControl === true,
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
         }, logger, defaultGitService)
         logger.log('Sandbox manager initialized')
@@ -382,8 +384,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     let userConfiguredShell: string | undefined
 
     if (sandboxManager && forgeClient) {
-      const sandboxImage = config.sandbox?.image ?? 'oc-forge-sandbox:latest'
+      const sandboxImage = config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
       const buildContextDir = resolveBundledContainerDir()
+      const browserControl = config.sandbox?.imageFeatures?.browserControl === true
       void (async () => {
         try {
           const available = await runtime.checkAvailable()
@@ -407,7 +410,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
               directory,
               logger,
               title: 'Sandbox template not found',
-              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}" && docker save ${sandboxImage} -o <tar> && sbx template load <tar>`,
+              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, { browserControl })}`,
               variant: 'warning',
               duration: 10_000,
             })

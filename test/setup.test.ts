@@ -59,6 +59,7 @@ describe('loadPluginConfig', () => {
       sandbox: {
         mode: 'sbx',
         image: 'custom-image:latest',
+        imageFeatures: { browserControl: true },
       },
     }
 
@@ -67,6 +68,7 @@ describe('loadPluginConfig', () => {
     const config = loadPluginConfig()
     expect(config.sandbox?.mode).toBe('sbx')
     expect(config.sandbox?.image).toBe('custom-image:latest')
+    expect(config.sandbox?.imageFeatures?.browserControl).toBe(true)
   })
 })
 
@@ -265,6 +267,7 @@ describe('bundled sample config', () => {
     expect(parsed.sandbox).toBeDefined()
     expect(parsed.sandbox?.enabled).toBe(true)
     expect(parsed.sandbox?.mode).toBe('sbx')
+    expect(parsed.sandbox?.imageFeatures?.browserControl).toBe(false)
   })
 
   test('JSONC parsing preserves worktreeLogging config', () => {

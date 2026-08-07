@@ -141,6 +141,10 @@ export interface SandboxMountConfig {
   readonly?: boolean
 }
 
+export interface SandboxImageFeaturesConfig {
+  browserControl?: boolean
+}
+
 /**
  * Configuration for the sandbox execution environment (sbx).
  */
@@ -151,6 +155,7 @@ export interface SandboxConfig {
   enabled?: boolean
   /** sbx template tag to use for sandboxed execution. */
   image?: string
+  imageFeatures?: SandboxImageFeaturesConfig
   /** Resource limits. Defaults to memory=8g, cpus=4. */
   resources?: SandboxResources
   /** Mount the source project directory read-only. Defaults to true. */
