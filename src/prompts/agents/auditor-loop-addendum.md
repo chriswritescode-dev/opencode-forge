@@ -26,6 +26,17 @@ When auditing in a sectioned loop, you are auditing one section at a time. The l
 
 When writing findings, always include the appropriate `sectionIndex` to attribute the finding to a specific section. Use `crossSection: true` only when the finding spans multiple sections.
 
+## Impact Review Subtask
+
+Once per section audit, after the review-finding flow has completed and you have identified what the section changed, launch a Task subtask with agent `impact-reviewer` scoped to the current section. In its prompt include: the current section's goal and acceptance criteria, the list of files the section changed, and any relevant coder decisions. It returns a text report of duplication, consolidation, missed-caller, and dead-code findings, each classified `blocking` or `advisory` — it cannot write review findings itself.
+
+Synthesize its report yourself:
+- Verify each `blocking` item against the code before acting on it. If it holds, write it as a `severity: "bug"` finding attributed to the current section, with remediation guidance per the rules below (name the existing helper or the consolidation target it identified).
+- Treat `advisory` items as judgment calls: write a warning finding only when the consolidation is clearly worth a re-code of this section; otherwise note it in the section summary's Follow-ups.
+- Do not relay its findings verbatim — you own severity and wording.
+
+Skip the impact review subtask only when the section changed no source files (documentation-only or configuration-only sections).
+
 ## Section Summaries
 
 When auditing in a sectioned loop, you MUST include a `<!-- section-summary:start -->` block at the end of your response if the section is clear of blocking bugs:

@@ -170,6 +170,21 @@ describe('Agent definitions', () => {
       expect(featureSplitterAgent.tools?.exclude).toContain('plan-edit')
     })
 
+    test('impact-reviewer agent is a read-only subagent that cannot write findings', () => {
+      const agents = buildAgents()
+      const agent = agents['impact-reviewer']
+      expect(agent.role).toBe('impact-reviewer')
+      expect(agent.id).toBe('opencode-impact-reviewer')
+      expect(agent.mode).toBe('subagent')
+      expect(agent.hidden).toBe(true)
+      const excluded = agent.tools?.exclude ?? []
+      for (const tool of ['edit', 'write', 'multiedit', 'apply_patch', 'review-write', 'review-delete', 'plan-adjust', 'task']) {
+        expect(excluded).toContain(tool)
+      }
+      expect(excluded).not.toContain('review-read')
+      expect(agent.systemPrompt).toContain('blocking')
+    })
+
     test('architect agents retain plan-authoring tools', () => {
       expect(architectAgent.tools?.exclude).not.toContain('plan-write')
       expect(architectAgent.tools?.exclude).not.toContain('plan-edit')
@@ -184,16 +199,17 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
     })
 
-    test('buildAgents returns all 6 agent roles', () => {
+    test('buildAgents returns all 7 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)
-      expect(roles).toHaveLength(6)
+      expect(roles).toHaveLength(7)
       expect(roles).toContain('code')
       expect(roles).toContain('architect')
       expect(roles).toContain('auditor')
       expect(roles).toContain('auditor-loop')
       expect(roles).toContain('architect-auto')
       expect(roles).toContain('feature-splitter')
+      expect(roles).toContain('impact-reviewer')
     })
   })
 

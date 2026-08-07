@@ -3,7 +3,7 @@ import { loadPrompt } from '../prompts/loader'
 import { hasSectionSummaryMarkers } from '../utils/section-summary'
 import { AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, SHARED_STRUCTURAL_DENY_PERMISSIONS } from '../constants/loop'
 
-const AUDITOR_TOOL_EXCLUDES = [
+export const AUDITOR_TOOL_EXCLUDES = [
   ...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS,
   ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
 ]
