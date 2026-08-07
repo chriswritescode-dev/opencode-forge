@@ -52,8 +52,10 @@ export function createLoopEventHandler(
   loopSessionUsageRepo?: LoopSessionUsageRepo,
   loopTransitionsRepo?: LoopTransitionsRepo,
   planAmendmentsRepo?: PlanAmendmentsRepo,
+  directory?: string,
 ): LoopEventHandler {
   const loop = createLoop({
+    directory,
     loopsRepo,
     plansRepo,
     reviewFindingsRepo,

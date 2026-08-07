@@ -412,4 +412,89 @@ describe('Loop Runtime start()', () => {
       expect(active.find(s => s.loopName === state.loopName)).toBeDefined()
     })
   })
+
+  describe('only the instance owning the worktree supervises a loop', () => {
+    function createRuntimeIn(directory?: string) {
+      const { logger, logs } = createCapturingLogger()
+      const loop = createLoop({
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        sectionPlansRepo,
+        projectId: PROJECT_ID,
+        client: createMockForgeClient(),
+        logger,
+        getConfig: () => mockConfig,
+        directory,
+      })
+      return { loop, logs }
+    }
+
+    function abortEvent(sessionId: string) {
+      return {
+        type: 'session.error',
+        properties: { sessionID: sessionId, error: { name: 'MessageAbortedError' } },
+      }
+    }
+
+    test('an instance bound to another directory does not start the watchdog', () => {
+      const { loop, logs } = createRuntimeIn('/tmp/some-other-project')
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      loop.start({ state })
+
+      loop.startWatchdog(state.loopName)
+
+      expect(logs.some(l => l.message.includes('skipping watchdog for test-loop'))).toBe(true)
+      expect(logs.some(l => l.message.includes('Loop watchdog: started'))).toBe(false)
+
+      loop.clearAllRetryTimeouts()
+    })
+
+    test('the instance bound to the worktree does start the watchdog', () => {
+      const { loop, logs } = createRuntimeIn('/tmp/owned-worktree')
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      loop.start({ state })
+
+      loop.startWatchdog(state.loopName)
+
+      expect(logs.some(l => l.message.includes('Loop watchdog: started for loop test-loop'))).toBe(true)
+      expect(logs.some(l => l.message.includes('skipping watchdog'))).toBe(false)
+
+      void loop.terminateAll()
+    })
+
+    // Regression: a non-owning instance never nudges, so it never holds the
+    // internal-abort marker. Before the ownership gate it read the resulting
+    // abort as a user abort and terminated a loop that was actively working.
+    test('an aborted event on a non-owning instance does not terminate the loop', async () => {
+      const { loop, logs } = createRuntimeIn('/tmp/some-other-project')
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      loop.start({ state })
+
+      await loop.tick(abortEvent(state.sessionId))
+
+      expect(loop.inspect(state.loopName)?.active).toBe(true)
+      expect(logs.some(l => l.message.includes('is owned by another instance'))).toBe(true)
+    })
+
+    test('an aborted event on the owning instance still terminates the loop', async () => {
+      const { loop } = createRuntimeIn('/tmp/owned-worktree')
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      loop.start({ state })
+
+      await loop.tick(abortEvent(state.sessionId))
+
+      expect(loop.inspect(state.loopName)?.active).toBe(false)
+    })
+
+    test('an instance with no directory stays ungated', async () => {
+      const { loop } = createRuntimeIn(undefined)
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      loop.start({ state })
+
+      await loop.tick(abortEvent(state.sessionId))
+
+      expect(loop.inspect(state.loopName)?.active).toBe(false)
+    })
+  })
 })

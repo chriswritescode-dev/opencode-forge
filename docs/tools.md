@@ -28,14 +28,15 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 
 ### `plan-read`
 
-Uses the regular Read tool's `offset` and `limit` options with the stored plan as the implicit target. Plan-specific selectors remain available for resolving or searching stored plans.
+Uses the regular Read tool's `offset` and `limit` options with the stored plan as the implicit target; reads are capped at 2000 lines by default, and when the requested window does not reach the end of the plan the output appends a notice showing the lines returned and the next `offset` to pass to read the rest. Plan-specific selectors remain available for resolving or searching stored plans.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
-| `offset` | Line number to start from, 1-indexed. |
-| `limit` | Maximum number of lines to return; defaults to 2000. |
+| `offset` | When reading a plan: line number to start from, 1-indexed. |
+| `limit` | When reading a plan: maximum number of lines to return; defaults to 2000. |
+| `count` | When `recent` is true: number of recent plans to list or search; defaults to 20, capped at 100. |
 | `pattern` | Regex pattern to search plan content. |
 | `loop_name` | Optional loop name to read a loop-scoped plan directly. |
 | `session_id` | Explicit session ID to read from. |
@@ -45,7 +46,7 @@ Arguments:
 
 Creates or overwrites the plan stored for the current session, matching the regular Write interaction with the plan as the implicit target. The stored plan is the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `plan-edit` for incremental additions and revisions. Available to architect and architect-auto sessions; denied in code, auditor, auditor-loop, and feature-splitter sessions, and inside loop/audit sessions.
 
-Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, decomposed sections, and a `Warnings:` block when any structural requirement is unmet.
+Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, the full decomposed section outline, and a `Warnings:` block when any structural requirement is unmet.
 
 Arguments:
 
@@ -55,7 +56,7 @@ Arguments:
 
 ### `plan-edit`
 
-Edits the stored session plan by exact string replacement, the same way the Edit tool edits a file. It supports small revisions, insertions, and deletions without rewriting the full plan. Use `plan-read` to inspect the current text first; do not include `plan-read`'s `N:` line-number prefixes (with trailing space) in `oldString`. Subject to the same availability and running-loop guard as `plan-write`. On success the tool rewrites the plan through the shared session-scoped write path and returns a `Replaced N occurrence(s).` line followed by a structure report.
+Edits the stored session plan by exact string replacement, the same way the Edit tool edits a file. It supports small revisions, insertions, and deletions without rewriting the full plan. Use `plan-read` to inspect the current text first; do not include `plan-read`'s `N:` line-number prefixes (with trailing space) in `oldString`. Subject to the same availability and running-loop guard as `plan-write`. On success the tool rewrites the plan through the shared session-scoped write path and returns a `Replaced N occurrence(s).` line followed by a structure report that details only the section(s) the replacement touched, or just the section count when the edit lands outside any section; `plan-write` reports the full outline.
 
 Arguments:
 

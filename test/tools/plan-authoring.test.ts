@@ -130,6 +130,8 @@ Loop Name: my-loop
 
     expect(result).toContain('Plan stored:')
     expect(result).toContain('Sections (2):')
+    expect(result).toContain('  1. Phase 1')
+    expect(result).toContain('  2. Phase 2')
 
     const row = plansRepo.getForSession('test-project', 'sess-1')
     expect(row).not.toBeNull()
@@ -262,6 +264,66 @@ describe('plan-edit', () => {
     // Untouched portions remain byte-identical.
     expect(row!.content).toContain('## Phase 2')
     expect(row!.content).toContain('- do two')
+  })
+
+  test('reports only the edited section on a multi-section plan', async () => {
+    plansRepo.writeForSession('test-project', 'sess-1', BASE_PLAN)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '- do one', newString: '- do one (revised)' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Sections (2):')
+    expect(result).toContain('  1. Phase 1')
+    expect(result).not.toContain('  2. Phase 2')
+  })
+
+  test('replaceAll spanning two sections reports both touched sections', async () => {
+    plansRepo.writeForSession('test-project', 'sess-1', BASE_PLAN)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '- do', newString: '- revised', replaceAll: true },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Replaced 2 occurrence(s).')
+    expect(result).toContain('Sections (2):')
+    expect(result).toContain('  1. Phase 1')
+    expect(result).toContain('  2. Phase 2')
+  })
+
+  test('an edit in the preamble reports the count with no per-section lines', async () => {
+    plansRepo.writeForSession('test-project', 'sess-1', BASE_PLAN)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '# Plan', newString: '# Plan (updated)' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Sections (2):')
+    expect(result).not.toMatch(/^\s+\d+\./m)
+  })
+
+  test('an edit in trailing content reports the count with no per-section lines', async () => {
+    const content = `# Plan
+
+<!-- forge-section -->
+## Phase 1
+- do one
+
+## Decisions
+- None.
+`
+    plansRepo.writeForSession('test-project', 'sess-1', content)
+
+    const result = await tools['plan-edit'].execute(
+      { oldString: '- None.', newString: '- None (revised).' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).toContain('Sections (1):')
+    expect(result).not.toMatch(/^\s+\d+\./m)
   })
 
   test('a 3-occurrence oldString without replaceAll performs no write and names 3', async () => {

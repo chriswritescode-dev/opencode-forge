@@ -1,3 +1,4 @@
+import type { ForgeClient, SessionCreateParams } from '../client/port'
 import { computeFenceMask } from './markdown-fences'
 
 /**
@@ -223,4 +224,17 @@ export function sanitizeLoopName(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .substring(0, MAX_LOOP_NAME_LENGTH) || 'loop'
+}
+
+export interface PlanExecutionSession {
+  sessionId: string
+  workspaceId?: string
+}
+
+export async function createPlanExecutionSession(
+  client: ForgeClient,
+  params: SessionCreateParams,
+): Promise<PlanExecutionSession> {
+  const session = await client.session.create(params)
+  return { sessionId: session.id, workspaceId: session.workspaceID }
 }

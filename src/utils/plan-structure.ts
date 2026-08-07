@@ -6,6 +6,10 @@ import { computeFenceMask } from './markdown-fences'
 export interface PlanSectionOutline {
   index: number
   title: string
+  /** 0-based line of the section's first content line (marker line + 1). */
+  startLine?: number
+  /** Exclusive 0-based boundary: the stop heading, next marker, or end of plan. */
+  endLine?: number
 }
 
 export interface PlanStructureSummary {
@@ -102,7 +106,7 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
   })
   const effectiveSections = allSections.slice(0, MAX_TOTAL_SECTIONS)
   const sections: PlanSectionOutline[] = effectiveSections
-    .map((s) => ({ index: s.index, title: s.title }))
+    .map((s) => ({ index: s.index, title: s.title, startLine: s.startLine, endLine: s.endLine }))
   const loopName = findExplicitLoopName(planText)
 
   const warnings: string[] = []
@@ -213,13 +217,40 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
 }
 
 /**
+ * Returns the produced sections whose line range overlaps `[startLine, endLine)`
+ * (both 0-based, `endLine` exclusive). Uses the same uncapped-then-capped
+ * decomposition as `summarizePlanStructure`, so indexes and titles match the
+ * reported outline. Empty when the range falls in the preamble (before the first
+ * marker) or trailing content (after the last section's end).
+ */
+export function findSectionsForLineRange(
+  planText: string,
+  startLine: number,
+  endLine: number,
+): PlanSectionOutline[] {
+  const { sections: allSections } = decomposePlanSections(planText, {
+    maxSections: Number.MAX_SAFE_INTEGER,
+  })
+  return allSections
+    .slice(0, MAX_TOTAL_SECTIONS)
+    .filter(
+      (s) =>
+        s.startLine !== undefined
+        && s.endLine !== undefined
+        && startLine < s.endLine
+        && endLine > s.startLine,
+    )
+    .map((s) => ({ index: s.index, title: s.title, startLine: s.startLine, endLine: s.endLine }))
+}
+
+/**
  * Formats a `PlanStructureSummary` as a compact multi-line string suitable for
  * showing the architect immediate structural feedback. Omits the `Loop Name:`
  * line when null and the `Warnings:` block entirely when empty.
  */
 export function formatPlanStructureSummary(
   summary: PlanStructureSummary,
-  options: { sectionDetail?: 'all' | 'latest' } = {},
+  options: { sectionIndexes?: number[] } = {},
 ): string {
   const out: string[] = [`Plan stored: ${summary.lines} lines, ${summary.characters} chars.`]
 
@@ -229,13 +260,13 @@ export function formatPlanStructureSummary(
 
   if (summary.sections.length === 0) {
     out.push('Sections (0): none detected')
-  } else if (options.sectionDetail === 'latest') {
-    const latest = summary.sections.at(-1)!
-    out.push(`Sections (${summary.sections.length}); latest: ${latest.index + 1}. ${latest.title}`)
   } else {
+    const focus = options.sectionIndexes === undefined ? null : new Set(options.sectionIndexes)
     out.push(`Sections (${summary.sections.length}):`)
     for (const s of summary.sections) {
-      out.push(`  ${s.index + 1}. ${s.title}`)
+      if (focus === null || focus.has(s.index)) {
+        out.push(`  ${s.index + 1}. ${s.title}`)
+      }
     }
   }
 

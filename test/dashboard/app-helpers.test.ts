@@ -12,11 +12,13 @@ import {
   splitFindings,
   findingsLevel,
   formatFindingCount,
+  formatSectionNumber,
   clampPercent,
   formatFinding,
   formatModelUsage,
   formatTokenCount,
   formatUsageCost,
+  formatSpanDuration,
   tokenBreakdownSegments,
   modelUsageBars,
   roleUsageBars,
@@ -24,12 +26,17 @@ import {
   tabsForLoop,
   computePhaseSpans,
   summarizePhaseTotals,
+  phaseLabel,
+  phaseLegendRows,
   computeTimelineEvents,
+  summarizeAmendments,
+  amendedSectionIndexes,
+  mergeTimelineEntries,
   capList,
 } from '../../src/dashboard/app/helpers'
-import type { LoopTab } from '../../src/dashboard/app/helpers'
+import type { LoopTab, PhaseSpan } from '../../src/dashboard/app/helpers'
 import type { DashboardPayload, DashboardProject, DashboardLoop, LoopTransitionRow } from '../../src/dashboard/app/types'
-import type { ReviewFindingRow } from '../../src/storage'
+import type { PlanAmendmentRow, ReviewFindingRow } from '../../src/storage'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -106,6 +113,39 @@ function mockFinding(overrides: Partial<ReviewFindingRow> = {}): ReviewFindingRo
     loopName: 'my-loop',
     sectionIndex: null,
     createdAt: 100,
+    ...overrides,
+  }
+}
+
+function mockAmendment(overrides: Partial<PlanAmendmentRow> = {}): PlanAmendmentRow {
+  return {
+    id: 1,
+    projectId: 'p1',
+    loopName: 'my-loop',
+    source: 'auditor',
+    rationale: 'adjust plan for missing section',
+    appliedAtSection: 4,
+    sectionsBefore: '[]',
+    sectionsAfter: '[]',
+    createdAt: 100,
+    ...overrides,
+  }
+}
+
+function makeTransition(overrides: Partial<LoopTransitionRow> = {}): LoopTransitionRow {
+  return {
+    id: 1,
+    projectId: 'p1',
+    loopName: 'loop-a',
+    eventType: 'phase',
+    transitionKind: 'phase',
+    fromPhase: 'coding',
+    toPhase: 'auditing',
+    status: null,
+    reason: null,
+    iteration: 1,
+    sectionIndex: null,
+    createdAt: 0,
     ...overrides,
   }
 }
@@ -763,6 +803,32 @@ describe('clampPercent', () => {
 })
 
 // ---------------------------------------------------------------------------
+// formatSectionNumber
+// ---------------------------------------------------------------------------
+
+describe('formatSectionNumber', () => {
+  test('converts 0-based stored indexes to 1-based display strings', () => {
+    expect(formatSectionNumber(0)).toBe('1')
+    expect(formatSectionNumber(1)).toBe('2')
+    expect(formatSectionNumber(4)).toBe('5')
+  })
+})
+
+describe('formatSpanDuration', () => {
+  test('keeps sub-second spans as raw milliseconds', () => {
+    expect(formatSpanDuration(0)).toBe('0ms')
+    expect(formatSpanDuration(500)).toBe('500ms')
+    expect(formatSpanDuration(999)).toBe('999ms')
+  })
+
+  test('formats spans of one second or more with the duration helper', () => {
+    expect(formatSpanDuration(1000)).toBe('1s')
+    expect(formatSpanDuration(90_000)).toBe('1m 30s')
+    expect(formatSpanDuration(3_600_000)).toBe('1h 0m')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // formatFinding
 // ---------------------------------------------------------------------------
 
@@ -1105,24 +1171,6 @@ describe('renderMarkdown', () => {
 // ---------------------------------------------------------------------------
 
 describe('computePhaseSpans', () => {
-  function makeTransition(overrides: Partial<LoopTransitionRow> = {}): LoopTransitionRow {
-    return {
-      id: 1,
-      projectId: 'p1',
-      loopName: 'loop-a',
-      eventType: 'phase',
-      transitionKind: 'phase',
-      fromPhase: 'coding',
-      toPhase: 'auditing',
-      status: null,
-      reason: null,
-      iteration: 1,
-      sectionIndex: null,
-      createdAt: 0,
-      ...overrides,
-    }
-  }
-
   test('empty transitions on a running loop yield one open span ending at now', () => {
     const startedAt = 1700000000000
     const now = startedAt + 5000
@@ -1499,28 +1547,83 @@ describe('computePhaseSpans', () => {
 })
 
 // ---------------------------------------------------------------------------
+// phaseLabel
+// ---------------------------------------------------------------------------
+
+describe('phaseLabel', () => {
+  test('maps the five known phases to human labels', () => {
+    expect(phaseLabel('coding')).toBe('Coding')
+    expect(phaseLabel('auditing')).toBe('Auditing')
+    expect(phaseLabel('final_auditing')).toBe('Final audit')
+    expect(phaseLabel('final_audit_fix')).toBe('Final audit fix')
+    expect(phaseLabel('post_action')).toBe('Post-action')
+  })
+
+  test('maps an empty phase to Unknown', () => {
+    expect(phaseLabel('')).toBe('Unknown')
+  })
+
+  test('returns an unrecognised phase unchanged', () => {
+    expect(phaseLabel('plan')).toBe('plan')
+    expect(phaseLabel('completed')).toBe('completed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// phaseLegendRows
+// ---------------------------------------------------------------------------
+
+describe('phaseLegendRows', () => {
+  function makeSpan(phase: string, durationMs: number): PhaseSpan {
+    return { phase, startedAt: 0, endedAt: durationMs, durationMs, open: false }
+  }
+
+  test('returns one row per non-empty phase sorted by descending durationMs', () => {
+    const rows = phaseLegendRows([
+      makeSpan('coding', 2000),
+      makeSpan('auditing', 6000),
+      makeSpan('final_auditing', 2000),
+      makeSpan('', 999),
+    ])
+    expect(rows.map(r => r.phase)).toEqual(['auditing', 'coding', 'final_auditing'])
+    expect(rows[0]).toEqual({ phase: 'auditing', label: 'Auditing', durationMs: 6000, pct: 60 })
+    expect(rows[1]).toEqual({ phase: 'coding', label: 'Coding', durationMs: 2000, pct: 20 })
+    expect(rows[2]).toEqual({ phase: 'final_auditing', label: 'Final audit', durationMs: 2000, pct: 20 })
+  })
+
+  test('folds repeated visits to one phase into a single row', () => {
+    const rows = phaseLegendRows([
+      makeSpan('coding', 1000),
+      makeSpan('auditing', 1000),
+      makeSpan('coding', 2000),
+    ])
+    expect(rows).toHaveLength(2)
+    const coding = rows.find(r => r.phase === 'coding')!
+    expect(coding.durationMs).toBe(3000)
+    expect(coding.pct).toBe(75)
+    expect(rows.reduce((sum, r) => sum + r.pct, 0)).toBe(100)
+  })
+
+  test('rounds pct to integers and sums to ~100 for a two-span input', () => {
+    const rows = phaseLegendRows([
+      makeSpan('coding', 1),
+      makeSpan('auditing', 2),
+    ])
+    expect(rows.map(r => r.pct)).toEqual([67, 33])
+    expect(rows.reduce((sum, r) => sum + r.pct, 0)).toBe(100)
+  })
+
+  test('returns an empty array when every span has an empty phase', () => {
+    expect(phaseLegendRows([makeSpan('', 500), makeSpan('', 300)])).toEqual([])
+    expect(phaseLegendRows([])).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // computeTimelineEvents
 // ---------------------------------------------------------------------------
 
 describe('computeTimelineEvents', () => {
-  function makeTransition(overrides: Partial<LoopTransitionRow> = {}): LoopTransitionRow {
-    return {
-      id: 1,
-      projectId: 'p1',
-      loopName: 'loop-a',
-      eventType: 'phase',
-      transitionKind: 'phase',
-      fromPhase: 'coding',
-      toPhase: 'auditing',
-      status: null,
-      reason: null,
-      iteration: 1,
-      sectionIndex: null,
-      createdAt: 0,
-      ...overrides,
-    }
-  }
-
   test('returns events newest first', () => {
     const startedAt = 1700000000000
     const t1 = makeTransition({ id: 1, createdAt: startedAt + 1000 })
@@ -1729,6 +1832,117 @@ describe('computeTimelineEvents', () => {
 
   test('empty transitions yield an empty event list', () => {
     expect(computeTimelineEvents([], 1700000000000, false)).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// summarizeAmendments / amendedSectionIndexes / mergeTimelineEntries
+// ---------------------------------------------------------------------------
+
+describe('summarizeAmendments', () => {
+  test('empty amendments yield a zero summary', () => {
+    expect(summarizeAmendments([])).toEqual({ count: 0, lastAt: null, lastSection: null })
+  })
+
+  test('counts rows and takes lastAt/lastSection from the newest createdAt, not the last array position', () => {
+    // Newest row (createdAt 3000) sits at index 0; the naive last-array-position
+    // pick (createdAt 2000) would report the wrong stamp. The repo orders by
+    // id ASC, so createdAt interleaving is the real-world input shape.
+    const newest = mockAmendment({ id: 2, createdAt: 3000, appliedAtSection: 4 })
+    const oldest = mockAmendment({ id: 1, createdAt: 1000, appliedAtSection: 2 })
+    const middle = mockAmendment({ id: 3, createdAt: 2000, appliedAtSection: 5 })
+    const summary = summarizeAmendments([newest, oldest, middle])
+    expect(summary).toEqual({ count: 3, lastAt: 3000, lastSection: 4 })
+  })
+
+  test('equal createdAt ties break toward the highest id', () => {
+    const a1 = mockAmendment({ id: 1, createdAt: 1000, appliedAtSection: 2 })
+    const a2 = mockAmendment({ id: 2, createdAt: 1000, appliedAtSection: 4 })
+    expect(summarizeAmendments([a1, a2])).toEqual({ count: 2, lastAt: 1000, lastSection: 4 })
+  })
+})
+
+describe('amendedSectionIndexes', () => {
+  test('empty amendments yield an empty set', () => {
+    expect(amendedSectionIndexes([])).toEqual(new Set<number>())
+  })
+
+  test('collects appliedAtSection values, deduplicated', () => {
+    const a1 = mockAmendment({ id: 1, appliedAtSection: 2 })
+    const a2 = mockAmendment({ id: 2, appliedAtSection: 4 })
+    const a3 = mockAmendment({ id: 3, appliedAtSection: 2 })
+    expect(amendedSectionIndexes([a1, a2, a3])).toEqual(new Set([2, 4]))
+  })
+})
+
+describe('mergeTimelineEntries', () => {
+  test('merges transitions and amendments into one newest-first timeline, sorting an in-between amendment between its transitions', () => {
+    const startedAt = 1700000000000
+    const t1 = makeTransition({ id: 1, createdAt: startedAt + 1000, fromPhase: 'coding', toPhase: 'auditing' })
+    const t2 = makeTransition({ id: 2, createdAt: startedAt + 3000, fromPhase: 'auditing', toPhase: 'final_auditing' })
+    const a1 = mockAmendment({ id: 10, createdAt: startedAt + 2000, appliedAtSection: 4 })
+    const entries = mergeTimelineEntries([t1, t2], [a1], startedAt, false)
+    expect(entries.map(e => e.kind)).toEqual(['transition', 'amendment', 'transition'])
+    expect(entries[0].kind === 'transition' && entries[0].transition.id).toBe(2)
+    expect(entries[1].kind === 'amendment' && entries[1].amendment).toBe(a1)
+    expect(entries[2].kind === 'transition' && entries[2].transition.id).toBe(1)
+  })
+
+  test('transition entries preserve the exact elapsedMs values computeTimelineEvents produces', () => {
+    const startedAt = 1700000000000
+    const transitions = [
+      makeTransition({ id: 1, createdAt: startedAt + 1000, fromPhase: 'coding', toPhase: 'auditing' }),
+      makeTransition({ id: 2, createdAt: startedAt + 3000, fromPhase: 'auditing', toPhase: 'final_auditing' }),
+      makeTransition({ id: 3, createdAt: startedAt + 6000, fromPhase: 'final_auditing', toPhase: null }),
+    ]
+    const expected = new Map(
+      computeTimelineEvents(transitions, startedAt, false).map(e => [e.transition.id, e.elapsedMs]),
+    )
+    const entries = mergeTimelineEntries(transitions, [], startedAt, false)
+    for (const e of entries) {
+      if (e.kind === 'transition') {
+        expect(e.elapsedMs).toBe(expected.get(e.transition.id))
+      }
+    }
+  })
+
+  test('amendment entries carry elapsedMs null', () => {
+    const startedAt = 1700000000000
+    const a1 = mockAmendment({ id: 10, createdAt: startedAt + 1000 })
+    const entries = mergeTimelineEntries([], [a1], startedAt, false)
+    expect(entries).toHaveLength(1)
+    const e = entries[0]
+    expect(e.kind).toBe('amendment')
+    if (e.kind === 'amendment') {
+      expect(e.elapsedMs).toBeNull()
+    }
+  })
+
+  test('equal createdAt ties break transition-before-amendment', () => {
+    const startedAt = 1700000000000
+    const t = makeTransition({ id: 1, createdAt: startedAt + 1000 })
+    const a = mockAmendment({ id: 10, createdAt: startedAt + 1000 })
+    const entries = mergeTimelineEntries([t], [a], startedAt, false)
+    expect(entries.map(e => e.kind)).toEqual(['transition', 'amendment'])
+  })
+
+  test('transitions sharing one createdAt order by descending id', () => {
+    const startedAt = 1700000000000
+    const ts = [1, 2, 3].map(id =>
+      makeTransition({ id, createdAt: startedAt + 1000, fromPhase: 'coding', toPhase: 'auditing' }),
+    )
+    const entries = mergeTimelineEntries(ts, [], startedAt, false)
+    expect(entries.filter(e => e.kind === 'transition').map(e => (e.kind === 'transition' ? e.transition.id : -1))).toEqual([3, 2, 1])
+  })
+
+  test('amendments sharing one createdAt order by descending id, agreeing with summarizeAmendments', () => {
+    const startedAt = 1700000000000
+    const as = [10, 11, 12].map(id => mockAmendment({ id, createdAt: startedAt + 1000 }))
+    const entries = mergeTimelineEntries([], as, startedAt, false)
+    expect(entries.filter(e => e.kind === 'amendment').map(e => (e.kind === 'amendment' ? e.amendment.id : -1))).toEqual([12, 11, 10])
+    const summary = summarizeAmendments(as)
+    expect(summary.lastAt).toBe(startedAt + 1000)
+    expect(summary.lastSection).toBe(4)
   })
 })
 

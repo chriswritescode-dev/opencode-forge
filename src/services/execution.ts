@@ -13,7 +13,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
-import { extractPlanExecutionMetadata } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata, createPlanExecutionSession } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
 import { auditorModelChoiceAt, buildAuditorModelChain } from '../utils/loop-helpers'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
@@ -162,7 +162,6 @@ export interface ExecutePlanNewSessionCommand {
     selectSessionTiming?: 'after-create' | 'after-prompt'
     abortSourceSession?: boolean
     deleteSessionOnPromptFailure?: boolean
-    returnToSourceOnPromptFailure?: boolean
   }
 }
 
@@ -761,11 +760,7 @@ export async function attachLoopToSession(
 
     // Navigate TUI if requested with early timing
     if (selectSession && selectSessionTiming === 'after-create') {
-      const selection = workspaceId
-        ? { workspace: workspaceId, sessionID: sessionId }
-        : { sessionID: sessionId }
-
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, selection).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: workspaceId }).catch((err: unknown) => {
         deps.logger.error('attachLoopToSession: failed to navigate TUI (early)', err as Error)
       })
     }
@@ -828,11 +823,7 @@ export async function attachLoopToSession(
 
     // Navigate TUI if requested with default/post-prompt timing
     if (selectSession && selectSessionTiming !== 'after-create') {
-      const selection = workspaceId
-        ? { workspace: workspaceId, sessionID: sessionId }
-        : { sessionID: sessionId }
-
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, selection).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: workspaceId }).catch((err: unknown) => {
         deps.logger.error('attachLoopToSession: failed to navigate TUI', err as Error)
       })
     }
@@ -893,12 +884,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let sessionId: string
     let sessionWorkspaceId: string | undefined
     try {
-      const session = await deps.client.session.create({
+      const created = await createPlanExecutionSession(deps.client, {
         title: sessionTitle,
         directory: ctx.directory,
       })
-      sessionId = session.id
-      sessionWorkspaceId = session.workspaceID
+      sessionId = created.sessionId
+      sessionWorkspaceId = created.workspaceId
     } catch (err) {
       deps.logger.error('handlePlanNewSession: failed to create session', err)
       return fail('internal_error', 500, 'Failed to create session')
@@ -914,6 +905,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     // Prompt code agent
     let promptError: unknown = null
+    const workspaceParam = sessionWorkspaceId ? { workspace: sessionWorkspaceId } : {}
     try {
       await deps.client.session.promptAsync({
         sessionID: sessionId,
@@ -921,6 +913,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         parts: [{ type: 'text' as const, text: planText }],
         agent: 'code',
         model: parsedModel!,
+        ...workspaceParam,
       })
     } catch (err) {
       promptError = err
@@ -933,13 +926,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (command.lifecycle?.deleteSessionOnPromptFailure) {
         await deps.client.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((err: unknown) => {
           deps.logger.error('handlePlanNewSession: failed to delete failed session', err as Error)
-        })
-      }
-      
-      // Return to source session if requested
-      if (command.lifecycle?.returnToSourceOnPromptFailure && ctx.sourceSessionId) {
-        selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId, workspace: sessionWorkspaceId }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to return to source session', err as Error)
         })
       }
       

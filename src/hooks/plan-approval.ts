@@ -281,7 +281,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
                   selectSessionTiming: 'after-prompt',
                   abortSourceSession: false,
                   deleteSessionOnPromptFailure: false,
-                  returnToSourceOnPromptFailure: false,
                 },
               })
               logger.log(`Plan approval [New session]: service.dispatch returned ok=${result.ok}`)

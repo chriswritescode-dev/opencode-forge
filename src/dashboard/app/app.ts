@@ -6,7 +6,7 @@ import type { DashboardRoute, SortMode, RepoSection, LoopTab } from './helpers'
 import { parseDashboardHash, buildDashboardHash, syncHash, dataHash, loopMatchesFilters, buildRepoLabels, repoRawPath, repoLabel, loopActivityAt, sortLoops, tabsForLoop, sameList, fmtTime } from './helpers'
 import {
   FilterBar,
-  Timestamp,
+  AppBar,
   RepoMenu,
   RepoIndexPane,
   Breadcrumb,
@@ -550,18 +550,11 @@ export function App() {
   // solid-js/html template are not wired as reactive inserts, so wrap the whole
   // UI in one container to keep the ${() => ...} regions reactive.
   return html`<div class="forge-app">
-    <h1><a class="forge-home" href="#">Forge Dashboard</a></h1>
+    ${AppBar({ generatedAt: () => state.generatedAt, breadcrumb: breadcrumbView })}
 
     ${() => {
       const err = loadError()
       return err ? html`<div class="error-text">${err}</div>` : ''
-    }}
-
-    ${() => {
-      if (!loaded()) return ''
-      return html`<div class="dashboard-summary">
-        ${Timestamp({ generatedAt: state.generatedAt })}
-      </div>`
     }}
 
     ${() => {
@@ -585,7 +578,6 @@ export function App() {
             </div>`
           }
           return html`<div class="repo-pane">
-            ${breadcrumbView}
             ${filterBarView}
             ${sectionNavView}
             ${listView}

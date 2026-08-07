@@ -10,9 +10,11 @@ import {
   featureStageClass,
   fmtTime,
   formatSectionDuration,
+  formatSpanDuration,
   splitFindings,
   findingsLevel,
   formatFindingCount,
+  formatSectionNumber,
   clampPercent,
   formatFinding,
   formatModelUsage,
@@ -26,8 +28,11 @@ import {
   formatRelativeTime,
   tabsForLoop,
   computePhaseSpans,
-  summarizePhaseTotals,
-  computeTimelineEvents,
+  phaseLabel,
+  phaseLegendRows,
+  summarizeAmendments,
+  amendedSectionIndexes,
+  mergeTimelineEntries,
   buildDashboardHash,
   capList,
   repoRawPath,
@@ -132,8 +137,19 @@ export function FilterBar(props: {
 
 // ── Timestamp ─────────────────────────────────────────────────────────────
 
-export function Timestamp(props: { generatedAt: number }) {
-  return html`<div class="timestamp">Last updated: ${new Date(props.generatedAt).toLocaleString()}</div>`
+function Timestamp(props: { generatedAt: () => number }) {
+  return html`<div class="timestamp">${() => {
+    const t = props.generatedAt()
+    return t > 0 ? `Last updated: ${new Date(t).toLocaleString()}` : ''
+  }}</div>`
+}
+
+export function AppBar(props: { generatedAt: () => number; breadcrumb: () => Node | string }) {
+  return html`<div class="app-bar">
+    <h1><a class="forge-home" href="#">Forge Dashboard</a></h1>
+    <div class="app-bar-nav">${() => props.breadcrumb()}</div>
+    ${Timestamp({ generatedAt: props.generatedAt })}
+  </div>`
 }
 
 export function RepoMenu(props: {
@@ -212,7 +228,7 @@ export function RepoIndexPane(props: {
             ${runningCards().map(c => html`<div class="repo-running-card" onclick=${() => props.onOpenLoop(c.projectId, c.loopName)}>
               <span class="repo-running-label"><span class="repo-running-dot"></span>${c.label}</span>
               <span class="repo-running-name">${c.loopName}</span>
-              <span class="repo-running-phase">${c.phase}</span>
+              <span class="repo-running-phase">${phaseLabel(c.phase)}</span>
             </div>`)}
           </div>
         </div>`
@@ -427,11 +443,11 @@ function ListCapNotice(props: { shown: () => number; total: () => number; noun: 
   </div>`
 }
 
-function MiniMeter(props: { current: () => number; total: () => number }) {
+function MiniMeter(props: { current: () => number; total: () => number; formatCurrent?: (n: number) => string }) {
   const pct = () => clampPercent(props.current(), props.total())
   return html`<span class="lt-meter-cell">
     <span class="lt-meter"><span class="lt-meter-fill" style=${() => 'width:' + pct() + '%'}></span></span>
-    <span class="lt-meter-text">${() => props.current()}/${() => props.total()}</span>
+    <span class="lt-meter-text">${() => (props.formatCurrent ? props.formatCurrent(props.current()) : String(props.current()))}/${() => props.total()}</span>
   </span>`
 }
 
@@ -455,10 +471,39 @@ function PhaseBar(props: {
       return s.map(sp => {
         const pct = tot > 0 ? (sp.durationMs / tot) * 100 : 0
         const cls = 'phase-seg' + (sp.open ? ' phase-seg-open' : '')
-        return html`<div class=${cls} data-phase=${sp.phase} style=${'width:' + pct + '%'}></div>`
+        const dur = formatSpanDuration(sp.durationMs)
+        return html`<div class=${cls} data-phase=${sp.phase} title=${phaseLabel(sp.phase) + ' · ' + dur} style=${'width:' + pct + '%'}></div>`
       })
     }}
   </div>`
+}
+
+// Shared legend under a phase bar: one row per non-empty phase, longest first,
+// with the dot color, human label, and duration + share. Empty span sets render
+// an empty container so the layout position is stable across polls.
+function Legend(props: {
+  items: () => Array<{ label: string; value: string; color?: string; phase?: string }>
+  phase?: boolean
+}) {
+  return html`<div class=${() => 'legend' + (props.phase ? ' legend-phase' : '')}>
+    ${() => props.items().map(item => html`<div class="legend-item">
+      <span class="legend-dot" data-phase=${item.phase ?? ''} style=${item.color ? 'background:' + item.color : ''}></span>
+      <span class="legend-label">${item.label}</span>
+      <span class="legend-value">${item.value}</span>
+    </div>`)}
+  </div>`
+}
+
+function PhaseLegend(props: { spans: () => PhaseSpan[] }) {
+  const rows = createMemo(() => phaseLegendRows(props.spans()))
+  return Legend({
+    phase: true,
+    items: () => rows().map(row => ({
+      phase: row.phase,
+      label: row.label,
+      value: formatSpanDuration(row.durationMs) + ' · ' + row.pct + '%',
+    })),
+  })
 }
 
 // Single entry point for a loop's phase spans. `now` is only read while the
@@ -485,8 +530,10 @@ export function LoopTable(props: { loops: () => DashboardLoop[]; now: () => numb
   return html`<div class="loop-table-wrap">
     <table class="loop-table">
       <thead><tr>
-        <th>Status</th><th>Loop</th><th>Phase</th><th>Phase span</th><th>Iter</th><th>Sections</th>
-        <th>Findings</th><th>Cost</th><th>Duration</th><th>Updated</th>
+        <th data-col="status">Status</th><th data-col="loop">Loop</th><th data-col="phase">Phase</th><th data-col="span">Phase span</th>
+        <th data-col="iter">Iter</th><th data-col="sections">Sections</th>
+        <th data-col="findings">Findings</th><th data-col="cost">Cost</th><th data-col="duration">Duration</th>
+        <th data-col="updated">Updated</th>
       </tr></thead>
       <tbody>
         ${() => view().rows.map((dl: DashboardLoop) => LoopTableRow({ dashLoop: dl, now: props.now, onOpen: props.onOpen }))}
@@ -504,15 +551,17 @@ function LoopTableRow(props: { dashLoop: DashboardLoop; now: () => number; onOpe
   const counts = createMemo(() => splitFindings(dl().findings))
   const spans = createMemo(() => loopPhaseState(dl(), props.now).spans)
   return html`<tr class="lt-row" onclick=${() => props.onOpen(props.dashLoop.loop.loopName)}>
-    <td><span class=${() => statusClass(lp().status)}>${() => lp().status}</span></td>
-    <td class="lt-name">${() => lp().loopName}</td>
-    <td class="lt-phase">${() => lp().phase}</td>
-    <td class="lt-phase-bar">${() => PhaseBar({ spans, variant: 'sm' })}</td>
-    <td>${MiniMeter({ current: () => lp().iteration, total: () => lp().maxIterations })}</td>
-    <td>${() => (lp().totalSections > 0
-      ? MiniMeter({ current: () => lp().currentSectionIndex, total: () => lp().totalSections })
+    <td data-col="status"><span class=${() => statusClass(lp().status)}>${() => lp().status}</span></td>
+    <td data-col="loop" class="lt-name">${() => lp().loopName}</td>
+    <td data-col="phase" class="lt-phase">${() => (lp().completedAt === null
+      ? html`<span class="lt-phase-chip" data-phase=${() => lp().phase}>${() => phaseLabel(lp().phase)}</span>`
       : html`<span class="dim">—</span>`)}</td>
-    <td class="lt-findings">${() => {
+    <td data-col="span" class="lt-phase-bar">${() => PhaseBar({ spans, variant: 'sm' })}</td>
+    <td data-col="iter">${MiniMeter({ current: () => lp().iteration, total: () => lp().maxIterations })}</td>
+    <td data-col="sections">${() => (lp().totalSections > 0
+      ? MiniMeter({ current: () => lp().currentSectionIndex, total: () => lp().totalSections, formatCurrent: formatSectionNumber })
+      : html`<span class="dim">—</span>`)}</td>
+    <td data-col="findings" class="lt-findings">${() => {
       const c = counts()
       if (c.bugs.length === 0 && c.warnings.length === 0) return html`<span class="dim">—</span>`
       return html`<span>
@@ -521,9 +570,9 @@ function LoopTableRow(props: { dashLoop: DashboardLoop; now: () => number; onOpe
         ${c.warnings.length > 0 ? html`<span class="finding-warning">${formatFindingCount(c.warnings.length, 'warn')}</span>` : ''}
       </span>`
     }}</td>
-    <td class="lt-cost">${() => (dl().usage ? formatUsageCost(dl().usage!.totalCost) : html`<span class="dim">—</span>`)}</td>
-    <td class="lt-duration">${() => dl().duration || ''}</td>
-    <td class="lt-updated">${() => fmtTime(loopActivityAt(lp()))}</td>
+    <td data-col="cost" class="lt-cost">${() => (dl().usage ? formatUsageCost(dl().usage!.totalCost) : html`<span class="dim">—</span>`)}</td>
+    <td data-col="duration" class="lt-duration">${() => dl().duration || ''}</td>
+    <td data-col="updated" class="lt-updated">${() => fmtTime(loopActivityAt(lp()))}</td>
   </tr>`
 }
 // ── MarkdownSection ───────────────────────────────────────────────────────
@@ -653,13 +702,15 @@ function SectionBody(props: { sec: DashboardSection }) {
 
 // A compact clickable row, reusing existing .section-item-{status}, .section-index,
 // .section-title, .section-status, .section-duration, .section-attempts classes.
-function SectionListRow(props: { sec: DashboardSection; onOpen: () => void }) {
+// `adjusted` gates the .section-adjusted flag for sections amended by the loop.
+function SectionListRow(props: { sec: DashboardSection; onOpen: () => void; adjusted: () => boolean }) {
   const sec = props.sec
   const duration = createMemo(() => formatSectionDuration(sec.startedAt, sec.completedAt))
   return html`<div class=${() => 'section-list-row section-item-' + sec.status} onclick=${props.onOpen}>
-    <span class="section-index">#${sec.sectionIndex}</span>
+    <span class="section-index">#${formatSectionNumber(sec.sectionIndex)}</span>
     <span class="section-title">${() => sec.title}</span>
     <span class=${() => sectionStatusClass(sec.status)}>${() => sec.status}</span>
+    ${() => (props.adjusted() ? html`<span class="section-adjusted">adjusted</span>` : '')}
     ${() => (duration() ? html`<span class="section-duration">${() => duration()}</span>` : '')}
     ${() => (sec.attempts > 0 ? html`<span class="section-attempts">${() => sec.attempts} attempts</span>` : '')}
     <span class="section-caret">▸</span>
@@ -670,8 +721,12 @@ function SectionListRow(props: { sec: DashboardSection; onOpen: () => void }) {
 // reused SectionBody; deselected shows the list. Persistence: current() returns
 // the same store proxy across polls, so the selected branch's thunk does not
 // re-run and SectionBody (its .markdown-body) is not rebuilt.
-function SectionsPanel(props: { sections: () => DashboardSection[] }) {
+function SectionsPanel(props: {
+  sections: () => DashboardSection[]
+  amendments: () => DashboardLoop['amendments']
+}) {
   const [selected, setSelected] = createSignal<number | null>(null)
+  const adjustedSections = createMemo(() => amendedSectionIndexes(props.amendments()))
   const current = createMemo(() => {
     const idx = selected()
     if (idx === null) return null
@@ -685,7 +740,7 @@ function SectionsPanel(props: { sections: () => DashboardSection[] }) {
         return html`<div class="section-drill">
           <div class="back-to-sections" onclick=${() => setSelected(null)}>← Back to sections</div>
           <div class="section-drill-title">
-            <span class="section-index">#${sec.sectionIndex}</span>
+            <span class="section-index">#${formatSectionNumber(sec.sectionIndex)}</span>
             <span class="section-title">${() => sec.title}</span>
             <span class=${() => sectionStatusClass(sec.status)}>${() => sec.status}</span>
           </div>
@@ -694,7 +749,11 @@ function SectionsPanel(props: { sections: () => DashboardSection[] }) {
       }
       return html`<div class="section-list">
         ${props.sections().map((s: DashboardSection) =>
-          SectionListRow({ sec: s, onOpen: () => setSelected(s.sectionIndex) }))}
+          SectionListRow({
+            sec: s,
+            onOpen: () => setSelected(s.sectionIndex),
+            adjusted: () => adjustedSections().has(s.sectionIndex),
+          }))}
       </div>`
     }}
   </div>`
@@ -704,21 +763,40 @@ function SectionsPanel(props: { sections: () => DashboardSection[] }) {
 
 // A labeled stat cell (label above value). The value is read through an
 // accessor so it updates in place on polls without rebuilding the cell.
-function LoopDetailStat(props: { label: string; value: () => string }) {
-  return html`<div class="ldh-stat">
-    <span class="ldh-stat-label">${props.label}</span>
-    <span class="ldh-stat-value">${() => props.value()}</span>
-  </div>`
+// An optional title accessor surfaces long model/branch values on hover.
+function LoopDetailCell(props: {
+  label: string
+  value: () => string
+  title?: () => string
+  tone?: () => string
+  size?: 'stat' | 'metric'
+}): Node {
+  const cls = () => 'ldh-cell'
+    + (props.size === 'stat' ? ' ldh-cell-stat' : '')
+    + (props.tone ? ' ldh-cell-' + props.tone() : '')
+  const valueCls = () => 'ldh-cell-value' + (props.size === 'stat' ? ' ldh-cell-value-stat' : '')
+  return html`<div class=${cls}>
+    <span class="ldh-cell-label">${props.label}</span>
+    <span class=${valueCls} title=${() => props.title ? props.title() : ''}>${() => props.value()}</span>
+  </div>` as Node
+}
+
+// A labelled stat group: the group label plus the shared .ldh-stats grid.
+function LoopDetailStatGroup(props: { label: string; children: Node[] }): Node {
+  return html`<div class="ldh-group">
+    <div class="ldh-group-label">${props.label}</div>
+    <div class="ldh-stats">${() => props.children.map(n => n)}</div>
+  </div>` as Node
 }
 
 // A progress bar with a count, clamped to 0–100%. Both current and total are
 // accessors so the fill width tracks live loop updates.
-function LoopDetailProgress(props: { label: string; current: () => number; total: () => number }) {
+function LoopDetailProgress(props: { label: string; current: () => number; total: () => number; formatCurrent?: (n: number) => string }) {
   const pct = () => clampPercent(props.current(), props.total())
   return html`<div class="ldh-bar-group">
     <div class="ldh-bar-head">
       <span class="ldh-bar-label">${props.label}</span>
-      <span class="ldh-bar-count">${() => props.current()} / ${() => props.total()}</span>
+      <span class="ldh-bar-count">${() => (props.formatCurrent ? props.formatCurrent(props.current()) : String(props.current()))} / ${() => props.total()}</span>
     </div>
     <div class="ldh-bar-track">
       <div class="ldh-bar-fill" style=${() => 'width:' + pct() + '%'}></div>
@@ -727,70 +805,106 @@ function LoopDetailProgress(props: { label: string; current: () => number; total
 }
 
 // Structured replacement for the cramped single-line summary: a status/name
-// title row, a labeled stat grid, iteration/section progress bars, and a
-// status-tinted outcome banner. Built once per selected loop; every dynamic
-// field is read reactively so it updates in place on polls.
+// title row, a primary metric strip, grouped labeled stats, iteration/section
+// progress bars, and a status-tinted outcome banner. Built once per selected
+// loop; every dynamic field is read reactively so it updates in place on polls.
 function LoopDetailHeader(props: {
   dashLoop: DashboardLoop
   split: () => { bugs: DashboardLoop['findings']; warnings: DashboardLoop['findings'] }
+  onSelectTab: (t: LoopTab) => void
 }) {
   const lp = () => props.dashLoop.loop
   const dl = () => props.dashLoop
   const hasCompletedAt = createMemo(() => !!lp().completedAt)
-  const hasDuration = createMemo(() => !!dl().duration)
+  const isLive = createMemo(() => lp().completedAt === null)
   const hasSectionsTotal = createMemo(() => lp().totalSections > 0)
-  const hasReason = createMemo(() => !!lp().terminationReason)
+  const amendmentsSummary = createMemo(() => summarizeAmendments(dl().amendments ?? []))
+  const bannerText = createMemo(() => {
+    const r = lp().terminationReason
+    if (!r) return null
+    return r.trim().toLowerCase() === lp().status.toLowerCase() ? null : r
+  })
   const level = createMemo(() => findingsLevel(props.split()))
   const hasUsage = createMemo(() => !!props.dashLoop.usage)
+  const findingsSummary = createMemo(() => {
+    const s = props.split()
+    if (s.bugs.length === 0 && s.warnings.length === 0) return 'No findings'
+    const parts: string[] = []
+    if (s.bugs.length > 0) parts.push(formatFindingCount(s.bugs.length, 'bug'))
+    if (s.warnings.length > 0) parts.push(formatFindingCount(s.warnings.length, 'warning'))
+    return parts.join(' · ')
+  })
+  // Group membership is reactive (Completed appears when the loop finishes,
+  // Messages when usage arrives); the stat values update in place through
+  // their accessors, so this memo only rebuilds on membership changes.
+  const groups = createMemo(() => {
+    const timing: Node[] = [LoopDetailCell({ label: 'Started', value: () => fmtTime(lp().startedAt), size: 'stat' })]
+    if (hasCompletedAt()) timing.push(LoopDetailCell({ label: 'Completed', value: () => fmtTime(lp().completedAt), size: 'stat' }))
+
+    const models: Node[] = [
+      LoopDetailCell({ label: 'Execution model', value: () => lp().executionModel ?? '—', title: () => lp().executionModel ?? '', size: 'stat' }),
+      LoopDetailCell({
+        label: 'Auditor model',
+        value: () => {
+          const base = lp().auditorModel ?? '—'
+          const fallbackIndex = lp().auditorFallbackIndex ?? 0
+          return fallbackIndex > 0 ? `${base} (fallback ${fallbackIndex})` : base
+        },
+        title: () => lp().auditorModel ?? '',
+        size: 'stat',
+      }),
+    ]
+
+    const env: Node[] = [
+      LoopDetailCell({ label: 'Branch', value: () => lp().worktreeBranch ?? '—', title: () => lp().worktreeBranch ?? '', size: 'stat' }),
+      LoopDetailCell({ label: 'Sandbox', value: () => (lp().sandbox ? 'on' : 'off'), size: 'stat' }),
+      LoopDetailCell({ label: 'Kind', value: () => lp().kind ?? '—', size: 'stat' }),
+      LoopDetailCell({ label: 'Audits', value: () => String(lp().auditCount), size: 'stat' }),
+      LoopDetailCell({ label: 'Errors', value: () => String(lp().errorCount), size: 'stat' }),
+    ]
+    if (hasUsage()) env.push(LoopDetailCell({ label: 'Messages', value: () => String(props.dashLoop.usage!.totalMessageCount), size: 'stat' }))
+
+    return [
+      LoopDetailStatGroup({ label: 'Timing', children: timing }),
+      LoopDetailStatGroup({ label: 'Models', children: models }),
+      LoopDetailStatGroup({ label: 'Environment', children: env }),
+    ]
+  })
 
   return html`<div class="loop-detail-header">
-    <div class=${() => 'ldh-findings ldh-findings-' + level()}>
-      ${() => {
-        const s = props.split()
-        if (s.bugs.length === 0 && s.warnings.length === 0) return 'No findings'
-        const parts = []
-        if (s.bugs.length > 0) parts.push(formatFindingCount(s.bugs.length, 'bug'))
-        if (s.warnings.length > 0) parts.push(formatFindingCount(s.warnings.length, 'warning'))
-        return parts.join(' · ')
-      }}
-    </div>
     <div class="ldh-top">
       <span class=${() => statusClass(lp().status)}>${() => lp().status}</span>
       <h3 class="ldh-name">${() => lp().loopName}</h3>
-      <span class="ldh-phase">${() => lp().phase}</span>
+      ${() => (amendmentsSummary().count > 0
+        ? html`<button
+            class="ldh-amendments"
+            onclick=${() => props.onSelectTab('plan')}
+          >${() => 'Plan adjusted ' + amendmentsSummary().count + '× · last ' + formatRelativeTime(amendmentsSummary().lastAt) + ' @ section ' + formatSectionNumber(amendmentsSummary().lastSection!)}</button>`
+        : '')}
+      ${() => (isLive() ? html`<span class="ldh-phase">${phaseLabel(lp().phase)}</span>` : '')}
     </div>
 
-    <div class="ldh-stats">
-      ${LoopDetailStat({ label: 'Started', value: () => fmtTime(lp().startedAt) })}
-      ${() => (hasCompletedAt() ? LoopDetailStat({ label: 'Completed', value: () => fmtTime(lp().completedAt) }) : '')}
-      ${() => (hasDuration() ? LoopDetailStat({ label: 'Duration', value: () => dl().duration || '' }) : '')}
-      ${LoopDetailStat({ label: 'Iteration', value: () => lp().iteration + ' / ' + lp().maxIterations })}
-      ${() => (hasSectionsTotal() ? LoopDetailStat({ label: 'Section', value: () => lp().currentSectionIndex + ' / ' + lp().totalSections }) : '')}
-      ${() => (hasUsage() ? LoopDetailStat({ label: 'Messages', value: () => String(props.dashLoop.usage!.totalMessageCount) }) : '')}
-      ${LoopDetailStat({ label: 'Execution model', value: () => lp().executionModel ?? '—' })}
-      ${LoopDetailStat({ label: 'Auditor model', value: () => {
-        const base = lp().auditorModel ?? '—'
-        const fallbackIndex = lp().auditorFallbackIndex ?? 0
-        return fallbackIndex > 0 ? `${base} (fallback ${fallbackIndex})` : base
-      }})}
-      ${LoopDetailStat({ label: 'Branch', value: () => lp().worktreeBranch ?? '—' })}
-      ${LoopDetailStat({ label: 'Sandbox', value: () => (lp().sandbox ? 'on' : 'off') })}
-      ${LoopDetailStat({ label: 'Kind', value: () => lp().kind ?? '—' })}
-      ${LoopDetailStat({ label: 'Audits', value: () => String(lp().auditCount) })}
-      ${LoopDetailStat({ label: 'Errors', value: () => String(lp().errorCount) })}
+    <div class="ldh-primary">
+      ${LoopDetailCell({ label: 'Duration', value: () => dl().duration || '—' })}
+      ${LoopDetailCell({ label: 'Cost', value: () => (hasUsage() ? formatUsageCost(props.dashLoop.usage!.totalCost) : '—') })}
+      ${LoopDetailCell({ label: 'Iterations', value: () => lp().iteration + ' / ' + lp().maxIterations })}
+      ${() => (hasSectionsTotal() ? LoopDetailCell({ label: 'Sections', value: () => formatSectionNumber(lp().currentSectionIndex) + ' / ' + lp().totalSections }) : '')}
+      ${LoopDetailCell({ label: 'Findings', value: () => findingsSummary(), tone: () => level() })}
     </div>
 
     <div class="ldh-bars">
       ${LoopDetailProgress({ label: 'Iterations', current: () => lp().iteration, total: () => lp().maxIterations })}
       ${() =>
         hasSectionsTotal()
-          ? LoopDetailProgress({ label: 'Sections', current: () => lp().currentSectionIndex, total: () => lp().totalSections })
+          ? LoopDetailProgress({ label: 'Sections', current: () => lp().currentSectionIndex, total: () => lp().totalSections, formatCurrent: formatSectionNumber })
           : ''}
     </div>
 
+    <div class="ldh-groups">${() => groups()}</div>
+
     ${() =>
-      hasReason()
-        ? html`<div class=${() => 'ldh-banner ldh-banner-' + lp().status}>${() => lp().terminationReason}</div>`
+      bannerText()
+        ? html`<div class=${() => 'ldh-banner ldh-banner-' + lp().status}>${() => bannerText()}</div>`
         : ''}
   </div>`
 }
@@ -843,16 +957,13 @@ function LoopUsage(props: {
               : '',
           )}
       </div>
-      <div class="usage-legend">
-        ${() =>
-          segments().map(
-            seg => html`<div class="usage-legend-item">
-              <span class="usage-legend-dot" style=${'background:' + seg.color}></span>
-              <span class="usage-legend-label">${seg.label}</span>
-              <span class="usage-legend-value">${formatTokenCount(seg.value)}</span>
-            </div>`,
-          )}
-      </div>
+      ${Legend({
+        items: () => segments().map(seg => ({
+          color: seg.color,
+          label: seg.label,
+          value: formatTokenCount(seg.value),
+        })),
+      })}
     </div>
 
     ${() =>
@@ -909,7 +1020,7 @@ function AmendmentRow(props: {
   return html`<div class="amendment-row">
     <div class="amendment-head" onclick=${props.onToggle}>
       <span class="amendment-time">${() => formatRelativeTime(a.createdAt)}</span>
-      <span class="amendment-section">applied @ section ${() => a.appliedAtSection}</span>
+      <span class="amendment-section">${() => 'applied @ section ' + formatSectionNumber(a.appliedAtSection)}</span>
       <span class="amendment-source">${() => a.source}</span>
       <span class="amendment-rationale">${() => a.rationale}</span>
       <span class="amendment-caret">${() => (props.expanded() ? '▾' : '▸')}</span>
@@ -976,7 +1087,7 @@ function TabBar(props: {
   </div>`
 }
 
-function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; now: () => number }) {
+function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; now: () => number; onSelectTab: (t: LoopTab) => void }) {
   const dl = () => props.dashLoop
   const lp = () => dl().loop
   const hasGoal = createMemo(() => !!dl().goal)
@@ -987,8 +1098,9 @@ function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; n
   const phaseState = createMemo(() => loopPhaseState(dl(), props.now))
   return html`<div class="overview-tab">
     ${() => PhaseBar({ spans: () => phaseState().spans, variant: 'md' })}
+    ${() => PhaseLegend({ spans: () => phaseState().spans })}
     ${() => (hasGoal() ? MarkdownSection({ label: 'Goal', src: () => dl().goal }) : '')}
-    ${LoopDetailHeader({ dashLoop: props.dashLoop, split: props.split })}
+    ${LoopDetailHeader({ dashLoop: props.dashLoop, split: props.split, onSelectTab: props.onSelectTab })}
     ${() => (hasReport() ? MarkdownSection({ label: reportLabel, src: () => reportSrc() }) : '')}
     ${() => (hasAudit() ? MarkdownSection({ label: 'Last Audit Result', src: () => dl().lastAuditResult }) : '')}
   </div>`
@@ -1003,11 +1115,24 @@ function TimelineEventRow(props: {
   const flowTarget = t.toPhase === null ? (t.status ?? '') : t.toPhase
   return html`<div class="tl-event">
     <span class="tl-event-time">${formatRelativeTime(t.createdAt)}</span>
-    <span class="tl-event-flow">${t.fromPhase} → ${flowTarget}</span>
+    <span class="tl-event-flow">${phaseLabel(t.fromPhase)} → ${phaseLabel(flowTarget)}</span>
     <span class="tl-event-kind">${t.transitionKind}</span>
     <span class="tl-event-iter">iter ${t.iteration}</span>
-    <span class="tl-event-section">${() => (t.sectionIndex === null ? '—' : 'sect ' + (t.sectionIndex + 1))}</span>
+    <span class="tl-event-section">${() => (t.sectionIndex === null ? '—' : 'sect ' + formatSectionNumber(t.sectionIndex))}</span>
     <span class="tl-event-elapsed">${() => (elapsedSec === null ? '—' : elapsedSec > 0 ? formatDuration(elapsedSec) : '0s')}</span>
+  </div>`
+}
+
+// A plan adjustment entry in the merged timeline stream. Distinct from the
+// uniform .tl-event grid rows: flex layout with an attention-tinted chip and
+// the auditor's rationale instead of phase-flow fields.
+function TimelineAmendmentRow(props: { amendment: NonNullable<DashboardLoop['amendments']>[number] }) {
+  const a = props.amendment
+  return html`<div class="tl-amendment">
+    <span class="tl-event-time">${formatRelativeTime(a.createdAt)}</span>
+    <span class="tl-amendment-kind">plan adjusted</span>
+    <span class="tl-amendment-section">${() => 'section ' + formatSectionNumber(a.appliedAtSection)}</span>
+    <span class="tl-amendment-rationale">${() => a.rationale}</span>
   </div>`
 }
 
@@ -1018,18 +1143,9 @@ function TimelineTabBody(props: { dashLoop: DashboardLoop; now: () => number }) 
   const phaseState = createMemo(() => loopPhaseState(dl(), props.now))
   const spans = createMemo(() => phaseState().spans)
   const truncated = createMemo(() => phaseState().truncated)
-  const totals = createMemo(() => summarizePhaseTotals(spans()))
-  const totalMs = createMemo(() => spans().filter(s => s.phase !== '').reduce((acc, s) => acc + s.durationMs, 0))
-
-  const sortedPhases = createMemo(() => {
-    const t = totals()
-    return Object.keys(t)
-      .filter(p => p !== '')
-      .sort((a, b) => t[b] - t[a])
-  })
 
   const eventsNewestFirst = createMemo(() =>
-    computeTimelineEvents(transitions(), lp().startedAt, truncated()),
+    mergeTimelineEntries(transitions(), dl().amendments ?? [], lp().startedAt, truncated()),
   )
 
   const [showAll, setShowAll] = createSignal(false)
@@ -1045,23 +1161,12 @@ function TimelineTabBody(props: { dashLoop: DashboardLoop; now: () => number }) 
     ${() => (truncated()
       ? html`<div class="phase-truncated">Earlier history was truncated by the 100-row fetch window.</div>`
       : '')}
-
-    <div class="phase-totals">
-      ${() =>
-        sortedPhases().map(phase => {
-          const ms = totals()[phase]
-          const pct = totalMs() > 0 ? Math.round((ms / totalMs()) * 100) : 0
-          return html`<div class="phase-totals-row">
-            <span class="phase-totals-label">
-              <span class="phase-totals-dot" data-phase=${phase}></span>${phase}
-            </span>
-            <span class="phase-totals-value">${() => (ms >= 1000 ? formatDuration(Math.floor(ms / 1000)) : ms + 'ms')} · ${pct}%</span>
-          </div>`
-        })}
-    </div>
+    ${() => PhaseLegend({ spans })}
 
     <div class="timeline-events">
-      ${() => visibleEvents().map(ev => TimelineEventRow({ ev }))}
+      ${() => visibleEvents().map(entry => (entry.kind === 'transition'
+        ? TimelineEventRow({ ev: { transition: entry.transition, elapsedMs: entry.elapsedMs } })
+        : TimelineAmendmentRow({ amendment: entry.amendment })))}
       ${() => (hiddenCount() > 0
         ? html`<div class="tl-event-expand" onclick=${() => setShowAll(true)}>[ ${() => hiddenCount()} earlier events ]</div>`
         : '')}
@@ -1070,7 +1175,10 @@ function TimelineTabBody(props: { dashLoop: DashboardLoop; now: () => number }) 
 }
 
 function SectionsTabBody(props: { dashLoop: DashboardLoop }) {
-  return SectionsPanel({ sections: () => props.dashLoop.sections })
+  return SectionsPanel({
+    sections: () => props.dashLoop.sections,
+    amendments: () => props.dashLoop.amendments ?? [],
+  })
 }
 
 type Split = { bugs: DashboardLoop['findings']; warnings: DashboardLoop['findings'] }
@@ -1094,7 +1202,7 @@ function groupFindingsBySection(findings: DashboardLoop['findings']): Array<{ ke
   })
   return order.map(k => ({
     key: k,
-    label: k === null ? 'cross-section' : 'sect ' + (k + 1),
+    label: k === null ? 'cross-section' : 'sect ' + formatSectionNumber(k),
     rows: map.get(k)!,
   }))
 }
@@ -1179,9 +1287,10 @@ function buildTabBody(props: {
   dashLoop: DashboardLoop
   split: () => Split
   now: () => number
+  onSelectTab: (t: LoopTab) => void
 }): Node {
   switch (props.tab) {
-    case 'overview': return OverviewTabBody({ dashLoop: props.dashLoop, split: props.split, now: props.now }) as Node
+    case 'overview': return OverviewTabBody({ dashLoop: props.dashLoop, split: props.split, now: props.now, onSelectTab: props.onSelectTab }) as Node
     case 'timeline': return TimelineTabBody({ dashLoop: props.dashLoop, now: props.now }) as Node
     case 'sections': return SectionsTabBody({ dashLoop: props.dashLoop }) as Node
     case 'findings': return FindingsTabBody({ dashLoop: props.dashLoop }) as Node
@@ -1203,6 +1312,7 @@ function TabBody(props: {
   now: () => number
   tabs: () => LoopTab[]
   activeTab: () => LoopTab
+  onSelectTab: (t: LoopTab) => void
 }) {
   const visible = createMemo(() => props.tabs().includes(props.tab) && props.activeTab() === props.tab)
   const owner = getOwner()
@@ -1223,6 +1333,7 @@ function LoopDetailTabs(props: {
   now: () => number
   tabs: () => LoopTab[]
   activeTab: () => LoopTab
+  onSelectTab: (t: LoopTab) => void
 }) {
   return html`<div class="tab-bodies">
     ${ALL_TABS.map((t: LoopTab) => TabBody({
@@ -1232,6 +1343,7 @@ function LoopDetailTabs(props: {
       now: props.now,
       tabs: props.tabs,
       activeTab: props.activeTab,
+      onSelectTab: props.onSelectTab,
     }))}
   </div>`
 }
@@ -1253,7 +1365,7 @@ export function LoopDetail(props: {
   return html`<div class="loop">
     <div class="loop-detail">
       ${TabBar({ tabs, activeTab, onSelect: props.onSelectTab })}
-      ${LoopDetailTabs({ dashLoop: props.dashLoop, split, now: props.now, tabs, activeTab })}
+      ${LoopDetailTabs({ dashLoop: props.dashLoop, split, now: props.now, tabs, activeTab, onSelectTab: props.onSelectTab })}
     </div>
   </div>`
 }

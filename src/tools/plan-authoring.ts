@@ -2,7 +2,7 @@ import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
 import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { writeSessionPlanContent } from '../services/plan-capture'
-import { formatPlanStructureSummary, summarizePlanStructure } from '../utils/plan-structure'
+import { findSectionsForLineRange, formatPlanStructureSummary, summarizePlanStructure } from '../utils/plan-structure'
 
 const z = tool.schema
 
@@ -44,20 +44,26 @@ function normalizePlanContent(content: string): { ok: true; text: string } | { o
 
 /**
  * Writes the plan text through the shared session-scoped write path and
- * returns a structural report (counts + warnings) for the architect.
+ * returns a structural report (counts + warnings) for the architect. When
+ * `focusedSectionIndexes` is given, only those sections are detailed; the full
+ * outline is reported otherwise.
  */
 function writeAndReport(
   ctx: ToolContext,
   sessionID: string,
   planText: string,
   prefix?: string,
+  focusedSectionIndexes?: number[],
 ): string {
   const result = writeSessionPlanContent(
     { plansRepo: ctx.plansRepo, projectId: ctx.projectId, directory: ctx.directory, logger: ctx.logger },
     sessionID,
     planText,
   )
-  return `${prefix ?? ''}${formatPlanStructureSummary(summarizePlanStructure(result.planText))}`
+  return `${prefix ?? ''}${formatPlanStructureSummary(
+    summarizePlanStructure(result.planText),
+    { sectionIndexes: focusedSectionIndexes },
+  )}`
 }
 
 export function createPlanAuthoringTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
@@ -148,10 +154,35 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, Retur
           )
         }
 
+        const replacementOffsets: number[] = []
+        let running = 0
+        for (let i = 0; i < parts.length - 1; i++) {
+          running += parts[i].length
+          replacementOffsets.push(running)
+          running += args.newString.length
+        }
+
+        const lineAt = (offset: number) => next.slice(0, offset).split('\n').length - 1
+        const matchedIndexes = new Set<number>()
+        for (const offset of replacementOffsets) {
+          const startLine = lineAt(offset)
+          const endLine = lineAt(offset + args.newString.length)
+          for (const section of findSectionsForLineRange(next, startLine, endLine)) {
+            matchedIndexes.add(section.index)
+          }
+        }
+
         ctx.logger.log(
           `plan-edit: replaced ${occurrences} occurrence(s) for session ${context.sessionID}`,
         )
-        return writeAndReport(ctx, context.sessionID, next, `Replaced ${occurrences} occurrence(s).\n`)
+        const focusedSectionIndexes = [...matchedIndexes].sort((a, b) => a - b)
+        return writeAndReport(
+          ctx,
+          context.sessionID,
+          next,
+          `Replaced ${occurrences} occurrence(s).\n`,
+          focusedSectionIndexes,
+        )
       },
     }),
   }
