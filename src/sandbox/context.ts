@@ -10,6 +10,18 @@ export interface SandboxContext {
   envFile?: string
 }
 
+/**
+ * Sandbox context note injected into the system prompt of every session whose tool calls are
+ * routed into a container — sandbox loops, their Task-tool subagents, and sessions with the host
+ * sandbox toggled on. Lives here, next to `SandboxContext`, because it describes the container
+ * routing itself rather than anything loop-specific, and because subagents never see a loop
+ * prompt body. Single source of truth.
+ */
+export const SANDBOX_CONTEXT_NOTE = [
+  '[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.',
+  'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
+].join('\n')
+
 export interface SandboxLoopContextState {
   loopName: string
   active: boolean
