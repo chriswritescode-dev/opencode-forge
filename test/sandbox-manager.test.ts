@@ -165,6 +165,20 @@ describe('SandboxManager', () => {
       expect(mockRuntime.getCreateSandboxCalls().length).toBe(0)
     })
 
+    test('includes opted-in image features in the missing-template build command', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      mockRuntime.setTemplateExists(false)
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'custom:browser', buildContextDir: '/some/context', browserControl: true },
+        createMockLogger(),
+      )
+
+      await expect(manager.start('test', '/path')).rejects.toThrow(
+        /docker build --build-arg INSTALL_BROWSER_CONTROL=true -t custom:browser/,
+      )
+    })
+
     test('returns early when container already running', async () => {
       const mockRuntime = createMockSandboxRuntime()
       mockRuntime.setRunning('forge-test', true)

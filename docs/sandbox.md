@@ -19,7 +19,48 @@ docker save oc-forge-sandbox:latest -o forge-sandbox.tar
 sbx template load forge-sandbox.tar
 ```
 
-The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a native Docker daemon inside each sandbox.
+The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a native Docker daemon inside each sandbox.
+
+### Browser Control (opt-in)
+
+Chromium and Browser Control add a substantial browser payload, so they are excluded by default. Enable them for future image builds:
+
+```jsonc
+{
+  "sandbox": {
+    "imageFeatures": {
+      "browserControl": true
+    }
+  }
+}
+```
+
+Then run `Build sandbox template` from the command palette. Changing the option does not modify an already-loaded template; rebuild it explicitly. The equivalent manual Docker build is:
+
+```bash
+docker build \
+  --build-arg INSTALL_BROWSER_CONTROL=true \
+  -t oc-forge-sandbox:latest \
+  container/
+docker save oc-forge-sandbox:latest -o forge-sandbox.tar
+sbx template load forge-sandbox.tar
+```
+
+The resulting image provides `browser-control`, `browser-control-mcp`, Chromium as `chromium`, and the unpacked extension at `/opt/browser-control-extension`.
+
+Browser Control connects to a browser in the same sandbox. Launch Chromium with the packaged extension path resolved to its installation directory:
+
+```bash
+extension="$(readlink -f /opt/browser-control-extension)"
+xvfb-run -a chromium \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --disable-extensions-except="$extension" \
+  --load-extension="$extension" \
+  --user-data-dir=/opt/forge/.browser-control-profile
+```
+
+It cannot control a browser running on the host because sandbox networking cannot reach the host loopback interface.
 
 ## How It Works
 

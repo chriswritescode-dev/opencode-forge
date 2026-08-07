@@ -104,7 +104,10 @@
   "sandbox": {
     "enabled": true,
     "mode": "sbx",
-    "image": "oc-forge-sandbox:latest"
+    "image": "oc-forge-sandbox:latest",
+    "imageFeatures": {
+      "browserControl": false
+    }
     // Mount the source project directory read-only at its identical host path. Defaults to true.
     // "mountProjectReadonly": true,
     // Network access configuration. The sbx proxy is deny-by-default: host loopback is

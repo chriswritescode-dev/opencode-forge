@@ -12,12 +12,28 @@ import { runCommand, type CommandResult } from './process'
 const BUILD_TIMEOUT = 600000
 const SAVE_TIMEOUT = 600000
 const DOCKER_NOT_FOUND_RE = /spawn docker ENOENT/i
+export const DEFAULT_SANDBOX_IMAGE = 'oc-forge-sandbox:latest'
 
 export interface BuildTemplateDeps {
   runCommand: typeof runCommand
   loadTemplate: (tar: string) => Promise<void>
   logger: Logger
   tmpDir: string
+}
+
+export interface SandboxTemplateOptions {
+  browserControl?: boolean
+}
+
+export function buildTemplateDockerArgs(options?: SandboxTemplateOptions): string[] {
+  return options?.browserControl === true
+    ? ['--build-arg', 'INSTALL_BROWSER_CONTROL=true']
+    : []
+}
+
+export function formatTemplateBuildCommands(contextDir: string, tag: string, options?: SandboxTemplateOptions): string {
+  const build = ['docker', 'build', ...buildTemplateDockerArgs(options), '-t', tag, `"${contextDir}"`].join(' ')
+  return `${build} && docker save ${tag} -o <tar> && sbx template load <tar>`
 }
 
 function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error {
@@ -41,10 +57,11 @@ export async function buildAndLoadSandboxTemplate(
   contextDir: string,
   tag: string,
   deps: BuildTemplateDeps,
+  options?: SandboxTemplateOptions,
 ): Promise<void> {
   const tarPath = join(deps.tmpDir, `forge-sandbox-template-${process.pid}.tar`)
   try {
-    const build = await deps.runCommand('docker', ['build', '-t', tag, contextDir], {
+    const build = await deps.runCommand('docker', ['build', ...buildTemplateDockerArgs(options), '-t', tag, contextDir], {
       logger: deps.logger,
       logLabel: 'docker',
       timeout: BUILD_TIMEOUT,

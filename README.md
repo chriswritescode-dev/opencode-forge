@@ -534,7 +534,7 @@ docker save oc-forge-sandbox:latest -o forge-sandbox.tar
 sbx template load forge-sandbox.tar
 ```
 
-The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
+The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq. Chromium and Browser Control are an opt-in image feature: set `sandbox.imageFeatures.browserControl` to `true`, then run `Build sandbox template` from the command palette to rebuild and load the configured image tag.
 
 The `container/Dockerfile` ships with the plugin package. If the template is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox template" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically.
 

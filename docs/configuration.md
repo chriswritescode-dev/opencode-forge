@@ -247,6 +247,7 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.enabled` | `true` | Enable sandboxed execution when the `sbx` daemon is available. |
 | `sandbox.mode` | `"sbx"` | Sandbox mode. `sbx` is currently the only supported mode. |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | sbx template tag used for sandboxed execution. |
+| `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the template after changing it. |
 | `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`sbx create --memory`). |
 | `sandbox.resources.cpus` | `"4"` | CPU count (`sbx create --cpus`; integer-only). |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
