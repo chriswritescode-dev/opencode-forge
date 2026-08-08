@@ -44,14 +44,16 @@ As of OpenCode 1.17.8, `OPENCODE_EXPERIMENTAL_WORKSPACES=true` is required for t
 export OPENCODE_EXPERIMENTAL_WORKSPACES=true
 ```
 
-Without this, Forge cannot create loop worktrees and `execute-plan` / `/execute-plan` will fail. See [Common Issues](#common-issues) and [Workspace Integration](#workspace-integration) for details.
+Without this, Forge cannot create loop worktrees, so plan loops, goal loops, TUI Loop launches, and grouped execution will fail. See [Common Issues](#common-issues) and [Workspace Integration](#workspace-integration) for details.
 
 ## What Forge Adds
 
-Forge ships two user-facing surfaces:
+Forge ships two plugin entrypoints plus standalone management surfaces:
 
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
+- **Installer CLI** — a standalone CLI accessible via `bunx opencode-forge` or `pnpm setup` (from a source checkout) for installing/upgrading bundled prompts and skills.
+- **Dashboard** — a read-only observability interface launchable from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only).
 
 The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on the sidebar and execution dialog.
 
@@ -66,7 +68,7 @@ The server plugin provides the core hooks, tools, agents, plan storage, loop orc
 
 ## Dashboard
 
-Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state. By default it binds loopback only. Set `dashboard.host` / `dashboard.port` in `forge-config.jsonc` to expose it on a LAN or VPN — see [Configuration](docs/configuration.md#dashboard). The dashboard has **no authentication**, so a non-loopback bind must be protected at the network layer.
+Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only). The dashboard **never mutates** loop, workspace, or storage state. By default it binds loopback only. Set `dashboard.host` / `dashboard.port` in `forge-config.jsonc` to expose it on a LAN or VPN — see [Configuration](docs/configuration.md#dashboard). The dashboard has **no authentication**, so a non-loopback bind must be protected at the network layer.
 
 ### Views
 
@@ -104,15 +106,16 @@ Execution flow dialog with mode and model selection:
 ## Features
 
 - **Plans** — architect authors validated plans directly into SQL storage with `plan-write`/`plan-edit`
-- **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](docs/configuration.md#remotes))
+- **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](docs/configuration.md#remotes)); grouped execution launches features from a PRD as parallel loops
 - **Loops** — iterative coding/auditing with isolated git worktree and optional sbx sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
+- **Group tools** — `launch-group`, `group-status`, `group-cancel` for parallel feature orchestration
 - **TUI** — sidebar and execution dialog
 - **Sandbox** — Optional sbx worktree loop isolation with bind-mounted project files
 
 ## Agents
 
-The plugin bundles three user-facing agents plus hidden `auditor-loop`, `architect-auto`, and `feature-splitter` agents for loop audits and grouped execution. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
+The plugin bundles three user-facing agents plus hidden `auditor-loop`, `architect-auto`, `feature-splitter`, and `impact-reviewer` agents for loop audits, grouped execution, and impact analysis. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
 
 | Agent | Mode | Description |
 |-------|------|-------------|
@@ -122,6 +125,7 @@ The plugin bundles three user-facing agents plus hidden `auditor-loop`, `archite
 | **auditor-loop** | primary, hidden | Internal audit agent used for loop-runner audit sessions. |
 | **architect-auto** | primary, hidden | Autonomous planner used by grouped execution. |
 | **feature-splitter** | primary, hidden | Splits broad grouped work into implementation-coherent features. |
+| **impact-reviewer** | subagent, hidden | Read-only impact analysis subagent invoked during loop audits to find duplicated logic, consolidation opportunities, missed callers, and dead code across sections. |
 
 The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
@@ -139,9 +143,9 @@ Forge provides these tool groups:
 - **Plan tools** — `plan-write`, `plan-edit`, `plan-read`, `section-read`, `plan-adjust`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
 - **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
-- **Sandbox shell** — `sh` when a sandbox manager is available
+- **Sandbox routing** — native `bash`, `glob`, and `grep` tools route into sbx for sandboxed sessions
 
-Loops always run in an isolated git worktree; sbx sandbox is used automatically when available.
+Loops always run in an isolated git worktree; sbx is used when enabled, configured, and available.
 
 | Tool | Description |
 |------|-------------|
@@ -162,6 +166,7 @@ Loops always run in an isolated git worktree; sbx sandbox is used automatically 
 | `/execute-goal` | Execute a free-text goal in dedicated worktree sessions until an audit leaves no findings | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
+| `/launch-group` | Decompose a PRD or feature list into features and launch them as parallel planning + development loops | code |
 
 ## Configuration
 
@@ -223,9 +228,21 @@ The plugin includes a TUI sidebar widget and an execution dialog for launching p
 
 The sidebar shows Forge's connection status and version. Captured plans live on the server in the `plansRepo` SQL store; the TUI no longer keeps a local archive or in-TUI editor.
 
+When sandboxing is configured, the sidebar displays the current session's sbx state. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
+
+### Additional Commands
+
+The TUI also registers these commands:
+
+| Command | Description |
+|---------|-------------|
+| `Toggle host sandbox` | Enable or disable sandbox for the current session |
+| `Build sandbox template` | Build, save, and load the sandbox template image |
+| `Open dashboard` | Start the Forge dashboard and open it in a browser |
+
 ### Execution Dialog
 
-Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. Legacy chat capture remains available for backward compatibility when no stored row exists; new plans should always be authored with `plan-write`. If no plan can be resolved, the dialog will not open and you'll see a toast asking the architect to produce one first.
+Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. Legacy chat capture remains available for backward compatibility when no stored row exists; new plans should always be authored with `plan-write`. If no plan can be resolved, a toast prompts the user and the dialog falls back to a paste-input prompt so a plan can be entered manually. A separate command, `Execute pasted plan`, opens the paste dialog directly.
 
 The dialog provides full control over execution parameters:
 
@@ -235,7 +252,7 @@ Choose from three execution modes:
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (sbx sandbox used automatically when available)
+3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (sbx is used when enabled, configured, and available)
 
 #### Model Selection
 
@@ -245,15 +262,15 @@ Two model selectors are available:
 - Opens a full model selection dialog with all available providers
 - Shows recently used models for quick access (derived from your OpenCode sessions, recent Forge loops, OpenCode favorites, and the global default)
 - Displays model capabilities (reasoning, tools support) in descriptions
-- Defaults to the most recent Forge loop's selection, falling back to `config.executionModel`
+- Defaults to `config.executionModel`, then the most recent Forge loop's selection, then the platform default
 
 **Auditor Model:**
 - Same model selection interface
-- Defaults to the most recent Forge loop's auditor selection, falling back to `config.auditorModel` → `config.executionModel`
+- Defaults to `config.auditorModel`, then `config.executionModel`, then the most recent Forge loop's auditor or execution model, then the platform default
 
 #### Persistence
 
-Selections live on the **OpenCode server**, not in a TUI-local cache. Every loop execution stamps the chosen execution + auditor model (and variants) into `workspace.create.extra.forgeLoop`, and the next time the dialog opens it derives defaults and recents from `workspace.list()` plus the session list. This means the picker is correct even when the TUI runs on a different host than the OpenCode server.
+Selections live on the **OpenCode server**, not in a TUI-local cache. Loops launched from the TUI execution dialog stamp the chosen execution and auditor models (and variants) into `workspace.create.extra.forgeLoop`; later dialogs derive defaults and recents from `workspace.list()` plus the session list. This keeps the picker correct when the TUI and OpenCode server run on different hosts.
 
 The dialog tracks only loop-mode executions for recents / last-used defaults; `New session` and `Execute here` modes do not create a workspace, so they do not contribute to recents.
 
@@ -272,7 +289,7 @@ Add to your `~/.config/opencode/tui.json` or project-level `tui.json`:
 }
 ```
 
-### Model Selection Dialog
+### Model Picker Organization
 
 The TUI provides a comprehensive model selection dialog when executing plans. The dialog features:
 
@@ -308,7 +325,7 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 }
 ```
 
-Set `sidebar` to `false` to completely disable the widget.
+Set `sidebar` to `false` to disable the widget, Forge client connection, plan-execution commands, and execution dialog. Session-rotation following plus the dashboard, sandbox-template build, and host-sandbox toggle commands remain available.
 
 For local development, reference the built TUI file directly:
 
@@ -337,7 +354,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions an sbx sandbox when available.
+- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions sbx when enabled, configured, and available.
 
 | Mode | When to choose it |
 |------|-------------------|
@@ -349,33 +366,7 @@ The dialog also lets you pick the execution model, auditor model, and their opti
 
 For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode, the architect is instead instructed to launch the loop via the `execute-plan` tool.
 
-### Model Selection Priority
-
-Model and variant selection follows this priority order:
-
-**For execution model:**
-1. In-session dialog override (instance lifetime)
-2. `config.executionModel`
-3. Last-used (per-project workspace)
-4. Platform default
-
-**For auditor model:**
-1. In-session override
-2. `config.auditorModel`
-3. `config.executionModel` (inherit)
-4. Last-used workspace
-5. Platform default
-
-**For execution variant:**
-1. In-session override
-2. `config.executionVariant`
-3. Last-used workspace
-
-**For auditor variant:**
-1. In-session override
-2. `config.auditorVariant`
-3. Last-used workspace
-   *(independent — does not inherit the execution variant)*
+For grouped execution, the `launch-group` slash command orchestrates parallel feature extraction: a PRD or feature list is split into implementation-coherent features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each warning-free plan runs as its own loop within a concurrency cap. The group tools (`launch-group`, `group-status`, `group-cancel`) are agent-invoked only (no slash commands beyond `/launch-group`).
 
 ### Troubleshooting
 
@@ -411,26 +402,48 @@ Loop sessions rotate between code and auditor work, so Forge persists per-sessio
 
 ### Worktree Isolation
 
-Loops always run in an isolated git worktree. Sandbox is optional: when the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
+Loops always run in an isolated git worktree. Sandbox is optional and enabled only when the `sbx` daemon is available and configured (`sandbox.mode = 'sbx'`): when available, a sandbox is provisioned automatically alongside the worktree; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
 
 ### Auditor Integration
 
-After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the current loop. Outstanding `severity: 'bug'` findings block completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
+After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the current loop. Outstanding findings return a dirty audit to coding; the loop terminates only when the auditor has run at least once and no findings remain.
+
+### Section Lifecycle
+
+Sectioned (plan) loops execute the plan milestone by milestone. A plan is decomposed into sections at loop start (one-time preprocessing), with a hard cap of **24 sections** (`MAX_TOTAL_SECTIONS`); markers past the cap are dropped rather than merged. The loop then advances through sections via clean section audits during the `auditing` phase. Each section is coded and audited in sequence — dirty section audits rotate back to coding for the same section.
+
+When all sections are clean, the loop enters `final_auditing`, which audits the entire accumulated diff. Outstanding final-audit findings rotate the loop to a `final_audit_fix` coding pass without rewinding a section; it then returns to `final_auditing` for verification. A clean final audit triggers completion or the configured `post_action` phase.
+
+During a section audit, the auditor may amend the plan via `plan-adjust`: revise the section under audit in place and/or replace the pending section suffix. The plan objective and verification criteria are immutable, already-completed sections cannot be changed, and the resulting total is capped at 24 sections. If an amendment appends sections while in `final_auditing`, the loop reverts to `auditing` to execute them.
 
 ### Stall Detection
 
-A watchdog monitors loop activity. If no progress is detected within `stallTimeoutMs` (default: 60s), the current phase is re-triggered. After `maxConsecutiveStalls` consecutive stalls (default: 5), the loop terminates with reason `stall_timeout`. Use `loop-status` with `restart` to resume from the persisted section/iteration.
+Two stall timeouts guard against wedged sessions:
+
+- **`stallTimeoutMs`** (default: 60 s) — recovers a missing or non-busy session status after the ordinary activity window expires.
+- **`busyStallTimeoutMs`** (default: 15 m) — bounds how long a busy session may emit neither tool activity nor streamed content. It is measured across the loop session and its subagents; on expiry Forge aborts and continues the phase with a nudge.
+
+Each recovery counts toward `maxConsecutiveStalls` (default: 5); exhausting the limit terminates with `stall_timeout`. Use `loop-status` with `restart` to resume from the persisted section and iteration.
 
 ### Model Configuration
 
-Loops use the following priority order for model selection:
+Model and variant selection follows this priority order (first match wins):
 
-1. **In-session dialog override** — Changed in the execution dialog (instance lifetime)
-2. `config.executionModel` — Global execution model fallback
-3. Last-used workspace — Previously selected model for the project
-4. Platform default — OpenCode's default model
+**For execution model:**
+1. In-session dialog override (instance lifetime)
+2. `config.executionModel`
+3. Last-used workspace preference
+4. Platform default
 
-The auditor model follows a similar chain: in-session override → `config.auditorModel` → `config.executionModel` (inherit) → last-used workspace → platform default. Variants follow their own priority (see [Model Selection Priority](#model-selection-priority)).
+**For auditor model:**
+1. In-session dialog override (instance lifetime)
+2. `config.auditorModel`
+3. `config.executionModel`
+4. Last-used auditor model
+5. Last-used execution model
+6. Platform default
+
+Variants use override → matching config value → last-used workspace value. The auditor variant does not inherit the execution variant.
 
 When launching from the TUI dialog, your selection is remembered and pre-filled on subsequent launches. The dialog also allows selecting a separate model for the auditor phase.
 
@@ -452,11 +465,9 @@ The loop terminates when any of these conditions is met:
 
 - **Max iterations** — The global `maxIterations` cap is exceeded (0 = unlimited).
 - **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
-- **Final audit completion** — When no bug-severity review findings remain after the final audit phase. If `loop.postAction.enabled` is `true`, the loop enters the `post_action` phase before final termination.
+- **Final audit completion** — The auditor has run at least once and leaves **zero open review findings of any severity** (`bug` or `warning`). If `loop.postAction.enabled` is `true`, the loop enters the `post_action` phase before final termination.
 - **Post-action completion** — After a clean final audit and a successful post-completion action phase (if configured).
 - **Consecutive errors** — 3 consecutive errors in either phase.
-
-Loops always run in an isolated git worktree. Sandbox is optional: when the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 ## Workspace Integration
 
@@ -466,12 +477,14 @@ Forge worktree loops register as **OpenCode workspaces**, letting you switch bet
 
 Workspace integration requires the **experimental workspace runtime** enabled in OpenCode. See [Quick Start](#quick-start) for the environment variable setup. No forge config option enables or disables this — the toggle is purely on the OpenCode side and must be present before OpenCode starts.
 
+All worktree-based execution paths require a git repository with at least one root commit: `execute-plan` (Loop mode), `execute-goal` (`/execute-goal`), TUI Loop execution dialog launches, grouped execution (`/launch-group`), and group restarts all check for the root commit before creating worktrees, sessions, or group state. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry.
+
 > The `OPENCODE_EXPERIMENTAL_WORKSPACES` flag is not currently documented on opencode.ai. The authoritative source is `packages/core/src/flag/flag.ts` and `packages/opencode/src/effect/runtime-flags.ts` in the OpenCode repo.
 
 ### When workspace integration is active
 
 - **Env var set, OpenCode ≥ 1.17.8** → Forge can create the worktree workspace, bind loop sessions to it, and show the loop as a switchable workspace in the TUI.
-- **Env var unset or older OpenCode** → `experimental.workspace.create` is unavailable or no-ops, Forge cannot create the loop worktree, and `execute-plan` / `/execute-plan` fails before iteration starts.
+- **Env var unset or older OpenCode** → `experimental.workspace.create` is unavailable or no-ops, Forge cannot create the loop worktree, and `execute-plan` / `/execute-plan`, `execute-goal`, TUI Loop launches, and `/launch-group` all fail before iteration starts.
 
 ### What it does
 
@@ -496,13 +509,13 @@ If initial workspace creation fails at startup — env var unset, OpenCode versi
 
 ## Common Issues
 
-### `execute-plan` / `/execute-plan` fails to start
+### Worktree execution fails to start
 
 **Most common cause:** `OPENCODE_EXPERIMENTAL_WORKSPACES=true` was not set in the environment that launched OpenCode. See [Quick Start](#quick-start) for setup.
 
 Symptoms include:
 
-- `execute-plan` or `/execute-plan` returns an internal error before the first coding session starts
+- A plan loop, goal loop, TUI Loop launch, or feature group returns an internal error before its first coding session starts
 - Forge logs contain `createBuiltinWorktreeWorkspace: workspace.create threw`, `workspace.create returned no workspace id`, or `handleStartLoop: failed to create builtin worktree workspace`
 - No loop worktree appears in the TUI workspace switcher
 
@@ -514,7 +527,7 @@ Worktree loops require a git repository with at least one commit. OpenCode scope
 
 ## Sandbox
 
-Run loop iterations inside an isolated `sbx` sandbox. Sandbox is optional: when the `sbx` daemon is available and configured, Forge provisions a loop sandbox automatically; otherwise loops run in worktree-only mode.
+Run loop iterations inside an isolated `sbx` sandbox when the `sbx` daemon is available and configured. Sandbox is optional: when `sbx` is enabled, Forge provisions a loop sandbox automatically; otherwise loops run in worktree-only mode.
 
 See [Sandbox](docs/sandbox.md) for setup, native in-sandbox Docker, network access, environment passthrough, custom bind mounts, large-output handling, and resource defaults.
 
@@ -534,7 +547,7 @@ docker save oc-forge-sandbox:latest -o forge-sandbox.tar
 sbx template load forge-sandbox.tar
 ```
 
-The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq. Chromium and Browser Control are an opt-in image feature: set `sandbox.imageFeatures.browserControl` to `true`, then run `Build sandbox template` from the command palette to rebuild and load the configured image tag.
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, and jq. Chromium and Browser Control are an opt-in image feature: set `sandbox.imageFeatures.browserControl` to `true`, then run `Build sandbox template` from the command palette to rebuild and load the configured image tag.
 
 The `container/Dockerfile` ships with the plugin package. If the template is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox template" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically.
 

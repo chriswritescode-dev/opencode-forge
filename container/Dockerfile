@@ -25,13 +25,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# pnpm via corepack, pre-activated into a world-readable/writable cache so the
-# container can run as an arbitrary host UID without downloading pnpm at runtime.
-ENV COREPACK_HOME=/opt/corepack \
-    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN corepack enable \
-    && corepack prepare pnpm@latest --activate \
-    && chmod -R 0777 /opt/corepack
+# pnpm installed globally at build time so the container never downloads a package
+# manager at runtime. Node stopped shipping corepack in v25, so npm is the install
+# path; the resulting /usr/local tree is readable by an arbitrary host UID.
+RUN npm install -g pnpm@latest
 
 # bun installed to a world-accessible location. The default installer targets
 # /root/.bun, which is unreadable (mode 0700) when the container runs as a
@@ -58,7 +55,7 @@ ENV HOME=/opt/forge \
     XDG_CACHE_HOME=/opt/forge/.cache \
     XDG_DATA_HOME=/opt/forge/.local/share \
     PNPM_HOME=/opt/forge/.local/share/pnpm \
-    PATH=/opt/forge/.local/share/pnpm:$PATH \
+    PATH=/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
     npm_config_cache=/opt/forge/.npm \
     npm_config_store_dir=/opt/forge/.local/share/pnpm/store
 RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.npm \
@@ -78,11 +75,12 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.np
 # writable by any exec UID. Any future build step that runs pnpm as root must do the same.
 ARG INSTALL_BROWSER_CONTROL=false
 
-RUN corepack pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
+RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
     && if [ "$INSTALL_BROWSER_CONTROL" = "true" ]; then \
-      corepack pnpm add -g @opencode-ai/browser-control@latest --global-bin-dir /usr/local/bin \
-      && package_root="$(corepack pnpm root -g)/@opencode-ai/browser-control" \
-      && package_modules="$(dirname "$(dirname "$(readlink -f "$package_root")")")" \
+      pnpm add -g @opencode-ai/browser-control@latest --global-bin-dir /usr/local/bin \
+      && package_link="$(find "$(pnpm root -g)" -maxdepth 4 -type l -path '*/node_modules/@opencode-ai/browser-control' -print -quit)" \
+      && package_root="$(readlink -f "$package_link")" \
+      && package_modules="$(dirname "$(dirname "$package_root")")" \
       && node "$package_modules/playwright-core/cli.js" install --with-deps chromium \
       && ln -s "$package_root/extension/dist" /opt/browser-control-extension \
       && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$package_modules/playwright-core/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium; \
