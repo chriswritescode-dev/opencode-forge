@@ -164,6 +164,12 @@ export interface SandboxConfig {
   mounts?: SandboxMountConfig[]
   /** Network access configuration (egress allow-list, env passthrough). */
   network?: SandboxNetworkConfig
+  /**
+   * Keep an active loop's sandbox warm with a periodic no-op exec so `sbx`'s auto-stop does not
+   * cold-boot the microVM between commands. Defaults to true; set false to trade command latency
+   * for idle host resources.
+   */
+  keepAlive?: boolean
 }
 
 /**

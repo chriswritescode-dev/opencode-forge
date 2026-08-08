@@ -351,6 +351,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
           tmpDir: forgeTempDir,
+          keepAlive: config.sandbox?.keepAlive,
           sourceProjectDir: projectRoot,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
           ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
@@ -537,6 +538,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         } catch (err) {
           logger.error('Error during session sandbox controller disposal', err)
         } finally {
+          sandboxManager?.dispose()
           closeDatabase(db)
           logger.log('Plugin cleanup complete')
         }

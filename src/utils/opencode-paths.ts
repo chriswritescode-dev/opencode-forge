@@ -1,4 +1,4 @@
-import { homedir, platform } from 'os'
+import { homedir, platform, tmpdir } from 'os'
 import { join } from 'path'
 
 /**
@@ -25,6 +25,16 @@ export function resolveDataDir(): string {
  */
 export function resolveOpencodeToolOutputDir(): string {
   return join(resolveOpencodeDataDir(), 'tool-output')
+}
+
+/**
+ * opencode's advertised scratch directory for its agents (`Global.Path.tmp`, `path.join(os.tmpdir(), app)`
+ * in opencode `packages/core/src/global.ts`). opencode's shell-tool description tells the agent this
+ * directory is pre-approved, so Forge must grant it `external_directory` access too — forge's blanket
+ * deny would otherwise revoke that promise.
+ */
+export function resolveOpencodeTmpDir(): string {
+  return join(tmpdir(), 'opencode')
 }
 
 export function resolveLogPath(): string {

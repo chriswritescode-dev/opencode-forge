@@ -1,11 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
-import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
+import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
 const TOOL_OUTPUT_ALLOW_RULES = [
   { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
   { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
+]
+const OPENCODE_TMP_DIR = resolveOpencodeTmpDir()
+const OPENCODE_TMP_ALLOW_RULES = [
+  { permission: 'external_directory', pattern: OPENCODE_TMP_DIR, action: 'allow' as const },
+  { permission: 'external_directory', pattern: `${OPENCODE_TMP_DIR}/**`, action: 'allow' as const },
 ]
 
 describe('MAX_TOTAL_SECTIONS', () => {
@@ -35,6 +40,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: '*', pattern: '*', action: 'allow' },
       { permission: 'external_directory', pattern: '*', action: 'deny' },
       ...TOOL_OUTPUT_ALLOW_RULES,
+      ...OPENCODE_TMP_ALLOW_RULES,
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan', pattern: '*', action: 'deny' },
@@ -99,12 +105,17 @@ describe('buildAuditSessionPermissionRuleset', () => {
 describe('external directory allowlist', () => {
   const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
 
-  it('loop ruleset allows only the tool-output directory when allowDirectories is omitted', () => {
+  it('loop ruleset allows only the tool-output and opencode tmp directories when allowDirectories is omitted', () => {
     const rules = buildLoopPermissionRuleset()
     const allowPatterns = rules
       .filter(r => r.permission === 'external_directory' && r.action === 'allow')
       .map(r => r.pattern)
-    expect(allowPatterns).toEqual([TOOL_OUTPUT_DIR, `${TOOL_OUTPUT_DIR}/**`])
+    expect(allowPatterns).toEqual([
+      TOOL_OUTPUT_DIR,
+      `${TOOL_OUTPUT_DIR}/**`,
+      OPENCODE_TMP_DIR,
+      `${OPENCODE_TMP_DIR}/**`,
+    ])
   })
 
   it('loop ruleset adds exact + recursive allow rules for each configured directory', () => {
@@ -133,9 +144,9 @@ describe('external directory allowlist', () => {
     const rules = buildLoopPermissionRuleset({ allowDirectories: [`${VAULT}/`, '', '   '] })
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: VAULT, action: 'allow' })
     const allowRules = rules.filter(r => r.permission === 'external_directory' && r.action === 'allow')
-    // Always-on tool-output dir (exact + recursive) + the one valid configured directory
-    // (exact + recursive) = 4 rules; blank/invalid entries are ignored.
-    expect(allowRules).toHaveLength(4)
+    // Always-on tool-output dir (exact + recursive) + always-on opencode tmp dir (exact + recursive)
+    // + the one valid configured directory (exact + recursive) = 6 rules; blank/invalid entries are ignored.
+    expect(allowRules).toHaveLength(6)
   })
 })
 

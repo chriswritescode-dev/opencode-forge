@@ -164,6 +164,22 @@ Security note: read-write custom mounts give the sandbox write access to host pa
 
 Each sbx sandbox has its own Docker daemon natively, so loops can build and run containers (for example end-to-end tests) without touching the host Docker daemon. Every sandbox gets isolated image and container storage.
 
+## Keep-Alive
+
+`sbx` stops an idle sandbox roughly 30 seconds after its last command. Forge keeps the sandboxes it holds — in particular the active loop sandboxes — warm by running a periodic no-op exec (`sbx exec <sandbox> true`) every 15 seconds, so a paused loop never pays a cold start to resume. The heartbeat runs only while at least one sandbox is active and stops when the last one is removed; it also stops on plugin cleanup without touching the sandboxes themselves, matching Forge's contract of preserving active loops across restarts.
+
+Disable the heartbeat when idle host resources matter more than command latency:
+
+```jsonc
+{
+  "sandbox": {
+    "keepAlive": false
+  }
+}
+```
+
+When disabled, the auto-stop can suspend the microVM between commands. Each command then cold-starts the sandbox before it runs, and any background process (`&`, `nohup`, `setsid`) or in-flight Docker pull/build inside the sandbox is destroyed by the stop. The default keeps the sandbox warm so that state survives.
+
 ## Large Command Output
 
 Shell output truncation is handled by opencode's native bash tool: when output exceeds the tool limit, the full output is spilled to opencode's tool-output directory on the host (readable from loop sessions, see below). The worktree `.forge/` scratch directory is added to git exclude so forge-written files are not committed.
@@ -173,7 +189,7 @@ Shell output truncation is handled by opencode's native bash tool: when output e
 opencode spills large tool outputs to its truncation directory (`<opencode-data>/tool-output`, e.g. `~/.local/share/opencode/tool-output`) and references the saved file by absolute host path. Forge makes those overflow files readable from loop and audit sessions in two complementary ways:
 
 - **Sandbox tools** (`bash`, `glob`, `grep`): the directory is bind-mounted **read-only at the identical sandbox path**, so the same absolute path opencode reports resolves inside the sandbox. The mount is added automatically when the directory exists; it is skipped when missing or already covered by the workspace mount.
-- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
+- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop. opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises as pre-approved) is granted the same way in the loop/audit rulesets. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
 
 ## Resource Defaults
 

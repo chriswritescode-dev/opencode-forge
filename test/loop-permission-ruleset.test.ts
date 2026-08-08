@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
-import { resolveOpencodeToolOutputDir } from '../src/utils/opencode-paths'
+import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../src/utils/opencode-paths'
 import { createLoopPermissionPatcher, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
@@ -10,6 +10,11 @@ const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
 const TOOL_OUTPUT_ALLOW_RULES = [
   { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
   { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
+]
+const OPENCODE_TMP_DIR = resolveOpencodeTmpDir()
+const OPENCODE_TMP_ALLOW_RULES = [
+  { permission: 'external_directory', pattern: OPENCODE_TMP_DIR, action: 'allow' as const },
+  { permission: 'external_directory', pattern: `${OPENCODE_TMP_DIR}/**`, action: 'allow' as const },
 ]
 
 beforeEach(() => {
@@ -23,6 +28,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: '*',                  pattern: '*', action: 'allow' },
       { permission: 'external_directory', pattern: '*', action: 'deny' },
       ...TOOL_OUTPUT_ALLOW_RULES,
+      ...OPENCODE_TMP_ALLOW_RULES,
       { permission: 'review-write',       pattern: '*', action: 'deny' },
       { permission: 'review-delete',      pattern: '*', action: 'deny' },
       { permission: 'plan',               pattern: '*', action: 'deny' },
@@ -73,12 +79,31 @@ describe('buildLoopPermissionRuleset', () => {
     }
   })
 
-  test('does not allow arbitrary external directories beyond tool-output and configured opt-ins', () => {
+  test('does not allow arbitrary external directories beyond tool-output, opencode tmp, and configured opt-ins', () => {
     const rules = buildLoopPermissionRuleset()
     const allowPatterns = rules
       .filter((r) => r.permission === 'external_directory' && r.action === 'allow')
       .map((r) => r.pattern)
-    expect(allowPatterns).toEqual([TOOL_OUTPUT_DIR, `${TOOL_OUTPUT_DIR}/**`])
+    expect(allowPatterns).toEqual([
+      TOOL_OUTPUT_DIR,
+      `${TOOL_OUTPUT_DIR}/**`,
+      OPENCODE_TMP_DIR,
+      `${OPENCODE_TMP_DIR}/**`,
+    ])
+  })
+
+  test('always allows opencode temp dir (Global.Path.tmp) layered after the blanket deny', () => {
+    const rules = buildLoopPermissionRuleset()
+    const denyIdx = rules.findIndex(
+      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
+    )
+    expect(denyIdx).toBeGreaterThanOrEqual(0)
+    for (const allowRule of OPENCODE_TMP_ALLOW_RULES) {
+      const idx = rules.findIndex(
+        (r) => r.permission === allowRule.permission && r.pattern === allowRule.pattern && r.action === allowRule.action,
+      )
+      expect(idx).toBeGreaterThan(denyIdx)
+    }
   })
 })
 
@@ -128,6 +153,20 @@ describe('buildAuditSessionPermissionRuleset', () => {
     // If a /tmp allow rule exists, deny must come first; otherwise deny is sufficient
     if (allowIdx >= 0) {
       expect(denyIdx).toBeLessThan(allowIdx)
+    }
+  })
+
+  test('always allows opencode temp dir (Global.Path.tmp) layered after the blanket deny', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    const denyIdx = rules.findIndex(
+      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
+    )
+    expect(denyIdx).toBeGreaterThanOrEqual(0)
+    for (const allowRule of OPENCODE_TMP_ALLOW_RULES) {
+      const idx = rules.findIndex(
+        (r) => r.permission === allowRule.permission && r.pattern === allowRule.pattern && r.action === allowRule.action,
+      )
+      expect(idx).toBeGreaterThan(denyIdx)
     }
   })
 })

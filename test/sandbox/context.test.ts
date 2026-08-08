@@ -1,6 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
-import { isSandboxEnabled, isSandboxConfigEnabled, resolveSandboxContextForLoop } from '../../src/sandbox/context'
+import {
+  SANDBOX_CONTEXT_NOTE,
+  isSandboxEnabled,
+  isSandboxConfigEnabled,
+  resolveSandboxContextForLoop,
+} from '../../src/sandbox/context'
 import type { SandboxMount } from '../../src/sandbox/path'
+
+describe('SANDBOX_CONTEXT_NOTE', () => {
+  it('keeps the container-routing caveat and adds lifetime/scratch guidance', () => {
+    expect(SANDBOX_CONTEXT_NOTE).toContain('bash tool commands execute in that container, not on the host')
+    expect(SANDBOX_CONTEXT_NOTE).toContain('foreground')
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/timeout/i)
+    expect(SANDBOX_CONTEXT_NOTE).toContain('/tmp/oc-forge')
+  })
+})
 
 describe('isSandboxEnabled', () => {
   it('returns true when sandboxManager is provided regardless of legacy mode value', () => {

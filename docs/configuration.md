@@ -75,7 +75,7 @@ Configured rules are layered into the ruleset in this order:
 
 1. Blanket allow-all (worktree/audit isolation).
 2. Blanket `external_directory` deny.
-3. `external_directory` allows (opencode's tool-output directory, then `loop.allowExternalDirectories`).
+3. `external_directory` allows (opencode's tool-output and temp directories, then `loop.allowExternalDirectories`).
 4. Configured `deny` rules.
 5. Forge structural denies.
 
@@ -254,6 +254,7 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
 | `sandbox.network.allow` | `[]` | Hosts the sandbox may reach (deny-by-default proxy). |
 | `sandbox.network.env` | `[]` | Host environment variables to pass into each sandbox command via the env file. |
+| `sandbox.keepAlive` | `true` | Keep active sandboxes warm with a periodic no-op exec, so `sbx`'s ~30s post-disconnect auto-stop never cold-boots the microVM between commands. Set `false` to trade command latency for idle host resources. |
 
 ## Bundled Assets & Installer
 

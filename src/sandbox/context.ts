@@ -20,6 +20,7 @@ export interface SandboxContext {
 export const SANDBOX_CONTEXT_NOTE = [
   '[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.',
   'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
+  'Run long commands in the foreground with a raised bash timeout: the container is a microVM that stops shortly after each command, so backgrounded work (&, nohup, setsid) and partial state are not guaranteed to survive. Write scratch files under /tmp/oc-forge (the loop temp dir, mounted at the same path; loop.tmpDir overrides it), not the OS temp path named in the bash tool description.',
 ].join('\n')
 
 export interface SandboxLoopContextState {

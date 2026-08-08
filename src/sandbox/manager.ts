@@ -34,6 +34,12 @@ export interface SandboxManagerConfig {
    * `allow` lists egress hosts to permit on the sbx network proxy's default-deny policy.
    */
   network?: { env?: string[]; allow?: string[] }
+  /**
+   * Keep active sandboxes warm with a periodic no-op exec so sbx's post-disconnect auto-stop never
+   * cold-boots the microVM between commands. Defaults to true; set false to trade command latency
+   * for idle host resources.
+   */
+  keepAlive?: boolean
 }
 
 const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus'>> = {
@@ -96,6 +102,12 @@ export function resolveCustomMounts(
 const DOCKER_AVAILABLE_TTL = 30_000
 const LIVENESS_CHECK_TTL = 2_000
 
+/**
+ * Heartbeat cadence for active sandboxes, deliberately below sbx's observed ~30s post-disconnect
+ * auto-stop deferral (sbx-cli v0.37.1), so a warm microVM is never cold-booted mid-loop.
+ */
+export const SANDBOX_KEEPALIVE_INTERVAL_MS = 15_000
+
 export interface ActiveSandbox {
   containerName: string
   projectDir: string
@@ -114,6 +126,8 @@ export interface SandboxManager {
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
+  /** Stops the keep-alive heartbeat and its bookkeeping without touching sandboxes. */
+  dispose(): void
 }
 
 /**
@@ -147,6 +161,9 @@ export function createSandboxManager(
   const lastLivenessCheck = new Map<string, number>()
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
+  let keepAliveTimer: ReturnType<typeof setInterval> | null = null
+  const keepAliveInFlight = new Set<string>()
+  const keepAliveDraining = new Set<string>()
   let runtimeAvailableCache: { value: SbxAvailability; at: number } | null = null
   let imageReady = false
   let allowListApplied = false
@@ -341,6 +358,61 @@ export function createSandboxManager(
   }
 
   /**
+   * Syncs the keep-alive timer with the active-sandbox map: running while any sandbox is active,
+   * dropped as soon as the map empties. The timer is unref'd so it can never keep the plugin
+   * process alive (multiple plugin instances share one process). `keepAlive: false` disables the
+   * heartbeat entirely and clears any existing timer. The timer is created only here; clearing is
+   * shared with `dispose` through `stopKeepAliveTimer`.
+   */
+  function stopKeepAliveTimer(): void {
+    if (keepAliveTimer) {
+      clearInterval(keepAliveTimer)
+      keepAliveTimer = null
+    }
+  }
+
+  function syncKeepAlive(): void {
+    if (config.keepAlive === false) {
+      stopKeepAliveTimer()
+      return
+    }
+    if (activeSandboxes.size > 0) {
+      if (!keepAliveTimer) {
+        const timer = setInterval(() => {
+          void heartbeat()
+        }, SANDBOX_KEEPALIVE_INTERVAL_MS)
+        timer.unref?.()
+        keepAliveTimer = timer
+      }
+      return
+    }
+    stopKeepAliveTimer()
+  }
+
+  /**
+   * One heartbeat pass: a no-op `sbx exec` per active sandbox, which resets sbx's post-disconnect
+   * auto-stop deferral. Never rejects — a failed keep-alive must never fail a loop. The in-flight
+   * guard prevents ticks from piling up while a cold microVM resumes (which takes tens of seconds).
+   */
+  async function heartbeat(): Promise<void> {
+    const entries = [...activeSandboxes.entries()]
+    for (const [worktreeName, active] of entries) {
+      if (keepAliveDraining.has(worktreeName) || keepAliveInFlight.has(worktreeName)) continue
+      keepAliveInFlight.add(worktreeName)
+      try {
+        const result = await runtime.exec(active.containerName, 'true')
+        if (result.exitCode !== 0) {
+          logger.log(`Sandbox: keep-alive exec for ${active.containerName} exited ${result.exitCode}`)
+        }
+      } catch (err) {
+        logger.log(`Sandbox: keep-alive exec for ${active.containerName} failed: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        keepAliveInFlight.delete(worktreeName)
+      }
+    }
+  }
+
+  /**
    * Single point that records a usable sandbox in the active map, shared by the adopt path in
    * `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins so adopting a
    * sandbox never resets the time it actually came up.
@@ -354,6 +426,7 @@ export function createSandboxManager(
       mounts: buildMountPlan(projectDir).mounts,
       envFile: writeEnvPassthroughFile(containerName),
     })
+    syncKeepAlive()
   }
 
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
@@ -389,12 +462,14 @@ export function createSandboxManager(
     }
 
     activeSandboxes.set(worktreeName, active)
+    syncKeepAlive()
     logger.log(`Sandbox ${containerName} started`)
 
     return { containerName }
   }
 
   async function stop(worktreeName: string): Promise<void> {
+    keepAliveDraining.add(worktreeName)
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
 
@@ -421,6 +496,8 @@ export function createSandboxManager(
         }
       }
       activeSandboxes.delete(worktreeName)
+      keepAliveDraining.delete(worktreeName)
+      syncKeepAlive()
     }
     if (removalError) throw removalError
   }
@@ -450,6 +527,7 @@ export function createSandboxManager(
     if (state === 'missing') {
       logger.log(`Sandbox: sandbox ${containerName} no longer exists, removing stale map entry for ${worktreeName}`)
       activeSandboxes.delete(worktreeName)
+      syncKeepAlive()
       return false
     }
 
@@ -487,6 +565,7 @@ export function createSandboxManager(
         }
       }
     }
+    syncKeepAlive()
 
     return removed
   }
@@ -544,6 +623,16 @@ export function createSandboxManager(
     return pending
   }
 
+  /**
+   * Stops the keep-alive heartbeat and its bookkeeping. Sandboxes stay alive — this only stops
+   * the timer, matching forge's contract of preserving active loops across plugin cleanup.
+   */
+  function dispose(): void {
+    stopKeepAliveTimer()
+    keepAliveInFlight.clear()
+    keepAliveDraining.clear()
+  }
+
   return {
     runtime,
     start,
@@ -554,5 +643,6 @@ export function createSandboxManager(
     cleanupOrphans,
     restore,
     ensureRunning,
+    dispose,
   }
 }
