@@ -1,4 +1,4 @@
-import { resolveOpencodeToolOutputDir, resolveForgeTempDir } from '../utils/opencode-paths'
+import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../utils/opencode-paths'
 import { isRecord } from '../utils/is-record'
 import type { PluginConfig, LoopPermissionsConfig } from '../types'
 
@@ -183,16 +183,13 @@ export function collectLoopPermissionConfigWarnings(config: PluginConfig | undef
 }
 
 /**
- * Resolves the full set of external directories loop/audit sessions may access: the shared temp
- * directory (always, default `/tmp/oc-forge`) plus any user-configured `loop.allowExternalDirectories`.
- * Single source of truth so every permission-ruleset call site grants the same paths regardless of
- * sandbox mode. (opencode's tool-output directory is added separately inside the ruleset builder.)
+ * Resolves the user-configured external directories loop/audit sessions may access. Single source of
+ * truth so every permission-ruleset call site grants the same paths regardless of sandbox mode.
+ * (opencode's tool-output directory and its advertised temp directory are added separately inside
+ * the ruleset builder.)
  */
 export function resolveLoopAllowedDirectories(config: PluginConfig | undefined): string[] {
-  return [
-    resolveForgeTempDir(config?.loop?.tmpDir),
-    ...(config?.loop?.allowExternalDirectories ?? []),
-  ]
+  return config?.loop?.allowExternalDirectories ?? []
 }
 
 export interface LoopPermissionRulesetOptions {
@@ -213,15 +210,16 @@ export interface LoopPermissionRulesetOptions {
  * Builds `external_directory` allow rules. Each directory produces two rules: an exact-path
  * allow and a recursive (`/**`) allow.
  *
- * opencode's tool-output (truncation) directory is always included: opencode spills large tool
- * outputs there and references the saved file by absolute host path, so loop/audit sessions must
- * be able to read it without prompting in the unattended loop. User-configured directories are
- * layered on top. Both are added AFTER the blanket `external_directory` deny so last-match-wins
- * resolution grants access to these paths while all others stay denied.
+ * opencode's tool-output (truncation) directory and its advertised temp directory (`Global.Path.tmp`,
+ * which its shell-tool description presents as pre-approved) are always included: loop/audit sessions
+ * must be able to read spilled tool outputs and use the advertised scratch dir without prompting in the
+ * unattended loop. User-configured directories are layered on top. All are added AFTER the blanket
+ * `external_directory` deny so last-match-wins resolution grants access to these paths while all
+ * others stay denied.
  */
 function buildExternalDirectoryAllowRules(allowDirectories: string[] = []): PermissionRule[] {
   const rules: PermissionRule[] = []
-  const dirs = [resolveOpencodeToolOutputDir(), ...allowDirectories]
+  const dirs = [resolveOpencodeToolOutputDir(), resolveOpencodeTmpDir(), ...allowDirectories]
   for (const dir of dirs) {
     if (typeof dir !== 'string') continue
     const trimmed = dir.trim().replace(/\/+$/, '')

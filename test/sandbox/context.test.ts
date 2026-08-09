@@ -1,6 +1,26 @@
 import { describe, it, expect, vi } from 'vitest'
-import { isSandboxEnabled, isSandboxConfigEnabled, resolveSandboxContextForLoop } from '../../src/sandbox/context'
+import {
+  SANDBOX_CONTEXT_NOTE,
+  isSandboxEnabled,
+  isSandboxConfigEnabled,
+  resolveSandboxContextForLoop,
+} from '../../src/sandbox/context'
 import type { SandboxMount } from '../../src/sandbox/path'
+
+describe('SANDBOX_CONTEXT_NOTE', () => {
+  it('keeps the container-routing caveat and gives accurate lifetime/scratch guidance', () => {
+    expect(SANDBOX_CONTEXT_NOTE).toContain('bash tool commands execute in that container, not on the host')
+    expect(SANDBOX_CONTEXT_NOTE).toContain('foreground')
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/timeout/i)
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/reboots/i)
+    expect(SANDBOX_CONTEXT_NOTE).toContain('files on disk')
+    expect(SANDBOX_CONTEXT_NOTE).not.toContain('stops shortly after each command')
+  })
+
+  it('does not name any specific scratch directory (agents use opencode\'s advertised default)', () => {
+    expect(SANDBOX_CONTEXT_NOTE).not.toContain('/tmp/oc-forge')
+  })
+})
 
 describe('isSandboxEnabled', () => {
   it('returns true when sandboxManager is provided regardless of legacy mode value', () => {

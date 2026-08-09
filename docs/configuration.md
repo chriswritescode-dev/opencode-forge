@@ -75,7 +75,7 @@ Configured rules are layered into the ruleset in this order:
 
 1. Blanket allow-all (worktree/audit isolation).
 2. Blanket `external_directory` deny.
-3. `external_directory` allows (opencode's tool-output directory, then `loop.allowExternalDirectories`).
+3. `external_directory` allows (opencode's tool-output and temp directories, then `loop.allowExternalDirectories`).
 4. Configured `deny` rules.
 5. Forge structural denies.
 

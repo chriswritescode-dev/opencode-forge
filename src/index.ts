@@ -14,13 +14,12 @@ import { createSbxRuntime, describeSbxUnavailable } from './sandbox/sbx'
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
-import { resolveForgeTempDir } from './utils/opencode-paths'
+import { resolveOpencodeTmpDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from './constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from './utils/loop-permission-options'
 import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnings'
 import { publishToast } from './utils/toast'
-import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from './sandbox/template'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type ResolveActiveLoopForSession, type SessionSandboxController } from './sandbox/session-controller'
@@ -48,7 +47,6 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from './utils/
 import { resolveSessionPlanOfRecord } from './services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from './utils/marked-plan-parser'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
-import { PLAN_EXECUTION_LABELS } from './utils/plan-execution'
 
 export interface CreateParentSessionLookupOptions {
   client: ForgeClient
@@ -331,15 +329,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       },
     })
 
-    // Shared loop scratch directory, allowed in both worktree-only and sandbox modes. Created here
-    // so it exists for host tools (worktree-only) and as a valid bind-mount source (sandbox).
-    const forgeTempDir = resolveForgeTempDir(config.loop?.tmpDir)
-    try {
-      mkdirSync(forgeTempDir, { recursive: true })
-    } catch (err) {
-      logger.error(`Failed to create loop temp directory ${forgeTempDir}`, err)
-    }
-
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
     const runtime = createSbxRuntime(logger)
     if (!isSandboxConfigEnabled(config)) {
@@ -350,7 +339,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
           dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
-          tmpDir: forgeTempDir,
+          tmpDir: resolveOpencodeTmpDir(),
           sourceProjectDir: projectRoot,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
           ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
@@ -537,6 +526,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         } catch (err) {
           logger.error('Error during session sandbox controller disposal', err)
         } finally {
+          sandboxManager?.dispose()
           closeDatabase(db)
           logger.log('Plugin cleanup complete')
         }
@@ -998,8 +988,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           type: 'text',
           text: `<system-reminder>
 READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
-Before approval, finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning.
-Then call the \`question\` tool with exactly ${PLAN_EXECUTION_LABELS.map((label) => `"${label}"`).join(', ')}. If "Loop" is selected, call \`execute-plan\` with a short title; it uses the stored plan automatically. Do not ask again.
+Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
 </system-reminder>`,
           synthetic: true,
         })
