@@ -1,10 +1,10 @@
 import type { SandboxRuntime, SandboxWorkspace } from './sbx'
-import { describeSbxUnavailable, type SbxAvailability } from './sbx'
+import type { SbxAvailability } from './sbx'
 import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
 import { mkdirSync, existsSync, writeFileSync, chmodSync, rmSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
-import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
+import { canonicalizePath, isSameOrDescendantPath, resolveSandboxEnvDir, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
 
 export interface SandboxManagerConfig {
@@ -168,14 +168,14 @@ export function createSandboxManager(
     const now = Date.now()
     if (runtimeAvailableCache && (now - runtimeAvailableCache.at) < DOCKER_AVAILABLE_TTL) {
       if (!runtimeAvailableCache.value.available) {
-        throw new Error(describeSbxUnavailable(runtimeAvailableCache.value))
+        throw new Error(runtime.describeUnavailable(runtimeAvailableCache.value))
       }
       return
     }
     const result = await runtime.checkAvailable()
     runtimeAvailableCache = { value: result, at: now }
     if (!result.available) {
-      throw new Error(describeSbxUnavailable(result))
+      throw new Error(runtime.describeUnavailable(result))
     }
   }
 
@@ -186,6 +186,7 @@ export function createSandboxManager(
       const buildHint = `  ${formatTemplateBuildCommands(
         config.buildContextDir ?? '<build-context-dir>',
         config.image,
+        runtime.templateLoadHint(config.image),
         { browserControl: config.browserControl },
       )}`
       throw new Error(
@@ -326,7 +327,7 @@ export function createSandboxManager(
     }
     if (lines.length === 0) return undefined
 
-    const dir = join(dataDir, 'sandbox-env')
+    const dir = resolveSandboxEnvDir(dataDir)
     mkdirSync(dir, { recursive: true })
     const filePath = join(dir, `${containerName}.env`)
     writeFileSync(filePath, lines.join('\n') + '\n', { encoding: 'utf-8' })
@@ -454,7 +455,11 @@ export function createSandboxManager(
       cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
     }
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus})`)
-    await runtime.createSandbox(containerName, workspaces, { template: config.image, resources })
+    await runtime.createSandbox(containerName, workspaces, {
+      template: config.image,
+      resources,
+      networkAllowHosts: config.network?.allow,
+    })
 
     const active: ActiveSandbox = {
       containerName,

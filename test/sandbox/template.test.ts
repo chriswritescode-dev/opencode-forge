@@ -35,7 +35,7 @@ describe('buildAndLoadSandboxTemplate', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
     try {
       const record: Array<{ command: string; args: string[] }> = []
-      const loadTemplate = vi.fn(async (_tar: string) => {})
+      const loadTemplate = vi.fn(async (_tar: string, _ref: string) => {})
       const deps: BuildTemplateDeps = {
         runCommand: makeFakeRun(record),
         loadTemplate,
@@ -50,6 +50,7 @@ describe('buildAndLoadSandboxTemplate', () => {
       expect(record[1].args[0]).toBe('save')
       expect(loadTemplate).toHaveBeenCalledTimes(1)
       expect(loadTemplate.mock.calls[0][0]).toMatch(/forge-sandbox-template-\d+\.tar$/)
+      expect(loadTemplate.mock.calls[0][1]).toBe('oc-forge-sandbox:latest')
       expect(leftoverTars(tmp)).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -173,14 +174,22 @@ describe('template build args and command formatter', () => {
   })
 
   test('formatTemplateBuildCommands reflects default args', () => {
-    expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest')).toBe(
+    expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', 'sbx template load <tar>', undefined)).toBe(
       'docker build -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && sbx template load <tar>',
     )
   })
 
   test('formatTemplateBuildCommands reflects the browser-control build arg', () => {
-    expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', { browserControl: true })).toBe(
+    expect(
+      formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', 'sbx template load <tar>', { browserControl: true }),
+    ).toBe(
       'docker build --build-arg INSTALL_BROWSER_CONTROL=true -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && sbx template load <tar>',
+    )
+  })
+
+  test('formatTemplateBuildCommands renders the loadHint as the final pipeline step', () => {
+    expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', 'cp <tar> /store/image.tar', undefined)).toBe(
+      'docker build -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && cp <tar> /store/image.tar',
     )
   })
 })

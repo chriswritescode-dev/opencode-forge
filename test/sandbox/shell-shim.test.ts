@@ -24,6 +24,13 @@ function cleanEnv(): NodeJS.ProcessEnv {
   return env
 }
 
+// Guest-side payloads baked into the smolvm routing lines. smolvm exec has no
+// `-w`/`--env-file`, so the shim passes the env file and `$PWD` as `bash -c`
+// positionals that the payload applies in-guest.
+const SMOLVM_EXEC_ENV_PAYLOAD =
+  'while IFS= read -r __fe || [ -n "$__fe" ]; do [ -n "$__fe" ] && export "$__fe"; done < "$0"; cd "$1" && shift 1 && exec bash "$@"'
+const SMOLVM_EXEC_PAYLOAD = 'cd "$0" && exec bash "$@"'
+
 describe('ensureShellShim', () => {
   test('writes an executable shim and is idempotent', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
@@ -46,6 +53,17 @@ describe('ensureShellShim', () => {
     ensureShellShim(dir, logger)
 
     expect(readFileSync(path, 'utf-8')).toBe(buildShimScript(resolveHostShell()))
+  })
+
+  test('rewrites the shim when the sandbox mode changes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const path = ensureShellShim(dir, logger)!
+    expect(readFileSync(path, 'utf-8')).toBe(buildShimScript(resolveHostShell()))
+
+    ensureShellShim(dir, logger, 'smolvm')
+
+    expect(readFileSync(path, 'utf-8')).toBe(buildShimScript(resolveHostShell(), 'smolvm'))
+    expect(readFileSync(path, 'utf-8')).not.toContain('sbx exec')
   })
 
   test('returns null and logs when the data dir is not writable', () => {
@@ -156,6 +174,142 @@ describe('shim behavior (executed via sh)', () => {
   })
 })
 
+describe('shim behavior (smolvm mode, executed via sh)', () => {
+  test('routes into smolvm machine exec with env file, cwd, and command when container env is set', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
+    const binDir = join(dir, 'bin')
+    mkdirSync(binDir)
+    const argsFile = join(dir, 'smolvm-args')
+    writeFileSync(join(binDir, 'smolvm'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\n`, { mode: 0o755 })
+
+    const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
+    const result = spawnSync(shim, ['-c', 'echo in-container'], {
+      cwd,
+      env: {
+        ...cleanEnv(),
+        PATH: binDir,
+        [SHIM_ENV_CONTAINER]: 'forge-loop-x',
+        [SHIM_ENV_ENV_FILE]: '/data/forge/sandbox-env/forge-loop-x.env',
+      },
+      encoding: 'utf-8',
+    })
+
+    expect(result.status).toBe(0)
+    const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
+    expect(argv).toEqual([
+      'machine',
+      'exec',
+      '--name',
+      'forge-loop-x',
+      '--',
+      'bash',
+      '-c',
+      SMOLVM_EXEC_ENV_PAYLOAD,
+      '/data/forge/sandbox-env/forge-loop-x.env',
+      realpathSync(cwd),
+      '-c',
+      'echo in-container',
+    ])
+  })
+
+  test('routes into smolvm machine exec without the env-file branch when no env file is set', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
+    const binDir = join(dir, 'bin')
+    mkdirSync(binDir)
+    const argsFile = join(dir, 'smolvm-args')
+    writeFileSync(join(binDir, 'smolvm'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\n`, { mode: 0o755 })
+
+    const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
+    const result = spawnSync(shim, ['-c', 'echo in-container'], {
+      cwd,
+      env: { ...cleanEnv(), PATH: binDir, [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
+      encoding: 'utf-8',
+    })
+
+    expect(result.status).toBe(0)
+    const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
+    expect(argv).toEqual([
+      'machine',
+      'exec',
+      '--name',
+      'forge-loop-x',
+      '--',
+      'bash',
+      '-c',
+      SMOLVM_EXEC_PAYLOAD,
+      realpathSync(cwd),
+      '-c',
+      'echo in-container',
+    ])
+  })
+
+  test('executes the guest payload: env-file vars with spaces are exported and the command runs from $PWD', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
+    // Fake smolvm: drop the CLI prefix up to `--`, then run the guest command
+    // vector (`bash -c <payload> <args...>`) exactly as the machine would.
+    const binDir = join(dir, 'bin')
+    mkdirSync(binDir)
+    writeFileSync(
+      join(binDir, 'smolvm'),
+      `#!/bin/sh
+i=1
+for a in "$@"; do
+  if [ "$a" = "--" ]; then
+    shift $i
+    break
+  fi
+  i=$((i+1))
+done
+exec bash -c "$3" "$4" "$5" "$6" "$7"
+`,
+      { mode: 0o755 },
+    )
+
+    const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
+    const envFile = join(dir, 'loop.env')
+    writeFileSync(envFile, 'FORGE_VAR=a value with spaces\nFORGE_EMPTY=\n')
+
+    const result = spawnSync(
+      shim,
+      ['-c', 'printf "value=[%s] pwd=[%s]" "$FORGE_VAR" "$PWD"'],
+      {
+        cwd,
+        env: {
+          ...cleanEnv(),
+          PATH: `${binDir}:${process.env.PATH}`,
+          [SHIM_ENV_CONTAINER]: 'forge-loop-x',
+          [SHIM_ENV_ENV_FILE]: envFile,
+        },
+        encoding: 'utf-8',
+      },
+    )
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('value=[a value with spaces]')
+    expect(result.stdout).toContain(`pwd=[${realpathSync(cwd)}]`)
+  })
+
+  test('fail-closed: when a container is set but smolvm is unavailable, the command never runs on the host', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
+    const marker = join(dir, 'escaped')
+    const result = spawnSync(shim, ['-c', `touch ${marker}`], {
+      env: { ...cleanEnv(), PATH: dir, [SHIM_ENV_CONTAINER]: 'forge-some-loop' },
+      encoding: 'utf-8',
+    })
+
+    expect(result.status).not.toBe(0)
+    expect(existsSync(marker)).toBe(false)
+  })
+})
+
 describe('shim content', () => {
   test('routes through sbx exec with no docker and no --user', () => {
     const script = buildShimScript('/bin/sh')
@@ -164,6 +318,17 @@ describe('shim content', () => {
     expect(script).not.toContain('docker')
     expect(script).not.toContain('--user')
     expect(script).toContain('exec "${FORGE_HOST_SHELL:-/bin/sh}" "$@"')
+  })
+
+  test('smolvm variant routes through smolvm machine exec with in-guest cwd and env handling', () => {
+    const script = buildShimScript('/bin/sh', 'smolvm')
+    expect(script).toContain('exec smolvm machine exec --name "$FORGE_SANDBOX_CONTAINER" -- bash -c')
+    expect(script).toContain(SMOLVM_EXEC_ENV_PAYLOAD)
+    expect(script).toContain(SMOLVM_EXEC_PAYLOAD)
+    expect(script).toContain('"$PWD" "$@"')
+    expect(script).toContain('exec "${FORGE_HOST_SHELL:-/bin/sh}" "$@"')
+    expect(script).not.toContain('sbx exec')
+    expect(script).toContain('no `-w` or `--env-file`')
   })
 })
 

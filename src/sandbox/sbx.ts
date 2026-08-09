@@ -4,6 +4,7 @@
  */
 import type { Logger, SandboxResources } from '../types'
 import { runCommand, type CommandResult } from './process'
+import { quoteShellArg } from './exec-fs'
 
 /**
  * Sanitizes a raw string into a name `sbx create --name` accepts. `sbx` allows only
@@ -53,13 +54,43 @@ export function buildSbxExecArgs(name: string, command: string, opts?: BuildSbxE
   return args
 }
 
+/**
+ * Prefixes a command with a `cd` into `cwd`, single-quote-escaping the path so arbitrary
+ * working directories (including ones containing single quotes) survive the shell round-trip.
+ * A missing `cwd` returns the command unchanged. Shared with the smolvm runtime so both
+ * backends apply the identical cwd semantics.
+ */
+export function prefixCommandWithCwd(command: string, cwd?: string): string {
+  if (!cwd) return command
+  return `cd ${quoteShellArg(cwd)} && ${command}`
+}
+
 /** A host directory to bind into the sandbox; `readOnly` maps to the `:ro` suffix. */
 export interface SandboxWorkspace {
   hostDir: string
   readOnly?: boolean
 }
 
-const SBX_MEMORY_RE = /^\d+(\.\d+)?[kmg]b?$/i
+const MEMORY_TOKEN_RE = /^\d+(\.\d+)?[kmg]b?$/i
+
+/**
+ * Shared memory-token normalization: accepts binary units such as `1024m` and `8g`
+ * (optionally with a trailing `b`), lowercases and strips the trailing `b`. Logs and
+ * returns `undefined` for anything else. `flag` names the backend flag in the log so
+ * each caller's message stays accurate.
+ */
+export function normalizeMemoryToken(
+  raw: string | undefined,
+  logger: Logger,
+  flag: string,
+): string | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined
+  if (!MEMORY_TOKEN_RE.test(raw)) {
+    logger.log(`Sandbox: unrecognized ${flag} value ${JSON.stringify(raw)} ignored`)
+    return undefined
+  }
+  return raw.toLowerCase().replace(/b$/, '')
+}
 
 /**
  * Coerces a raw `sbx create --cpus` value. `sbx`'s `--cpus` flag is integer-only while
@@ -86,12 +117,7 @@ export function parseSbxCpus(raw: string | undefined, logger: Logger): number | 
  * `undefined` for anything else.
  */
 export function normalizeSbxMemory(raw: string | undefined, logger: Logger): string | undefined {
-  if (raw === undefined || raw.trim() === '') return undefined
-  if (!SBX_MEMORY_RE.test(raw)) {
-    logger.log(`Sandbox: unrecognized --memory value ${JSON.stringify(raw)} ignored`)
-    return undefined
-  }
-  return raw.toLowerCase().replace(/b$/, '')
+  return normalizeMemoryToken(raw, logger, '--memory')
 }
 
 /**
@@ -242,28 +268,48 @@ export type CommandRunner = (
 ) => Promise<CommandResult>
 
 const SBX_RUNNING_RE = /^\s*status:\s*running/im
-const SBX_NOT_INSTALLED_RE = /ENOENT|not found|command not found/i
+/** Matches the combined output of a CLI that could not be spawned at all. Backend-neutral: shared with the smolvm runtime. */
+const NOT_INSTALLED_RE = /ENOENT|not found|command not found/i
+
+/**
+ * Shared availability probe used by both backends: runs `args` with a short timeout, treats
+ * `isAvailable` as the health predicate, distinguishes a missing CLI from a failing one via
+ * `NOT_INSTALLED_RE`, and maps everything else to `fallbackReason` (`daemon-down` for sbx's
+ * stopped daemon, `unknown` for smolvm which has no daemon).
+ */
+export async function probeCliAvailability(
+  run: CommandRunner,
+  opts: {
+    args: string[]
+    isAvailable: (result: CommandResult) => boolean
+    fallbackReason: 'daemon-down' | 'unknown'
+  },
+): Promise<SbxAvailability> {
+  let result: CommandResult
+  try {
+    result = await run(opts.args, { timeout: SBX_PROBE_TIMEOUT })
+  } catch {
+    return { available: false, reason: 'unknown' }
+  }
+  if (opts.isAvailable(result)) return { available: true }
+  const combined = `${result.stdout}\n${result.stderr}`
+  if (NOT_INSTALLED_RE.test(combined)) {
+    return { available: false, reason: 'not-installed' }
+  }
+  return { available: false, reason: opts.fallbackReason, detail: combined.trim() }
+}
 
 /**
  * Probes sandbox availability by running `sbx daemon status`. A zero exit with a
  * `Status: running` line yields `{ available: true }`; a missing CLI is distinguished from a
- * stopped daemon because they need different remediation. A rejected run yields `'unknown'`.
+ * stopped daemon because they need different remediation.
  */
-export async function checkSbxAvailability(run: CommandRunner): Promise<SbxAvailability> {
-  let result: CommandResult
-  try {
-    result = await run(['daemon', 'status'], { timeout: 5000 })
-  } catch {
-    return { available: false, reason: 'unknown' }
-  }
-  if (result.exitCode === 0 && SBX_RUNNING_RE.test(result.stdout)) {
-    return { available: true }
-  }
-  const combined = `${result.stdout}\n${result.stderr}`
-  if (SBX_NOT_INSTALLED_RE.test(combined)) {
-    return { available: false, reason: 'not-installed' }
-  }
-  return { available: false, reason: 'daemon-down', detail: combined.trim() }
+export function checkSbxAvailability(run: CommandRunner): Promise<SbxAvailability> {
+  return probeCliAvailability(run, {
+    args: ['daemon', 'status'],
+    isAvailable: (result) => result.exitCode === 0 && SBX_RUNNING_RE.test(result.stdout),
+    fallbackReason: 'daemon-down',
+  })
 }
 
 /** The single source of the user-facing remediation message for an unavailable sandbox. */
@@ -284,6 +330,8 @@ export function describeSbxUnavailable(
 export interface CreateSandboxOpts {
   template?: string
   resources?: SandboxResources
+  /** Per-create egress allowlist; the sbx runtime ignores it (egress policy is global via `allowNetworkHost`). */
+  networkAllowHosts?: string[]
 }
 
 /** Options for a non-piped sandbox exec. */
@@ -304,8 +352,10 @@ export type SandboxState = 'running' | 'stopped' | 'missing' | 'unknown'
 /** Runtime facade over the `sbx` CLI — the sandbox analog of the old Docker driver. */
 export interface SandboxRuntime {
   checkAvailable(): Promise<SbxAvailability>
+  describeUnavailable(result: Extract<SbxAvailability, { available: false }>): string
   templateExists(ref: string): Promise<boolean>
-  loadTemplate(tarPath: string): Promise<void>
+  templateLoadHint(ref: string): string
+  loadTemplate(tarPath: string, ref: string): Promise<void>
   createSandbox(name: string, workspaces: SandboxWorkspace[], opts?: CreateSandboxOpts): Promise<void>
   removeSandbox(name: string): Promise<void>
   exec(name: string, command: string, opts?: SandboxExecOpts): Promise<CommandResult>
@@ -323,8 +373,67 @@ export interface SandboxRuntime {
  */
 export const SBX_DEFAULT_TIMEOUT = 120000
 const SBX_TEMPLATE_LOAD_TIMEOUT = 600000
+/** Quick CLI round-trip bound for the availability probe; shared by both backends. */
+const SBX_PROBE_TIMEOUT = 5000
+/** Quick CLI round-trip bound for the inventory listing; shared by both backends. */
 const SBX_LIST_TIMEOUT = 5000
 const SBX_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox/i
+
+/**
+ * Runs a backend `remove` command, tolerating non-zero exits that mean the sandbox is already
+ * gone. The missing-regex is backend-specific (`sbx` says `no such sandbox`, smolvm `unknown
+ * machine`); any other failure throws with the CLI stderr.
+ */
+export async function removeSandboxWith(run: CommandRunner, argv: string[], missingRe: RegExp): Promise<void> {
+  const result = await run(argv)
+  if (result.exitCode !== 0 && !missingRe.test(`${result.stdout}\n${result.stderr}`)) {
+    throw new Error(`Failed to remove sandbox: ${result.stderr}`)
+  }
+}
+
+/**
+ * Shared liveness inventory backed by a backend `ls --json` invocation. `getSandboxState` is the
+ * only liveness primitive: a failed or unparseable listing yields `'unknown'` (never `'missing'`,
+ * which would let callers destroy or duplicate a live sandbox), a parsed-but-absent entry
+ * `'missing'`, and `'running'`/`'stopped'` from the raw status. `listSandboxesByPrefix` degrades
+ * to `[]` on any failure.
+ */
+export function createSandboxInventory(
+  run: CommandRunner,
+  listArgs: string[],
+): {
+  getSandboxState(name: string): Promise<SandboxState>
+  listSandboxesByPrefix(prefix: string): Promise<string[]>
+} {
+  async function getSandboxState(name: string): Promise<SandboxState> {
+    let result: CommandResult
+    try {
+      result = await run(listArgs, { timeout: SBX_LIST_TIMEOUT })
+    } catch {
+      return 'unknown'
+    }
+    if (result.exitCode !== 0) return 'unknown'
+    const entries = parseSbxSandboxListOrNull(result.stdout)
+    if (!entries) return 'unknown'
+    const entry = entries.find((e) => e.name === name)
+    if (!entry) return 'missing'
+    return entry.running ? 'running' : 'stopped'
+  }
+
+  async function listSandboxesByPrefix(prefix: string): Promise<string[]> {
+    try {
+      const result = await run(listArgs, { timeout: SBX_LIST_TIMEOUT })
+      if (result.exitCode !== 0) return []
+      return parseSbxSandboxList(result.stdout)
+        .map((e) => e.name)
+        .filter((n) => n.startsWith(prefix))
+    } catch {
+      return []
+    }
+  }
+
+  return { getSandboxState, listSandboxesByPrefix }
+}
 
 /**
  * Assembles a `SandboxRuntime` from the pure `sbx` helpers, routing every method through an
@@ -333,9 +442,14 @@ const SBX_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox/i
 export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner }): SandboxRuntime {
   const run: CommandRunner =
     opts?.run ?? ((args, o) => runCommand('sbx', args, { ...o, logger, logLabel: 'sbx' }))
+  const inventory = createSandboxInventory(run, ['ls', '--json'])
 
   async function checkAvailable(): Promise<SbxAvailability> {
     return checkSbxAvailability(run)
+  }
+
+  function describeUnavailable(result: Extract<SbxAvailability, { available: false }>): string {
+    return describeSbxUnavailable(result)
   }
 
   async function templateExists(ref: string): Promise<boolean> {
@@ -348,7 +462,11 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
     }
   }
 
-  async function loadTemplate(tarPath: string): Promise<void> {
+  function templateLoadHint(_ref: string): string {
+    return 'sbx template load <tar>'
+  }
+
+  async function loadTemplate(tarPath: string, _ref: string): Promise<void> {
     const result = await run(['template', 'load', tarPath], { timeout: SBX_TEMPLATE_LOAD_TIMEOUT })
     if (result.exitCode !== 0) {
       throw new Error(`Failed to load sandbox template: ${result.stderr || result.stdout}`)
@@ -372,19 +490,11 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
   }
 
   async function removeSandbox(name: string): Promise<void> {
-    const result = await run(['rm', '--force', name])
-    if (result.exitCode !== 0 && !SBX_REMOVE_MISSING_RE.test(`${result.stdout}\n${result.stderr}`)) {
-      throw new Error(`Failed to remove sandbox: ${result.stderr}`)
-    }
+    return removeSandboxWith(run, ['rm', '--force', name], SBX_REMOVE_MISSING_RE)
   }
 
   async function exec(name: string, command: string, opts?: SandboxExecOpts): Promise<CommandResult> {
-    let fullCommand = command
-    if (opts?.cwd) {
-      const safeCwd = opts.cwd.replace(/'/g, "'\\''")
-      fullCommand = `cd '${safeCwd}' && ${command}`
-    }
-    const args = buildSbxExecArgs(name, fullCommand, { envFile: opts?.envFile })
+    const args = buildSbxExecArgs(name, prefixCommandWithCwd(command, opts?.cwd), { envFile: opts?.envFile })
     return run(args, { timeout: opts?.timeout ?? SBX_DEFAULT_TIMEOUT, abort: opts?.abort })
   }
 
@@ -398,33 +508,6 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
     return run(args, { timeout: opts?.timeout ?? SBX_DEFAULT_TIMEOUT, stdin, abort: opts?.abort })
   }
 
-  async function getSandboxState(name: string): Promise<SandboxState> {
-    let result: CommandResult
-    try {
-      result = await run(['ls', '--json'], { timeout: SBX_LIST_TIMEOUT })
-    } catch {
-      return 'unknown'
-    }
-    if (result.exitCode !== 0) return 'unknown'
-    const entries = parseSbxSandboxListOrNull(result.stdout)
-    if (!entries) return 'unknown'
-    const entry = entries.find((e) => e.name === name)
-    if (!entry) return 'missing'
-    return entry.running ? 'running' : 'stopped'
-  }
-
-  async function listSandboxesByPrefix(prefix: string): Promise<string[]> {
-    try {
-      const result = await run(['ls', '--json'], { timeout: SBX_LIST_TIMEOUT })
-      if (result.exitCode !== 0) return []
-      return parseSbxSandboxList(result.stdout)
-        .map((e) => e.name)
-        .filter((n) => n.startsWith(prefix))
-    } catch {
-      return []
-    }
-  }
-
   async function allowNetworkHost(host: string): Promise<boolean> {
     try {
       const result = await run(['policy', 'allow', 'network', host])
@@ -436,15 +519,17 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
 
   return {
     checkAvailable,
+    describeUnavailable,
     templateExists,
+    templateLoadHint,
     loadTemplate,
     createSandbox,
     removeSandbox,
     exec,
     execPipe,
-    getSandboxState,
+    getSandboxState: inventory.getSandboxState,
     sandboxContainerName,
-    listSandboxesByPrefix,
+    listSandboxesByPrefix: inventory.listSandboxesByPrefix,
     allowNetworkHost,
   }
 }

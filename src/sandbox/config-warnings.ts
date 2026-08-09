@@ -12,7 +12,7 @@ export function collectLegacySandboxConfigWarnings(rawSandbox: unknown): string[
   const warnings: string[] = []
 
   if (rawSandbox.mode === 'docker') {
-    warnings.push("sandbox.mode 'docker' is ignored: the sbx migration replaces the Docker driver; use mode 'sbx'")
+    warnings.push("sandbox.mode 'docker' is ignored: the sbx migration replaces the Docker driver; use mode 'sbx' (default) or 'smolvm'")
   }
   if ('projectMountPath' in rawSandbox) {
     warnings.push('sandbox.projectMountPath is ignored: sbx mounts the source project read-only at its own host path')

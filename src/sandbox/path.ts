@@ -1,4 +1,5 @@
 import { realpathSync } from 'fs'
+import { join } from 'path'
 
 export interface SandboxMount {
   hostDir: string
@@ -26,4 +27,13 @@ export function isInsideAnyMount(p: string, mounts: SandboxMount[]): boolean {
     }
   }
   return false
+}
+
+/**
+ * Directory for per-sandbox env passthrough files. The smolvm backend mounts it read-only at its
+ * identical host path so in-guest execs source the same `KEY=value` file the host wrote; the sbx
+ * backend consumes the file host-side via `--env-file` and never mounts it.
+ */
+export function resolveSandboxEnvDir(dataDir: string): string {
+  return join(dataDir, 'sandbox-env')
 }

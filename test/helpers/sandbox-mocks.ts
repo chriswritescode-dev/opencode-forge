@@ -1,6 +1,30 @@
 import { vi } from 'vitest'
-import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/sbx'
+import type { CommandRunner, SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/sbx'
 import type { SandboxResources } from '../../src/types'
+
+/** A recorded CommandRunner invocation plus the options the facade forwarded. */
+export interface RecordingCall {
+  args: string[]
+  opts?: { timeout?: number; stdin?: string }
+}
+
+/**
+ * Returns a fake CommandRunner that records every invocation (args plus forwarded timeout/stdin)
+ * and optionally delegates each call to `handler`. Shared by the sbx and smolvm runtime facade
+ * suites so both backends exercise the same recording seam.
+ */
+export function createRecordingRunner(
+  handler?: (rec: RecordingCall) => { stdout: string; stderr: string; exitCode: number },
+): { calls: RecordingCall[]; runner: CommandRunner } {
+  const calls: RecordingCall[] = []
+  const runner: CommandRunner = async (args, opts) => {
+    const rec = { args, opts: { timeout: opts?.timeout, stdin: opts?.stdin } }
+    calls.push(rec)
+    const res = handler ? handler(rec) : { stdout: '', stderr: '', exitCode: 0 }
+    return res
+  }
+  return { calls, runner }
+}
 
 /**
  * Mock SandboxRuntime plus the test helpers used by the manager suites. Extending
@@ -9,7 +33,7 @@ import type { SandboxResources } from '../../src/types'
  */
 export interface MockSandboxRuntime extends SandboxRuntime {
   getCreateSandboxCalls(): Array<
-    [string, SandboxWorkspace[], { template?: string; resources?: SandboxResources } | undefined]
+    [string, SandboxWorkspace[], { template?: string; resources?: SandboxResources; networkAllowHosts?: string[] } | undefined]
   >
   getRemoveSandboxCalls(): string[]
   setSandboxes(newSandboxes: string[]): void
@@ -26,7 +50,7 @@ export interface MockSandboxRuntime extends SandboxRuntime {
  */
 export function createMockSandboxRuntime(): MockSandboxRuntime {
   const createSandboxCalls: Array<
-    [string, SandboxWorkspace[], { template?: string; resources?: SandboxResources } | undefined]
+    [string, SandboxWorkspace[], { template?: string; resources?: SandboxResources; networkAllowHosts?: string[] } | undefined]
   > = []
   const removeSandboxCalls: string[] = []
   let sandboxes = ['forge-foo', 'forge-bar']
@@ -40,11 +64,16 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       ? { available: true as const }
       : { available: false as const, reason: 'daemon-down' as const, detail: 'mock daemon down' },
     templateExists: async () => shouldTemplateExist,
-    loadTemplate: async () => {},
+    loadTemplate: async (_tar: string, _ref: string) => {},
+    describeUnavailable: (result) =>
+      result.reason === 'daemon-down'
+        ? 'The sbx daemon is not running'
+        : `Sandbox unavailable: ${result.reason}`,
+    templateLoadHint: () => 'sbx template load <tar>',
     createSandbox: async (
       name: string,
       workspaces: SandboxWorkspace[],
-      opts?: { template?: string; resources?: SandboxResources },
+      opts?: { template?: string; resources?: SandboxResources; networkAllowHosts?: string[] },
     ) => {
       createSandboxCalls.push([name, workspaces, opts])
       sandboxStates.set(name, 'running')

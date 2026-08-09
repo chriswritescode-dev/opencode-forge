@@ -99,10 +99,12 @@
   },
 
   // Sandbox configuration. Sandbox is optional: loops always run in an isolated git worktree, and
-  // when the sbx CLI and daemon are available a sandbox is provisioned automatically. Set
-  // "enabled": false to force worktree-only mode even when the sbx daemon is running.
+  // when a sandbox backend is available a sandbox is provisioned automatically. Set
+  // "enabled": false to force worktree-only mode even when a backend is available.
   "sandbox": {
     "enabled": true,
+    // "mode" selects the sandbox backend: "sbx" (default; CLI + daemon) or "smolvm" (the smolvm
+    // CLI, no daemon). Unknown or legacy values fall back to "sbx".
     "mode": "sbx",
     "image": "oc-forge-sandbox:latest",
     "imageFeatures": {
@@ -110,10 +112,12 @@
     }
     // Mount the source project directory read-only at its identical host path. Defaults to true.
     // "mountProjectReadonly": true,
-    // Network access configuration. The sbx proxy is deny-by-default: host loopback is
-    // unreachable, and outbound access is allowed only for hosts listed in "allow".
+    // Network access configuration. With "sbx" the proxy is deny-by-default: host loopback is
+    // unreachable, and outbound access is allowed only for hosts listed in "allow". With "smolvm"
+    // the list becomes per-machine --allow-host flags applied at create time, and an empty list
+    // means unrestricted egress.
     // "network": {
-    //   // Hosts the sandbox may reach. Defaults to none (deny-by-default).
+    //   // Hosts the sandbox may reach. Defaults to none (deny-by-default with sbx).
     //   "allow": ["registry.npmjs.org"],
     //   // Host environment variable names passed into each sandbox exec via the env file.
     //   "env": ["MY_VAR"]

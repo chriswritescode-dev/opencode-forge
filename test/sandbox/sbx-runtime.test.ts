@@ -12,6 +12,7 @@ import {
   checkSbxAvailability,
   describeSbxUnavailable,
   createSbxRuntime,
+  prefixCommandWithCwd,
 } from '../../src/sandbox/sbx'
 import type { CommandRunner } from '../../src/sandbox/sbx'
 import type { Logger } from '../../src/types'
@@ -309,24 +310,11 @@ describe('availability', () => {
   })
 })
 
-describe('runtime', () => {
-  interface Rec {
-    args: string[]
-    opts?: { timeout?: number; stdin?: string }
-  }
-  function recordingRunner(handler?: (rec: Rec) => { stdout: string; stderr: string; exitCode: number }) {
-    const calls: Rec[] = []
-    const runner: CommandRunner = async (args, opts) => {
-      const rec = { args, opts: { timeout: opts?.timeout, stdin: opts?.stdin } }
-      calls.push(rec)
-      const res = handler ? handler(rec) : { stdout: '', stderr: '', exitCode: 0 }
-      return res
-    }
-    return { calls, runner }
-  }
+import { createRecordingRunner } from '../helpers/sandbox-mocks'
 
+describe('runtime', () => {
   test('exec with cwd prefixes the command with cd and records args', async () => {
-    const { calls, runner } = recordingRunner()
+    const { calls, runner } = createRecordingRunner()
     const rt = createSbxRuntime(logger, { run: runner })
     await rt.exec('forge-c', 'ls', { cwd: "/w/it's" })
     expect(calls[0].args).toEqual([
@@ -338,8 +326,31 @@ describe('runtime', () => {
     ])
   })
 
+  test('prefixCommandWithCwd escapes single quotes and leaves a missing cwd untouched', () => {
+    expect(prefixCommandWithCwd('ls', "/w/it's")).toBe("cd '/w/it'\\''s' && ls")
+    expect(prefixCommandWithCwd('ls')).toBe('ls')
+  })
+
+  test('loadTemplate accepts a ref argument that the sbx runner ignores', async () => {
+    const { calls, runner } = createRecordingRunner()
+    const rt = createSbxRuntime(logger, { run: runner })
+    await rt.loadTemplate('/tmp/t.tar', 'oc-forge-sandbox:latest')
+    expect(calls[0].args).toEqual(['template', 'load', '/tmp/t.tar'])
+    expect(calls[0].opts?.timeout).toBe(600000)
+  })
+
+  test('describeUnavailable delegates to describeSbxUnavailable', () => {
+    const rt = createSbxRuntime(logger, { run: async () => ({ stdout: '', stderr: '', exitCode: 0 }) })
+    expect(rt.describeUnavailable({ available: false, reason: 'daemon-down', detail: 'x' })).toMatch(/sbx daemon start/)
+  })
+
+  test('templateLoadHint returns the sbx template load command', () => {
+    const rt = createSbxRuntime(logger, { run: async () => ({ stdout: '', stderr: '', exitCode: 0 }) })
+    expect(rt.templateLoadHint('oc-forge-sandbox:latest')).toBe('sbx template load <tar>')
+  })
+
   test('exec passes envFile and timeout to the runner', async () => {
-    const { calls, runner } = recordingRunner()
+    const { calls, runner } = createRecordingRunner()
     const rt = createSbxRuntime(logger, { run: runner })
     await rt.exec('forge-c', 'ls', { envFile: '/e.env', timeout: 3000 })
     expect(calls[0].args).toContain('--env-file')
@@ -347,7 +358,7 @@ describe('runtime', () => {
   })
 
   test('execPipe sets interactive and passes stdin through', async () => {
-    const { calls, runner } = recordingRunner()
+    const { calls, runner } = createRecordingRunner()
     const rt = createSbxRuntime(logger, { run: runner })
     await rt.execPipe('forge-c', 'cat', 'hello')
     expect(calls[0].args.slice(0, 3)).toEqual(['exec', '-i', 'forge-c'])
@@ -355,7 +366,7 @@ describe('runtime', () => {
   })
 
   test('createSandbox builds create args with coerced resources', async () => {
-    const { calls, runner } = recordingRunner()
+    const { calls, runner } = createRecordingRunner()
     const rt = createSbxRuntime(logger, { run: runner })
     await rt.createSandbox('forge-c', [{ hostDir: '/work' }], {
       template: 't1',
@@ -369,7 +380,7 @@ describe('runtime', () => {
   })
 
   test('createSandbox throws on non-zero exit', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.createSandbox('forge-c', [{ hostDir: '/work' }])).rejects.toThrow(
       'Failed to create sandbox: boom',
@@ -377,27 +388,27 @@ describe('runtime', () => {
   })
 
   test('removeSandbox records rm --force', async () => {
-    const { calls, runner } = recordingRunner()
+    const { calls, runner } = createRecordingRunner()
     const rt = createSbxRuntime(logger, { run: runner })
     await rt.removeSandbox('forge-a')
     expect(calls[0].args).toEqual(['rm', '--force', 'forge-a'])
   })
 
   test('removeSandbox tolerates a not-found failure', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'no such sandbox forge-a', exitCode: 1 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '', stderr: 'no such sandbox forge-a', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.removeSandbox('forge-a')).resolves.toBeUndefined()
   })
 
   test('removeSandbox throws on an unexpected failure', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'permission denied', exitCode: 1 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '', stderr: 'permission denied', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.removeSandbox('forge-a')).rejects.toThrow('Failed to remove sandbox')
   })
 
   test('getSandboxState reports running, and missing for an absent name', async () => {
     const stdout = JSON.stringify({ sandboxes: [{ name: 'forge-a', status: 'running' }] })
-    const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('running')
     await expect(rt.getSandboxState('forge-b')).resolves.toBe('missing')
@@ -405,19 +416,19 @@ describe('runtime', () => {
 
   test('getSandboxState reports an idle-suspended sandbox as stopped, not missing', async () => {
     const stdout = JSON.stringify({ sandboxes: [{ name: 'forge-a', status: 'stopped' }] })
-    const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('stopped')
   })
 
   test('getSandboxState reports unknown on a failing ls rather than claiming missing', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
   })
 
   test('getSandboxState reports unknown when the ls invocation throws', async () => {
-    const { runner } = recordingRunner(() => { throw new Error('sbx exploded') })
+    const { runner } = createRecordingRunner(() => { throw new Error('sbx exploded') })
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
   })
@@ -425,32 +436,32 @@ describe('runtime', () => {
   test('getSandboxState reports unknown when a successful ls emits unparseable output', async () => {
     // A truncated or schema-changed payload must never be read as "the sandbox is gone",
     // or the caller would destroy or duplicate a live sandbox.
-    const { runner } = recordingRunner(() => ({ stdout: '{"sandboxes":[{"name":"forg', stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '{"sandboxes":[{"name":"forg', stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
   })
 
   test('getSandboxState reports unknown for valid JSON in an unrecognized shape', async () => {
     // An error object or a future nested schema is a failed inventory read, not an empty inventory
-    const { runner } = recordingRunner(() => ({ stdout: JSON.stringify({ error: 'daemon down' }), stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: JSON.stringify({ error: 'daemon down' }), stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
   })
 
   test('getSandboxState reports unknown for a valid JSON scalar', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '123', stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '123', stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('unknown')
   })
 
   test('getSandboxState reports missing when a successful ls returns an empty list', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: JSON.stringify({ sandboxes: [] }), stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: JSON.stringify({ sandboxes: [] }), stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('missing')
   })
 
   test('getSandboxState treats empty output as an empty list so a missing sandbox can still be created', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '', stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('missing')
   })
@@ -463,48 +474,48 @@ describe('runtime', () => {
         { name: 'other', status: 'running' },
       ],
     })
-    const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.listSandboxesByPrefix('forge-')).resolves.toEqual(['forge-a', 'forge-b'])
   })
 
   test('listSandboxesByPrefix returns [] on a failing ls', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.listSandboxesByPrefix('forge-')).resolves.toEqual([])
   })
 
   test('templateExists matches parsed template list', async () => {
     const stdout = ['REPOSITORY TAG', 'oc-forge-sandbox latest'].join('\n')
-    const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.templateExists('oc-forge-sandbox:latest')).resolves.toBe(true)
     await expect(rt.templateExists('oc-forge-sandbox:other')).resolves.toBe(false)
   })
 
   test('loadTemplate throws on non-zero exit', async () => {
-    const { calls, runner } = recordingRunner(() => ({ stdout: '', stderr: 'bad tar', exitCode: 1 }))
+    const { calls, runner } = createRecordingRunner(() => ({ stdout: '', stderr: 'bad tar', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
-    await expect(rt.loadTemplate('/tmp/t.tar')).rejects.toThrow('Failed to load sandbox template')
+    await expect(rt.loadTemplate('/tmp/t.tar', 'oc-forge-sandbox:latest')).rejects.toThrow('Failed to load sandbox template')
     expect(calls[0].args).toEqual(['template', 'load', '/tmp/t.tar'])
     expect(calls[0].opts?.timeout).toBe(600000)
   })
 
   test('checkAvailable proxies to checkSbxAvailability', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: 'Status: running\n', stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: 'Status: running\n', stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.checkAvailable()).resolves.toEqual({ available: true })
   })
 
   test('allowNetworkHost returns false on non-zero exit without throwing', async () => {
-    const { calls, runner } = recordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
+    const { calls, runner } = createRecordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.allowNetworkHost('db.internal')).resolves.toBe(false)
     expect(calls[0].args).toEqual(['policy', 'allow', 'network', 'db.internal'])
   })
 
   test('allowNetworkHost returns true on success', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: '', exitCode: 0 }))
+    const { runner } = createRecordingRunner(() => ({ stdout: '', stderr: '', exitCode: 0 }))
     const rt = createSbxRuntime(logger, { run: runner })
     await expect(rt.allowNetworkHost('db.internal')).resolves.toBe(true)
   })

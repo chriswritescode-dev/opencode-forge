@@ -1,6 +1,6 @@
 # Sandbox
 
-Forge can run loop iterations or one selected host session inside an isolated `sbx` sandbox while keeping the active project directory mounted at its identical host path for fast host/sandbox file sharing.
+Forge can run loop iterations or one selected host session inside an isolated sandbox — either an `sbx` sandbox (CLI + daemon) or a `smolvm` machine (see [smolvm Mode](#smolvm-mode)) — while keeping the active project directory mounted at its identical host path for fast host/sandbox file sharing.
 
 See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](loop-system.md).
 
@@ -169,6 +169,52 @@ Each sbx sandbox has its own Docker daemon natively, so loops can build and run 
 `sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends. Forge holds one long-lived "sentinel" exec per active sandbox — an in-container `sleep 600` — and renews it when it returns. `sbx` keeps a sandbox running as long as an exec session is in flight, so the sentinel holds it warm with no polling. The 10-minute bound means that if the forge process dies without cleanup, the sandbox stops within that bound rather than staying up forever. On plugin cleanup the sentinel is aborted and the sandboxes are left alone, matching Forge's contract of preserving active loops across restarts. Holding a session is the same "sentinel connection" approach Docker's own `sbx cp` and `sbx kit add` use.
 
 Cold starts are cheap: roughly 0.9s for the first command after a stop, vs ~0.16s warm. Keep-alive is not about latency — a stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. And because `sbx exec` auto-starts a stopped sandbox, keep-alive is never required for correctness of a single command.
+
+## smolvm Mode
+
+Forge can run sandboxed loops on the `smolvm` CLI (smolmachines.com) instead of the `sbx` daemon. Enable it with:
+
+```jsonc
+{
+  "sandbox": {
+    "mode": "smolvm"
+  }
+}
+```
+
+### Requirements
+
+- The `smolvm` CLI installed: `curl -sSL https://smolmachines.com/install.sh | bash`. There is no daemon — the `smolvm` binary embeds libkrun and drives the local hypervisor directly.
+- A supported platform: macOS 11+ on Apple silicon, Linux with `/dev/kvm`, or Windows x86_64 with Windows Hypervisor Platform.
+- Docker, used only to build the sandbox template (see below).
+
+### Template Flow
+
+The bundled template is still built with Docker; only the final step differs. Forge keeps a managed image store at `<dataDir>/smolvm-images/`:
+
+```bash
+docker build -t oc-forge-sandbox:latest container/
+docker save oc-forge-sandbox:latest -o forge-sandbox.tar
+# Forge stores the tar as <dataDir>/smolvm-images/<sanitized-ref>.tar
+```
+
+Each sandbox create resolves `--image` from that store and passes the tar to `smolvm machine create --image <tar>`, which consumes the `docker save` archive directly — there is no template-store command to run. A registry-qualified ref containing `/` (for example `docker.io/library/oc-forge-sandbox:latest`) is passed through to `machine create` unchanged, letting smolvm pull it. The "Build sandbox template" palette command builds and stores the tar under the active mode.
+
+### Network Semantics
+
+smolvm machines are created with `--net` and have no global proxy: egress is unrestricted by default. `sandbox.network.allow` maps to per-machine `--allow-host` flags applied at create time, so changing the list after a sandbox exists requires recreating the sandbox. Under smolvm an empty (or absent) allow list means unrestricted egress — the opposite of sbx's deny-by-default proxy. Host loopback remains unreachable from inside the machine.
+
+### Environment Passthrough
+
+`sandbox.network.env` variables are written to the same host-side env file. Because `smolvm machine exec` has no `--env-file` flag, Forge mounts the env directory read-only at its identical host path and each exec sources the file in-guest before running the command.
+
+### Shell Routing
+
+The generated shell shim routes bash-tool commands through `smolvm machine exec --name <sandbox> -- bash -c <payload>` instead of `sbx exec`, applying the working directory and env file inside the guest (smolvm exec has no `-w` or `--env-file` flags). It fails closed exactly like the sbx shim: if the machine is expected but `smolvm machine exec` fails, the command errors rather than silently running on the host.
+
+### Keep-Alive and Recovery
+
+smolvm machines do not auto-stop the way `sbx` sandboxes do (~35s idle stop), so the sentinel exec is harmless there. If a machine is stopped out-of-band, the next exec fails with a stopped-machine error and Forge restarts it transparently before retrying the command once.
 
 ## Large Command Output
 

@@ -7,7 +7,7 @@ import { resolveForgeDbPath, resolveDataDir } from './storage'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
-import { createSbxRuntime } from './sandbox/sbx'
+import { createSandboxRuntime, resolveSandboxMode, type SandboxMode } from './sandbox/runtime-factory'
 import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE } from './sandbox/template'
 import { runCommand } from './sandbox/process'
 import { isSandboxConfigEnabled } from './sandbox/context'
@@ -237,6 +237,8 @@ function SandboxBuildDialog(props: {
   buildContextDir: string
   image: string
   browserControl: boolean
+  mode: SandboxMode
+  dataDir: string
 }) {
   const theme = () => props.api.theme.current
 
@@ -249,7 +251,7 @@ function SandboxBuildDialog(props: {
     try {
       await buildAndLoadSandboxTemplate(props.buildContextDir, props.image, {
         runCommand,
-        loadTemplate: (tar) => createSbxRuntime(logger).loadTemplate(tar),
+        loadTemplate: (tar, ref) => createSandboxRuntime(props.mode, logger, { dataDir: props.dataDir }).loadTemplate(tar, ref),
         logger,
         tmpDir: tmpdir(),
       }, { browserControl: props.browserControl })
@@ -274,7 +276,9 @@ function SandboxBuildDialog(props: {
 
       <box paddingBottom={1}>
         <text fg={theme().textMuted}>
-          This builds the sandbox image with Docker, then loads it into sbx.
+          {props.mode === 'smolvm'
+            ? 'This builds the sandbox image with Docker, then copies it into the smolvm image store.'
+            : 'This builds the sandbox image with Docker, then loads it into sbx.'}
         </text>
       </box>
       <box paddingBottom={1}>
@@ -330,6 +334,7 @@ const tui: TuiPlugin = async (api) => {
   // `dataDir` cannot leave the dashboard and the execute-plan dialog pointed at
   // different databases.
   const forgeDbPath = resolveForgeDbPath(pluginConfig.dataDir)
+  const effectiveDataDir = pluginConfig.dataDir || resolveDataDir()
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showVersion: tuiConfig?.showVersion ?? true,
@@ -338,7 +343,7 @@ const tui: TuiPlugin = async (api) => {
 
   createEffect(() => {
     if (!api.state.ready) return
-    emitLoopPermissionConfigWarnings(pluginConfig, pluginConfig.dataDir || resolveDataDir(), directory, {
+    emitLoopPermissionConfigWarnings(pluginConfig, effectiveDataDir, directory, {
       logger: console,
       onWarnings: (warnings) => {
         api.ui.toast({ title: 'Forge loop permissions', message: warnings.join(' '), variant: 'warning', duration: 10_000 })
@@ -624,6 +629,8 @@ const tui: TuiPlugin = async (api) => {
         buildContextDir={buildContextDir}
         image={image}
         browserControl={browserControl}
+        mode={resolveSandboxMode(pluginConfig)}
+        dataDir={effectiveDataDir}
       />
     ))
   }
@@ -641,7 +648,7 @@ const tui: TuiPlugin = async (api) => {
       {
         name: 'forge.sandbox.buildImage',
         title: 'Build sandbox template',
-        desc: 'Build the sandbox template image and load it into sbx',
+        desc: 'Build the sandbox template image and load it into the sandbox runtime',
         category: 'Forge',
         namespace: 'palette',
         run: () => { runBuildSandboxImage() },

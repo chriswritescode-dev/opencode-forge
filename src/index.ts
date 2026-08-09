@@ -10,7 +10,7 @@ import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger, slugify } from './utils/logger'
-import { createSbxRuntime, describeSbxUnavailable } from './sandbox/sbx'
+import { createSandboxRuntime, resolveSandboxMode } from './sandbox/runtime-factory'
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
@@ -314,6 +314,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const forgeClient = createForgeClientFromPluginInput(input)
 
     const dataDir = config.dataDir || resolveDataDir()
+    const sandboxMode = resolveSandboxMode(config)
 
     emitLoopPermissionConfigWarnings(config, dataDir, directory, {
       logger,
@@ -331,7 +332,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    const runtime = createSbxRuntime(logger)
+    const runtime = createSandboxRuntime(sandboxMode, logger, { dataDir })
     if (!isSandboxConfigEnabled(config)) {
       logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
@@ -363,7 +364,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // would be the upgrade path.
     let shellShimPath: string | null = null
     if (sandboxManager) {
-      shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger)
+      shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger, sandboxMode)
       if (!shellShimPath) {
         logger.error('Sandbox shell shim unavailable; falling back to worktree-only mode')
         sandboxManager = null
@@ -386,7 +387,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
               directory,
               logger,
               title: 'Sandbox unavailable',
-              message: describeSbxUnavailable(available),
+              message: runtime.describeUnavailable(available),
               variant: 'warning',
               duration: 10_000,
             })
@@ -400,7 +401,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
               directory,
               logger,
               title: 'Sandbox template not found',
-              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, { browserControl })}`,
+              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, runtime.templateLoadHint(sandboxImage), { browserControl })}`,
               variant: 'warning',
               duration: 10_000,
             })

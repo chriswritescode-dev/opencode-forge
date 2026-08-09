@@ -268,36 +268,40 @@ Source: [src/services/execution.ts](../src/services/execution.ts)
 
 ---
 
-## `sandbox/` — sbx Sandboxing
+## `sandbox/` — Sandbox Runtimes
 
-Drives the `sbx` CLI to provision isolated sandboxes for loop execution.
+Drives the `sbx` and `smolvm` CLIs to provision isolated sandboxes for loop execution.
 
 ### Files
 
 | File | Purpose |
 |------|---------|
 | `sbx.ts` | `SandboxRuntime` facade over the `sbx` CLI (create/exec/remove/list, availability probe) |
+| `smolvm.ts` | Pure helpers plus the `SandboxRuntime` facade over the `smolvm` CLI (argv builders, image-store paths, stopped-machine recovery) |
+| `runtime-factory.ts` | `SandboxMode` resolution and the single `createSandboxRuntime` construction point |
 | `process.ts` | Child-process runner (`runCommand`) shared by the sandbox helpers |
-| `template.ts` | Template build/save/load helper (`docker build`/`docker save`/`sbx template load`) |
+| `template.ts` | Template build/save/load helper (`docker build`/`docker save`/backend `loadTemplate`) |
 | `config-warnings.ts` | Warnings for legacy Docker-era sandbox config keys |
 | `manager.ts` | `SandboxManager` lifecycle management (start/stop/getActive/isLive) |
 | `reconcile.ts` | Sandbox reconciliation with loop states |
 | `context.ts` | `SandboxContext`, `isSandboxEnabled()` |
 | `path.ts` | Sandbox path utilities |
-| `exec-fs.ts` | Filesystem operations through `sbx exec` |
+| `exec-fs.ts` | Filesystem operations executed inside the sandbox (backend-agnostic) |
 
 ### SandboxRuntime Interface
 
 ```typescript
 interface SandboxRuntime {
   checkAvailable(): Promise<SbxAvailability>
+  describeUnavailable(result: Extract<SbxAvailability, { available: false }>): string
   templateExists(ref: string): Promise<boolean>
-  loadTemplate(tarPath: string): Promise<void>
+  templateLoadHint(ref: string): string
+  loadTemplate(tarPath: string, ref: string): Promise<void>
   createSandbox(name: string, workspaces: SandboxWorkspace[], opts?: CreateSandboxOpts): Promise<void>
   removeSandbox(name: string): Promise<void>
   exec(name: string, command: string, opts?: SandboxExecOpts): Promise<CommandResult>
-  execPipe(name: string, command: string, stdin: string, opts?: ...): Promise<CommandResult>
-  isRunning(name: string): Promise<boolean>
+  execPipe(name: string, command: string, stdin: string, opts?: { timeout?: number; abort?: AbortSignal; envFile?: string }): Promise<CommandResult>
+  getSandboxState(name: string): Promise<SandboxState>
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
   allowNetworkHost(host: string): Promise<boolean>

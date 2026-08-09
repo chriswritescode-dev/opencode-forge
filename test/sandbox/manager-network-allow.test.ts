@@ -29,6 +29,33 @@ describe('SandboxManager network allowlist', () => {
     expect(allowNetworkHost).toHaveBeenNthCalledWith(2, 'pypi.org')
   })
 
+  test('each createSandbox call receives the configured hosts as networkAllowHosts', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const manager = createSandboxManager(
+      runtime,
+      makeConfig(['registry.npmjs.org', 'pypi.org']),
+      logger,
+    )
+
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const calls = runtime.getCreateSandboxCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0][2]?.networkAllowHosts).toEqual(['registry.npmjs.org', 'pypi.org'])
+  })
+
+  test('networkAllowHosts is absent from createSandbox opts when allow is unset', async () => {
+    const runtime = createMockSandboxRuntime()
+    const manager = createSandboxManager(runtime, makeConfig(undefined), createMockLogger())
+
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const calls = runtime.getCreateSandboxCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0][2]?.networkAllowHosts).toBeUndefined()
+  })
+
   test('a false return is logged and does not fail start', async () => {
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()

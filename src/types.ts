@@ -107,19 +107,23 @@ export interface LoopConfig {
 export interface SandboxNetworkConfig {
   /** Environment variable names to pass through from host process into the sandbox. */
   env?: string[]
-  /** Hostnames to allow through the sbx network proxy via `sbx policy allow network`. */
+  /**
+   * Hostnames to allow for egress. Applied via `sbx policy allow network` (sbx, a global
+   * deny-by-default proxy) or per-machine `--allow-host` flags at create (smolvm; without
+   * entries the machine has unrestricted egress because smolvm has no global proxy policy).
+   */
   allow?: string[]
 }
 
 /**
- * Resource limits for the sandbox. Maps directly to `sbx create` flags.
+ * Resource limits for the sandbox. Maps to `sbx create` flags or smolvm `--cpus`/`--mem`.
  * sbx defaults are often too tight for many real projects — `pnpm install`
  * gets OOM-killed (exit 137) and shell commands run slowly.
  */
 export interface SandboxResources {
-  /** Memory limit, e.g. '8g', '1024m'. Maps to `sbx create --memory`. */
+  /** Memory limit, e.g. '8g', '1024m'. Maps to `sbx create --memory` / smolvm `--mem` (converted to MiB). */
   memory?: string
-  /** Number of CPUs. `sbx create --cpus` is integer-only. */
+  /** Number of CPUs. Integer-only for both backends (`sbx create --cpus`, smolvm `--cpus`). */
   cpus?: string
 }
 
@@ -138,12 +142,18 @@ export interface SandboxImageFeaturesConfig {
   browserControl?: boolean
 }
 
+/** Sandbox backend selected by `SandboxConfig.mode`. */
+export type SandboxMode = 'sbx' | 'smolvm'
+
 /**
- * Configuration for the sandbox execution environment (sbx).
+ * Configuration for the sandbox execution environment.
  */
 export interface SandboxConfig {
-  /** Sandbox mode. Currently only 'sbx' is supported. Reserved for future modes. */
-  mode?: 'sbx'
+  /**
+   * Sandbox mode. `'sbx'` (default) uses the sbx daemon/CLI; `'smolvm'` uses the smolvm
+   * CLI (no daemon). Unknown or legacy values fall back to `'sbx'`.
+   */
+  mode?: SandboxMode
   /** Enable sandboxed execution. When false, loops run in worktree-only mode even if sbx is available. Default: true. */
   enabled?: boolean
   /** sbx template tag to use for sandboxed execution. */

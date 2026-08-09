@@ -7,8 +7,19 @@ interface SandboxExecutionDeps {
   envFile?: string
 }
 
-function quoteShellArg(value: string): string {
+/** Single-quote-escapes `value` (including the wrapping quotes) so it survives a POSIX-sh round-trip. */
+export function quoteShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+/**
+ * POSIX-sh loop that exports each non-empty `KEY=value` line of the env file without
+ * shell-interpreting values. `redirectToken` must already be shell-safe (single-quoted, or a
+ * quoted positional such as `"$0"`). Shared by the smolvm runtime preamble and the shell shim
+ * so the export semantics exist once.
+ */
+export function buildEnvFileExportLoop(redirectToken: string): string {
+  return `while IFS= read -r __fe || [ -n "$__fe" ]; do [ -n "$__fe" ] && export "$__fe"; done < ${redirectToken}; `
 }
 
 /**

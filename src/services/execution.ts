@@ -740,8 +740,7 @@ export async function attachLoopToSession(
         if (!waitResult.ready) {
           deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason}${waitResult.error ? `: ${waitResult.error}` : ''})`)
           try {
-            const { createSbxRuntime } = await import('../sandbox/sbx')
-            const runtime = createSbxRuntime(deps.logger as unknown as Console)
+            const runtime = deps.sandboxManager.runtime
             const cn = runtime.sandboxContainerName(loopName)
             if (await runtime.getSandboxState(cn) !== 'missing') {
               await runtime.removeSandbox(cn)

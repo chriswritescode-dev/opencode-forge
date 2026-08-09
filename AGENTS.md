@@ -29,7 +29,8 @@
 
 ## Sandbox
 
-- `src/sandbox/sbx.ts` is the only module invoking the `sbx` CLI; route through its `SandboxRuntime` facade. `src/sandbox/process.ts` is the only child-process spawner; all shell execution goes through `runCommand`.
+- `src/sandbox/sbx.ts` is the only module invoking the `sbx` CLI and `src/sandbox/smolvm.ts` the only one invoking `smolvm`; both are constructed exclusively through `createSandboxRuntime` in `src/sandbox/runtime-factory.ts`, which is the single mode-dispatch point. `src/sandbox/process.ts` is the only child-process spawner; all shell execution goes through `runCommand`.
+- `buildShimScript` in `src/sandbox/shell-shim.ts` is the second place backend CLI shapes are encoded (as generated shell text, not a spawn) and must stay mode-aware and fail-closed.
 - `getSandboxState` is the only liveness primitive; four states: `running`, `stopped` (reusable, never create/evict), `unknown` (query failed), `missing` (may create or evict). `registerActiveSandbox` is the only place a usable sandbox is recorded.
 - `container/Dockerfile` must derive from `docker.io/docker/sandbox-templates:shell-docker`; no `ENTRYPOINT`, `CMD`, or `WORKDIR`.
 

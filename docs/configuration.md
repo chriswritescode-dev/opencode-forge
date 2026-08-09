@@ -244,15 +244,15 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 
 | Option | Default | Description |
 |---|---:|---|
-| `sandbox.enabled` | `true` | Enable sandboxed execution when the `sbx` daemon is available. |
-| `sandbox.mode` | `"sbx"` | Sandbox mode. `sbx` is currently the only supported mode. |
-| `sandbox.image` | `"oc-forge-sandbox:latest"` | sbx template tag used for sandboxed execution. |
+| `sandbox.enabled` | `true` | Enable sandboxed execution when a sandbox backend is available. |
+| `sandbox.mode` | `"sbx"` | Sandbox backend: `"sbx"` (default; CLI + daemon) or `"smolvm"` (the smolvm CLI, no daemon). Unknown or legacy values fall back to `"sbx"`. |
+| `sandbox.image` | `"oc-forge-sandbox:latest"` | Template tag used for sandboxed execution: loaded via `sbx template load`, or stored as `<dataDir>/smolvm-images/<sanitized-ref>.tar` and passed to `smolvm machine create --image`. Under smolvm a registry-qualified ref containing `/` is passed through for smolvm to pull. |
 | `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the template after changing it. |
-| `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`sbx create --memory`). |
-| `sandbox.resources.cpus` | `"4"` | CPU count (`sbx create --cpus`; integer-only). |
+| `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`sbx create --memory`; smolvm `--mem`, converted to integer MiB). |
+| `sandbox.resources.cpus` | `"4"` | CPU count (`sbx create --cpus` / smolvm `--cpus`; integer-only). |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
-| `sandbox.network.allow` | `[]` | Hosts the sandbox may reach (deny-by-default proxy). |
+| `sandbox.network.allow` | `[]` | Hosts the sandbox may reach. sbx: deny-by-default proxy, applied via `sbx policy allow network` at sandbox start. smolvm: per-machine `--allow-host` flags applied at create time (changing the list requires recreating the sandbox); an empty list means unrestricted egress. |
 | `sandbox.network.env` | `[]` | Host environment variables to pass into each sandbox command via the env file. |
 
 ## Bundled Assets & Installer

@@ -16,7 +16,7 @@ export const DEFAULT_SANDBOX_IMAGE = 'oc-forge-sandbox:latest'
 
 export interface BuildTemplateDeps {
   runCommand: typeof runCommand
-  loadTemplate: (tar: string) => Promise<void>
+  loadTemplate: (tar: string, ref: string) => Promise<void>
   logger: Logger
   tmpDir: string
 }
@@ -31,9 +31,14 @@ export function buildTemplateDockerArgs(options?: SandboxTemplateOptions): strin
     : []
 }
 
-export function formatTemplateBuildCommands(contextDir: string, tag: string, options?: SandboxTemplateOptions): string {
+export function formatTemplateBuildCommands(
+  contextDir: string,
+  tag: string,
+  loadHint: string,
+  options?: SandboxTemplateOptions,
+): string {
   const build = ['docker', 'build', ...buildTemplateDockerArgs(options), '-t', tag, `"${contextDir}"`].join(' ')
-  return `${build} && docker save ${tag} -o <tar> && sbx template load <tar>`
+  return `${build} && docker save ${tag} -o <tar> && ${loadHint}`
 }
 
 function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error {
@@ -75,7 +80,7 @@ export async function buildAndLoadSandboxTemplate(
     })
     if (save.exitCode !== 0) throw dockerStageError('save', save)
 
-    await deps.loadTemplate(tarPath)
+    await deps.loadTemplate(tarPath, tag)
   } finally {
     rmSync(tarPath, { force: true })
   }
