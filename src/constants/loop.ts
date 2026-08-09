@@ -1,4 +1,4 @@
-import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir, resolveForgeTempDir } from '../utils/opencode-paths'
+import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../utils/opencode-paths'
 import { isRecord } from '../utils/is-record'
 import type { PluginConfig, LoopPermissionsConfig } from '../types'
 
@@ -183,16 +183,13 @@ export function collectLoopPermissionConfigWarnings(config: PluginConfig | undef
 }
 
 /**
- * Resolves the full set of external directories loop/audit sessions may access: the shared temp
- * directory (always, default `/tmp/oc-forge`) plus any user-configured `loop.allowExternalDirectories`.
- * Single source of truth so every permission-ruleset call site grants the same paths regardless of
- * sandbox mode. (opencode's tool-output directory is added separately inside the ruleset builder.)
+ * Resolves the user-configured external directories loop/audit sessions may access. Single source of
+ * truth so every permission-ruleset call site grants the same paths regardless of sandbox mode.
+ * (opencode's tool-output directory and its advertised temp directory are added separately inside
+ * the ruleset builder.)
  */
 export function resolveLoopAllowedDirectories(config: PluginConfig | undefined): string[] {
-  return [
-    resolveForgeTempDir(config?.loop?.tmpDir),
-    ...(config?.loop?.allowExternalDirectories ?? []),
-  ]
+  return config?.loop?.allowExternalDirectories ?? []
 }
 
 export interface LoopPermissionRulesetOptions {

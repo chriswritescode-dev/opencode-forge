@@ -254,7 +254,6 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
 | `sandbox.network.allow` | `[]` | Hosts the sandbox may reach (deny-by-default proxy). |
 | `sandbox.network.env` | `[]` | Host environment variables to pass into each sandbox command via the env file. |
-| `sandbox.keepAlive` | `true` | Keep active sandboxes warm with a periodic no-op exec, so `sbx`'s ~30s post-disconnect auto-stop never cold-boots the microVM between commands. Set `false` to trade command latency for idle host resources. |
 
 ## Bundled Assets & Installer
 

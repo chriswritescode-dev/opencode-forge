@@ -34,12 +34,6 @@ export interface SandboxManagerConfig {
    * `allow` lists egress hosts to permit on the sbx network proxy's default-deny policy.
    */
   network?: { env?: string[]; allow?: string[] }
-  /**
-   * Keep active sandboxes warm with a periodic no-op exec so sbx's post-disconnect auto-stop never
-   * cold-boots the microVM between commands. Defaults to true; set false to trade command latency
-   * for idle host resources.
-   */
-  keepAlive?: boolean
 }
 
 const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus'>> = {
@@ -103,10 +97,14 @@ const DOCKER_AVAILABLE_TTL = 30_000
 const LIVENESS_CHECK_TTL = 2_000
 
 /**
- * Heartbeat cadence for active sandboxes, deliberately below sbx's observed ~30s post-disconnect
- * auto-stop deferral (sbx-cli v0.37.1), so a warm microVM is never cold-booted mid-loop.
+ * A sandbox stays up while an exec session is in flight, so a bounded `sleep` holds it warm
+ * without polling, and the bound means a crashed plugin leaks at most this long instead of forever.
+ * Renewal requires the `sleep` to have actually elapsed — a fast-returning exec never renews, so
+ * it can never spin.
  */
-export const SANDBOX_KEEPALIVE_INTERVAL_MS = 15_000
+export const SANDBOX_SENTINEL_SECONDS = 600
+export const SANDBOX_SENTINEL_TIMEOUT_MS = (SANDBOX_SENTINEL_SECONDS + 60) * 1000
+export const SANDBOX_SENTINEL_MIN_RENEW_MS = (SANDBOX_SENTINEL_SECONDS * 1000) / 2
 
 export interface ActiveSandbox {
   containerName: string
@@ -126,7 +124,7 @@ export interface SandboxManager {
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
-  /** Stops the keep-alive heartbeat and its bookkeeping without touching sandboxes. */
+  /** Stops the keep-alive sentinels and their bookkeeping without touching sandboxes. */
   dispose(): void
 }
 
@@ -161,9 +159,7 @@ export function createSandboxManager(
   const lastLivenessCheck = new Map<string, number>()
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
-  let keepAliveTimer: ReturnType<typeof setInterval> | null = null
-  const keepAliveInFlight = new Set<string>()
-  const keepAliveDraining = new Set<string>()
+  const sentinels = new Map<string, AbortController>()
   let runtimeAvailableCache: { value: SbxAvailability; at: number } | null = null
   let imageReady = false
   let allowListApplied = false
@@ -358,58 +354,65 @@ export function createSandboxManager(
   }
 
   /**
-   * Syncs the keep-alive timer with the active-sandbox map: running while any sandbox is active,
-   * dropped as soon as the map empties. The timer is unref'd so it can never keep the plugin
-   * process alive (multiple plugin instances share one process). `keepAlive: false` disables the
-   * heartbeat entirely and clears any existing timer. The timer is created only here; clearing is
-   * shared with `dispose` through `stopKeepAliveTimer`.
+   * Syncs the keep-alive sentinels with the active-sandbox map: one sentinel exec per active
+   * sandbox, dropped as soon as the map empties.
    */
-  function stopKeepAliveTimer(): void {
-    if (keepAliveTimer) {
-      clearInterval(keepAliveTimer)
-      keepAliveTimer = null
-    }
-  }
-
   function syncKeepAlive(): void {
-    if (config.keepAlive === false) {
-      stopKeepAliveTimer()
-      return
-    }
-    if (activeSandboxes.size > 0) {
-      if (!keepAliveTimer) {
-        const timer = setInterval(() => {
-          void heartbeat()
-        }, SANDBOX_KEEPALIVE_INTERVAL_MS)
-        timer.unref?.()
-        keepAliveTimer = timer
+    for (const [worktreeName, active] of activeSandboxes) {
+      if (!sentinels.has(worktreeName)) {
+        startSentinel(worktreeName, active.containerName)
       }
-      return
     }
-    stopKeepAliveTimer()
+    for (const worktreeName of sentinels.keys()) {
+      if (!activeSandboxes.has(worktreeName)) {
+        sentinels.get(worktreeName)?.abort()
+        sentinels.delete(worktreeName)
+      }
+    }
   }
 
   /**
-   * One heartbeat pass: a no-op `sbx exec` per active sandbox, which resets sbx's post-disconnect
-   * auto-stop deferral. Never rejects — a failed keep-alive must never fail a loop. The in-flight
-   * guard prevents ticks from piling up while a cold microVM resumes (which takes tens of seconds).
+   * Starts one long-lived exec that holds the sandbox warm while it is in flight, and renews it
+   * when it returns. Never rejects — a failed keep-alive must never fail a loop.
    */
-  async function heartbeat(): Promise<void> {
-    const entries = [...activeSandboxes.entries()]
-    for (const [worktreeName, active] of entries) {
-      if (keepAliveDraining.has(worktreeName) || keepAliveInFlight.has(worktreeName)) continue
-      keepAliveInFlight.add(worktreeName)
-      try {
-        const result = await runtime.exec(active.containerName, 'true')
-        if (result.exitCode !== 0) {
-          logger.log(`Sandbox: keep-alive exec for ${active.containerName} exited ${result.exitCode}`)
+  function startSentinel(worktreeName: string, containerName: string): void {
+    const controller = new AbortController()
+    sentinels.set(worktreeName, controller)
+    void (async () => {
+      while (!controller.signal.aborted) {
+        if (sentinels.get(worktreeName) !== controller) return
+        if (!activeSandboxes.has(worktreeName)) return
+        try {
+          const startedAt = Date.now()
+          const result = await runtime.exec(containerName, `sleep ${SANDBOX_SENTINEL_SECONDS}`, {
+            timeout: SANDBOX_SENTINEL_TIMEOUT_MS,
+            abort: controller.signal,
+          })
+          if (result.exitCode !== 0) {
+            logger.log(`Sandbox: keep-alive sentinel for ${containerName} exited ${result.exitCode}`)
+            if (sentinels.get(worktreeName) === controller) {
+              sentinels.delete(worktreeName)
+            }
+            return
+          }
+          const elapsedMs = Date.now() - startedAt
+          if (elapsedMs < SANDBOX_SENTINEL_MIN_RENEW_MS) {
+            logger.log(`Sandbox: keep-alive sentinel for ${containerName} returned after ${elapsedMs}ms; not renewing`)
+            if (sentinels.get(worktreeName) === controller) {
+              sentinels.delete(worktreeName)
+            }
+            return
+          }
+        } catch (err) {
+          if (controller.signal.aborted) return
+          logger.log(`Sandbox: keep-alive sentinel for ${containerName} failed: ${err instanceof Error ? err.message : String(err)}`)
+          if (sentinels.get(worktreeName) === controller) {
+            sentinels.delete(worktreeName)
+          }
+          return
         }
-      } catch (err) {
-        logger.log(`Sandbox: keep-alive exec for ${active.containerName} failed: ${err instanceof Error ? err.message : String(err)}`)
-      } finally {
-        keepAliveInFlight.delete(worktreeName)
       }
-    }
+    })()
   }
 
   /**
@@ -469,9 +472,11 @@ export function createSandboxManager(
   }
 
   async function stop(worktreeName: string): Promise<void> {
-    keepAliveDraining.add(worktreeName)
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
+
+    sentinels.get(worktreeName)?.abort()
+    sentinels.delete(worktreeName)
 
     // Cleanup (env file, in-memory map entry) always runs; the removal failure is rethrown so
     // callers that own the container lifecycle (e.g. the session-sandbox controller) can observe
@@ -496,7 +501,6 @@ export function createSandboxManager(
         }
       }
       activeSandboxes.delete(worktreeName)
-      keepAliveDraining.delete(worktreeName)
       syncKeepAlive()
     }
     if (removalError) throw removalError
@@ -624,13 +628,15 @@ export function createSandboxManager(
   }
 
   /**
-   * Stops the keep-alive heartbeat and its bookkeeping. Sandboxes stay alive — this only stops
-   * the timer, matching forge's contract of preserving active loops across plugin cleanup.
+   * Stops the keep-alive sentinels and their bookkeeping. Sandboxes stay alive — this only stops
+   * forge-side bookkeeping, matching forge's contract of preserving active loops across plugin
+   * cleanup.
    */
   function dispose(): void {
-    stopKeepAliveTimer()
-    keepAliveInFlight.clear()
-    keepAliveDraining.clear()
+    for (const controller of sentinels.values()) {
+      controller.abort()
+    }
+    sentinels.clear()
   }
 
   return {

@@ -82,13 +82,6 @@ export interface LoopConfig {
    */
   allowExternalDirectories?: string[]
   /**
-   * Absolute path of a shared scratch/temp directory granted to loop sessions in BOTH modes.
-   * It is added to the `external_directory` allowlist and, for sandboxed loops, bind-mounted
-   * read-write at the identical container path so absolute temp paths match host↔container.
-   * Defaults to `/tmp/oc-forge`. The directory is created on startup if missing.
-   */
-  tmpDir?: string
-  /**
    * Inline opencode config object written as `opencode.jsonc` at the root of each freshly created
    * loop worktree, enabling per-loop opencode customization (primarily MCP servers). The
    * `{{FORGE_SANDBOX_CONTAINER}}` token is replaced in string values for sandboxed loops; MCP
@@ -164,12 +157,6 @@ export interface SandboxConfig {
   mounts?: SandboxMountConfig[]
   /** Network access configuration (egress allow-list, env passthrough). */
   network?: SandboxNetworkConfig
-  /**
-   * Keep an active loop's sandbox warm with a periodic no-op exec so `sbx`'s auto-stop does not
-   * cold-boot the microVM between commands. Defaults to true; set false to trade command latency
-   * for idle host resources.
-   */
-  keepAlive?: boolean
 }
 
 /**

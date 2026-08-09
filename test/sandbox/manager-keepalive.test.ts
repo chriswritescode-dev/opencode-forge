@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   createSandboxManager,
-  SANDBOX_KEEPALIVE_INTERVAL_MS,
+  SANDBOX_SENTINEL_SECONDS,
+  SANDBOX_SENTINEL_TIMEOUT_MS,
   type SandboxManagerConfig,
 } from '../../src/sandbox/manager'
 import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
 import type { CommandResult } from '../../src/sandbox/process'
+import type { SandboxExecOpts } from '../../src/sandbox/sbx'
 
 describe('SandboxManager keep-alive', () => {
   let mockRuntime: ReturnType<typeof createMockSandboxRuntime>
@@ -29,78 +31,147 @@ describe('SandboxManager keep-alive', () => {
     return createSandboxManager(mockRuntime, config, mockLogger)
   }
 
-  it('issues a no-op exec exactly once per interval while a sandbox is active', async () => {
+  it('issues exactly one sentinel exec with the sleep command, timeout, and an AbortSignal', async () => {
     const manager = makeManager()
     await manager.start('wt', '/tmp/project')
 
-    await vi.advanceTimersByTimeAsync(SANDBOX_KEEPALIVE_INTERVAL_MS)
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.exec).toHaveBeenCalledWith('forge-wt', `sleep ${SANDBOX_SENTINEL_SECONDS}`, {
+      timeout: SANDBOX_SENTINEL_TIMEOUT_MS,
+      abort: expect.any(AbortSignal),
+    })
+  })
+
+  it('does not poll while a sentinel is still in flight', async () => {
+    mockRuntime.exec = vi.fn(() => new Promise<CommandResult>(() => {}))
+    const manager = makeManager()
+    await manager.start('wt', '/tmp/project')
 
     expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
-    expect(mockRuntime.exec).toHaveBeenCalledWith('forge-wt', 'true')
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
   })
 
-  it('issues no exec when no sandbox has ever been started', async () => {
-    makeManager()
+  it('renews with a fresh sentinel exec once the sleep has fully elapsed', async () => {
+    mockRuntime.exec = vi.fn(
+      () =>
+        new Promise<CommandResult>((resolve) => {
+          setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), SANDBOX_SENTINEL_SECONDS * 1000)
+        }),
+    )
+    const manager = makeManager()
+    await manager.start('wt', '/tmp/project')
 
-    await vi.advanceTimersByTimeAsync(SANDBOX_KEEPALIVE_INTERVAL_MS * 3)
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
 
-    expect(mockRuntime.exec).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(SANDBOX_SENTINEL_SECONDS * 1000)
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(SANDBOX_SENTINEL_SECONDS * 1000)
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(3)
   })
 
-  it('swallows a rejecting exec and keeps heartbeating', async () => {
+  it('does not renew and logs when the exec returns faster than the minimum', async () => {
+    mockRuntime.exec = vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 }))
+    const manager = makeManager()
+    await manager.start('wt', '/tmp/project')
+
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
+    expect(mockLogger.log).toHaveBeenCalledWith(expect.stringContaining('not renewing'))
+  })
+
+  it('stops renewal and logs when the sentinel exits non-zero', async () => {
+    mockRuntime.exec = vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 1 }))
+    const manager = makeManager()
+    await manager.start('wt', '/tmp/project')
+
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
+    expect(mockLogger.log).toHaveBeenCalledWith(expect.stringContaining('exited 1'))
+  })
+
+  it('stops renewal and logs a throwing sentinel without rejecting', async () => {
     mockRuntime.exec = vi.fn(async () => {
       throw new Error('keep-alive exec failed')
     })
     const manager = makeManager()
     await manager.start('wt', '/tmp/project')
 
-    await vi.advanceTimersByTimeAsync(SANDBOX_KEEPALIVE_INTERVAL_MS)
-    await vi.advanceTimersByTimeAsync(SANDBOX_KEEPALIVE_INTERVAL_MS)
-
-    expect(mockRuntime.exec).toHaveBeenCalledTimes(2)
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
     expect(mockLogger.log).toHaveBeenCalledWith(
-      expect.stringContaining('keep-alive exec for forge-wt failed'),
+      expect.stringContaining('keep-alive sentinel for forge-wt failed'),
     )
-  })
 
-  it('issues no further exec after stop', async () => {
-    const manager = makeManager()
-    await manager.start('wt', '/tmp/project')
-    await manager.stop('wt')
-
-    await vi.advanceTimersByTimeAsync(SANDBOX_KEEPALIVE_INTERVAL_MS * 2)
-
-    expect(mockRuntime.exec).not.toHaveBeenCalled()
-  })
-
-  it('issues no further exec after dispose', async () => {
-    const manager = makeManager()
-    await manager.start('wt', '/tmp/project')
-
-    manager.dispose()
-    await vi.advanceTimersByTimeAsync(SANDBOX_KEEPALIVE_INTERVAL_MS * 2)
-
-    expect(mockRuntime.exec).not.toHaveBeenCalled()
-  })
-
-  it('does not start a second heartbeat while one is still pending for the same sandbox', async () => {
-    mockRuntime.exec = vi.fn(() => new Promise<CommandResult>(() => {}))
-    const manager = makeManager()
-    await manager.start('wt', '/tmp/project')
-
-    vi.advanceTimersByTime(SANDBOX_KEEPALIVE_INTERVAL_MS)
-    vi.advanceTimersByTime(SANDBOX_KEEPALIVE_INTERVAL_MS)
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
 
     expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
   })
 
-  it('issues no exec and disposes without throwing when keepAlive is false', async () => {
-    const manager = makeManager({ keepAlive: false })
+  it('aborts the sentinel signal before removing the sandbox on stop', async () => {
+    let capturedSignal: AbortSignal | undefined
+    let abortedAtRemoval = false
+    mockRuntime.exec = vi.fn(
+      (_name: string, _command: string, opts?: SandboxExecOpts) => {
+        capturedSignal = opts?.abort
+        return new Promise<CommandResult>(() => {})
+      },
+    )
+    mockRuntime.removeSandbox = vi.fn(async (_name: string) => {
+      abortedAtRemoval = capturedSignal?.aborted === true
+    })
+    const manager = makeManager()
     await manager.start('wt', '/tmp/project')
 
-    await vi.advanceTimersByTimeAsync(SANDBOX_KEEPALIVE_INTERVAL_MS * 3)
+    expect(capturedSignal).toBeDefined()
 
-    expect(mockRuntime.exec).not.toHaveBeenCalled()
-    expect(() => manager.dispose()).not.toThrow()
+    await manager.stop('wt')
+
+    expect(abortedAtRemoval).toBe(true)
+    expect(capturedSignal?.aborted).toBe(true)
+  })
+
+  it('dispose aborts the sentinel without removing or stopping any sandbox', async () => {
+    let capturedSignal: AbortSignal | undefined
+    mockRuntime.exec = vi.fn(
+      (_name: string, _command: string, opts?: SandboxExecOpts) => {
+        capturedSignal = opts?.abort
+        return new Promise<CommandResult>(() => {})
+      },
+    )
+    const manager = makeManager()
+    await manager.start('wt', '/tmp/project')
+
+    expect(capturedSignal?.aborted).toBe(false)
+
+    manager.dispose()
+
+    expect(capturedSignal?.aborted).toBe(true)
+    expect(mockRuntime.getRemoveSandboxCalls()).toEqual([])
+    expect(manager.isActive('wt')).toBe(true)
+  })
+
+  it('starts a fresh sentinel when ensureRunning re-registers a worktree after renewal stopped', async () => {
+    mockRuntime.exec = vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 }))
+    const manager = makeManager()
+    await manager.start('wt', '/tmp/project')
+
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
+    expect(mockLogger.log).toHaveBeenCalledWith(expect.stringContaining('not renewing'))
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
+
+    await manager.ensureRunning('wt', '/tmp/project')
+
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(2)
   })
 })

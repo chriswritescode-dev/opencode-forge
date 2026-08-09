@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
-import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
+import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
 const TOOL_OUTPUT_ALLOW_RULES = [
@@ -151,25 +151,14 @@ describe('external directory allowlist', () => {
 })
 
 describe('resolveLoopAllowedDirectories', () => {
-  it('always includes the default temp dir, even with no config', () => {
-    expect(resolveLoopAllowedDirectories(undefined)).toEqual([DEFAULT_FORGE_TMP_DIR])
-    expect(resolveLoopAllowedDirectories({})).toEqual([DEFAULT_FORGE_TMP_DIR])
+  it('returns no directories when no config is given', () => {
+    expect(resolveLoopAllowedDirectories(undefined)).toEqual([])
+    expect(resolveLoopAllowedDirectories({})).toEqual([])
   })
 
-  it('layers configured external directories after the temp dir', () => {
+  it('returns only the configured external directories', () => {
     const config = { loop: { allowExternalDirectories: ['/vault', '/notes'] } }
-    expect(resolveLoopAllowedDirectories(config)).toEqual([DEFAULT_FORGE_TMP_DIR, '/vault', '/notes'])
-  })
-
-  it('honors a configured tmpDir override', () => {
-    const config = { loop: { tmpDir: '/scratch/forge', allowExternalDirectories: ['/vault'] } }
-    expect(resolveLoopAllowedDirectories(config)).toEqual(['/scratch/forge', '/vault'])
-  })
-
-  it('grants the temp dir in the loop ruleset', () => {
-    const rules = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(undefined) })
-    expect(rules).toContainEqual({ permission: 'external_directory', pattern: DEFAULT_FORGE_TMP_DIR, action: 'allow' })
-    expect(rules).toContainEqual({ permission: 'external_directory', pattern: `${DEFAULT_FORGE_TMP_DIR}/**`, action: 'allow' })
+    expect(resolveLoopAllowedDirectories(config)).toEqual(['/vault', '/notes'])
   })
 })
 
@@ -213,12 +202,12 @@ describe('resolveLoopPermissionOptions', () => {
   it('resolves both the directory list and the parsed rule from config', () => {
     const config = { loop: { permissions: { deny: ['webfetch'] }, allowExternalDirectories: ['/vault'] } }
     const options = resolveLoopPermissionOptions(config)
-    expect(options.allowDirectories).toEqual([DEFAULT_FORGE_TMP_DIR, '/vault'])
+    expect(options.allowDirectories).toEqual(['/vault'])
     expect(options.extraRules).toEqual([{ permission: 'webfetch', pattern: '*', action: 'deny' }])
   })
 
   it('yields empty options when config is undefined', () => {
-    expect(resolveLoopPermissionOptions(undefined)).toEqual({ allowDirectories: [DEFAULT_FORGE_TMP_DIR], extraRules: [] })
+    expect(resolveLoopPermissionOptions(undefined)).toEqual({ allowDirectories: [], extraRules: [] })
   })
 })
 

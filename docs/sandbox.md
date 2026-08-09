@@ -166,19 +166,9 @@ Each sbx sandbox has its own Docker daemon natively, so loops can build and run 
 
 ## Keep-Alive
 
-`sbx` stops an idle sandbox roughly 30 seconds after its last command. Forge keeps the sandboxes it holds — in particular the active loop sandboxes — warm by running a periodic no-op exec (`sbx exec <sandbox> true`) every 15 seconds, so a paused loop never pays a cold start to resume. The heartbeat runs only while at least one sandbox is active and stops when the last one is removed; it also stops on plugin cleanup without touching the sandboxes themselves, matching Forge's contract of preserving active loops across restarts.
+`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends. Forge holds one long-lived "sentinel" exec per active sandbox — an in-container `sleep 600` — and renews it when it returns. `sbx` keeps a sandbox running as long as an exec session is in flight, so the sentinel holds it warm with no polling. The 10-minute bound means that if the forge process dies without cleanup, the sandbox stops within that bound rather than staying up forever. On plugin cleanup the sentinel is aborted and the sandboxes are left alone, matching Forge's contract of preserving active loops across restarts. Holding a session is the same "sentinel connection" approach Docker's own `sbx cp` and `sbx kit add` use.
 
-Disable the heartbeat when idle host resources matter more than command latency:
-
-```jsonc
-{
-  "sandbox": {
-    "keepAlive": false
-  }
-}
-```
-
-When disabled, the auto-stop can suspend the microVM between commands. Each command then cold-starts the sandbox before it runs, and any background process (`&`, `nohup`, `setsid`) or in-flight Docker pull/build inside the sandbox is destroyed by the stop. The default keeps the sandbox warm so that state survives.
+Cold starts are cheap: roughly 0.9s for the first command after a stop, vs ~0.16s warm. Keep-alive is not about latency — a stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. And because `sbx exec` auto-starts a stopped sandbox, keep-alive is never required for correctness of a single command.
 
 ## Large Command Output
 
@@ -189,7 +179,9 @@ Shell output truncation is handled by opencode's native bash tool: when output e
 opencode spills large tool outputs to its truncation directory (`<opencode-data>/tool-output`, e.g. `~/.local/share/opencode/tool-output`) and references the saved file by absolute host path. Forge makes those overflow files readable from loop and audit sessions in two complementary ways:
 
 - **Sandbox tools** (`bash`, `glob`, `grep`): the directory is bind-mounted **read-only at the identical sandbox path**, so the same absolute path opencode reports resolves inside the sandbox. The mount is added automatically when the directory exists; it is skipped when missing or already covered by the workspace mount.
-- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop. opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises as pre-approved) is granted the same way in the loop/audit rulesets. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
+- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop — the ruleset's blanket allow covers the `read` permission itself, but a `loop.permissions` rule that denies or asks for `read` is layered after these grants and still applies. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
+
+opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises to agents as pre-approved scratch space) is handled the same way, but for writes: it is granted an `external_directory` allow rule for host file tools **and** bind-mounted read-write at the identical sandbox path, so scratch files an agent writes at that path resolve identically on the host and inside the sandbox. It is opencode's own directory — Forge provides no separate scratch directory, and agents can use the advertised OS temp path without issue.
 
 ## Resource Defaults
 
