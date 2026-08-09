@@ -78,9 +78,21 @@ export function normalizeSmolvmMemoryMiB(raw: string | undefined, logger: Logger
 }
 
 /**
+ * Resolves the effective `--allow-host` entries: trimmed, non-empty, and empty whenever any
+ * entry carries a `*` wildcard. smolvm resolves every `--allow-host` as a literal hostname at
+ * create time (an unresolvable one fails the create outright), so it has no wildcard concept —
+ * while an absent allow list already means unrestricted egress. That makes "drop every flag" the
+ * faithful translation of a wildcard entry such as sbx's allow-everything `**`.
+ */
+export function resolveSmolvmAllowHosts(allowHosts: string[] | undefined): string[] {
+  const entries = (allowHosts ?? []).map((host) => host.trim()).filter((host) => host.length > 0)
+  return entries.some((host) => host.includes('*')) ? [] : entries
+}
+
+/**
  * Builds a `smolvm machine create` argument vector for a shell sandbox. Emits
- * `machine create --name <name> --net`, then `--image`, one `--allow-host` per trimmed
- * non-empty entry, `--cpus` and `--mem` (MiB) when set, then one `-v HOST:HOST` volume
+ * `machine create --name <name> --net`, then `--image`, one `--allow-host` per resolved
+ * entry, `--cpus` and `--mem` (MiB) when set, then one `-v HOST:HOST` volume
  * per workspace (`:ro` suffix when read-only). Identical-path mounting is a repo
  * invariant: exec-fs and the shim rely on host paths resolving unchanged in-guest. The
  * primary (worktree) workspace is required, so an empty array throws.
@@ -95,9 +107,8 @@ export function buildSmolvmCreateArgs(
   }
   const args = ['machine', 'create', '--name', name, '--net']
   if (opts.image) args.push('--image', opts.image)
-  for (const host of opts.allowHosts ?? []) {
-    const trimmed = host.trim()
-    if (trimmed) args.push('--allow-host', trimmed)
+  for (const host of resolveSmolvmAllowHosts(opts.allowHosts)) {
+    args.push('--allow-host', host)
   }
   if (opts.cpus !== undefined) args.push('--cpus', String(opts.cpus))
   if (opts.memMiB !== undefined) args.push('--mem', String(opts.memMiB))
@@ -168,6 +179,35 @@ export function resolveSmolvmImageArg(imageStoreDir: string | undefined, ref: st
   return null
 }
 
+/**
+ * In-guest command that brings up the image's Docker daemon after a machine boots, giving smolvm
+ * loops the same in-sandbox Docker that `sbx` sandboxes get natively. Three guest facts shape it:
+ *
+ * - smolvm boots an image as a bare agent and never runs its entrypoint/init, so the daemon that
+ *   `sbx` starts for free has to be started explicitly here, once per machine start.
+ * - The machine root filesystem is itself an overlay, which `overlay2` cannot stack on, so the data
+ *   root is pinned to the machine's ext4 `/storage` disk (smolvm's documented docker-in-vm flow).
+ *   Pointing `--data-root` there also survives stop/start, unlike the bind mount the example uses.
+ * - `smolvm machine exec` applies only the user's primary group, so the default `root:docker` socket
+ *   is unreachable from a loop command; `--group agent` matches the image user's primary group.
+ *
+ * Idempotent and self-limiting: it no-ops when the image ships no `dockerd` or a daemon already
+ * answers, and otherwise waits only until the socket responds.
+ */
+export const SMOLVM_DOCKER_BOOTSTRAP = [
+  'command -v dockerd >/dev/null 2>&1 || exit 0',
+  'docker info >/dev/null 2>&1 && exit 0',
+  'sudo -n mkdir -p /storage/docker || exit 1',
+  'sudo -n dockerd --data-root=/storage/docker --storage-driver=overlay2 --group agent >/tmp/dockerd.log 2>&1 &',
+  '__i=0',
+  'while [ "$__i" -lt 30 ]; do',
+  '  docker info >/dev/null 2>&1 && exit 0',
+  '  __i=$((__i+1))',
+  '  sleep 1',
+  'done',
+  'exit 1',
+].join('\n')
+
 /** Matches the combined output of a `smolvm machine exec` aimed at a stopped machine. */
 const STOPPED_MACHINE_RE = /not running|is stopped|machine stopped|start the machine/i
 const SMOLVM_REMOVE_MISSING_RE = /not found|no such machine|unknown machine|does not exist/i
@@ -217,11 +257,32 @@ export function createSmolvmRuntime(
     copyFileSync(tarPath, smolvmImageTarPath(imageStoreDir, ref))
   }
 
+  /**
+   * Starts the in-machine Docker daemon. Deliberately never throws: Docker is a sandbox
+   * capability, not a precondition for running a loop, so an image without `dockerd` or a daemon
+   * that refuses to come up degrades to "no Docker in this sandbox" (surfaced in the log and by
+   * the agent's own `docker` failures) instead of failing sandbox creation outright.
+   */
+  async function ensureDocker(name: string): Promise<void> {
+    let result: CommandResult
+    try {
+      result = await run(buildSmolvmExecArgs(name, SMOLVM_DOCKER_BOOTSTRAP), { timeout: SBX_DEFAULT_TIMEOUT })
+    } catch (err) {
+      logger.log(`Sandbox: Docker bootstrap for ${name} failed: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    if (result.exitCode !== 0) {
+      logger.log(`Sandbox: Docker is unavailable in ${name}: ${(result.stderr || result.stdout).trim()}`)
+    }
+  }
+
+  /** Starts a machine and brings its Docker daemon up; every boot path routes through here. */
   async function startMachine(name: string): Promise<void> {
     const startResult = await run(buildSmolvmStartArgs(name), { timeout: SBX_DEFAULT_TIMEOUT })
     if (startResult.exitCode !== 0) {
       throw new Error(`Failed to start sandbox: ${startResult.stderr}`)
     }
+    await ensureDocker(name)
   }
 
   async function createSandbox(

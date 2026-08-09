@@ -4,6 +4,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   SMOLVM_INSTALL_HINT,
+  SMOLVM_DOCKER_BOOTSTRAP,
+  resolveSmolvmAllowHosts,
   checkSmolvmAvailability,
   describeSmolvmUnavailable,
   normalizeSmolvmMemoryMiB,
@@ -139,6 +141,19 @@ describe('create args', () => {
         allowHosts: ['', '  '],
       }),
     ).toEqual(['machine', 'create', '--name', 'forge-c', '--net', '-v', '/work:/work'])
+  })
+
+  test('a wildcard allow-host entry drops every --allow-host flag', () => {
+    // smolvm resolves each --allow-host as a literal hostname, so sbx's allow-everything `**`
+    // would fail the create; an absent list already means unrestricted egress.
+    expect(resolveSmolvmAllowHosts(['**'])).toEqual([])
+    expect(resolveSmolvmAllowHosts(['**', 'db.internal'])).toEqual([])
+    expect(resolveSmolvmAllowHosts(['*.example.com'])).toEqual([])
+    expect(resolveSmolvmAllowHosts([' db.internal ', ''])).toEqual(['db.internal'])
+    expect(resolveSmolvmAllowHosts(undefined)).toEqual([])
+    expect(buildSmolvmCreateArgs('forge-c', [{ hostDir: '/work' }], { allowHosts: ['**'] })).not.toContain(
+      '--allow-host',
+    )
   })
 
   test('throws on an empty workspace array', () => {
@@ -332,7 +347,7 @@ describe('runtime', () => {
         resources: { memory: '8g', cpus: '4' },
         networkAllowHosts: ['db.internal'],
       })
-      expect(calls).toHaveLength(2)
+      expect(calls).toHaveLength(3)
       expect(calls[0].args).toEqual([
         'machine',
         'create',
@@ -355,6 +370,7 @@ describe('runtime', () => {
       expect(calls[0].opts?.timeout).toBe(120000)
       expect(calls[1].args).toEqual(['machine', 'start', '--name', 'forge-c'])
       expect(calls[1].opts?.timeout).toBe(120000)
+      expect(calls[2].args).toEqual(['machine', 'exec', '--name', 'forge-c', '--', 'sh', '-c', SMOLVM_DOCKER_BOOTSTRAP])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -382,6 +398,26 @@ describe('runtime', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  test('a failed Docker bootstrap is logged but never fails the sandbox', async () => {
+    const { calls, runner } = createRecordingRunner((rec) =>
+      rec.args[1] === 'exec' ? { stdout: '', stderr: 'dockerd: not found', exitCode: 1 } : { stdout: '', stderr: '', exitCode: 0 },
+    )
+    const rt = createSmolvmRuntime(logger, { run: runner })
+    await expect(rt.createSandbox('forge-c', [{ hostDir: '/work' }])).resolves.toBeUndefined()
+    expect(calls[2].args[calls[2].args.length - 1]).toBe(SMOLVM_DOCKER_BOOTSTRAP)
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Docker is unavailable in forge-c'))
+  })
+
+  test('the Docker bootstrap no-ops without dockerd and skips an already-running daemon', () => {
+    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('command -v dockerd >/dev/null 2>&1 || exit 0')
+    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('docker info >/dev/null 2>&1 && exit 0')
+    // overlay2 cannot stack on the machine's overlay root, so the data root is the ext4 disk,
+    // and the socket group must match the exec user's primary group.
+    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('--data-root=/storage/docker')
+    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('--storage-driver=overlay2')
+    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('--group agent')
   })
 
   test('createSandbox throws when a set template resolves to null', async () => {
@@ -469,6 +505,7 @@ describe('runtime', () => {
       'machine exec --name forge-c -- sh -c ls',
       'machine ls --json',
       'machine start --name forge-c',
+      `machine exec --name forge-c -- sh -c ${SMOLVM_DOCKER_BOOTSTRAP}`,
       'machine exec --name forge-c -- sh -c ls',
     ])
   })
@@ -484,7 +521,10 @@ describe('runtime', () => {
     const rt = createSmolvmRuntime(logger, { run: runner })
     const result = await rt.exec('forge-c', 'ls')
     expect(result.exitCode).toBe(1)
-    expect(calls.filter((c) => c.args.join(' ').startsWith('machine exec')).length).toBe(2)
+    const commandExecs = calls.filter(
+      (c) => c.args.join(' ').startsWith('machine exec') && c.args[c.args.length - 1] === 'ls',
+    )
+    expect(commandExecs).toHaveLength(2)
     expect(calls.filter((c) => c.args.join(' ').startsWith('machine start')).length).toBe(1)
   })
 

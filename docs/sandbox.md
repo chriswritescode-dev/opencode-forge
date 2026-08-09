@@ -202,7 +202,21 @@ Each sandbox create resolves `--image` from that store and passes the tar to `sm
 
 ### Network Semantics
 
-smolvm machines are created with `--net` and have no global proxy: egress is unrestricted by default. `sandbox.network.allow` maps to per-machine `--allow-host` flags applied at create time, so changing the list after a sandbox exists requires recreating the sandbox. Under smolvm an empty (or absent) allow list means unrestricted egress — the opposite of sbx's deny-by-default proxy. Host loopback remains unreachable from inside the machine.
+smolvm machines are created with `--net` and have no global proxy: egress is unrestricted by default. `sandbox.network.allow` maps to per-machine `--allow-host` flags applied at create time, so changing the list after a sandbox exists requires recreating the sandbox. Under smolvm an empty (or absent) allow list means unrestricted egress — the opposite of sbx's deny-by-default proxy.
+
+smolvm resolves every `--allow-host` as a literal hostname when the machine starts, and an unresolvable one fails the create outright — there is no wildcard. A wildcard entry (for example sbx's allow-everything `**`) therefore drops **all** `--allow-host` flags, which is the faithful translation: no flags already means unrestricted egress.
+
+Inbound is closed and guest ports never collide with host ports. Forge passes no `-p`, so a guest listener publishes nothing and binds nothing on the host. The machine has its own kernel and network stack, so a guest process binds a port the host is already using, each side keeps serving its own process on that number, and inside the guest `127.0.0.1:<port>` resolves to the guest's own listener.
+
+**Host loopback is reachable for ports the guest is not using.** smolvm's default `tsi` network backend impersonates guest sockets on the host, so a guest connection to `127.0.0.1:<port>` falls through to a *host* service on that port whenever the guest has nothing bound there — guest listeners take precedence, but they are the only thing shadowing the host. sbx's proxy blocks host loopback outright, so this is a smolvm-only exposure: treat host-local dev servers, databases, and unauthenticated ports as reachable from a smolvm loop. Egress filtering (`--allow-host`/`--allow-cidr`) is the only mitigation and requires the `virtio-net` backend, which bundled libkrun builds may not expose; when they do not, any `sandbox.network.allow` entry makes the machine fail to start rather than silently run unfiltered.
+
+### Docker in the Machine
+
+Each smolvm sandbox runs the image's own Docker daemon, matching the in-sandbox Docker that `sbx` provides natively. smolvm boots an image as a bare agent and never runs its entrypoint or init scripts, so Forge starts the daemon itself after every machine start (creation and transparent restart alike). Three guest details shape the command:
+
+- The machine root filesystem is itself an overlay and `overlay2` cannot stack on it, so the daemon's data root is pinned to the machine's ext4 `/storage` disk (`--data-root=/storage/docker`). Unlike the bind mount in smolvm's docker-in-vm example, a data root survives stop/start.
+- `smolvm machine exec` applies only the user's primary group, so the default `root:docker` socket is unreachable from a loop command. The daemon is started with `--group agent`, matching the image user's primary group.
+- Startup is idempotent and non-fatal: it no-ops when the image ships no `dockerd` or a daemon already answers, and a daemon that refuses to start degrades to "no Docker in this sandbox" (logged) rather than failing sandbox creation.
 
 ### Environment Passthrough
 
