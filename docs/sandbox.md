@@ -210,6 +210,14 @@ Inbound is closed and guest ports never collide with host ports. Forge passes no
 
 **Host loopback is reachable for ports the guest is not using.** smolvm's default `tsi` network backend impersonates guest sockets on the host, so a guest connection to `127.0.0.1:<port>` falls through to a *host* service on that port whenever the guest has nothing bound there — guest listeners take precedence, but they are the only thing shadowing the host. sbx's proxy blocks host loopback outright, so this is a smolvm-only exposure: treat host-local dev servers, databases, and unauthenticated ports as reachable from a smolvm loop. Egress filtering (`--allow-host`/`--allow-cidr`) is the only mitigation and requires the `virtio-net` backend, which bundled libkrun builds may not expose; when they do not, any `sandbox.network.allow` entry makes the machine fail to start rather than silently run unfiltered.
 
+### Guest User
+
+smolvm bind-mounts host directories through virtiofs **without uid mapping**: the guest sees the host owner's numeric uid on the worktree, while the image user (`agent`) is a different uid, so that user cannot write a single file in the mount. `smolvm machine exec` has no `--user` flag, so Forge elevates each guest command with `sudo -nE PATH="$PATH"` — root is the only guest user that can write the mounts, and virtiofsd runs as the host user, so files the guest creates are owned by the host user on the host side. `-E` plus an explicit `PATH` is required because sudoers `secure_path` would otherwise strip the image PATH and hide the preinstalled toolchains. When an image offers no passwordless sudo the command still runs, unelevated, rather than failing.
+
+Because the image ships an empty `/etc/hosts`, `sudo` would print `unable to resolve host` on every command's stderr; the guest bootstrap appends the machine hostname once per machine start to silence it, guarded so it can never fail the bootstrap.
+
+This is a smolvm-only concern. `sbx` id-maps its bind mounts to the container user, so its commands stay unprivileged as `agent`.
+
 ### Docker in the Machine
 
 Each smolvm sandbox runs the image's own Docker daemon, matching the in-sandbox Docker that `sbx` provides natively. smolvm boots an image as a bare agent and never runs its entrypoint or init scripts, so Forge starts the daemon itself after every machine start (creation and transparent restart alike). Three guest details shape the command:
@@ -224,7 +232,7 @@ Each smolvm sandbox runs the image's own Docker daemon, matching the in-sandbox 
 
 ### Shell Routing
 
-The generated shell shim routes bash-tool commands through `smolvm machine exec --name <sandbox> -- bash -c <payload>` instead of `sbx exec`, applying the working directory and env file inside the guest (smolvm exec has no `-w` or `--env-file` flags). It fails closed exactly like the sbx shim: if the machine is expected but `smolvm machine exec` fails, the command errors rather than silently running on the host.
+The generated shell shim routes bash-tool commands through `smolvm machine exec --name <sandbox> -- bash -c <payload>` instead of `sbx exec`, applying the working directory and env file inside the guest (smolvm exec has no `-w` or `--env-file` flags). The payload rides as a positional argument of the same root-elevation wrapper the runtime exec path uses, so shim and runtime commands run as the same guest user. It fails closed exactly like the sbx shim: if the machine is expected but `smolvm machine exec` fails, the command errors rather than silently running on the host.
 
 ### Keep-Alive and Recovery
 

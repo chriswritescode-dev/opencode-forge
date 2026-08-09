@@ -2,9 +2,11 @@ import { describe, test, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { spawnSync } from 'child_process'
 import {
   SMOLVM_INSTALL_HINT,
-  SMOLVM_DOCKER_BOOTSTRAP,
+  SMOLVM_GUEST_BOOTSTRAP,
+  buildSmolvmRootWrapper,
   resolveSmolvmAllowHosts,
   checkSmolvmAvailability,
   describeSmolvmUnavailable,
@@ -166,7 +168,7 @@ describe('start/exec/delete args', () => {
     expect(buildSmolvmStartArgs('forge-c')).toEqual(['machine', 'start', '--name', 'forge-c'])
   })
 
-  test('emits the minimal exec vector', () => {
+  test('emits the minimal exec vector through the root wrapper', () => {
     expect(buildSmolvmExecArgs('forge-c', 'ls')).toEqual([
       'machine',
       'exec',
@@ -175,6 +177,7 @@ describe('start/exec/delete args', () => {
       '--',
       'sh',
       '-c',
+      buildSmolvmRootWrapper('sh'),
       'ls',
     ])
   })
@@ -189,8 +192,18 @@ describe('start/exec/delete args', () => {
       '--',
       'sh',
       '-c',
+      buildSmolvmRootWrapper('sh'),
       'cat',
     ])
+  })
+
+  test('buildSmolvmRootWrapper probes -nE sudo, preserves PATH and runs the inner script via $0', () => {
+    expect(buildSmolvmRootWrapper('sh')).toBe(
+      'if sudo -nE true 2>/dev/null; then exec sudo -nE PATH="$PATH" sh -c "$0" "$@"; fi; exec sh -c "$0" "$@"',
+    )
+    expect(buildSmolvmRootWrapper('bash')).toBe(
+      'if sudo -nE true 2>/dev/null; then exec sudo -nE PATH="$PATH" bash -c "$0" "$@"; fi; exec bash -c "$0" "$@"',
+    )
   })
 
   test('buildSmolvmDeleteArgs emits the delete vector', () => {
@@ -370,7 +383,17 @@ describe('runtime', () => {
       expect(calls[0].opts?.timeout).toBe(120000)
       expect(calls[1].args).toEqual(['machine', 'start', '--name', 'forge-c'])
       expect(calls[1].opts?.timeout).toBe(120000)
-      expect(calls[2].args).toEqual(['machine', 'exec', '--name', 'forge-c', '--', 'sh', '-c', SMOLVM_DOCKER_BOOTSTRAP])
+      expect(calls[2].args).toEqual([
+        'machine',
+        'exec',
+        '--name',
+        'forge-c',
+        '--',
+        'sh',
+        '-c',
+        buildSmolvmRootWrapper('sh'),
+        SMOLVM_GUEST_BOOTSTRAP,
+      ])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -406,18 +429,30 @@ describe('runtime', () => {
     )
     const rt = createSmolvmRuntime(logger, { run: runner })
     await expect(rt.createSandbox('forge-c', [{ hostDir: '/work' }])).resolves.toBeUndefined()
-    expect(calls[2].args[calls[2].args.length - 1]).toBe(SMOLVM_DOCKER_BOOTSTRAP)
+    expect(calls[2].args[calls[2].args.length - 1]).toBe(SMOLVM_GUEST_BOOTSTRAP)
     expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Docker is unavailable in forge-c'))
   })
 
-  test('the Docker bootstrap no-ops without dockerd and skips an already-running daemon', () => {
-    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('command -v dockerd >/dev/null 2>&1 || exit 0')
-    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('docker info >/dev/null 2>&1 && exit 0')
+  test('the guest bootstrap no-ops without dockerd and skips an already-running daemon', () => {
+    expect(SMOLVM_GUEST_BOOTSTRAP).toContain('command -v dockerd >/dev/null 2>&1 || exit 0')
+    expect(SMOLVM_GUEST_BOOTSTRAP).toContain('docker info >/dev/null 2>&1 && exit 0')
     // overlay2 cannot stack on the machine's overlay root, so the data root is the ext4 disk,
     // and the socket group must match the exec user's primary group.
-    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('--data-root=/storage/docker')
-    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('--storage-driver=overlay2')
-    expect(SMOLVM_DOCKER_BOOTSTRAP).toContain('--group agent')
+    expect(SMOLVM_GUEST_BOOTSTRAP).toContain('--data-root=/storage/docker')
+    expect(SMOLVM_GUEST_BOOTSTRAP).toContain('--storage-driver=overlay2')
+    expect(SMOLVM_GUEST_BOOTSTRAP).toContain('--group agent')
+  })
+
+  test('the guest bootstrap fixes /etc/hosts before probing dockerd', () => {
+    // The image ships an empty /etc/hosts, so sudo prints "unable to resolve host" for every
+    // guest command unless the hostname is pinned first; the trailing `|| true` keeps this
+    // step from ever failing the bootstrap, so the "Docker is unavailable" log stays accurate.
+    const hostsLine =
+      'grep -q "$(hostname)" /etc/hosts 2>/dev/null || echo "127.0.0.1 $(hostname)" | sudo -n tee -a /etc/hosts >/dev/null 2>&1 || true'
+    expect(SMOLVM_GUEST_BOOTSTRAP.startsWith(hostsLine)).toBe(true)
+    expect(SMOLVM_GUEST_BOOTSTRAP.indexOf('command -v dockerd')).toBeGreaterThan(
+      SMOLVM_GUEST_BOOTSTRAP.indexOf(hostsLine),
+    )
   })
 
   test('createSandbox throws when a set template resolves to null', async () => {
@@ -461,6 +496,7 @@ describe('runtime', () => {
       '--',
       'sh',
       '-c',
+      buildSmolvmRootWrapper('sh'),
       "while IFS= read -r __fe || [ -n \"$__fe\" ]; do [ -n \"$__fe\" ] && export \"$__fe\"; done < '/data/sandbox-env/forge-c.env'; cd '/work' && ls",
     ])
     expect(calls[0].opts?.timeout).toBe(120000)
@@ -502,11 +538,11 @@ describe('runtime', () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toBe('ok')
     expect(calls.map((c) => c.args.join(' '))).toEqual([
-      'machine exec --name forge-c -- sh -c ls',
+      `machine exec --name forge-c -- sh -c ${buildSmolvmRootWrapper('sh')} ls`,
       'machine ls --json',
       'machine start --name forge-c',
-      `machine exec --name forge-c -- sh -c ${SMOLVM_DOCKER_BOOTSTRAP}`,
-      'machine exec --name forge-c -- sh -c ls',
+      `machine exec --name forge-c -- sh -c ${buildSmolvmRootWrapper('sh')} ${SMOLVM_GUEST_BOOTSTRAP}`,
+      `machine exec --name forge-c -- sh -c ${buildSmolvmRootWrapper('sh')} ls`,
     ])
   })
 
@@ -547,7 +583,10 @@ describe('runtime', () => {
     const rt = createSmolvmRuntime(logger, { run: runner })
     const result = await rt.exec('forge-c', 'ls')
     expect(result.exitCode).toBe(1)
-    expect(calls.map((c) => c.args.join(' '))).toEqual(['machine exec --name forge-c -- sh -c ls', 'machine ls --json'])
+    expect(calls.map((c) => c.args.join(' '))).toEqual([
+      `machine exec --name forge-c -- sh -c ${buildSmolvmRootWrapper('sh')} ls`,
+      'machine ls --json',
+    ])
   })
 
   test('exec surfaces the original error when the machine is missing despite a matching message', async () => {
@@ -561,7 +600,10 @@ describe('runtime', () => {
     const rt = createSmolvmRuntime(logger, { run: runner })
     const result = await rt.exec('forge-c', 'ls')
     expect(result.exitCode).toBe(1)
-    expect(calls.map((c) => c.args.join(' '))).toEqual(['machine exec --name forge-c -- sh -c ls', 'machine ls --json'])
+    expect(calls.map((c) => c.args.join(' '))).toEqual([
+      `machine exec --name forge-c -- sh -c ${buildSmolvmRootWrapper('sh')} ls`,
+      'machine ls --json',
+    ])
   })
 
   test('exec throws when the restart start fails', async () => {
@@ -669,5 +711,73 @@ describe('runtime', () => {
   test('sandboxContainerName is exposed on the runtime', () => {
     const rt = createSmolvmRuntime(logger)
     expect(rt.sandboxContainerName('feature/test')).toBe('forge-feature-test')
+  })
+})
+
+describe('root wrapper as a shell script', () => {
+  test('falls back to running the inner script unelevated when the sudo probe fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolvm-sudo-'))
+    try {
+      const probeLog = join(dir, 'probe.log')
+      writeFileSync(
+        join(dir, 'sudo'),
+        `#!/bin/sh
+printf '%s\\n' "$@" > '${probeLog}'
+exit 1
+`,
+        { mode: 0o755 },
+      )
+      const env = { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` }
+      const result = spawnSync(
+        'sh',
+        ['-c', buildSmolvmRootWrapper('sh'), 'echo "wrapped-ran $0|$1"', 'inner-arg-0', 'inner-arg-1'],
+        { encoding: 'utf-8', env },
+      )
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('wrapped-ran inner-arg-0|inner-arg-1')
+      // The probe reached the stub with -nE (not bare -n) so SETENV is proven before use.
+      expect(readFileSync(probeLog, 'utf-8').trim().split('\n')).toEqual(['-nE', 'true'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('elevates through a passwordless sudo that records its argv and execs the rest', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smolvm-sudo-'))
+    const argvLog = join(dir, 'sudo-argv.log')
+    try {
+      writeFileSync(
+        join(dir, 'sudo'),
+        `#!/bin/sh
+printf '%s\\n' "$@" > '${argvLog}'
+if [ "$1" = '-nE' ]; then shift; fi
+case "$1" in
+  PATH=*) export "$1"; shift ;;
+esac
+exec "$@"
+`,
+        { mode: 0o755 },
+      )
+      const env = { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` }
+      const inner = 'echo "wrapped-ran $0|$1"'
+      const result = spawnSync(
+        'sh',
+        ['-c', buildSmolvmRootWrapper('sh'), inner, 'inner-arg-0', 'inner-arg-1'],
+        { encoding: 'utf-8', env },
+      )
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('wrapped-ran inner-arg-0|inner-arg-1')
+      expect(readFileSync(argvLog, 'utf-8').trim().split('\n')).toEqual([
+        '-nE',
+        `PATH=${env.PATH}`,
+        'sh',
+        '-c',
+        inner,
+        'inner-arg-0',
+        'inner-arg-1',
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

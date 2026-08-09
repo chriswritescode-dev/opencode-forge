@@ -12,6 +12,7 @@ import {
   SHIM_ENV_ENV_FILE,
   SHIM_ENV_HOST_SHELL,
 } from '../../src/sandbox/shell-shim'
+import { buildSmolvmRootWrapper } from '../../src/sandbox/smolvm'
 import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
@@ -179,6 +180,8 @@ describe('shim behavior (smolvm mode, executed via sh)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
+    // Fake smolvm on PATH that records its argv. PATH is binDir-only, so the
+    // real sudo can never be reached; the recorded wrapper is never executed.
     const binDir = join(dir, 'bin')
     mkdirSync(binDir)
     const argsFile = join(dir, 'smolvm-args')
@@ -206,6 +209,7 @@ describe('shim behavior (smolvm mode, executed via sh)', () => {
       '--',
       'bash',
       '-c',
+      buildSmolvmRootWrapper('bash'),
       SMOLVM_EXEC_ENV_PAYLOAD,
       '/data/forge/sandbox-env/forge-loop-x.env',
       realpathSync(cwd),
@@ -218,6 +222,8 @@ describe('shim behavior (smolvm mode, executed via sh)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
+    // Fake smolvm on PATH that records its argv. PATH is binDir-only, so the
+    // real sudo can never be reached; the recorded wrapper is never executed.
     const binDir = join(dir, 'bin')
     mkdirSync(binDir)
     const argsFile = join(dir, 'smolvm-args')
@@ -240,6 +246,7 @@ describe('shim behavior (smolvm mode, executed via sh)', () => {
       '--',
       'bash',
       '-c',
+      buildSmolvmRootWrapper('bash'),
       SMOLVM_EXEC_PAYLOAD,
       realpathSync(cwd),
       '-c',
@@ -251,8 +258,8 @@ describe('shim behavior (smolvm mode, executed via sh)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
-    // Fake smolvm: drop the CLI prefix up to `--`, then run the guest command
-    // vector (`bash -c <payload> <args...>`) exactly as the machine would.
+    // Fake smolvm: drop the CLI prefix up to and including `--`, then exec the
+    // remaining command vector exactly as the machine would.
     const binDir = join(dir, 'bin')
     mkdirSync(binDir)
     writeFileSync(
@@ -266,7 +273,73 @@ for a in "$@"; do
   fi
   i=$((i+1))
 done
-exec bash -c "$3" "$4" "$5" "$6" "$7"
+exec "$@"
+`,
+      { mode: 0o755 },
+    )
+    // Stub sudo that fails the passwordless probe, so the payload runs
+    // unelevated. binDir is first in PATH, so the real sudo is unreachable.
+    writeFileSync(join(binDir, 'sudo'), `#!/bin/sh\nexit 1\n`, { mode: 0o755 })
+
+    const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
+    const envFile = join(dir, 'loop.env')
+    writeFileSync(envFile, 'FORGE_VAR=a value with spaces\nFORGE_EMPTY=\n')
+
+    const result = spawnSync(
+      shim,
+      ['-c', 'printf "value=[%s] pwd=[%s]" "$FORGE_VAR" "$PWD"'],
+      {
+        cwd,
+        env: {
+          ...cleanEnv(),
+          PATH: `${binDir}:${process.env.PATH}`,
+          [SHIM_ENV_CONTAINER]: 'forge-loop-x',
+          [SHIM_ENV_ENV_FILE]: envFile,
+        },
+        encoding: 'utf-8',
+      },
+    )
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('value=[a value with spaces]')
+    expect(result.stdout).toContain(`pwd=[${realpathSync(cwd)}]`)
+  })
+
+  test('executes the guest payload via root elevation when passwordless sudo is available', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh', 'smolvm'), { mode: 0o755 })
+    // Fake smolvm: drop the CLI prefix up to and including `--`, then exec the
+    // remaining command vector exactly as the machine would.
+    const binDir = join(dir, 'bin')
+    mkdirSync(binDir)
+    writeFileSync(
+      join(binDir, 'smolvm'),
+      `#!/bin/sh
+i=1
+for a in "$@"; do
+  if [ "$a" = "--" ]; then
+    shift $i
+    break
+  fi
+  i=$((i+1))
+done
+exec "$@"
+`,
+      { mode: 0o755 },
+    )
+    // Stub sudo that passes the passwordless probe and records each invocation
+    // before execing the remaining arguments as the machine would: it drops the
+    // `-nE` flag and an optional `PATH=` assignment, then execs the rest. binDir
+    // is first in PATH, so the real sudo is unreachable.
+    const sudoArgsFile = join(dir, 'sudo-args')
+    writeFileSync(
+      join(binDir, 'sudo'),
+      `#!/bin/sh
+printf '%s\\n' "$@" >> ${sudoArgsFile}
+shift
+[ "\${1#PATH=}" != "$1" ] && shift
+exec "$@"
 `,
       { mode: 0o755 },
     )
@@ -293,6 +366,15 @@ exec bash -c "$3" "$4" "$5" "$6" "$7"
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('value=[a value with spaces]')
     expect(result.stdout).toContain(`pwd=[${realpathSync(cwd)}]`)
+    // Recorded invocations: the `-nE true` probe first, then the elevation
+    // `-nE PATH=<...> bash -c <payload> <envFile> <cwd> -c <command>`.
+    const argv = readFileSync(sudoArgsFile, 'utf-8').trim().split('\n')
+    expect(argv.slice(0, 2)).toEqual(['-nE', 'true'])
+    expect(argv.some((arg) => arg.startsWith('PATH='))).toBe(true)
+    const bashIdx = argv.findIndex(
+      (arg, i) => arg === 'bash' && argv[i + 1] === '-c' && argv[i + 2] === SMOLVM_EXEC_ENV_PAYLOAD,
+    )
+    expect(bashIdx).toBeGreaterThan(0)
   })
 
   test('fail-closed: when a container is set but smolvm is unavailable, the command never runs on the host', () => {
@@ -323,12 +405,14 @@ describe('shim content', () => {
   test('smolvm variant routes through smolvm machine exec with in-guest cwd and env handling', () => {
     const script = buildShimScript('/bin/sh', 'smolvm')
     expect(script).toContain('exec smolvm machine exec --name "$FORGE_SANDBOX_CONTAINER" -- bash -c')
+    expect(script).toContain(buildSmolvmRootWrapper('bash'))
     expect(script).toContain(SMOLVM_EXEC_ENV_PAYLOAD)
     expect(script).toContain(SMOLVM_EXEC_PAYLOAD)
     expect(script).toContain('"$PWD" "$@"')
     expect(script).toContain('exec "${FORGE_HOST_SHELL:-/bin/sh}" "$@"')
     expect(script).not.toContain('sbx exec')
     expect(script).toContain('no `-w` or `--env-file`')
+    expect(script).toContain('root')
   })
 })
 

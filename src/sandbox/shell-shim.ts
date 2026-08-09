@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'f
 import type { Logger } from '../types'
 import type { SandboxMode } from './runtime-factory'
 import { buildEnvFileExportLoop } from './exec-fs'
+import { buildSmolvmRootWrapper } from './smolvm'
 
 export const SHELL_SHIM_FILENAME = 'forge-shell'
 
@@ -36,7 +37,7 @@ export function resolveHostShell(env: NodeJS.ProcessEnv = process.env): string {
 export function buildShimScript(hostShell: string, mode: SandboxMode = 'sbx'): string {
   const smolvm = mode === 'smolvm'
   const routingVia = smolvm
-    ? '`smolvm machine exec`. smolvm exec has no `-w` or `--env-file`, so the cwd and env are applied inside the guest: `$PWD` and the env file resolve to the same paths in the machine because all mounts (including the env dir) are identical-path.'
+    ? '`smolvm machine exec`. smolvm exec has no `-w` or `--env-file`, so the cwd and env are applied inside the guest: `$PWD` and the env file resolve to the same paths in the machine because all mounts (including the env dir) are identical-path. Guest commands are elevated to root when passwordless sudo is available, because smolvm virtiofs mounts carry host uids that the image user cannot write.'
     : '`sbx exec`.'
   // Guest payload for the env-file branch: exports the file (which rides as bash
   // positional `$0`, so it needs no shell quoting), then applies the shim cwd as
@@ -46,9 +47,9 @@ export function buildShimScript(hostShell: string, mode: SandboxMode = 'sbx'): s
     mode === 'smolvm'
       ? `if [ -n "\${${SHIM_ENV_CONTAINER}:-}" ]; then
   if [ -n "\${${SHIM_ENV_ENV_FILE}:-}" ]; then
-    exec smolvm machine exec --name "$${SHIM_ENV_CONTAINER}" -- bash -c '${smolvmEnvPayload}' "$${SHIM_ENV_ENV_FILE}" "$PWD" "$@"
+    exec smolvm machine exec --name "$${SHIM_ENV_CONTAINER}" -- bash -c '${buildSmolvmRootWrapper('bash')}' '${smolvmEnvPayload}' "$${SHIM_ENV_ENV_FILE}" "$PWD" "$@"
   fi
-  exec smolvm machine exec --name "$${SHIM_ENV_CONTAINER}" -- bash -c 'cd "$0" && exec bash "$@"' "$PWD" "$@"
+  exec smolvm machine exec --name "$${SHIM_ENV_CONTAINER}" -- bash -c '${buildSmolvmRootWrapper('bash')}' 'cd "$0" && exec bash "$@"' "$PWD" "$@"
 fi`
       : `if [ -n "\${${SHIM_ENV_CONTAINER}:-}" ]; then
   if [ -n "\${${SHIM_ENV_ENV_FILE}:-}" ]; then

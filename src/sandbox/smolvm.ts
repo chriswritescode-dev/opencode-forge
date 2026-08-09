@@ -124,8 +124,25 @@ export function buildSmolvmStartArgs(name: string): string[] {
 }
 
 /**
+ * Builds the `<shell> -c` script that elevates a guest command to root when the image
+ * grants passwordless sudo. smolvm bind-mounts the worktree through virtiofs with no uid
+ * mapping, so the guest sees the host owner while the image user is a different uid and
+ * every write to the mount fails with EACCES — root is required to write the mounts.
+ * `-E` plus an explicit `PATH` is used because sudoers `secure_path` would otherwise
+ * strip the image PATH (losing pnpm/bun/uv); when passwordless sudo is unavailable the
+ * wrapper falls back to running the inner script unelevated rather than hard-failing.
+ * The real inner script rides as positional `$0` and its arguments as `"$@"`, so this
+ * wrapper is passed as the `-c` script with the command following as an argument.
+ */
+export function buildSmolvmRootWrapper(shell: string): string {
+  return `if sudo -nE true 2>/dev/null; then exec sudo -nE PATH="$PATH" ${shell} -c "$0" "$@"; fi; exec ${shell} -c "$0" "$@"`
+}
+
+/**
  * Builds a `smolvm machine exec` argument vector. Emits `machine exec`, then `-i` when
- * interactive, then `--name <name> --` and the command through `sh -c`.
+ * interactive, then `--name <name> --` and the command through `sh -c`, routed through
+ * `buildSmolvmRootWrapper` so guest commands run elevated against the uid-less virtiofs
+ * mounts.
  */
 export function buildSmolvmExecArgs(
   name: string,
@@ -141,6 +158,7 @@ export function buildSmolvmExecArgs(
     '--',
     'sh',
     '-c',
+    buildSmolvmRootWrapper('sh'),
     command,
   ]
 }
@@ -180,9 +198,14 @@ export function resolveSmolvmImageArg(imageStoreDir: string | undefined, ref: st
 }
 
 /**
- * In-guest command that brings up the image's Docker daemon after a machine boots, giving smolvm
- * loops the same in-sandbox Docker that `sbx` sandboxes get natively. Three guest facts shape it:
+ * In-guest script that runs after a machine boots: first silences sudo's "unable to
+ * resolve host" noise, then brings up the image's Docker daemon, giving smolvm loops the
+ * same in-sandbox Docker that `sbx` sandboxes get natively. Guest facts shape it:
  *
+ * - The image ships an empty `/etc/hosts`, so every `sudo` invocation prints
+ *   `sudo: unable to resolve host ...` on stderr; appending `127.0.0.1 <hostname>`
+ *   silences it permanently. This step must never fail the script, so it is guarded by
+ *   a trailing `|| true`.
  * - smolvm boots an image as a bare agent and never runs its entrypoint/init, so the daemon that
  *   `sbx` starts for free has to be started explicitly here, once per machine start.
  * - The machine root filesystem is itself an overlay, which `overlay2` cannot stack on, so the data
@@ -194,7 +217,8 @@ export function resolveSmolvmImageArg(imageStoreDir: string | undefined, ref: st
  * Idempotent and self-limiting: it no-ops when the image ships no `dockerd` or a daemon already
  * answers, and otherwise waits only until the socket responds.
  */
-export const SMOLVM_DOCKER_BOOTSTRAP = [
+export const SMOLVM_GUEST_BOOTSTRAP = [
+  'grep -q "$(hostname)" /etc/hosts 2>/dev/null || echo "127.0.0.1 $(hostname)" | sudo -n tee -a /etc/hosts >/dev/null 2>&1 || true',
   'command -v dockerd >/dev/null 2>&1 || exit 0',
   'docker info >/dev/null 2>&1 && exit 0',
   'sudo -n mkdir -p /storage/docker || exit 1',
@@ -258,15 +282,16 @@ export function createSmolvmRuntime(
   }
 
   /**
-   * Starts the in-machine Docker daemon. Deliberately never throws: Docker is a sandbox
+   * Bootstraps the guest after `machine start`: fixes the sudo hostname noise, then
+   * starts the in-machine Docker daemon. Deliberately never throws: Docker is a sandbox
    * capability, not a precondition for running a loop, so an image without `dockerd` or a daemon
    * that refuses to come up degrades to "no Docker in this sandbox" (surfaced in the log and by
    * the agent's own `docker` failures) instead of failing sandbox creation outright.
    */
-  async function ensureDocker(name: string): Promise<void> {
+  async function bootstrapGuest(name: string): Promise<void> {
     let result: CommandResult
     try {
-      result = await run(buildSmolvmExecArgs(name, SMOLVM_DOCKER_BOOTSTRAP), { timeout: SBX_DEFAULT_TIMEOUT })
+      result = await run(buildSmolvmExecArgs(name, SMOLVM_GUEST_BOOTSTRAP), { timeout: SBX_DEFAULT_TIMEOUT })
     } catch (err) {
       logger.log(`Sandbox: Docker bootstrap for ${name} failed: ${err instanceof Error ? err.message : String(err)}`)
       return
@@ -276,13 +301,13 @@ export function createSmolvmRuntime(
     }
   }
 
-  /** Starts a machine and brings its Docker daemon up; every boot path routes through here. */
+  /** Starts a machine and bootstraps its guest; every boot path routes through here. */
   async function startMachine(name: string): Promise<void> {
     const startResult = await run(buildSmolvmStartArgs(name), { timeout: SBX_DEFAULT_TIMEOUT })
     if (startResult.exitCode !== 0) {
       throw new Error(`Failed to start sandbox: ${startResult.stderr}`)
     }
-    await ensureDocker(name)
+    await bootstrapGuest(name)
   }
 
   async function createSandbox(
