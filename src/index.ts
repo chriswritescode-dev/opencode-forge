@@ -47,7 +47,6 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from './utils/
 import { resolveSessionPlanOfRecord } from './services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from './utils/marked-plan-parser'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
-import { PLAN_EXECUTION_LABELS } from './utils/plan-execution'
 
 export interface CreateParentSessionLookupOptions {
   client: ForgeClient
@@ -989,8 +988,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           type: 'text',
           text: `<system-reminder>
 READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
-Before approval, finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning.
-Then call the \`question\` tool with exactly ${PLAN_EXECUTION_LABELS.map((label) => `"${label}"`).join(', ')}. If "Loop" is selected, call \`execute-plan\` with a short title; it uses the stored plan automatically. Do not ask again.
+Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
 </system-reminder>`,
           synthetic: true,
         })
