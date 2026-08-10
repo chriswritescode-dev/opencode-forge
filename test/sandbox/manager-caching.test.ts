@@ -40,6 +40,15 @@ describe('SandboxManager caching', () => {
     expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
   })
 
+  it('should not start a keep-alive exec', async () => {
+    mockRuntime.exec = vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 }))
+    const manager = createSandboxManager(mockRuntime, { image: 'oc-forge-sandbox:latest' }, mockLogger)
+
+    await manager.start('test-wt', '/tmp/project')
+
+    expect(mockRuntime.exec).not.toHaveBeenCalled()
+  })
+
   it('should reject both calls when runtime is unavailable and cache negative result within TTL', async () => {
     mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => daemonDown)
 
@@ -107,5 +116,17 @@ describe('SandboxManager caching', () => {
 
     mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => daemonDown)
     await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('daemon is not running')
+  })
+
+  it('should defer an indeterminate template query to sandbox creation', async () => {
+    mockRuntime.templateExists = vi.fn(async () => false)
+    mockRuntime.checkAvailable = vi.fn()
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce(indeterminate)
+
+    const manager = createSandboxManager(mockRuntime, { image: 'oc-forge-sandbox:latest' }, mockLogger)
+
+    await expect(manager.start('test-wt', '/tmp/project')).resolves.toEqual({ containerName: 'forge-test-wt' })
+    expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(1)
   })
 })

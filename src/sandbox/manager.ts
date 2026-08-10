@@ -217,7 +217,8 @@ export function createSandboxManager(
       // A daemon that cannot answer `sbx template ls` is indistinguishable from a missing template,
       // so confirm it is really reachable before telling the user to rebuild the image.
       const availability = await runtime.checkAvailable()
-      if (!availability.available && availability.reason !== 'unknown') {
+      if (!availability.available) {
+        if (availability.reason === 'unknown') return
         throw new Error(describeSbxUnavailable(availability))
       }
       const buildHint = `  ${formatTemplateBuildCommands(

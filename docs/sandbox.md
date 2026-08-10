@@ -177,7 +177,7 @@ Each sbx sandbox has its own Docker daemon natively, so loops can build and run 
 
 ## Sandbox Lifecycle
 
-`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends, and `sbx exec` auto-starts a stopped sandbox, so a stop is never a correctness problem — only a restart. A stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. Cold starts are cheap: roughly 0.9s for the first command after a stop, vs ~0.16s warm. Keep-alive is not needed for latency or correctness of a single command.
+`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends, and `sbx exec` auto-starts a stopped sandbox, so a stop is never a correctness problem — only a restart. A stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. Cold starts are roughly 0.9s for the first command after a stop, vs ~0.16s warm. Forge relies on auto-resume instead of holding a separate keep-alive exec open.
 
 ## Large Command Output
 
