@@ -175,11 +175,9 @@ Security note: read-write custom mounts give the sandbox write access to host pa
 
 Each sbx sandbox has its own Docker daemon natively, so loops can build and run containers (for example end-to-end tests) without touching the host Docker daemon. Every sandbox gets isolated image and container storage.
 
-## Keep-Alive
+## Sandbox Lifecycle
 
-`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends. Forge holds one long-lived "sentinel" exec per active sandbox — an in-container `sleep 600` — and renews it when it returns. `sbx` keeps a sandbox running as long as an exec session is in flight, so the sentinel holds it warm with no polling. The 10-minute bound means that if the forge process dies without cleanup, the sandbox stops within that bound rather than staying up forever. On plugin cleanup the sentinel is aborted and the sandboxes are left alone, matching Forge's contract of preserving active loops across restarts. Holding a session is the same "sentinel connection" approach Docker's own `sbx cp` and `sbx kit add` use.
-
-Cold starts are cheap: roughly 0.9s for the first command after a stop, vs ~0.16s warm. Keep-alive is not about latency — a stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. And because `sbx exec` auto-starts a stopped sandbox, keep-alive is never required for correctness of a single command.
+`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends, and `sbx exec` auto-starts a stopped sandbox, so a stop is never a correctness problem — only a restart. A stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. Cold starts are cheap: roughly 0.9s for the first command after a stop, vs ~0.16s warm. Keep-alive is not needed for latency or correctness of a single command.
 
 ## Large Command Output
 

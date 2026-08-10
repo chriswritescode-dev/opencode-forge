@@ -532,7 +532,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         } catch (err) {
           logger.error('Error during session sandbox controller disposal', err)
         } finally {
-          sandboxManager?.dispose()
           closeDatabase(db)
           logger.log('Plugin cleanup complete')
         }

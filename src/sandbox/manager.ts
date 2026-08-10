@@ -130,16 +130,6 @@ export function resolveCustomMounts(
 const DOCKER_AVAILABLE_TTL = 30_000
 const LIVENESS_CHECK_TTL = 2_000
 
-/**
- * A sandbox stays up while an exec session is in flight, so a bounded `sleep` holds it warm
- * without polling, and the bound means a crashed plugin leaks at most this long instead of forever.
- * Renewal requires the `sleep` to have actually elapsed — a fast-returning exec never renews, so
- * it can never spin.
- */
-export const SANDBOX_SENTINEL_SECONDS = 600
-export const SANDBOX_SENTINEL_TIMEOUT_MS = (SANDBOX_SENTINEL_SECONDS + 60) * 1000
-export const SANDBOX_SENTINEL_MIN_RENEW_MS = (SANDBOX_SENTINEL_SECONDS * 1000) / 2
-
 export interface ActiveSandbox {
   containerName: string
   projectDir: string
@@ -158,8 +148,6 @@ export interface SandboxManager {
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
-  /** Stops the keep-alive sentinels and their bookkeeping without touching sandboxes. */
-  dispose(): void
 }
 
 /**
@@ -194,7 +182,6 @@ export function createSandboxManager(
   const lastLivenessCheck = new Map<string, number>()
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
-  const sentinels = new Map<string, AbortController>()
   let runtimeAvailableCache: { value: SbxAvailability; at: number } | null = null
   let imageReady = false
   let allowListApplied = false
@@ -416,68 +403,6 @@ export function createSandboxManager(
   }
 
   /**
-   * Syncs the keep-alive sentinels with the active-sandbox map: one sentinel exec per active
-   * sandbox, dropped as soon as the map empties.
-   */
-  function syncKeepAlive(): void {
-    for (const [worktreeName, active] of activeSandboxes) {
-      if (!sentinels.has(worktreeName)) {
-        startSentinel(worktreeName, active.containerName)
-      }
-    }
-    for (const worktreeName of sentinels.keys()) {
-      if (!activeSandboxes.has(worktreeName)) {
-        sentinels.get(worktreeName)?.abort()
-        sentinels.delete(worktreeName)
-      }
-    }
-  }
-
-  /**
-   * Starts one long-lived exec that holds the sandbox warm while it is in flight, and renews it
-   * when it returns. Never rejects — a failed keep-alive must never fail a loop.
-   */
-  function startSentinel(worktreeName: string, containerName: string): void {
-    const controller = new AbortController()
-    sentinels.set(worktreeName, controller)
-    void (async () => {
-      while (!controller.signal.aborted) {
-        if (sentinels.get(worktreeName) !== controller) return
-        if (!activeSandboxes.has(worktreeName)) return
-        try {
-          const startedAt = Date.now()
-          const result = await runtime.exec(containerName, `sleep ${SANDBOX_SENTINEL_SECONDS}`, {
-            timeout: SANDBOX_SENTINEL_TIMEOUT_MS,
-            abort: controller.signal,
-          })
-          if (result.exitCode !== 0) {
-            logger.log(`Sandbox: keep-alive sentinel for ${containerName} exited ${result.exitCode}`)
-            if (sentinels.get(worktreeName) === controller) {
-              sentinels.delete(worktreeName)
-            }
-            return
-          }
-          const elapsedMs = Date.now() - startedAt
-          if (elapsedMs < SANDBOX_SENTINEL_MIN_RENEW_MS) {
-            logger.log(`Sandbox: keep-alive sentinel for ${containerName} returned after ${elapsedMs}ms; not renewing`)
-            if (sentinels.get(worktreeName) === controller) {
-              sentinels.delete(worktreeName)
-            }
-            return
-          }
-        } catch (err) {
-          if (controller.signal.aborted) return
-          logger.log(`Sandbox: keep-alive sentinel for ${containerName} failed: ${err instanceof Error ? err.message : String(err)}`)
-          if (sentinels.get(worktreeName) === controller) {
-            sentinels.delete(worktreeName)
-          }
-          return
-        }
-      }
-    })()
-  }
-
-  /**
    * Single point that records a usable sandbox in the active map, shared by the adopt path in
    * `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins so adopting a
    * sandbox never resets the time it actually came up.
@@ -491,7 +416,6 @@ export function createSandboxManager(
       mounts: buildMountPlan(projectDir).mounts,
       envFile: writeEnvPassthroughFile(containerName),
     })
-    syncKeepAlive()
   }
 
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
@@ -527,7 +451,6 @@ export function createSandboxManager(
     }
 
     activeSandboxes.set(worktreeName, active)
-    syncKeepAlive()
     logger.log(`Sandbox ${containerName} started`)
 
     return { containerName }
@@ -536,9 +459,6 @@ export function createSandboxManager(
   async function stop(worktreeName: string): Promise<void> {
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
-
-    sentinels.get(worktreeName)?.abort()
-    sentinels.delete(worktreeName)
 
     // Cleanup (env file, in-memory map entry) always runs; the removal failure is rethrown so
     // callers that own the container lifecycle (e.g. the session-sandbox controller) can observe
@@ -563,7 +483,6 @@ export function createSandboxManager(
         }
       }
       activeSandboxes.delete(worktreeName)
-      syncKeepAlive()
     }
     if (removalError) throw removalError
   }
@@ -593,7 +512,6 @@ export function createSandboxManager(
     if (state === 'missing') {
       logger.log(`Sandbox: sandbox ${containerName} no longer exists, removing stale map entry for ${worktreeName}`)
       activeSandboxes.delete(worktreeName)
-      syncKeepAlive()
       return false
     }
 
@@ -631,7 +549,6 @@ export function createSandboxManager(
         }
       }
     }
-    syncKeepAlive()
 
     return removed
   }
@@ -689,18 +606,6 @@ export function createSandboxManager(
     return pending
   }
 
-  /**
-   * Stops the keep-alive sentinels and their bookkeeping. Sandboxes stay alive — this only stops
-   * forge-side bookkeeping, matching forge's contract of preserving active loops across plugin
-   * cleanup.
-   */
-  function dispose(): void {
-    for (const controller of sentinels.values()) {
-      controller.abort()
-    }
-    sentinels.clear()
-  }
-
   return {
     runtime,
     start,
@@ -711,6 +616,5 @@ export function createSandboxManager(
     cleanupOrphans,
     restore,
     ensureRunning,
-    dispose,
   }
 }
