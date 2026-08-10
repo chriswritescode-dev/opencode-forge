@@ -59,6 +59,40 @@ function findContainerPathCollision(container: string, used: ReadonlySet<string>
   return undefined
 }
 
+function isStrictDescendantPath(path: string, prefix: string): boolean {
+  const resolved = normalizeContainerPath(canonicalizePath(path))
+  const base = normalizeContainerPath(canonicalizePath(prefix))
+  return resolved !== base && resolved.startsWith(base + '/')
+}
+
+/**
+ * Whether a new workspace cannot coexist with an already-accepted one on an overlapping path.
+ * sbx accepts nested workspace mounts, but a read-only mount applies to its whole subtree, so
+ * flags cannot differ across a nesting boundary: a read-only ancestor silently makes a
+ * read-write descendant read-only, and a read-write descendant of a read-only mount never takes
+ * effect. The one safe flag mismatch is a read-only mount strictly inside a read-write mount,
+ * which merely restricts that subtree. Matching flags always coexist.
+ */
+function mountConflictsWith(next: SandboxMount, accepted: SandboxMount): boolean {
+  if (!containerPathsOverlap(next.hostDir, accepted.hostDir)) return false
+  const nextReadOnly = next.readOnly === true
+  const acceptedReadOnly = accepted.readOnly === true
+  if (nextReadOnly === acceptedReadOnly) return false
+  if (nextReadOnly) {
+    return !isStrictDescendantPath(next.hostDir, accepted.hostDir)
+  }
+  return true
+}
+
+/** Whether an accepted mount with the same access already covers `next`, making it redundant. */
+function mountAlreadyCovered(next: SandboxMount, accepted: SandboxMount): boolean {
+  if ((next.readOnly === true) !== (accepted.readOnly === true)) return false
+  return isSameOrDescendantPath(
+    normalizeContainerPath(canonicalizePath(next.hostDir)),
+    normalizeContainerPath(canonicalizePath(accepted.hostDir)),
+  )
+}
+
 export function resolveCustomMounts(
   raw: SandboxMountConfig[] | undefined,
   reservedHostPaths: ReadonlySet<string>,
@@ -129,21 +163,22 @@ export interface SandboxManager {
 }
 
 /**
- * Maps the resolved mount plan to `sbx create` workspaces. `sbx` rejects overlapping
- * workspace paths, so any mount whose hostDir overlaps (in either direction) an earlier
- * accepted hostDir is dropped (with a log). First accepted wins, so callers must pass mounts
- * in priority order (worktree → git dirs → read-only project → tool-output → temp → custom).
+ * Maps the resolved mount plan to `sbx create` workspaces. sbx accepts nested workspace
+ * mounts, so overlapping read-write mounts (worktree + git dirs) coexist; a mount is dropped
+ * only when its read-only flag conflicts with an accepted mount's (see `mountConflictsWith`).
+ * Callers must still pass mounts in priority order (worktree → git dirs → read-only project →
+ * tool-output → temp → custom) so the first-accepted flag wins when a conflict is unavoidable.
  */
 export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): SandboxWorkspace[] {
-  const accepted: string[] = []
+  const accepted: SandboxMount[] = []
   const workspaces: SandboxWorkspace[] = []
   for (const mount of mounts) {
-    const overlap = accepted.some((hostDir) => containerPathsOverlap(mount.hostDir, hostDir))
-    if (overlap) {
-      logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir`)
+    if (accepted.some((existing) => mountConflictsWith(mount, existing))) {
+      logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir with conflicting permissions`)
       continue
     }
-    accepted.push(mount.hostDir)
+    if (accepted.some((existing) => mountAlreadyCovered(mount, existing))) continue
+    accepted.push(mount)
     workspaces.push({ hostDir: mount.hostDir, readOnly: mount.readOnly })
   }
   return workspaces
@@ -227,12 +262,13 @@ export function createSandboxManager(
     const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
 
     // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
-    // it survives the overlap drop and keeps the whole git metadata region writable), then the
-    // read-only project mount, then tool-output/temp/custom. Because the first accepted mount
-    // wins, the read-only project workspace (an ancestor of the git dirs) is dropped with a log
-    // rather than swallowing the writable git workspaces. Never resolve the conflict by making
-    // the project workspace read-write — that would let a sandboxed agent modify the user's
-    // main checkout.
+    // it survives any conflict and keeps the whole git metadata region writable), then the
+    // read-only project mount, then tool-output/temp/custom. sbx accepts nested workspaces, so
+    // read-write mounts (worktree + git dirs) all mount even when one nests inside another; the
+    // read-only project workspace is dropped because it is an ancestor of the writable git
+    // workspaces and a read-only ancestor silently makes them read-only inside the sandbox.
+    // Never resolve that conflict by making the project workspace read-write — that would let a
+    // sandboxed agent modify the user's main checkout.
     const candidates: SandboxMount[] = [
       worktreeMount,
       ...orderedGitMounts,
@@ -243,14 +279,14 @@ export function createSandboxManager(
     ]
 
     const mounts: SandboxMount[] = []
-    const accepted = new Set<string>()
+    const accepted: SandboxMount[] = []
     for (const mount of candidates) {
-      const overlap = [...accepted].some((hostDir) => containerPathsOverlap(mount.hostDir, hostDir))
-      if (overlap) {
-        logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir`)
+      if (accepted.some((existing) => mountConflictsWith(mount, existing))) {
+        logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir with conflicting permissions`)
         continue
       }
-      accepted.add(mount.hostDir)
+      if (accepted.some((existing) => mountAlreadyCovered(mount, existing))) continue
+      accepted.push(mount)
       mounts.push(mount)
     }
 
@@ -306,7 +342,18 @@ export function createSandboxManager(
       paths.add(resolvedCommonDir)
     }
 
-    const result = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
+    const result: SandboxMount[] = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
+
+    // The git metadata region is mounted read-write so in-sandbox git works, which would also let
+    // the sandbox plant a hook that runs on the host under the user's account. Forge's own git
+    // disables hooksPath (see `git-service`), but the user's git in the same repository does not,
+    // so the hooks directory is re-mounted read-only inside the writable region. `sbx` workspaces
+    // are directories only, so the repo-local config file cannot be protected the same way.
+    const hooksDir = join(resolvedCommonDir, 'hooks')
+    if (existsSync(hooksDir)) {
+      result.push({ hostDir: hooksDir, containerDir: hooksDir, readOnly: true })
+    }
+
     gitMountCache.set(projectDir, result)
     return result
   }

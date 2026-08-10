@@ -30,8 +30,19 @@ export interface GitService {
   worktreePrune(cwd: string): GitResult
 }
 
+/**
+ * Forge's git always runs on the host, while a sandboxed loop has read-write access to the
+ * repository's git metadata (its worktree's git dir, and the common dir when it is mounted). A
+ * repo-controlled hook — planted in `.git/hooks` or pointed at by `core.hooksPath` in the
+ * repo-local config, neither of which the sandbox boundary can make read-only — would therefore
+ * execute on the host with the user's privileges. Disabling hooksPath on every forge invocation
+ * closes that path: forge's git calls are mechanical (status, scratch-branch snapshot commits,
+ * worktree bookkeeping) and never depended on repository hooks.
+ */
+const HOOKS_DISABLED_ARGS = ['-c', 'core.hooksPath=/dev/null']
+
 function runGit(args: string[], cwd: string): GitResult {
-  const res = spawnSync('git', args, { cwd, encoding: 'utf-8' })
+  const res = spawnSync('git', [...HOOKS_DISABLED_ARGS, ...args], { cwd, encoding: 'utf-8' })
   if (res.error) return { ok: false, status: -1, stdout: '', stderr: res.error.message }
   return { ok: res.status === 0, status: res.status ?? -1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
 }

@@ -66,10 +66,10 @@ It cannot control a browser running on the host because sandbox networking canno
 
 1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI.
 2. Forge creates one sandbox per loop, or one project-scoped host-session sandbox shared by plugin instances in the process.
-3. The active directory and the read-only source project (when `sandbox.mountProjectReadonly` is enabled) are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
+3. The active directory, the read-only source project (when `sandbox.mountProjectReadonly` is enabled), and the worktree's git metadata directory are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
 4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work.
 
-The read-only project mount is dropped whenever the worktree's git directories live inside the source project (the default forge layout), so `sandbox.mountProjectReadonly` is effectively inert there.
+The read-only project mount is dropped whenever it would nest over the writable worktree — which is the default forge layout, where the worktree lives inside the source project — so `sandbox.mountProjectReadonly` is effectively inert there. The worktree stays writable and the git metadata directory is mounted read-write alongside it, so in-sandbox git works and multiple loops in the same project each mount their worktree plus the shared git metadata independently.
 
 ## Shell Routing
 
@@ -134,7 +134,16 @@ By default, Forge mounts the source project directory read-only at its identical
 |---|---:|---|
 | `sandbox.mountProjectReadonly` | `true` | Enable the read-only source project mount. |
 
-The loop worktree remains writable.
+The loop worktree remains writable. When the read-only project mount would nest over the writable worktree (the default forge layout), it is dropped instead: inside the sandbox the outermost mount's read-only flag applies to the whole subtree, so a read-only ancestor would silently make the worktree read-only. The worktree and the shared git metadata directory are mounted read-write in that case.
+
+## Git Metadata and Hooks
+
+The worktree's git metadata directory is mounted read-write so git works inside the sandbox (`status`, `log`, `diff`, and commits all resolve against the real repository). Two guards keep that from becoming a path out of the sandbox:
+
+- `<git-common-dir>/hooks` is mounted **read-only**, so a sandboxed agent cannot plant a hook that the user's own git would later execute on the host.
+- Every git command Forge itself runs is invoked with `core.hooksPath` disabled, so no repository hook runs on the host — including one reached through a `core.hooksPath` entry in the repo-local config, which cannot be mounted read-only because `sbx` workspaces are directories, not files.
+
+Consequences: tools that install hooks into `.git/hooks` (for example `pre-commit install`, or Husky v4) fail inside the sandbox — hook managers that keep hooks in the working tree and point `core.hooksPath` at them still work. Forge's own scratch-branch commits never run repository hooks.
 
 ## Custom Bind Mounts
 
