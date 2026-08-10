@@ -11,6 +11,8 @@ See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](lo
 - A platform the `sbx` daemon supports: macOS 14+ on Apple silicon, Windows 11 with Hypervisor Platform, or Ubuntu 24.04+ with KVM.
 - Docker, used only to build the sandbox template (see below).
 
+The daemon serializes its work behind in-flight sandbox commands, so `sbx daemon status` and `sbx ls` can take seconds while several loops are running. Forge bounds those queries at 30s and treats a query that does not answer as *indeterminate* rather than "daemon down": it logs and continues, letting the actual sandbox operation report the authoritative error. Only a daemon that answers definitively (or a missing CLI) fails a loop launch with remediation advice.
+
 Build and load the bundled template:
 
 ```bash
@@ -66,10 +68,10 @@ It cannot control a browser running on the host because sandbox networking canno
 
 1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI.
 2. Forge creates one sandbox per loop, or one project-scoped host-session sandbox shared by plugin instances in the process.
-3. The active directory and the read-only source project (when `sandbox.mountProjectReadonly` is enabled) are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
+3. The active directory, the read-only source project (when `sandbox.mountProjectReadonly` is enabled), and the worktree's git metadata directory are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
 4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work.
 
-The read-only project mount is dropped whenever the worktree's git directories live inside the source project (the default forge layout), so `sandbox.mountProjectReadonly` is effectively inert there.
+The read-only project mount is dropped whenever it would nest over the writable worktree — which is the default forge layout, where the worktree lives inside the source project — so `sandbox.mountProjectReadonly` is effectively inert there. The worktree stays writable and the git metadata directory is mounted read-write alongside it, so in-sandbox git works and multiple loops in the same project each mount their worktree plus the shared git metadata independently.
 
 ## Shell Routing
 
@@ -134,7 +136,16 @@ By default, Forge mounts the source project directory read-only at its identical
 |---|---:|---|
 | `sandbox.mountProjectReadonly` | `true` | Enable the read-only source project mount. |
 
-The loop worktree remains writable.
+The loop worktree remains writable. When the read-only project mount would nest over the writable worktree (the default forge layout), it is dropped instead: inside the sandbox the outermost mount's read-only flag applies to the whole subtree, so a read-only ancestor would silently make the worktree read-only. The worktree and the shared git metadata directory are mounted read-write in that case.
+
+## Git Metadata and Hooks
+
+The worktree's git metadata directory is mounted read-write so git works inside the sandbox (`status`, `log`, `diff`, and commits all resolve against the real repository). Two guards keep that from becoming a path out of the sandbox:
+
+- `<git-common-dir>/hooks` is mounted **read-only**, so a sandboxed agent cannot plant a hook that the user's own git would later execute on the host.
+- Every git command Forge itself runs is invoked with `core.hooksPath` disabled, so no repository hook runs on the host — including one reached through a `core.hooksPath` entry in the repo-local config, which cannot be mounted read-only because `sbx` workspaces are directories, not files.
+
+Consequences: tools that install hooks into `.git/hooks` (for example `pre-commit install`, or Husky v4) fail inside the sandbox — hook managers that keep hooks in the working tree and point `core.hooksPath` at them still work. Forge's own scratch-branch commits never run repository hooks.
 
 ## Custom Bind Mounts
 
@@ -164,11 +175,9 @@ Security note: read-write custom mounts give the sandbox write access to host pa
 
 Each sbx sandbox has its own Docker daemon natively, so loops can build and run containers (for example end-to-end tests) without touching the host Docker daemon. Every sandbox gets isolated image and container storage.
 
-## Keep-Alive
+## Sandbox Lifecycle
 
-`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends. Forge holds one long-lived "sentinel" exec per active sandbox — an in-container `sleep 600` — and renews it when it returns. `sbx` keeps a sandbox running as long as an exec session is in flight, so the sentinel holds it warm with no polling. The 10-minute bound means that if the forge process dies without cleanup, the sandbox stops within that bound rather than staying up forever. On plugin cleanup the sentinel is aborted and the sandboxes are left alone, matching Forge's contract of preserving active loops across restarts. Holding a session is the same "sentinel connection" approach Docker's own `sbx cp` and `sbx kit add` use.
-
-Cold starts are cheap: roughly 0.9s for the first command after a stop, vs ~0.16s warm. Keep-alive is not about latency — a stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. And because `sbx exec` auto-starts a stopped sandbox, keep-alive is never required for correctness of a single command.
+`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends, and `sbx exec` auto-starts a stopped sandbox, so a stop is never a correctness problem — only a restart. A stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. Cold starts are roughly 0.9s for the first command after a stop, vs ~0.16s warm. Forge relies on auto-resume instead of holding a separate keep-alive exec open.
 
 ## smolvm Mode
 
@@ -234,9 +243,9 @@ Each smolvm sandbox runs the image's own Docker daemon, matching the in-sandbox 
 
 The generated shell shim routes bash-tool commands through `smolvm machine exec --name <sandbox> -- bash -c <payload>` instead of `sbx exec`, applying the working directory and env file inside the guest (smolvm exec has no `-w` or `--env-file` flags). The payload rides as a positional argument of the same root-elevation wrapper the runtime exec path uses, so shim and runtime commands run as the same guest user. It fails closed exactly like the sbx shim: if the machine is expected but `smolvm machine exec` fails, the command errors rather than silently running on the host.
 
-### Keep-Alive and Recovery
+### Recovery
 
-smolvm machines do not auto-stop the way `sbx` sandboxes do (~35s idle stop), so the sentinel exec is harmless there. If a machine is stopped out-of-band, the next exec fails with a stopped-machine error and Forge restarts it transparently before retrying the command once.
+smolvm machines do not auto-stop the way `sbx` sandboxes do (~35s idle stop). If a machine is stopped out-of-band, the next exec fails with a stopped-machine error and Forge restarts it transparently before retrying the command once.
 
 ## Large Command Output
 

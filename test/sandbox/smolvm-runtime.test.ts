@@ -54,11 +54,11 @@ describe('availability', () => {
     await expect(checkSmolvmAvailability(fake)).resolves.toEqual({ available: false, reason: 'unknown' })
   })
 
-  test('passes --version with a 5000ms timeout to the runner', async () => {
+  test('passes --version with a 30000ms timeout to the runner', async () => {
     const { calls, runner } = createRecordingRunner(() => ({ stdout: 'smolvm 0.1.0\n', stderr: '', exitCode: 0 }))
     await checkSmolvmAvailability(runner)
     expect(calls[0].args).toEqual(['--version'])
-    expect(calls[0].opts?.timeout).toBe(5000)
+    expect(calls[0].opts?.timeout).toBe(30000)
   })
 
   test('describeSmolvmUnavailable carries the remediation strings', () => {
@@ -651,7 +651,7 @@ describe('runtime', () => {
     await expect(rt.getSandboxState('forge-b')).resolves.toBe('stopped')
     await expect(rt.getSandboxState('forge-c')).resolves.toBe('missing')
     expect(calls[0].args).toEqual(['machine', 'ls', '--json'])
-    expect(calls[0].opts?.timeout).toBe(5000)
+    expect(calls[0].opts?.timeout).toBe(30000)
   })
 
   test('getSandboxState reports unknown on unparseable or schema-changed output', async () => {

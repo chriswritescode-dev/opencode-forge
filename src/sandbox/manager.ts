@@ -59,6 +59,40 @@ function findContainerPathCollision(container: string, used: ReadonlySet<string>
   return undefined
 }
 
+function isStrictDescendantPath(path: string, prefix: string): boolean {
+  const resolved = normalizeContainerPath(canonicalizePath(path))
+  const base = normalizeContainerPath(canonicalizePath(prefix))
+  return resolved !== base && resolved.startsWith(base + '/')
+}
+
+/**
+ * Whether a new workspace cannot coexist with an already-accepted one on an overlapping path.
+ * sbx accepts nested workspace mounts, but a read-only mount applies to its whole subtree, so
+ * flags cannot differ across a nesting boundary: a read-only ancestor silently makes a
+ * read-write descendant read-only, and a read-write descendant of a read-only mount never takes
+ * effect. The one safe flag mismatch is a read-only mount strictly inside a read-write mount,
+ * which merely restricts that subtree. Matching flags always coexist.
+ */
+function mountConflictsWith(next: SandboxMount, accepted: SandboxMount): boolean {
+  if (!containerPathsOverlap(next.hostDir, accepted.hostDir)) return false
+  const nextReadOnly = next.readOnly === true
+  const acceptedReadOnly = accepted.readOnly === true
+  if (nextReadOnly === acceptedReadOnly) return false
+  if (nextReadOnly) {
+    return !isStrictDescendantPath(next.hostDir, accepted.hostDir)
+  }
+  return true
+}
+
+/** Whether an accepted mount with the same access already covers `next`, making it redundant. */
+function mountAlreadyCovered(next: SandboxMount, accepted: SandboxMount): boolean {
+  if ((next.readOnly === true) !== (accepted.readOnly === true)) return false
+  return isSameOrDescendantPath(
+    normalizeContainerPath(canonicalizePath(next.hostDir)),
+    normalizeContainerPath(canonicalizePath(accepted.hostDir)),
+  )
+}
+
 export function resolveCustomMounts(
   raw: SandboxMountConfig[] | undefined,
   reservedHostPaths: ReadonlySet<string>,
@@ -96,16 +130,6 @@ export function resolveCustomMounts(
 const DOCKER_AVAILABLE_TTL = 30_000
 const LIVENESS_CHECK_TTL = 2_000
 
-/**
- * A sandbox stays up while an exec session is in flight, so a bounded `sleep` holds it warm
- * without polling, and the bound means a crashed plugin leaks at most this long instead of forever.
- * Renewal requires the `sleep` to have actually elapsed — a fast-returning exec never renews, so
- * it can never spin.
- */
-export const SANDBOX_SENTINEL_SECONDS = 600
-export const SANDBOX_SENTINEL_TIMEOUT_MS = (SANDBOX_SENTINEL_SECONDS + 60) * 1000
-export const SANDBOX_SENTINEL_MIN_RENEW_MS = (SANDBOX_SENTINEL_SECONDS * 1000) / 2
-
 export interface ActiveSandbox {
   containerName: string
   projectDir: string
@@ -124,26 +148,25 @@ export interface SandboxManager {
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
-  /** Stops the keep-alive sentinels and their bookkeeping without touching sandboxes. */
-  dispose(): void
 }
 
 /**
- * Maps the resolved mount plan to `sbx create` workspaces. `sbx` rejects overlapping
- * workspace paths, so any mount whose hostDir overlaps (in either direction) an earlier
- * accepted hostDir is dropped (with a log). First accepted wins, so callers must pass mounts
- * in priority order (worktree → git dirs → read-only project → tool-output → temp → custom).
+ * Maps the resolved mount plan to `sbx create` workspaces. sbx accepts nested workspace
+ * mounts, so overlapping read-write mounts (worktree + git dirs) coexist; a mount is dropped
+ * only when its read-only flag conflicts with an accepted mount's (see `mountConflictsWith`).
+ * Callers must still pass mounts in priority order (worktree → git dirs → read-only project →
+ * tool-output → temp → custom) so the first-accepted flag wins when a conflict is unavoidable.
  */
 export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): SandboxWorkspace[] {
-  const accepted: string[] = []
+  const accepted: SandboxMount[] = []
   const workspaces: SandboxWorkspace[] = []
   for (const mount of mounts) {
-    const overlap = accepted.some((hostDir) => containerPathsOverlap(mount.hostDir, hostDir))
-    if (overlap) {
-      logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir`)
+    if (accepted.some((existing) => mountConflictsWith(mount, existing))) {
+      logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir with conflicting permissions`)
       continue
     }
-    accepted.push(mount.hostDir)
+    if (accepted.some((existing) => mountAlreadyCovered(mount, existing))) continue
+    accepted.push(mount)
     workspaces.push({ hostDir: mount.hostDir, readOnly: mount.readOnly })
   }
   return workspaces
@@ -159,7 +182,6 @@ export function createSandboxManager(
   const lastLivenessCheck = new Map<string, number>()
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
-  const sentinels = new Map<string, AbortController>()
   let runtimeAvailableCache: { value: SbxAvailability; at: number } | null = null
   let imageReady = false
   let allowListApplied = false
@@ -173,6 +195,15 @@ export function createSandboxManager(
       return
     }
     const result = await runtime.checkAvailable()
+    // An inconclusive probe says nothing about the daemon: `sbx daemon status` queues behind
+    // in-flight sandbox work, so starting a second loop while the first one is busy can exhaust the
+    // query bound even though the daemon is healthy. Failing on it would block loop launches under
+    // exactly the concurrency forge exists to provide, and caching it would extend one slow probe
+    // into a window of refusals. Proceed instead and let the real operation report authoritatively.
+    if (!result.available && result.reason === 'unknown') {
+      logger.log(`Sandbox: could not determine daemon availability (${result.detail ?? 'no detail'}); continuing`)
+      return
+    }
     runtimeAvailableCache = { value: result, at: now }
     if (!result.available) {
       throw new Error(runtime.describeUnavailable(result))
@@ -183,6 +214,13 @@ export function createSandboxManager(
     if (imageReady) return
     const exists = await runtime.templateExists(config.image)
     if (!exists) {
+      // A daemon that cannot answer `sbx template ls` is indistinguishable from a missing template,
+      // so confirm it is really reachable before telling the user to rebuild the image.
+      const availability = await runtime.checkAvailable()
+      if (!availability.available) {
+        if (availability.reason === 'unknown') return
+        throw new Error(runtime.describeUnavailable(availability))
+      }
       const buildHint = `  ${formatTemplateBuildCommands(
         config.buildContextDir ?? '<build-context-dir>',
         config.image,
@@ -228,12 +266,13 @@ export function createSandboxManager(
     const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
 
     // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
-    // it survives the overlap drop and keeps the whole git metadata region writable), then the
-    // read-only project mount, then tool-output/temp/custom. Because the first accepted mount
-    // wins, the read-only project workspace (an ancestor of the git dirs) is dropped with a log
-    // rather than swallowing the writable git workspaces. Never resolve the conflict by making
-    // the project workspace read-write — that would let a sandboxed agent modify the user's
-    // main checkout.
+    // it survives any conflict and keeps the whole git metadata region writable), then the
+    // read-only project mount, then tool-output/temp/custom. sbx accepts nested workspaces, so
+    // read-write mounts (worktree + git dirs) all mount even when one nests inside another; the
+    // read-only project workspace is dropped because it is an ancestor of the writable git
+    // workspaces and a read-only ancestor silently makes them read-only inside the sandbox.
+    // Never resolve that conflict by making the project workspace read-write — that would let a
+    // sandboxed agent modify the user's main checkout.
     const candidates: SandboxMount[] = [
       worktreeMount,
       ...orderedGitMounts,
@@ -244,14 +283,14 @@ export function createSandboxManager(
     ]
 
     const mounts: SandboxMount[] = []
-    const accepted = new Set<string>()
+    const accepted: SandboxMount[] = []
     for (const mount of candidates) {
-      const overlap = [...accepted].some((hostDir) => containerPathsOverlap(mount.hostDir, hostDir))
-      if (overlap) {
-        logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir`)
+      if (accepted.some((existing) => mountConflictsWith(mount, existing))) {
+        logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir with conflicting permissions`)
         continue
       }
-      accepted.add(mount.hostDir)
+      if (accepted.some((existing) => mountAlreadyCovered(mount, existing))) continue
+      accepted.push(mount)
       mounts.push(mount)
     }
 
@@ -307,7 +346,18 @@ export function createSandboxManager(
       paths.add(resolvedCommonDir)
     }
 
-    const result = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
+    const result: SandboxMount[] = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
+
+    // The git metadata region is mounted read-write so in-sandbox git works, which would also let
+    // the sandbox plant a hook that runs on the host under the user's account. Forge's own git
+    // disables hooksPath (see `git-service`), but the user's git in the same repository does not,
+    // so the hooks directory is re-mounted read-only inside the writable region. `sbx` workspaces
+    // are directories only, so the repo-local config file cannot be protected the same way.
+    const hooksDir = join(resolvedCommonDir, 'hooks')
+    if (existsSync(hooksDir)) {
+      result.push({ hostDir: hooksDir, containerDir: hooksDir, readOnly: true })
+    }
+
     gitMountCache.set(projectDir, result)
     return result
   }
@@ -355,68 +405,6 @@ export function createSandboxManager(
   }
 
   /**
-   * Syncs the keep-alive sentinels with the active-sandbox map: one sentinel exec per active
-   * sandbox, dropped as soon as the map empties.
-   */
-  function syncKeepAlive(): void {
-    for (const [worktreeName, active] of activeSandboxes) {
-      if (!sentinels.has(worktreeName)) {
-        startSentinel(worktreeName, active.containerName)
-      }
-    }
-    for (const worktreeName of sentinels.keys()) {
-      if (!activeSandboxes.has(worktreeName)) {
-        sentinels.get(worktreeName)?.abort()
-        sentinels.delete(worktreeName)
-      }
-    }
-  }
-
-  /**
-   * Starts one long-lived exec that holds the sandbox warm while it is in flight, and renews it
-   * when it returns. Never rejects — a failed keep-alive must never fail a loop.
-   */
-  function startSentinel(worktreeName: string, containerName: string): void {
-    const controller = new AbortController()
-    sentinels.set(worktreeName, controller)
-    void (async () => {
-      while (!controller.signal.aborted) {
-        if (sentinels.get(worktreeName) !== controller) return
-        if (!activeSandboxes.has(worktreeName)) return
-        try {
-          const startedAt = Date.now()
-          const result = await runtime.exec(containerName, `sleep ${SANDBOX_SENTINEL_SECONDS}`, {
-            timeout: SANDBOX_SENTINEL_TIMEOUT_MS,
-            abort: controller.signal,
-          })
-          if (result.exitCode !== 0) {
-            logger.log(`Sandbox: keep-alive sentinel for ${containerName} exited ${result.exitCode}`)
-            if (sentinels.get(worktreeName) === controller) {
-              sentinels.delete(worktreeName)
-            }
-            return
-          }
-          const elapsedMs = Date.now() - startedAt
-          if (elapsedMs < SANDBOX_SENTINEL_MIN_RENEW_MS) {
-            logger.log(`Sandbox: keep-alive sentinel for ${containerName} returned after ${elapsedMs}ms; not renewing`)
-            if (sentinels.get(worktreeName) === controller) {
-              sentinels.delete(worktreeName)
-            }
-            return
-          }
-        } catch (err) {
-          if (controller.signal.aborted) return
-          logger.log(`Sandbox: keep-alive sentinel for ${containerName} failed: ${err instanceof Error ? err.message : String(err)}`)
-          if (sentinels.get(worktreeName) === controller) {
-            sentinels.delete(worktreeName)
-          }
-          return
-        }
-      }
-    })()
-  }
-
-  /**
    * Single point that records a usable sandbox in the active map, shared by the adopt path in
    * `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins so adopting a
    * sandbox never resets the time it actually came up.
@@ -430,7 +418,6 @@ export function createSandboxManager(
       mounts: buildMountPlan(projectDir).mounts,
       envFile: writeEnvPassthroughFile(containerName),
     })
-    syncKeepAlive()
   }
 
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
@@ -470,7 +457,6 @@ export function createSandboxManager(
     }
 
     activeSandboxes.set(worktreeName, active)
-    syncKeepAlive()
     logger.log(`Sandbox ${containerName} started`)
 
     return { containerName }
@@ -479,9 +465,6 @@ export function createSandboxManager(
   async function stop(worktreeName: string): Promise<void> {
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
-
-    sentinels.get(worktreeName)?.abort()
-    sentinels.delete(worktreeName)
 
     // Cleanup (env file, in-memory map entry) always runs; the removal failure is rethrown so
     // callers that own the container lifecycle (e.g. the session-sandbox controller) can observe
@@ -506,7 +489,6 @@ export function createSandboxManager(
         }
       }
       activeSandboxes.delete(worktreeName)
-      syncKeepAlive()
     }
     if (removalError) throw removalError
   }
@@ -536,7 +518,6 @@ export function createSandboxManager(
     if (state === 'missing') {
       logger.log(`Sandbox: sandbox ${containerName} no longer exists, removing stale map entry for ${worktreeName}`)
       activeSandboxes.delete(worktreeName)
-      syncKeepAlive()
       return false
     }
 
@@ -574,7 +555,6 @@ export function createSandboxManager(
         }
       }
     }
-    syncKeepAlive()
 
     return removed
   }
@@ -632,18 +612,6 @@ export function createSandboxManager(
     return pending
   }
 
-  /**
-   * Stops the keep-alive sentinels and their bookkeeping. Sandboxes stay alive — this only stops
-   * forge-side bookkeeping, matching forge's contract of preserving active loops across plugin
-   * cleanup.
-   */
-  function dispose(): void {
-    for (const controller of sentinels.values()) {
-      controller.abort()
-    }
-    sentinels.clear()
-  }
-
   return {
     runtime,
     start,
@@ -654,6 +622,5 @@ export function createSandboxManager(
     cleanupOrphans,
     restore,
     ensureRunning,
-    dispose,
   }
 }

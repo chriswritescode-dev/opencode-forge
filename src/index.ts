@@ -47,7 +47,6 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from './utils/
 import { resolveSessionPlanOfRecord } from './services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from './utils/marked-plan-parser'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
-import { PLAN_EXECUTION_LABELS } from './utils/plan-execution'
 
 export interface CreateParentSessionLookupOptions {
   client: ForgeClient
@@ -382,15 +381,21 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         try {
           const available = await runtime.checkAvailable()
           if (!available.available) {
-            publishToast({
-              client: forgeClient,
-              directory,
-              logger,
-              title: 'Sandbox unavailable',
-              message: runtime.describeUnavailable(available),
-              variant: 'warning',
-              duration: 10_000,
-            })
+            // `unknown` means the probe itself could not answer (a daemon busy with other
+            // sandboxes; every worktree loads its own plugin instance, so probes race at startup).
+            // That is not evidence of unavailability, and the template probe below would be just as
+            // unreliable, so stay quiet instead of raising a false alarm about either.
+            if (available.reason !== 'unknown') {
+              publishToast({
+                client: forgeClient,
+                directory,
+                logger,
+                title: 'Sandbox unavailable',
+                message: runtime.describeUnavailable(available),
+                variant: 'warning',
+                duration: 10_000,
+              })
+            }
             return
           }
           const exists = await runtime.templateExists(sandboxImage)
@@ -528,7 +533,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         } catch (err) {
           logger.error('Error during session sandbox controller disposal', err)
         } finally {
-          sandboxManager?.dispose()
           closeDatabase(db)
           logger.log('Plugin cleanup complete')
         }
@@ -990,8 +994,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           type: 'text',
           text: `<system-reminder>
 READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
-Before approval, finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning.
-Then call the \`question\` tool with exactly ${PLAN_EXECUTION_LABELS.map((label) => `"${label}"`).join(', ')}. If "Loop" is selected, call \`execute-plan\` with a short title; it uses the stored plan automatically. Do not ask again.
+Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
 </system-reminder>`,
           synthetic: true,
         })

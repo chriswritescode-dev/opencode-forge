@@ -3,7 +3,7 @@
  * these functions only shape names and argument vectors so they are trivially testable.
  */
 import type { Logger, SandboxResources } from '../types'
-import { runCommand, type CommandResult } from './process'
+import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
 import { quoteShellArg } from './exec-fs'
 
 /**
@@ -272,10 +272,22 @@ const SBX_RUNNING_RE = /^\s*status:\s*running/im
 const NOT_INSTALLED_RE = /ENOENT|not found|command not found/i
 
 /**
+ * Quick CLI round-trip bound for the availability probe and inventory listing; shared by both
+ * backends. The daemon serializes these queries behind in-flight sandbox work, so with several
+ * loops running at once they can take seconds; the previous 5s bound made a merely busy daemon
+ * indistinguishable from an absent one. Generous, but still bounded so a wedged daemon cannot
+ * hang a loop launch.
+ */
+const SBX_PROBE_TIMEOUT = 30000
+const SBX_LIST_TIMEOUT = 30000
+
+/**
  * Shared availability probe used by both backends: runs `args` with a short timeout, treats
  * `isAvailable` as the health predicate, distinguishes a missing CLI from a failing one via
  * `NOT_INSTALLED_RE`, and maps everything else to `fallbackReason` (`daemon-down` for sbx's
- * stopped daemon, `unknown` for smolvm which has no daemon).
+ * stopped daemon, `unknown` for smolvm which has no daemon). A probe that produced no answer at
+ * all — a rejection, or a timeout because the daemon was busy serving other sandboxes — yields
+ * `'unknown'`: it is not evidence the daemon is absent.
  */
 export async function probeCliAvailability(
   run: CommandRunner,
@@ -296,13 +308,23 @@ export async function probeCliAvailability(
   if (NOT_INSTALLED_RE.test(combined)) {
     return { available: false, reason: 'not-installed' }
   }
+  if (result.exitCode === COMMAND_TIMEOUT_EXIT_CODE) {
+    return {
+      available: false,
+      reason: 'unknown',
+      detail: `${opts.args.join(' ')} did not answer within ${SBX_PROBE_TIMEOUT}ms`,
+    }
+  }
   return { available: false, reason: opts.fallbackReason, detail: combined.trim() }
 }
 
 /**
  * Probes sandbox availability by running `sbx daemon status`. A zero exit with a
  * `Status: running` line yields `{ available: true }`; a missing CLI is distinguished from a
- * stopped daemon because they need different remediation.
+ * stopped daemon because they need different remediation. A run that produced no answer at all —
+ * a rejection, or a timeout because the daemon was busy serving other sandboxes — yields
+ * `'unknown'`: it is not evidence the daemon is absent, and reporting `'daemon-down'` there would
+ * fail loop launches with remediation advice for a daemon that is actually running.
  */
 export function checkSbxAvailability(run: CommandRunner): Promise<SbxAvailability> {
   return probeCliAvailability(run, {
@@ -373,10 +395,6 @@ export interface SandboxRuntime {
  */
 export const SBX_DEFAULT_TIMEOUT = 120000
 const SBX_TEMPLATE_LOAD_TIMEOUT = 600000
-/** Quick CLI round-trip bound for the availability probe; shared by both backends. */
-const SBX_PROBE_TIMEOUT = 5000
-/** Quick CLI round-trip bound for the inventory listing; shared by both backends. */
-const SBX_LIST_TIMEOUT = 5000
 const SBX_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox/i
 
 /**

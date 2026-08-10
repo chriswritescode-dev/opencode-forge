@@ -17,6 +17,12 @@ export interface RunCommandOpts {
 
 const DEFAULT_TIMEOUT = 120000
 
+/**
+ * Exit code reported when `runCommand` itself killed the child (timeout or hard deadline) rather
+ * than the command exiting on its own. Callers must treat it as "no answer", never as a result.
+ */
+export const COMMAND_TIMEOUT_EXIT_CODE = 124
+
 export function runCommand(command: string, args: string[], opts: RunCommandOpts): Promise<CommandResult> {
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT
   const logLabel = opts.logLabel ?? 'sandbox'
@@ -90,7 +96,7 @@ export function runCommand(command: string, args: string[], opts: RunCommandOpts
       settle({
         stdout,
         stderr,
-        exitCode: timedOut ? 124 : (code ?? 1),
+        exitCode: timedOut ? COMMAND_TIMEOUT_EXIT_CODE : (code ?? 1),
       })
     })
 
@@ -108,7 +114,7 @@ export function runCommand(command: string, args: string[], opts: RunCommandOpts
   const deadlinePromise = new Promise<CommandResult>((resolve) => {
     hardDeadlineId = setTimeout(() => {
       opts.logger.log(`[${logLabel}] hard deadline (${hardDeadline}ms) hit for: ${cmdPreview}`)
-      resolve({ stdout: '', stderr: `Command exceeded hard deadline of ${hardDeadline}ms`, exitCode: 124 })
+      resolve({ stdout: '', stderr: `Command exceeded hard deadline of ${hardDeadline}ms`, exitCode: COMMAND_TIMEOUT_EXIT_CODE })
     }, hardDeadline)
   })
 

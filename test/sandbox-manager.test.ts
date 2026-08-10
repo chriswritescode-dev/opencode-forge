@@ -248,7 +248,11 @@ describe('SandboxManager', () => {
         expect(commonWorkspace?.readOnly).not.toBe(true)
         // The git dir region is covered read-write by an accepted workspace.
         expect(workspaces.some(w => absoluteGitDir === w.hostDir || absoluteGitDir.startsWith(w.hostDir + '/'))).toBe(true)
-        expect(workspaces.some(w => w.readOnly === true)).toBe(false)
+        // The hooks directory is the one read-only carve-out: the sandbox must not be able to
+        // plant a hook that the user's host git would execute.
+        const hooksDir = join(absoluteCommonDir, 'hooks')
+        expect(workspaces).toContainEqual({ hostDir: hooksDir, readOnly: true })
+        expect(workspaces.filter(w => w.readOnly === true)).toHaveLength(1)
       } finally {
         rmSync(tempDir, { recursive: true, force: true })
       }
@@ -283,6 +287,46 @@ describe('SandboxManager', () => {
         expect(workspaces.some(w => w.hostDir === commonDir && w.readOnly !== true)).toBe(true)
         expect(workspaces.some(w => gitDir === w.hostDir || gitDir.startsWith(w.hostDir + '/'))).toBe(true)
         // ...while the read-only project workspace, an ancestor of the git dirs, is dropped.
+        expect(workspaces.some(w => w.hostDir === projectDir)).toBe(false)
+        expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    test('default-layout worktree keeps its mount and the git common dir while the read-only project is dropped', async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-default-layout-'))
+      try {
+        const projectDir = join(tempDir, 'main')
+        const worktreeDir = join(projectDir, '.git', 'worktrees', 'feature-test')
+        execSync(`git init "${projectDir}"`, { cwd: tempDir })
+        execSync('git config user.email test@example.com', { cwd: projectDir })
+        execSync('git config user.name Test', { cwd: projectDir })
+        execSync('git commit --allow-empty -m init', { cwd: projectDir })
+        execSync('git worktree add -b feature-test .git/worktrees/feature-test', { cwd: projectDir })
+
+        const mockRuntime = createMockSandboxRuntime()
+        const logger = createMockLogger()
+        const manager = createSandboxManager(
+          mockRuntime,
+          { image: 'oc-forge-sandbox:latest', sourceProjectDir: projectDir, mountProjectReadonly: true },
+          logger
+        )
+
+        await manager.start('test', worktreeDir)
+
+        const workspaces = mockRuntime.getCreateSandboxCalls()[0][1]
+        const commonDir = resolve(worktreeDir, execSync('git rev-parse --git-common-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim())
+
+        // The loop's own worktree is the primary writable workspace and is never dropped, even
+        // though it lives inside the git common dir and the source project.
+        expect(workspaces[0]).toEqual({ hostDir: worktreeDir })
+        // The git common dir (an ancestor of the worktree) is read-write and mounted alongside it,
+        // so in-sandbox git reads/writes keep working for concurrent loops in the same project.
+        expect(workspaces.some(w => w.hostDir === commonDir && w.readOnly !== true)).toBe(true)
+        // ...but its hooks directory is carved out read-only so the sandbox cannot plant a hook.
+        expect(workspaces).toContainEqual({ hostDir: join(commonDir, 'hooks'), readOnly: true })
+        // The read-only project mount, an ancestor of the writable worktree, is still dropped.
         expect(workspaces.some(w => w.hostDir === projectDir)).toBe(false)
         expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
       } finally {
@@ -568,7 +612,25 @@ describe('SandboxManager', () => {
   })
 
   describe('buildSandboxWorkspaces', () => {
-    test('drops nested workspaces and keeps non-nested mounts', () => {
+    test('keeps a read-write ancestor alongside a read-write descendant', () => {
+      const logger = createMockLogger()
+      const result = buildSandboxWorkspaces(
+        [
+          { hostDir: '/a/b', containerDir: '/a/b' },
+          { hostDir: '/a', containerDir: '/a' },
+          { hostDir: '/c', containerDir: '/c' },
+        ],
+        logger
+      )
+
+      // sbx accepts nested workspaces, so a writable ancestor mounts alongside the primary
+      // workspace instead of being dropped — this is what keeps git metadata available.
+      expect(result).toHaveLength(3)
+      expect(result.map((w) => w.hostDir)).toEqual(['/a/b', '/a', '/c'])
+      expect(logger.log).not.toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
+    })
+
+    test('skips a mount already covered by an accepted mount with the same access', () => {
       const logger = createMockLogger()
       const result = buildSandboxWorkspaces(
         [
@@ -579,25 +641,56 @@ describe('SandboxManager', () => {
         logger
       )
 
-      expect(result).toHaveLength(2)
-      expect(result[0].hostDir).toBe('/a')
-      expect(result[1].hostDir).toBe('/b')
-      expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/overlaps/))
+      expect(result.map((w) => w.hostDir)).toEqual(['/a', '/b'])
+      expect(logger.log).not.toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
     })
 
-    test('drops an ancestor mount that arrives after a descendant', () => {
+    test('drops a read-only ancestor mount that arrives after a read-write descendant', () => {
       const logger = createMockLogger()
       const result = buildSandboxWorkspaces(
         [
           { hostDir: '/a/b', containerDir: '/a/b' },
-          { hostDir: '/a', containerDir: '/a' },
+          { hostDir: '/a', containerDir: '/a', readOnly: true },
         ],
         logger
       )
 
+      // A read-only ancestor would shadow the writable descendant inside the sandbox.
       expect(result).toHaveLength(1)
       expect(result[0].hostDir).toBe('/a/b')
-      expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/overlaps/))
+      expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
+    })
+
+    test('keeps a read-only mount nested inside a read-write mount', () => {
+      const logger = createMockLogger()
+      const result = buildSandboxWorkspaces(
+        [
+          { hostDir: '/a', containerDir: '/a' },
+          { hostDir: '/a/sub', containerDir: '/a/sub', readOnly: true },
+        ],
+        logger
+      )
+
+      // Restricting a subtree read-only is safe: it only narrows writable access.
+      expect(result).toHaveLength(2)
+      expect(result[1]).toEqual({ hostDir: '/a/sub', readOnly: true })
+      expect(logger.log).not.toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
+    })
+
+    test('drops a read-write descendant of an already-accepted read-only mount', () => {
+      const logger = createMockLogger()
+      const result = buildSandboxWorkspaces(
+        [
+          { hostDir: '/a', containerDir: '/a', readOnly: true },
+          { hostDir: '/a/sub', containerDir: '/a/sub' },
+        ],
+        logger
+      )
+
+      // The read-only ancestor shadows the descendant, so mounting it read-write is useless.
+      expect(result).toHaveLength(1)
+      expect(result[0]).toEqual({ hostDir: '/a', readOnly: true })
+      expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
     })
   })
 })

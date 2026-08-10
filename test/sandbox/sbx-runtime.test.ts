@@ -15,6 +15,7 @@ import {
   prefixCommandWithCwd,
 } from '../../src/sandbox/sbx'
 import type { CommandRunner } from '../../src/sandbox/sbx'
+import { COMMAND_TIMEOUT_EXIT_CODE } from '../../src/sandbox/process'
 import type { Logger } from '../../src/types'
 
 const logger: Logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
@@ -293,14 +294,27 @@ describe('availability', () => {
     await expect(checkSbxAvailability(fake)).resolves.toEqual({ available: false, reason: 'unknown' })
   })
 
-  test('passes a 5000ms timeout to the runner', async () => {
+  test('a timed-out probe yields unknown, not daemon-down', async () => {
+    // A busy daemon (other loops mid-exec) can blow the query bound while running perfectly well;
+    // reporting daemon-down there tells the user to start a daemon that is already up.
+    const fake: CommandRunner = async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: COMMAND_TIMEOUT_EXIT_CODE,
+    })
+    const result = await checkSbxAvailability(fake)
+    expect(result).toMatchObject({ available: false, reason: 'unknown' })
+    if (!result.available) expect(result.detail).toMatch(/did not answer/)
+  })
+
+  test('passes a 30000ms timeout to the runner', async () => {
     const optsSeen: Array<{ timeout?: number }> = []
     const fake: CommandRunner = async (_args, opts) => {
       optsSeen.push(opts ?? {})
       return { stdout: 'Status: running\n', stderr: '', exitCode: 0 }
     }
     await checkSbxAvailability(fake)
-    expect(optsSeen[0]?.timeout).toBe(5000)
+    expect(optsSeen[0]?.timeout).toBe(30000)
   })
 
   test('describeSbxUnavailable carries the remediation strings', () => {

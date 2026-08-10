@@ -4,7 +4,6 @@ import { buildArchitectAgent } from './architect'
 import { buildAuditorAgent, buildAuditorLoopAgent } from './auditor'
 import { buildArchitectAutoAgent } from './architect-auto'
 import { buildFeatureSplitterAgent } from './feature-splitter'
-import { buildImpactReviewerAgent } from './impact-reviewer'
 
 export function buildAgents(promptsDir?: string): Record<AgentRole, AgentDefinition> {
   return {
@@ -14,7 +13,6 @@ export function buildAgents(promptsDir?: string): Record<AgentRole, AgentDefinit
     'auditor-loop': buildAuditorLoopAgent(promptsDir),
     'architect-auto': buildArchitectAutoAgent(promptsDir),
     'feature-splitter': buildFeatureSplitterAgent(promptsDir),
-    'impact-reviewer': buildImpactReviewerAgent(promptsDir),
   }
 }
 
