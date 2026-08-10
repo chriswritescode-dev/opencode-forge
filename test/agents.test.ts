@@ -129,6 +129,22 @@ describe('Agent definitions', () => {
       expect(prompt.toLowerCase()).toContain('deviation acceptance')
     })
 
+    test('auditor-loop final rules contain direct Whole-Change Impact Analysis with the four concrete categories', () => {
+      const prompt = auditorLoopAgent.systemPrompt
+      expect(prompt).toContain('### Whole-Change Impact Analysis')
+      expect(prompt).toContain('There is no separate agent; you perform it yourself.')
+      expect(prompt).toContain('**Duplication**')
+      expect(prompt).toContain('**Parallel implementations**')
+      expect(prompt).toContain('**Missed callers or companion updates**')
+      expect(prompt).toContain('**Unreachable or superseded code**')
+    })
+
+    test('auditor-loop combined prompt does not reference impact-reviewer or a separate impact agent', () => {
+      const prompt = auditorLoopAgent.systemPrompt
+      expect(prompt).not.toContain('impact-reviewer')
+      expect(prompt).not.toMatch(/impact.?agent/i)
+    })
+
     test('architect-auto agent has stable metadata', () => {
       expect(architectAutoAgent.role).toBe('architect-auto')
       expect(architectAutoAgent.id).toBe('opencode-architect-auto')
@@ -170,21 +186,6 @@ describe('Agent definitions', () => {
       expect(featureSplitterAgent.tools?.exclude).toContain('plan-edit')
     })
 
-    test('impact-reviewer agent is a read-only subagent that cannot write findings', () => {
-      const agents = buildAgents()
-      const agent = agents['impact-reviewer']
-      expect(agent.role).toBe('impact-reviewer')
-      expect(agent.id).toBe('opencode-impact-reviewer')
-      expect(agent.mode).toBe('subagent')
-      expect(agent.hidden).toBe(true)
-      const excluded = agent.tools?.exclude ?? []
-      for (const tool of ['edit', 'write', 'multiedit', 'apply_patch', 'review-write', 'review-delete', 'plan-adjust', 'task']) {
-        expect(excluded).toContain(tool)
-      }
-      expect(excluded).not.toContain('review-read')
-      expect(agent.systemPrompt).toContain('blocking')
-    })
-
     test('architect agents retain plan-authoring tools', () => {
       expect(architectAgent.tools?.exclude).not.toContain('plan-write')
       expect(architectAgent.tools?.exclude).not.toContain('plan-edit')
@@ -199,17 +200,16 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
     })
 
-    test('buildAgents returns all 7 agent roles', () => {
+    test('buildAgents returns all 6 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)
-      expect(roles).toHaveLength(7)
+      expect(roles).toHaveLength(6)
       expect(roles).toContain('code')
       expect(roles).toContain('architect')
       expect(roles).toContain('auditor')
       expect(roles).toContain('auditor-loop')
       expect(roles).toContain('architect-auto')
       expect(roles).toContain('feature-splitter')
-      expect(roles).toContain('impact-reviewer')
     })
   })
 
@@ -252,7 +252,7 @@ describe('Agent definitions', () => {
         'material ambiguity',
         'success criteria',
         'scope boundaries',
-        'brief chat summary',
+        'do not emit the full plan',
         '`plan-read`',
         '`plan-write`',
         '`plan-edit`',
@@ -274,11 +274,34 @@ describe('Agent definitions', () => {
       expect(prompt).not.toContain('<!-- forge-plan:end -->')
     })
 
-    test('architect.systemPrompt preserves exact approval choices and loop dispatch', () => {
+    test('architect prompts require source-backed impact planning contracts', () => {
+      for (const prompt of [architectAgent.systemPrompt, architectAutoAgent.systemPrompt]) {
+        for (const contract of [
+          'existing helpers, utilities, types, constants, and platform features',
+          'all callers and references',
+          'Name the one existing or planned owner for each shared behavior',
+          'prohibit parallel implementations across phases',
+          'every affected caller and companion update',
+          'every obsolete or superseded code path to remove, with exact files/symbols',
+          'never a vague "update related code"',
+          'callers converge on the single point of truth',
+          'targeted reference/search assertions',
+          'searching for a stale symbol',
+        ]) {
+          expect(prompt).toContain(contract)
+        }
+      }
+    })
+
+    test('architect.systemPrompt concludes without dispatching execution', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('"New session", "Execute here", and "Loop"')
-      expect(prompt).toContain('call `execute-plan` with a short `title`')
-      expect(prompt).toContain('uses the stored plan automatically')
+      expect(prompt).toContain('summarizing the plan in chat')
+      expect(prompt).toContain('do not emit the full plan')
+      expect(prompt).toContain('do not call `execute-plan`')
+      expect(prompt).toContain('do not ask how to launch')
+      expect(prompt).toContain('The user decides whether and how to execute')
+      expect(prompt).not.toContain('"New session", "Execute here", and "Loop"')
+      expect(prompt).not.toContain('uses the stored plan automatically')
     })
 
     test('architect-auto.systemPrompt keeps autonomous plan contracts aligned', () => {

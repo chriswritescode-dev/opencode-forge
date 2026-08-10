@@ -115,7 +115,7 @@ Execution flow dialog with mode and model selection:
 
 ## Agents
 
-The plugin bundles three user-facing agents plus hidden `auditor-loop`, `architect-auto`, `feature-splitter`, and `impact-reviewer` agents for loop audits, grouped execution, and impact analysis. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
+The plugin bundles three user-facing agents plus hidden `auditor-loop`, `architect-auto`, and `feature-splitter` agents for loop audits and grouped execution. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
 
 | Agent | Mode | Description |
 |-------|------|-------------|
@@ -125,7 +125,6 @@ The plugin bundles three user-facing agents plus hidden `auditor-loop`, `archite
 | **auditor-loop** | primary, hidden | Internal audit agent used for loop-runner audit sessions. |
 | **architect-auto** | primary, hidden | Autonomous planner used by grouped execution. |
 | **feature-splitter** | primary, hidden | Splits broad grouped work into implementation-coherent features. |
-| **impact-reviewer** | subagent, hidden | Read-only impact analysis subagent invoked during loop audits to find duplicated logic, consolidation opportunities, missed callers, and dead code across sections. |
 
 The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
