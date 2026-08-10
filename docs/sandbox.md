@@ -11,6 +11,8 @@ See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](lo
 - A platform the `sbx` daemon supports: macOS 14+ on Apple silicon, Windows 11 with Hypervisor Platform, or Ubuntu 24.04+ with KVM.
 - Docker, used only to build the sandbox template (see below).
 
+The daemon serializes its work behind in-flight sandbox commands, so `sbx daemon status` and `sbx ls` can take seconds while several loops are running. Forge bounds those queries at 30s and treats a query that does not answer as *indeterminate* rather than "daemon down": it logs and continues, letting the actual sandbox operation report the authoritative error. Only a daemon that answers definitively (or a missing CLI) fails a loop launch with remediation advice.
+
 Build and load the bundled template:
 
 ```bash

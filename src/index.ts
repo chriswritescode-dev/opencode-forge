@@ -380,15 +380,21 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         try {
           const available = await runtime.checkAvailable()
           if (!available.available) {
-            publishToast({
-              client: forgeClient,
-              directory,
-              logger,
-              title: 'Sandbox unavailable',
-              message: describeSbxUnavailable(available),
-              variant: 'warning',
-              duration: 10_000,
-            })
+            // `unknown` means the probe itself could not answer (a daemon busy with other
+            // sandboxes; every worktree loads its own plugin instance, so probes race at startup).
+            // That is not evidence of unavailability, and the template probe below would be just as
+            // unreliable, so stay quiet instead of raising a false alarm about either.
+            if (available.reason !== 'unknown') {
+              publishToast({
+                client: forgeClient,
+                directory,
+                logger,
+                title: 'Sandbox unavailable',
+                message: describeSbxUnavailable(available),
+                variant: 'warning',
+                duration: 10_000,
+              })
+            }
             return
           }
           const exists = await runtime.templateExists(sandboxImage)

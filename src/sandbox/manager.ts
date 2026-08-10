@@ -208,6 +208,15 @@ export function createSandboxManager(
       return
     }
     const result = await runtime.checkAvailable()
+    // An inconclusive probe says nothing about the daemon: `sbx daemon status` queues behind
+    // in-flight sandbox work, so starting a second loop while the first one is busy can exhaust the
+    // query bound even though the daemon is healthy. Failing on it would block loop launches under
+    // exactly the concurrency forge exists to provide, and caching it would extend one slow probe
+    // into a window of refusals. Proceed instead and let the real operation report authoritatively.
+    if (!result.available && result.reason === 'unknown') {
+      logger.log(`Sandbox: could not determine daemon availability (${result.detail ?? 'no detail'}); continuing`)
+      return
+    }
     runtimeAvailableCache = { value: result, at: now }
     if (!result.available) {
       throw new Error(describeSbxUnavailable(result))
@@ -218,6 +227,12 @@ export function createSandboxManager(
     if (imageReady) return
     const exists = await runtime.templateExists(config.image)
     if (!exists) {
+      // A daemon that cannot answer `sbx template ls` is indistinguishable from a missing template,
+      // so confirm it is really reachable before telling the user to rebuild the image.
+      const availability = await runtime.checkAvailable()
+      if (!availability.available && availability.reason !== 'unknown') {
+        throw new Error(describeSbxUnavailable(availability))
+      }
       const buildHint = `  ${formatTemplateBuildCommands(
         config.buildContextDir ?? '<build-context-dir>',
         config.image,

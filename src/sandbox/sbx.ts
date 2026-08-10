@@ -3,7 +3,7 @@
  * these functions only shape names and argument vectors so they are trivially testable.
  */
 import type { Logger, SandboxResources } from '../types'
-import { runCommand, type CommandResult } from './process'
+import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
 
 /**
  * Sanitizes a raw string into a name `sbx create --name` accepts. `sbx` allows only
@@ -245,14 +245,25 @@ const SBX_RUNNING_RE = /^\s*status:\s*running/im
 const SBX_NOT_INSTALLED_RE = /ENOENT|not found|command not found/i
 
 /**
+ * Bound for the short informational queries (`daemon status`, `ls --json`). The daemon serializes
+ * these behind in-flight sandbox work, so with several loops running at once they can take seconds;
+ * the previous 5s bound made a merely busy daemon indistinguishable from an absent one. Generous,
+ * but still bounded so a wedged daemon cannot hang a loop launch.
+ */
+const SBX_QUERY_TIMEOUT = 30000
+
+/**
  * Probes sandbox availability by running `sbx daemon status`. A zero exit with a
  * `Status: running` line yields `{ available: true }`; a missing CLI is distinguished from a
- * stopped daemon because they need different remediation. A rejected run yields `'unknown'`.
+ * stopped daemon because they need different remediation. A run that produced no answer at all —
+ * a rejection, or a timeout because the daemon was busy serving other sandboxes — yields
+ * `'unknown'`: it is not evidence the daemon is absent, and reporting `'daemon-down'` there would
+ * fail loop launches with remediation advice for a daemon that is actually running.
  */
 export async function checkSbxAvailability(run: CommandRunner): Promise<SbxAvailability> {
   let result: CommandResult
   try {
-    result = await run(['daemon', 'status'], { timeout: 5000 })
+    result = await run(['daemon', 'status'], { timeout: SBX_QUERY_TIMEOUT })
   } catch {
     return { available: false, reason: 'unknown' }
   }
@@ -262,6 +273,13 @@ export async function checkSbxAvailability(run: CommandRunner): Promise<SbxAvail
   const combined = `${result.stdout}\n${result.stderr}`
   if (SBX_NOT_INSTALLED_RE.test(combined)) {
     return { available: false, reason: 'not-installed' }
+  }
+  if (result.exitCode === COMMAND_TIMEOUT_EXIT_CODE) {
+    return {
+      available: false,
+      reason: 'unknown',
+      detail: `\`sbx daemon status\` did not answer within ${SBX_QUERY_TIMEOUT}ms`,
+    }
   }
   return { available: false, reason: 'daemon-down', detail: combined.trim() }
 }
@@ -323,7 +341,6 @@ export interface SandboxRuntime {
  */
 export const SBX_DEFAULT_TIMEOUT = 120000
 const SBX_TEMPLATE_LOAD_TIMEOUT = 600000
-const SBX_LIST_TIMEOUT = 5000
 const SBX_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox/i
 
 /**
@@ -401,7 +418,7 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
   async function getSandboxState(name: string): Promise<SandboxState> {
     let result: CommandResult
     try {
-      result = await run(['ls', '--json'], { timeout: SBX_LIST_TIMEOUT })
+      result = await run(['ls', '--json'], { timeout: SBX_QUERY_TIMEOUT })
     } catch {
       return 'unknown'
     }
@@ -415,7 +432,7 @@ export function createSbxRuntime(logger: Logger, opts?: { run?: CommandRunner })
 
   async function listSandboxesByPrefix(prefix: string): Promise<string[]> {
     try {
-      const result = await run(['ls', '--json'], { timeout: SBX_LIST_TIMEOUT })
+      const result = await run(['ls', '--json'], { timeout: SBX_QUERY_TIMEOUT })
       if (result.exitCode !== 0) return []
       return parseSbxSandboxList(result.stdout)
         .map((e) => e.name)

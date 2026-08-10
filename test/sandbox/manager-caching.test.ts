@@ -5,6 +5,7 @@ import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-m
 
 const available: SbxAvailability = { available: true }
 const daemonDown: SbxAvailability = { available: false, reason: 'daemon-down', detail: 'mock daemon down' }
+const indeterminate: SbxAvailability = { available: false, reason: 'unknown', detail: 'probe timed out' }
 
 describe('SandboxManager caching', () => {
   let mockRuntime: ReturnType<typeof createMockSandboxRuntime>
@@ -71,5 +72,40 @@ describe('SandboxManager caching', () => {
 
     expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(1)
     expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
+  })
+
+  it('should start the sandbox when availability is indeterminate instead of failing the launch', async () => {
+    // A busy daemon cannot answer the probe in time; that must not block a concurrent loop launch.
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => indeterminate)
+
+    const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
+
+    await expect(manager.start('test-wt', '/tmp/project')).resolves.toEqual({ containerName: 'forge-test-wt' })
+    expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(1)
+  })
+
+  it('should not cache an indeterminate probe, so the next launch re-probes immediately', async () => {
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => indeterminate)
+
+    const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
+
+    await manager.start('wt-a', '/tmp/project')
+    await manager.start('wt-b', '/tmp/project')
+
+    expect(mockRuntime.checkAvailable).toHaveBeenCalledTimes(2)
+  })
+
+  it('should report an unreachable daemon rather than a missing template', async () => {
+    // `sbx template ls` failing looks identical to an absent template, so the daemon error wins.
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => available)
+    mockRuntime.templateExists = vi.fn(async () => false)
+
+    const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
+
+    mockRuntime.checkAvailable = vi.fn(async (): Promise<SbxAvailability> => daemonDown)
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('daemon is not running')
   })
 })
