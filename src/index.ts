@@ -14,7 +14,6 @@ import { createSandboxRuntime, resolveSandboxMode } from './sandbox/runtime-fact
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
-import { resolveOpencodeTmpDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from './constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from './utils/loop-permission-options'
@@ -340,7 +339,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
           dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
-          tmpDir: resolveOpencodeTmpDir(),
           sourceProjectDir: projectRoot,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
           ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),

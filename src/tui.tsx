@@ -252,8 +252,8 @@ function SandboxBuildDialog(props: {
       await buildAndLoadSandboxTemplate(props.buildContextDir, props.image, {
         runCommand,
         loadTemplate: (tar, ref) => createSandboxRuntime(props.mode, logger, { dataDir: props.dataDir }).loadTemplate(tar, ref),
-        logger,
         tmpDir: tmpdir(),
+        logger,
       }, { browserControl: props.browserControl })
       props.api.ui.toast({
         message: `Sandbox template ${props.image} built and loaded successfully`,

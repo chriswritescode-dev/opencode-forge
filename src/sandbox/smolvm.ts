@@ -10,7 +10,6 @@ import { copyFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { Logger } from '../types'
 import { runCommand, type CommandResult } from './process'
-import { isSameOrDescendantPath, resolveSandboxEnvDir } from './path'
 import {
   createSandboxInventory,
   normalizeMemoryToken,
@@ -239,10 +238,8 @@ const SMOLVM_REMOVE_MISSING_RE = /not found|no such machine|unknown machine|does
 /**
  * Assembles a `SandboxRuntime` from the pure smolvm helpers, routing every method through an
  * injectable `CommandRunner`. The default runner spawns the `smolvm` binary; tests inject a fake.
- * `dataDir` enables the two forge-managed paths: the image store (`<dataDir>/smolvm-images`, the
- * `docker save` tar is passed to `machine create --image` per create — smolvm has no template
- * store) and the env-passthrough directory (`<dataDir>/sandbox-env`, mounted read-only at its
- * identical path so execs can source the per-sandbox env file the manager wrote).
+ * `dataDir` enables the image store (`<dataDir>/smolvm-images`); the `docker save` tar is passed
+ * to `machine create --image` per create because smolvm has no template store.
  */
 export function createSmolvmRuntime(
   logger: Logger,
@@ -251,7 +248,6 @@ export function createSmolvmRuntime(
   const run: CommandRunner =
     opts?.run ?? ((args, o) => runCommand('smolvm', args, { ...o, logger, logLabel: 'smolvm' }))
   const imageStoreDir = opts?.dataDir ? join(opts.dataDir, 'smolvm-images') : undefined
-  const envDir = opts?.dataDir ? resolveSandboxEnvDir(opts.dataDir) : undefined
   const inventory = createSandboxInventory(run, ['machine', 'ls', '--json'])
 
   async function checkAvailable(): Promise<SbxAvailability> {
@@ -319,13 +315,8 @@ export function createSmolvmRuntime(
     if (opts?.template !== undefined && image === null) {
       throw new Error(`Sandbox template "${opts.template}" not found in the smolvm image store`)
     }
-    const allWorkspaces = [...workspaces]
-    if (envDir && !allWorkspaces.some((ws) => isSameOrDescendantPath(envDir, ws.hostDir))) {
-      mkdirSync(envDir, { recursive: true })
-      allWorkspaces.push({ hostDir: envDir, readOnly: true })
-    }
     const createResult = await run(
-      buildSmolvmCreateArgs(name, allWorkspaces, {
+      buildSmolvmCreateArgs(name, workspaces, {
         image: image ?? undefined,
         cpus: parseSbxCpus(opts?.resources?.cpus, logger),
         memMiB: normalizeSmolvmMemoryMiB(opts?.resources?.memory, logger),

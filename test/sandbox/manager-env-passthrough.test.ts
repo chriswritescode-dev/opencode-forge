@@ -59,6 +59,10 @@ describe('SandboxManager env passthrough file lifecycle', () => {
     // Only the set variable is listed; unset/absent names are omitted.
     expect(readFileSync(expectedPath, 'utf-8')).not.toMatch(/FORGE_TEST_EMPTY/)
     expect(statSync(expectedPath).mode & 0o777).toBe(0o600)
+    expect(runtime.getCreateSandboxCalls()[0][1]).toContainEqual({
+      hostDir: join(dataDir, 'sandbox-env'),
+      readOnly: true,
+    })
 
     await manager.stop('test')
 
@@ -81,6 +85,10 @@ describe('SandboxManager env passthrough file lifecycle', () => {
 
     expect(manager.getActive('test')?.envFile).toBeUndefined()
     expect(existsSync(join(dataDir, 'sandbox-env'))).toBe(false)
+    expect(runtime.getCreateSandboxCalls()[0][1]).not.toContainEqual({
+      hostDir: join(dataDir, 'sandbox-env'),
+      readOnly: true,
+    })
   })
 
   test('no sandbox-env directory is created when no listed variable is set', async () => {

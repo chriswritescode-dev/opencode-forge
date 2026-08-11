@@ -23,12 +23,6 @@ export interface SandboxManagerConfig {
    */
   toolOutputDir?: string
   /**
-   * Host path of the shared loop scratch/temp directory. When set, it is created if missing and
-   * bind-mounted read-WRITE at the identical container path, so absolute temp paths resolve
-   * unchanged inside the container and match the host (worktree-only) view.
-   */
-  tmpDir?: string
-  /**
    * Network policy for the sbx proxy. `env` lists host environment variable names to pass through
    * into the sandbox on every exec (written to a per-sandbox env file under `<dataDir>/sandbox-env/`).
    * `allow` lists egress hosts to permit on the sbx network proxy's default-deny policy.
@@ -257,12 +251,9 @@ export function createSandboxManager(
       : undefined
 
     const toolOutputMount = resolveToolOutputMount(absolute)
-    const tmpMount = resolveTempMount(absolute)
-
     const reserved = new Set<string>([worktreeMount.containerDir, ...orderedGitMounts.map((m) => m.containerDir)])
     if (projectMount) reserved.add(projectMount.containerDir)
     if (toolOutputMount) reserved.add(toolOutputMount.containerDir)
-    if (tmpMount) reserved.add(tmpMount.containerDir)
     const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
 
     // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
@@ -278,7 +269,6 @@ export function createSandboxManager(
       ...orderedGitMounts,
       ...(projectMount ? [projectMount] : []),
       ...(toolOutputMount ? [toolOutputMount] : []),
-      ...(tmpMount ? [tmpMount] : []),
       ...customMounts,
     ]
 
@@ -309,20 +299,6 @@ export function createSandboxManager(
     return { hostDir: resolved, containerDir: resolved, readOnly: true }
   }
 
-  function resolveTempMount(workspaceDir: string): SandboxMount | undefined {
-    const dir = config.tmpDir
-    if (!dir) return undefined
-    const resolved = resolve(dir)
-    try {
-      mkdirSync(resolved, { recursive: true })
-    } catch (err) {
-      logger.log(`Sandbox: skipping temp mount; could not create ${resolved}: ${err instanceof Error ? err.message : String(err)}`)
-      return undefined
-    }
-    if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
-    return { hostDir: resolved, containerDir: resolved, readOnly: false }
-  }
-
   function detectGitMount(projectDir: string): SandboxMount[] {
     const cached = gitMountCache.get(projectDir)
     if (cached) return cached
@@ -346,20 +322,9 @@ export function createSandboxManager(
       paths.add(resolvedCommonDir)
     }
 
-    const result: SandboxMount[] = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
-
-    // The git metadata region is mounted read-write so in-sandbox git works, which would also let
-    // the sandbox plant a hook that runs on the host under the user's account. Forge's own git
-    // disables hooksPath (see `git-service`), but the user's git in the same repository does not,
-    // so the hooks directory is re-mounted read-only inside the writable region. `sbx` workspaces
-    // are directories only, so the repo-local config file cannot be protected the same way.
-    const hooksDir = join(resolvedCommonDir, 'hooks')
-    if (existsSync(hooksDir)) {
-      result.push({ hostDir: hooksDir, containerDir: hooksDir, readOnly: true })
-    }
-
-    gitMountCache.set(projectDir, result)
-    return result
+    const mounts: SandboxMount[] = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
+    gitMountCache.set(projectDir, mounts)
+    return mounts
   }
 
   function writeEnvPassthroughFile(containerName: string): string | undefined {
@@ -437,23 +402,30 @@ export function createSandboxManager(
 
     const { mounts } = buildMountPlan(absoluteProjectDir)
     const workspaces = buildSandboxWorkspaces(mounts, logger)
+    const envFile = writeEnvPassthroughFile(containerName)
+    if (envFile) workspaces.push({ hostDir: resolveSandboxEnvDir(config.dataDir!), readOnly: true })
     const resources: SandboxResources = {
       memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
       cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
     }
     logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus})`)
-    await runtime.createSandbox(containerName, workspaces, {
-      template: config.image,
-      resources,
-      networkAllowHosts: config.network?.allow,
-    })
+    try {
+      await runtime.createSandbox(containerName, workspaces, {
+        template: config.image,
+        resources,
+        networkAllowHosts: config.network?.allow,
+      })
+    } catch (err) {
+      if (envFile) rmSync(envFile, { force: true })
+      throw err
+    }
 
     const active: ActiveSandbox = {
       containerName,
       projectDir: absoluteProjectDir,
       startedAt: startedAt ?? new Date().toISOString(),
       mounts,
-      envFile: writeEnvPassthroughFile(containerName),
+      envFile,
     }
 
     activeSandboxes.set(worktreeName, active)

@@ -248,11 +248,7 @@ describe('SandboxManager', () => {
         expect(commonWorkspace?.readOnly).not.toBe(true)
         // The git dir region is covered read-write by an accepted workspace.
         expect(workspaces.some(w => absoluteGitDir === w.hostDir || absoluteGitDir.startsWith(w.hostDir + '/'))).toBe(true)
-        // The hooks directory is the one read-only carve-out: the sandbox must not be able to
-        // plant a hook that the user's host git would execute.
-        const hooksDir = join(absoluteCommonDir, 'hooks')
-        expect(workspaces).toContainEqual({ hostDir: hooksDir, readOnly: true })
-        expect(workspaces.filter(w => w.readOnly === true)).toHaveLength(1)
+        expect(workspaces.filter(w => w.readOnly === true)).toHaveLength(0)
       } finally {
         rmSync(tempDir, { recursive: true, force: true })
       }
@@ -324,8 +320,6 @@ describe('SandboxManager', () => {
         // The git common dir (an ancestor of the worktree) is read-write and mounted alongside it,
         // so in-sandbox git reads/writes keep working for concurrent loops in the same project.
         expect(workspaces.some(w => w.hostDir === commonDir && w.readOnly !== true)).toBe(true)
-        // ...but its hooks directory is carved out read-only so the sandbox cannot plant a hook.
-        expect(workspaces).toContainEqual({ hostDir: join(commonDir, 'hooks'), readOnly: true })
         // The read-only project mount, an ancestor of the writable worktree, is still dropped.
         expect(workspaces.some(w => w.hostDir === projectDir)).toBe(false)
         expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))

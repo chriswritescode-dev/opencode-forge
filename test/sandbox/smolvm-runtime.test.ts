@@ -347,7 +347,7 @@ describe('runtime', () => {
     await expect(rt.loadTemplate('/tmp/t.tar', 'oc-forge-sandbox:latest')).rejects.toThrow('no image store')
   })
 
-  test('createSandbox emits create-then-start with --net, env-dir mount, allow-host and resolved tar image', async () => {
+  test('createSandbox emits create-then-start with --net, allow-host and resolved tar image', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'smolvm-data-'))
     try {
       const store = join(dir, 'smolvm-images')
@@ -377,8 +377,6 @@ describe('runtime', () => {
         '8192',
         '-v',
         '/work:/work',
-        '-v',
-        `${join(dir, 'sandbox-env')}:${join(dir, 'sandbox-env')}:ro`,
       ])
       expect(calls[0].opts?.timeout).toBe(120000)
       expect(calls[1].args).toEqual(['machine', 'start', '--name', 'forge-c'])
