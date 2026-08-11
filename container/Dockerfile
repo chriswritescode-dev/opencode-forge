@@ -21,6 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# Guarantee passwordless root elevation for the `agent` user, independent of the
+# base template's sudo configuration, so system-wide package installs (apt, gem,
+# npm -g, pip) work inside sandbox loops. `sbx` commands stay unprivileged as
+# `agent`; installs use an explicit `sudo` prefix.
+RUN apt-get update && apt-get install -y --no-install-recommends sudo \
+    && echo 'agent ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/forge-agent \
+    && chmod 0440 /etc/sudoers.d/forge-agent \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*

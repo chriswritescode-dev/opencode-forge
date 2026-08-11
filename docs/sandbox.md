@@ -23,6 +23,8 @@ sbx template load forge-sandbox.tar
 
 The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a native Docker daemon inside each sandbox.
 
+The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. `sbx` commands stay unprivileged as `agent` (keeping host-mapped worktree files owned by the host user), so system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
+
 ### Browser Control (opt-in)
 
 Chromium and Browser Control add a substantial browser payload, so they are excluded by default. Enable them for future image builds:
