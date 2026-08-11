@@ -21,6 +21,7 @@ export const SANDBOX_CONTEXT_NOTE = [
   '[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.',
   'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
   'Run long commands in the foreground with a raised bash timeout: if the sandbox stops while idle it reboots the VM, so backgrounded work (&, nohup, setsid) and in-memory state are not guaranteed to survive, though files on disk do.',
+  'Passwordless sudo is available, so install missing tools system-wide (for example `sudo apt-get install ruby`) instead of expecting them to be preinstalled.',
 ].join('\n')
 
 export interface SandboxLoopContextState {

@@ -23,6 +23,8 @@ sbx template load forge-sandbox.tar
 
 The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a native Docker daemon inside each sandbox.
 
+The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime in either backend. smolvm commands are automatically elevated and run as root; `sbx` commands stay unprivileged as `agent` (which keeps host-mapped worktree files owned by the host user), so system-wide installs there use an explicit `sudo` prefix, for example `sudo apt-get install ruby`. The sandbox context note tells agents this.
+
 ### Browser Control (opt-in)
 
 Chromium and Browser Control add a substantial browser payload, so they are excluded by default. Enable them for future image builds:
@@ -225,7 +227,7 @@ smolvm bind-mounts host directories through virtiofs **without uid mapping**: th
 
 Because the image ships an empty `/etc/hosts`, `sudo` would print `unable to resolve host` on every command's stderr; the guest bootstrap appends the machine hostname once per machine start to silence it, guarded so it can never fail the bootstrap.
 
-This is a smolvm-only concern. `sbx` id-maps its bind mounts to the container user, so its commands stay unprivileged as `agent`.
+This is a smolvm-only concern. `sbx` id-maps its bind mounts to the container user, so its commands stay unprivileged as `agent`; system-wide installs in sbx loops use the image's passwordless sudo (`sudo apt-get install ruby`), keeping worktree writes host-user-owned.
 
 ### Docker in the Machine
 
