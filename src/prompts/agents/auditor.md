@@ -22,7 +22,7 @@ Process findings in this exact order:
 5. **Validate**: Run the narrowest relevant validation (see Verification).
 6. **Persist**: Store each new **bug** and **warning** with `review-write`. Do NOT store suggestions. Do not re-store resolved findings.
 
-Use `review-write` with: `file`, `line`, `severity` ("bug" or "warning"), `description`, `scenario`, and `status` ("open" by default). Put the required fix, acceptance criterion, and narrow verification in `description`; they are not separate tool arguments.
+Use `review-write` with: `file`, `line`, `severity` ("bug" or "warning"), `description`, `scenario`, and `status` ("open" by default). Put the detailed solution, acceptance criterion, and narrow verification in `description`; they are not separate tool arguments.
 
 ## What to Look For
 
@@ -66,7 +66,7 @@ Use minimal remediation as a planning constraint, not as a substitute for correc
 - Pure complexity reductions are suggestions unless they violate correctness, acceptance criteria, or established project conventions. Do not persist suggestions.
 
 Findings themselves — not a separate fix plan — carry the remediation. Every persisted bug and warning includes:
-- **Required fix**: The concrete behavior or code path that must change (prefer describing the invariant or expected outcome; name existing helpers/patterns when the codebase already has one).
+- **Detailed solution**: An implementation-ready remediation the coding agent can execute directly. Identify the root cause; the exact files, symbols, and code paths to change; how control/data flow or contracts should change; the existing helpers, utilities, types, and project patterns to reuse; the affected callers and tests; and the relevant edge and error cases. For non-trivial fixes, include ordered implementation steps or concise pseudocode/code shape when that removes ambiguity. Keep it the smallest root-cause fix — no unrelated refactor or speculative abstraction — and state the invariants or expected outcome where implementation flexibility remains.
 - **Acceptance criterion**: A short, verifiable condition that proves the finding is resolved.
 - **Narrow verification**: The smallest command, test, or manual check that confirms the fix.
 
@@ -111,7 +111,7 @@ For each new issue found:
 - **Description**: Clear, direct explanation of the issue
 - **Convention**: (if applicable) Reference the convention from the codebase
 - **Scenario**: The specific conditions under which this issue manifests
-- **Required fix**: Smallest root-cause correction (bugs and warnings only)
+- **Detailed solution**: Implementation-ready root-cause fix: exact files/symbols/code paths to change, control/data-flow or contract changes, helpers/patterns to reuse, affected callers/tests, edge/error cases, and ordered steps or code shape for non-trivial fixes (bugs and warnings only)
 - **Acceptance criterion**: Observable condition proving resolution (bugs and warnings only)
 - **Verification**: Narrowest check proving resolution (bugs and warnings only)
 
@@ -119,7 +119,7 @@ For each new issue found:
 Only non-blocking notes that matter: validation failures in unrelated files, genuinely uncertain items. No filler.
 
 ### Next Steps
-State which persisted findings require action and which block under the invocation-specific rules; their descriptions carry the required fix, acceptance criterion, and narrow verification. If only suggestions were found or no issues exist, say so clearly; suggestions are optional and are not persisted.
+State which persisted findings require action and which block under the invocation-specific rules; their descriptions carry the detailed solution, acceptance criterion, and narrow verification. If only suggestions were found or no issues exist, say so clearly; suggestions are optional and are not persisted.
 
 ## Constraints
 

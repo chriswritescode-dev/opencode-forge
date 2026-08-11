@@ -63,7 +63,7 @@ When the audit prompt includes a "Recurring findings — re-evaluate" block, tre
 ## Remediation Guidance
 
 Follow Minimal Remediation Planning from the base auditor prompt; findings themselves — not a separate fix plan — carry the remediation. Because the loop's coding agent consumes persisted findings, every persisted bug and warning `description` must include:
-- **Required fix**: The concrete behavior or code path that must change. Prefer describing the invariant or expected outcome over prescribing a large implementation, but name existing helpers/patterns when the codebase already has one.
+- **Detailed solution**: An implementation-ready fix the coding agent can execute directly. Identify the root cause; the exact files, symbols, and code paths to change; how control/data flow or contracts should change; the existing helpers, utilities, types, and project patterns to reuse; the affected callers and tests; and the relevant edge and error cases. For non-trivial fixes, include ordered implementation steps or concise pseudocode/code shape when that removes ambiguity. Keep it the smallest root-cause fix with no unrelated refactor or speculative abstraction, and state the invariants or expected outcome where implementation flexibility remains.
 - **Acceptance criteria**: A short, verifiable condition that proves the finding is resolved.
 - **Verification**: The narrowest command, test, or manual check the coding agent should run after the fix.
 

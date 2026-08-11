@@ -54,7 +54,10 @@ describe('loadPrompt', () => {
   test('auditor-loop-addendum requires remediation guidance for blocking findings', () => {
     const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
     expect(prompt).toContain('## Remediation Guidance')
-    expect(prompt).toContain('**Required fix**')
+    expect(prompt).toContain('**Detailed solution**')
+    expect(prompt).toContain('implementation-ready fix')
+    expect(prompt).toContain('exact files, symbols, and code paths')
+    expect(prompt).toContain('ordered implementation steps or concise pseudocode/code shape')
     expect(prompt).toContain('**Acceptance criteria**')
     expect(prompt).toContain('**Verification**')
   })
