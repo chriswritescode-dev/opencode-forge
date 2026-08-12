@@ -76,9 +76,10 @@ export interface LoopConfig {
   /**
    * Absolute directory paths that loop, audit, and post-action sessions may read despite
    * worktree isolation (e.g. an Obsidian vault). Each entry is granted via `external_directory`
-   * allow rules layered over the default deny. Provide the path as the session sees it on the
-   * host (governs host-side Read/Glob/Grep); for sandboxed loops, host-side tools still resolve
-   * host paths, so use the host path here rather than a container mount path.
+   * allow rules layered over the default deny, and is additionally bind-mounted read-only into
+   * the sandbox so in-container `bash`/`glob`/`grep` resolve the same tree host `read` does.
+   * Always an absolute host path: sbx mounts every workspace at its identical host path, so the
+   * same value is correct on both sides. Use `sandbox.mounts` for read-write container access.
    */
   allowExternalDirectories?: string[]
   /**

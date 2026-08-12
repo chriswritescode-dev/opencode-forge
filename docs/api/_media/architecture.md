@@ -109,15 +109,24 @@ Sandbox is optional. When the `sbx` daemon is available and `sandbox.mode = 'sbx
 
 1. When a sandbox loop starts, an `sbx` sandbox is created
 2. The worktree directory is mounted at its identical host path inside the sandbox
-3. Tool hooks redirect `bash`, `glob`, and `grep` calls into the sandbox via `sbx exec`
+3. `bash` runs inside the sandbox; `glob` and `grep` results are produced inside the sandbox
 4. File operations (`read`, `write`, `edit`) operate on the host directly
 5. On loop completion, the sandbox is stopped and removed
 
 ### Tool Redirection
 
-The sandbox uses OpenCode's tool hook system to intercept and redirect tool calls:
-- `tool.execute.before` hook prepends commands with `sbx exec`
-- `tool.execute.after` hook captures output and returns it to the host
+`bash` and the search tools reach the sandbox through two different mechanisms:
+
+- **`bash`** is redirected out of band, not through a tool hook. The `config` hook points
+  `cfg.shell` at the `forge-shell` shim (`sandbox/shell-shim.ts`) and the `shell.env` hook
+  injects `FORGE_SANDBOX_CONTAINER`. The shim `exec`s `sbx exec -w "$PWD" <container> bash "$@"`.
+  Tool arguments are never rewritten.
+- **`glob` and `grep`** use output replacement. `tool.execute.before` runs the equivalent
+  `rg` command inside the container and stores the result by `callID`; `tool.execute.after`
+  overwrites `output.output` with it. Because `tool.execute.before` cannot cancel a tool call,
+  the native host search still executes and its result is discarded. The before-hook rejects
+  absolute paths outside the sandbox mounts, so that host execution stays confined to the
+  mounted worktree.
 
 ## Hook System
 

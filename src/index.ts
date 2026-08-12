@@ -13,7 +13,7 @@ import { createLogger, slugify } from './utils/logger'
 import { createSbxRuntime, describeSbxUnavailable } from './sandbox/sbx'
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
-import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs } from './sandbox/context'
 import { resolveOpencodeTmpDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from './constants/loop'
@@ -334,6 +334,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     if (!isSandboxConfigEnabled(config)) {
       logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
+      const sandboxMountConfigs = resolveSandboxMountConfigs(config)
       try {
         sandboxManager = createSandboxManager(runtime, {
           image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
@@ -342,7 +343,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           tmpDir: resolveOpencodeTmpDir(),
           sourceProjectDir: projectRoot,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
-          ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
+          ...(sandboxMountConfigs.length > 0 ? { customMounts: sandboxMountConfigs } : {}),
           ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
           buildContextDir: resolveBundledContainerDir(),
           browserControl: config.sandbox?.imageFeatures?.browserControl === true,

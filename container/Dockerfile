@@ -12,6 +12,7 @@ FROM docker.io/docker/sandbox-templates:shell-docker
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ca-certificates \
     curl \
     git \

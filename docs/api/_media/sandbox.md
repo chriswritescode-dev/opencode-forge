@@ -11,6 +11,8 @@ See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](lo
 - A platform the `sbx` daemon supports: macOS 14+ on Apple silicon, Windows 11 with Hypervisor Platform, or Ubuntu 24.04+ with KVM.
 - Docker, used only to build the sandbox template (see below).
 
+The daemon serializes its work behind in-flight sandbox commands, so `sbx daemon status` and `sbx ls` can take seconds while several loops are running. Forge bounds those queries at 30s and treats a query that does not answer as *indeterminate* rather than "daemon down": it logs and continues, letting the actual sandbox operation report the authoritative error. Only a daemon that answers definitively (or a missing CLI) fails a loop launch with remediation advice.
+
 Build and load the bundled template:
 
 ```bash
@@ -19,16 +21,59 @@ docker save oc-forge-sandbox:latest -o forge-sandbox.tar
 sbx template load forge-sandbox.tar
 ```
 
-The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a native Docker daemon inside each sandbox.
+The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a native Docker daemon inside each sandbox.
+
+The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. `sbx` commands stay unprivileged as `agent` (keeping host-mapped worktree files owned by the host user), so system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
+
+### Browser Control (opt-in)
+
+Chromium and Browser Control add a substantial browser payload, so they are excluded by default. Enable them for future image builds:
+
+```jsonc
+{
+  "sandbox": {
+    "imageFeatures": {
+      "browserControl": true
+    }
+  }
+}
+```
+
+Then run `Build sandbox template` from the command palette. Changing the option does not modify an already-loaded template; rebuild it explicitly. The equivalent manual Docker build is:
+
+```bash
+docker build \
+  --build-arg INSTALL_BROWSER_CONTROL=true \
+  -t oc-forge-sandbox:latest \
+  container/
+docker save oc-forge-sandbox:latest -o forge-sandbox.tar
+sbx template load forge-sandbox.tar
+```
+
+The resulting image provides `browser-control`, `browser-control-mcp`, Chromium as `chromium`, and the unpacked extension at `/opt/browser-control-extension`.
+
+Browser Control connects to a browser in the same sandbox. Launch Chromium with the packaged extension path resolved to its installation directory:
+
+```bash
+extension="$(readlink -f /opt/browser-control-extension)"
+xvfb-run -a chromium \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --disable-extensions-except="$extension" \
+  --load-extension="$extension" \
+  --user-data-dir=/opt/forge/.browser-control-profile
+```
+
+It cannot control a browser running on the host because sandbox networking cannot reach the host loopback interface.
 
 ## How It Works
 
 1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI.
 2. Forge creates one sandbox per loop, or one project-scoped host-session sandbox shared by plugin instances in the process.
-3. The active directory and the read-only source project (when `sandbox.mountProjectReadonly` is enabled) are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
+3. The active directory, the read-only source project (when `sandbox.mountProjectReadonly` is enabled), and the worktree's git metadata directory are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
 4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work.
 
-The read-only project mount is dropped whenever the worktree's git directories live inside the source project (the default forge layout), so `sandbox.mountProjectReadonly` is effectively inert there.
+The read-only project mount is dropped whenever it would nest over the writable worktree — which is the default forge layout, where the worktree lives inside the source project — so `sandbox.mountProjectReadonly` is effectively inert there. The worktree stays writable and the git metadata directory is mounted read-write alongside it, so in-sandbox git works and multiple loops in the same project each mount their worktree plus the shared git metadata independently.
 
 ## Shell Routing
 
@@ -93,7 +138,16 @@ By default, Forge mounts the source project directory read-only at its identical
 |---|---:|---|
 | `sandbox.mountProjectReadonly` | `true` | Enable the read-only source project mount. |
 
-The loop worktree remains writable.
+The loop worktree remains writable. When the read-only project mount would nest over the writable worktree (the default forge layout), it is dropped instead: inside the sandbox the outermost mount's read-only flag applies to the whole subtree, so a read-only ancestor would silently make the worktree read-only. The worktree and the shared git metadata directory are mounted read-write in that case.
+
+## Git Metadata and Hooks
+
+The worktree's git metadata directory is mounted read-write so git works inside the sandbox (`status`, `log`, `diff`, and commits all resolve against the real repository). Two guards keep that from becoming a path out of the sandbox:
+
+- `<git-common-dir>/hooks` is mounted **read-only**, so a sandboxed agent cannot plant a hook that the user's own git would later execute on the host.
+- Every git command Forge itself runs is invoked with `core.hooksPath` disabled, so no repository hook runs on the host — including one reached through a `core.hooksPath` entry in the repo-local config, which cannot be mounted read-only because `sbx` workspaces are directories, not files.
+
+Consequences: tools that install hooks into `.git/hooks` (for example `pre-commit install`, or Husky v4) fail inside the sandbox — hook managers that keep hooks in the working tree and point `core.hooksPath` at them still work. Forge's own scratch-branch commits never run repository hooks.
 
 ## Custom Bind Mounts
 
@@ -123,6 +177,10 @@ Security note: read-write custom mounts give the sandbox write access to host pa
 
 Each sbx sandbox has its own Docker daemon natively, so loops can build and run containers (for example end-to-end tests) without touching the host Docker daemon. Every sandbox gets isolated image and container storage.
 
+## Sandbox Lifecycle
+
+`sbx` auto-stops a sandbox roughly 35 seconds after the last exec session ends, and `sbx exec` auto-starts a stopped sandbox, so a stop is never a correctness problem — only a restart. A stop is a full VM reboot that destroys in-memory state, while on-disk state (Docker images, containers, and files) persists across it. Cold starts are roughly 0.9s for the first command after a stop, vs ~0.16s warm. Forge relies on auto-resume instead of holding a separate keep-alive exec open.
+
 ## Large Command Output
 
 Shell output truncation is handled by opencode's native bash tool: when output exceeds the tool limit, the full output is spilled to opencode's tool-output directory on the host (readable from loop sessions, see below). The worktree `.forge/` scratch directory is added to git exclude so forge-written files are not committed.
@@ -132,7 +190,18 @@ Shell output truncation is handled by opencode's native bash tool: when output e
 opencode spills large tool outputs to its truncation directory (`<opencode-data>/tool-output`, e.g. `~/.local/share/opencode/tool-output`) and references the saved file by absolute host path. Forge makes those overflow files readable from loop and audit sessions in two complementary ways:
 
 - **Sandbox tools** (`bash`, `glob`, `grep`): the directory is bind-mounted **read-only at the identical sandbox path**, so the same absolute path opencode reports resolves inside the sandbox. The mount is added automatically when the directory exists; it is skipped when missing or already covered by the workspace mount.
-- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
+- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop — the ruleset's blanket allow covers the `read` permission itself, but a `loop.permissions` rule that denies or asks for `read` is layered after these grants and still applies. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
+
+opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises to agents as pre-approved scratch space) is handled the same way, but for writes: it is granted an `external_directory` allow rule for host file tools **and** bind-mounted read-write at the identical sandbox path, so scratch files an agent writes at that path resolve identically on the host and inside the sandbox. It is opencode's own directory — Forge provides no separate scratch directory, and agents can use the advertised OS temp path without issue.
+
+## External Directory Access
+
+`loop.allowExternalDirectories` entries are granted the same two ways, so host and container agree on what exists:
+
+- **Host file tools** (`read`, `write`, `edit`): an `external_directory` allow rule layered after the blanket deny.
+- **Sandbox tools** (`bash`, `glob`, `grep`): a **read-only** bind mount at the identical sandbox path, added automatically. Entries that do not exist on the host are skipped with a log line.
+
+The mount is read-only because the setting exists to grant read access. To make an external directory writable from inside the sandbox, add it to `sandbox.mounts` with `"readonly": false`; explicit `sandbox.mounts` entries are resolved first, so they win for any path listed in both.
 
 ## Resource Defaults
 

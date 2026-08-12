@@ -1,10 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join, resolve } from 'path'
 import {
   SANDBOX_CONTEXT_NOTE,
   isSandboxEnabled,
   isSandboxConfigEnabled,
   resolveSandboxContextForLoop,
+  resolveSandboxMountConfigs,
 } from '../../src/sandbox/context'
+import { resolveCustomMounts } from '../../src/sandbox/manager'
+import { createMockLogger } from '../helpers/sandbox-mocks'
 import type { SandboxMount } from '../../src/sandbox/path'
 
 describe('SANDBOX_CONTEXT_NOTE', () => {
@@ -59,6 +65,39 @@ describe('isSandboxConfigEnabled', () => {
   it('is false only when explicitly disabled', () => {
     expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: false } })).toBe(false)
     expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: true } })).toBe(true)
+  })
+})
+
+describe('resolveSandboxMountConfigs', () => {
+  it('is empty when neither sandbox.mounts nor loop.allowExternalDirectories is set', () => {
+    expect(resolveSandboxMountConfigs(undefined)).toEqual([])
+    expect(resolveSandboxMountConfigs({})).toEqual([])
+  })
+
+  it('mounts loop.allowExternalDirectories read-only so container search sees what host read sees', () => {
+    expect(resolveSandboxMountConfigs({ loop: { allowExternalDirectories: ['/vault', '/notes'] } })).toEqual([
+      { host: '/vault', readonly: true },
+      { host: '/notes', readonly: true },
+    ])
+  })
+
+  it('lists explicit sandbox.mounts first so a user entry wins the resolver collision check', () => {
+    const vault = mkdtempSync(join(tmpdir(), 'forge-allow-external-'))
+    try {
+      const resolved = resolveSandboxMountConfigs({
+        sandbox: { mounts: [{ host: vault, readonly: false }] },
+        loop: { allowExternalDirectories: [vault] },
+      })
+      expect(resolved).toEqual([
+        { host: vault, readonly: false },
+        { host: vault, readonly: true },
+      ])
+      expect(resolveCustomMounts(resolved, new Set(), createMockLogger())).toEqual([
+        { hostDir: resolve(vault), containerDir: resolve(vault), readOnly: false },
+      ])
+    } finally {
+      rmSync(vault, { recursive: true, force: true })
+    }
   })
 })
 

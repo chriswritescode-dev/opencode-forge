@@ -194,6 +194,15 @@ opencode spills large tool outputs to its truncation directory (`<opencode-data>
 
 opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises to agents as pre-approved scratch space) is handled the same way, but for writes: it is granted an `external_directory` allow rule for host file tools **and** bind-mounted read-write at the identical sandbox path, so scratch files an agent writes at that path resolve identically on the host and inside the sandbox. It is opencode's own directory — Forge provides no separate scratch directory, and agents can use the advertised OS temp path without issue.
 
+## External Directory Access
+
+`loop.allowExternalDirectories` entries are granted the same two ways, so host and container agree on what exists:
+
+- **Host file tools** (`read`, `write`, `edit`): an `external_directory` allow rule layered after the blanket deny.
+- **Sandbox tools** (`bash`, `glob`, `grep`): a **read-only** bind mount at the identical sandbox path, added automatically. Entries that do not exist on the host are skipped with a log line.
+
+The mount is read-only because the setting exists to grant read access. To make an external directory writable from inside the sandbox, add it to `sandbox.mounts` with `"readonly": false`; explicit `sandbox.mounts` entries are resolved first, so they win for any path listed in both.
+
 ## Resource Defaults
 
 | Option | Default | sbx flag |

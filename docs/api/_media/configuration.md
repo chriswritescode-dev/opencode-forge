@@ -52,7 +52,8 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.cleanupWorktree` | `false` | Auto-remove worktree on cancel. |
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
-| `loop.allowExternalDirectories` | unset | Absolute host directories that loop, audit, and post-action sessions may read despite worktree isolation. |
+| `loop.busyStallTimeoutMs` | `900000` | How long a session may stay busy with no sign of progress before the watchdog aborts the wedged message and sends a continue prompt. Both tool activity and streamed content (including reasoning/thinking deltas) count as progress, in the loop session or any of its subagent sessions, so a long thinking stretch is not mistaken for a wedged stream. `0` disables nudging. |
+| `loop.allowExternalDirectories` | unset | Absolute host directories that loop, audit, and post-action sessions may read despite worktree isolation. In sandboxed loops each entry is also bind-mounted read-only, so in-container `bash`/`glob`/`grep` see the same tree as host `read`. |
 | `loop.permissions` | unset | Per-tool `deny` overrides for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
 
@@ -74,7 +75,7 @@ Configured rules are layered into the ruleset in this order:
 
 1. Blanket allow-all (worktree/audit isolation).
 2. Blanket `external_directory` deny.
-3. `external_directory` allows (opencode's tool-output directory, then `loop.allowExternalDirectories`).
+3. `external_directory` allows (opencode's tool-output and temp directories, then `loop.allowExternalDirectories`).
 4. Configured `deny` rules.
 5. Forge structural denies.
 
@@ -246,6 +247,7 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.enabled` | `true` | Enable sandboxed execution when the `sbx` daemon is available. |
 | `sandbox.mode` | `"sbx"` | Sandbox mode. `sbx` is currently the only supported mode. |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | sbx template tag used for sandboxed execution. |
+| `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the template after changing it. |
 | `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`sbx create --memory`). |
 | `sandbox.resources.cpus` | `"4"` | CPU count (`sbx create --cpus`; integer-only). |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
