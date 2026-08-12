@@ -50,6 +50,7 @@ describe('buildAndLoadSandboxTemplate', () => {
       expect(record[1].args[0]).toBe('save')
       expect(loadTemplate).toHaveBeenCalledTimes(1)
       expect(loadTemplate.mock.calls[0][0]).toMatch(/forge-sandbox-template-\d+\.tar$/)
+      expect(loadTemplate.mock.calls[0][1]).toBe('oc-forge-sandbox:latest')
       expect(leftoverTars(tmp)).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -116,7 +117,7 @@ describe('buildAndLoadSandboxTemplate', () => {
       }
 
       await expect(buildAndLoadSandboxTemplate('/ctx', 't', deps)).rejects.toThrow(
-        /Docker CLI not found\. Building the sandbox template requires Docker; the sbx runtime itself does not\./,
+        /Docker CLI not found\. Building the sandbox template requires Docker; the msb runtime itself does not\./,
       )
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -174,13 +175,13 @@ describe('template build args and command formatter', () => {
 
   test('formatTemplateBuildCommands reflects default args', () => {
     expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest')).toBe(
-      'docker build -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && sbx template load <tar>',
+      'docker build -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
     )
   })
 
   test('formatTemplateBuildCommands reflects the browser-control build arg', () => {
     expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', { browserControl: true })).toBe(
-      'docker build --build-arg INSTALL_BROWSER_CONTROL=true -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && sbx template load <tar>',
+      'docker build --build-arg INSTALL_BROWSER_CONTROL=true -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
     )
   })
 })

@@ -1,6 +1,6 @@
 /**
- * Builds the sandbox template image with Docker and loads it into the `sbx` store.
- * Docker still produces the image, but `sbx` needs it in its own image store, so the
+ * Builds the sandbox template image with Docker and loads it into the `msb` image store.
+ * Docker still produces the image, but `msb` needs it in its own image store, so the
  * palette command becomes build -> save -> load. Both steps live here so there is a
  * single point of truth for the sequence and its failure messages.
  */
@@ -16,7 +16,7 @@ export const DEFAULT_SANDBOX_IMAGE = 'oc-forge-sandbox:latest'
 
 export interface BuildTemplateDeps {
   runCommand: typeof runCommand
-  loadTemplate: (tar: string) => Promise<void>
+  loadTemplate: (tar: string, ref: string) => Promise<void>
   logger: Logger
   tmpDir: string
 }
@@ -33,7 +33,7 @@ export function buildTemplateDockerArgs(options?: SandboxTemplateOptions): strin
 
 export function formatTemplateBuildCommands(contextDir: string, tag: string, options?: SandboxTemplateOptions): string {
   const build = ['docker', 'build', ...buildTemplateDockerArgs(options), '-t', tag, `"${contextDir}"`].join(' ')
-  return `${build} && docker save ${tag} -o <tar> && sbx template load <tar>`
+  return `${build} && docker save ${tag} -o <tar> && msb load --input <tar> --tag ${tag}`
 }
 
 function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error {
@@ -43,7 +43,7 @@ function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error
     return new Error(`Docker ${stage} timed out after ${seconds} seconds.`)
   }
   if (DOCKER_NOT_FOUND_RE.test(output)) {
-    return new Error('Docker CLI not found. Building the sandbox template requires Docker; the sbx runtime itself does not.')
+    return new Error('Docker CLI not found. Building the sandbox template requires Docker; the msb runtime itself does not.')
   }
   const lastLine = output.split('\n').filter(Boolean).at(-1)?.trim()
   return new Error(`Docker ${stage} failed: ${lastLine ?? output.trim()}`)
@@ -51,7 +51,7 @@ function dockerStageError(stage: 'build' | 'save', result: CommandResult): Error
 
 /**
  * Builds `<tag>` from `contextDir` with Docker, saves it to a temp tar, loads that tar
- * into the sbx template store, and removes the tar on both the success and failure paths.
+ * into the msb image store, and removes the tar on both the success and failure paths.
  */
 export async function buildAndLoadSandboxTemplate(
   contextDir: string,
@@ -75,7 +75,7 @@ export async function buildAndLoadSandboxTemplate(
     })
     if (save.exitCode !== 0) throw dockerStageError('save', save)
 
-    await deps.loadTemplate(tarPath)
+    await deps.loadTemplate(tarPath, tag)
   } finally {
     rmSync(tarPath, { force: true })
   }

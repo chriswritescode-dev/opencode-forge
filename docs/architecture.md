@@ -67,7 +67,7 @@ The codebase is organized into these module groups under `src/`:
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `plan-capture.ts`, `worktree-log.ts` |
-| `sandbox/` | sbx sandbox management | `sbx.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
+| `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
 | `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `section-read.ts` |
 | `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `pending-teardown.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
@@ -96,28 +96,31 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 ## Sandbox System
 
-Sandbox is optional. When the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise loops run in worktree-only mode.
+Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`. When enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
 ### Components
 
-- **SandboxRuntime** (`sandbox/sbx.ts`) - `sbx` CLI facade (create/exec/remove/list, availability probe)
+- **SandboxRuntime** (`sandbox/msb.ts`) - `msb` CLI facade (create/exec/remove/list, availability probe)
 - **SandboxManager** (`sandbox/manager.ts`) - Sandbox lifecycle management
 - **SandboxContext** (`sandbox/context.ts`) - Tool call redirection
 - **SandboxTools** (`hooks/sandbox-tools.ts`) - Hooks for sandbox integration
+- **Shell shim** (`sandbox/shell-shim.ts`) - Generated shim routing the native `bash` tool through `msb exec`
+- **Shell env hook** (`hooks/shell-env.ts`) - Injects the sandbox container into each shell spawn
 
 ### How It Works
 
-1. When a sandbox loop starts, an `sbx` sandbox is created
+1. When a sandbox loop starts, an `msb` sandbox is created
 2. The worktree directory is mounted at its identical host path inside the sandbox
-3. Tool hooks redirect `bash`, `glob`, and `grep` calls into the sandbox via `sbx exec`
+3. Shell commands and search tools run inside the sandbox: `bash` through the generated shell shim, `glob` and `grep` through the sandbox tool hooks — both backed by `msb exec`
 4. File operations (`read`, `write`, `edit`) operate on the host directly
 5. On loop completion, the sandbox is stopped and removed
 
 ### Tool Redirection
 
-The sandbox uses OpenCode's tool hook system to intercept and redirect tool calls:
-- `tool.execute.before` hook prepends commands with `sbx exec`
-- `tool.execute.after` hook captures output and returns it to the host
+The sandbox isolates shell and search tools while file tools keep operating on the host:
+
+- **Shell** — Forge points opencode's `shell` config at a generated shim (`sandbox/shell-shim.ts`). The `shell.env` hook injects `FORGE_SANDBOX_CONTAINER` for sandboxed sessions, and the shim runs the command via `msb exec --no-tty -w "$PWD" -- bash "$@"`.
+- **Search tools** — the `tool.execute.before` hook intercepts `glob` and `grep`, runs them through `msb exec` inside the sandbox, and the `tool.execute.after` hook replaces the tool output with the guest result (`hooks/sandbox-tools.ts`).
 
 ## Hook System
 
@@ -196,7 +199,7 @@ The plugin follows this initialization sequence within `createForgePlugin()`:
 
 1. **Logger** - Always first (`createLogger()`)
 2. **v2 Client** - Create OpenCode v2 SDK client for API calls
-3. **Sandbox Manager** - sbx sandbox management (optional, fails gracefully)
+3. **Sandbox Manager** - msb sandbox management (optional, fails gracefully)
 4. **Pending Teardown Registry** - Track worktree teardown contexts
 5. **Workspace Status Registry** - Track workspace connected/disconnected state
 6. **Workspace Adapter** - Register forge workspace adapter if experimental workspace API available
@@ -241,7 +244,7 @@ graph TD
     end
 
     LoopRuntime --> SandboxManager["Sandbox Manager"]
-    SandboxManager --> Sbx["sbx Sandbox"]
+    SandboxManager --> Msb["msb Sandbox"]
 
     SQLite --> LoopsRepo["Loops Repo"]
     SQLite --> PlansRepo["Plans Repo"]

@@ -10,7 +10,7 @@ import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger, slugify } from './utils/logger'
-import { createSbxRuntime, describeSbxUnavailable } from './sandbox/sbx'
+import { createMsbRuntime, describeMsbUnavailable } from './sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
@@ -330,7 +330,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    const runtime = createSbxRuntime(logger)
+    const runtime = createMsbRuntime(logger)
     if (!isSandboxConfigEnabled(config)) {
       logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
@@ -350,7 +350,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }, logger, defaultGitService)
         logger.log('Sandbox manager initialized')
       } catch (err) {
-        logger.error('Failed to initialize sbx sandbox manager', err)
+        logger.error('Failed to initialize msb sandbox manager', err)
       }
     }
 
@@ -390,7 +390,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
                 directory,
                 logger,
                 title: 'Sandbox unavailable',
-                message: describeSbxUnavailable(available),
+                message: describeMsbUnavailable(available),
                 variant: 'warning',
                 duration: 10_000,
               })

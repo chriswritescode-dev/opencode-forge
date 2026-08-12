@@ -7,7 +7,7 @@ import { resolveForgeDbPath, resolveDataDir } from './storage'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
-import { createSbxRuntime } from './sandbox/sbx'
+import { createMsbRuntime } from './sandbox/msb'
 import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE } from './sandbox/template'
 import { runCommand } from './sandbox/process'
 import { isSandboxConfigEnabled } from './sandbox/context'
@@ -51,7 +51,7 @@ type TuiOptions = {
 
 type ForgeConnectionStatus = 'connecting' | 'connected' | 'unavailable'
 
-const SBX_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+const MSB_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
 function SandboxLoadingSpinner(props: { api: TuiPluginApi }) {
   const [frame, setFrame] = createSignal(0)
@@ -59,11 +59,11 @@ function SandboxLoadingSpinner(props: { api: TuiPluginApi }) {
 
   createEffect(() => {
     if (!animationsEnabled()) return
-    const timer = setInterval(() => setFrame((current) => (current + 1) % SBX_SPINNER_FRAMES.length), 80)
+    const timer = setInterval(() => setFrame((current) => (current + 1) % MSB_SPINNER_FRAMES.length), 80)
     onCleanup(() => clearInterval(timer))
   })
 
-  return <text fg={props.api.theme.current.textMuted}>{animationsEnabled() ? SBX_SPINNER_FRAMES[frame()] : '⋯'}</text>
+  return <text fg={props.api.theme.current.textMuted}>{animationsEnabled() ? MSB_SPINNER_FRAMES[frame()] : '⋯'}</text>
 }
 
 function SandboxStatusText(props: { api: TuiPluginApi; preference: () => SessionSandboxPreference | null; sessionId?: string }) {
@@ -80,10 +80,10 @@ function SandboxStatusText(props: { api: TuiPluginApi; preference: () => Session
   return (
     <Show
       when={status() === 'loading'}
-      fallback={<text fg={statusColor()}>· SBX {status()}</text>}
+      fallback={<text fg={statusColor()}>· MSB {status()}</text>}
     >
       <box flexDirection="row" gap={1}>
-        <text fg={theme().textMuted}>· SBX</text>
+        <text fg={theme().textMuted}>· MSB</text>
         <SandboxLoadingSpinner api={props.api} />
       </box>
     </Show>
@@ -249,7 +249,7 @@ function SandboxBuildDialog(props: {
     try {
       await buildAndLoadSandboxTemplate(props.buildContextDir, props.image, {
         runCommand,
-        loadTemplate: (tar) => createSbxRuntime(logger).loadTemplate(tar),
+        loadTemplate: (tar, ref) => createMsbRuntime(logger).loadTemplate(tar, ref),
         logger,
         tmpDir: tmpdir(),
       }, { browserControl: props.browserControl })
@@ -274,7 +274,7 @@ function SandboxBuildDialog(props: {
 
       <box paddingBottom={1}>
         <text fg={theme().textMuted}>
-          This builds the sandbox image with Docker, then loads it into sbx.
+          This builds the sandbox image with Docker, then loads it into msb.
         </text>
       </box>
       <box paddingBottom={1}>
@@ -479,7 +479,7 @@ const tui: TuiPlugin = async (api) => {
       setSandboxProjectId(projectId)
     }
     // Each failure below reports a distinct cause. The TUI has no usable log sink (console output
-    // corrupts the rendered screen, which is why the sbx runtime here is given a no-op logger), so
+    // corrupts the rendered screen, which is why the msb runtime here is given a no-op logger), so
     // the reason has to travel in the toast or it is lost entirely.
     if (!projectId) {
       api.ui.toast({ message: 'Sandbox toggle unavailable: could not resolve this project', variant: 'warning', duration: 5000 })
@@ -641,7 +641,7 @@ const tui: TuiPlugin = async (api) => {
       {
         name: 'forge.sandbox.buildImage',
         title: 'Build sandbox template',
-        desc: 'Build the sandbox template image and load it into sbx',
+        desc: 'Build the sandbox template image and load it into msb',
         category: 'Forge',
         namespace: 'palette',
         run: () => { runBuildSandboxImage() },

@@ -1,7 +1,7 @@
 import type { Hooks } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { SHIM_ENV_CONTAINER, SHIM_ENV_ENV_FILE, SHIM_ENV_HOST_SHELL } from '../sandbox/shell-shim'
+import { SHIM_ENV_CONTAINER, SHIM_ENV_HOST_SHELL } from '../sandbox/shell-shim'
 
 export interface ShellEnvHookDeps {
   /** Resolves the sandbox context for a session through the unified loop-first resolver. */
@@ -13,8 +13,8 @@ export interface ShellEnvHookDeps {
 
 /**
  * Feeds the sandbox shell shim: for sessions that resolve to a sandbox context (a loop sandbox or
- * an acknowledged host-session sandbox), injects the container name (and env-file path) so the shim
- * routes the command into the microVM via `sbx exec`. Every other session gets no container env, so
+ * an acknowledged host-session sandbox), injects the container name so the shim
+ * routes the command into the microVM via `msb exec`. Every other session gets no container env, so
  * the shim falls through to the host shell — restoring the user's own configured shell when they had
  * one.
  *
@@ -28,7 +28,6 @@ export function createShellEnvHook(deps: ShellEnvHookDeps): NonNullable<Hooks['s
       const sandbox = await deps.resolveSandboxForSession(input.sessionID, { throwOnRestoreError: true })
       if (sandbox) {
         output.env[SHIM_ENV_CONTAINER] = sandbox.containerName
-        if (sandbox.envFile) output.env[SHIM_ENV_ENV_FILE] = sandbox.envFile
         return
       }
     }

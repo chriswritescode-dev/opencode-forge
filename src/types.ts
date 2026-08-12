@@ -101,30 +101,50 @@ export interface LoopConfig {
 }
 
 /**
- * Network access configuration for the sandbox.
- * Controls egress allow-listing and environment passthrough.
+ * A host-held credential bound to a sandbox at create time. The real value stays on the host:
+ * msb keeps a source reference to the environment variable, exposes a `$MSB_<env>` placeholder
+ * inside the sandbox, and substitutes the real value only for the listed hosts at the network
+ * boundary — the value never enters the guest.
  */
-export interface SandboxNetworkConfig {
-  /** Environment variable names to pass through from host process into the sandbox. */
-  env?: string[]
-  /** Hostnames to allow through the sbx network proxy via `sbx policy allow network`. */
-  allow?: string[]
+export interface SandboxSecretConfig {
+  /** Host environment variable name that holds the secret value. */
+  env: string
+  /** Hostnames allowed to receive the real value at the network boundary. */
+  hosts: string[]
 }
 
 /**
- * Resource limits for the sandbox. Maps directly to `sbx create` flags.
- * sbx defaults are often too tight for many real projects — `pnpm install`
+ * Network access configuration for the sandbox.
+ * Controls egress allow-listing and credential delivery.
+ */
+export interface SandboxNetworkConfig {
+  /** Environment variable names to pass through from the host process into the sandbox at
+   *  create time. Only names that are set in the host process are injected, as plain guest
+   *  environment variables (msb resolves a bare name from its own environment, so values
+   *  never appear on forge's command line). */
+  env?: string[]
+  /** Hostnames to allow through msb's per-sandbox egress proxy via `--net-rule allow@<host>`. */
+  allow?: string[]
+  /** Host-held credentials exposed to the sandbox only as `$MSB_<env>` placeholders. The real
+   *  value never enters the guest: msb substitutes it only for the listed hosts at the network
+   *  boundary. */
+  secrets?: SandboxSecretConfig[]
+}
+
+/**
+ * Resource limits for the sandbox. Maps directly to `msb create` flags.
+ * msb defaults are often too tight for many real projects — `pnpm install`
  * gets OOM-killed (exit 137) and shell commands run slowly.
  */
 export interface SandboxResources {
-  /** Memory limit, e.g. '8g', '1024m'. Maps to `sbx create --memory`. */
+  /** Memory limit, e.g. '8g', '1024m'. Maps to `msb create -m`. */
   memory?: string
-  /** Number of CPUs. `sbx create --cpus` is integer-only. */
+  /** Number of CPUs. `msb create -c` is integer-only. */
   cpus?: string
 }
 
 /**
- * A single custom mount for the sbx sandbox. `sbx` always mounts a workspace
+ * A single custom mount for the msb sandbox. `msb` always mounts a workspace
  * at its identical host path, so only the host path is specified.
  */
 export interface SandboxMountConfig {
@@ -139,23 +159,23 @@ export interface SandboxImageFeaturesConfig {
 }
 
 /**
- * Configuration for the sandbox execution environment (sbx).
+ * Configuration for the sandbox execution environment (msb).
  */
 export interface SandboxConfig {
-  /** Sandbox mode. Currently only 'sbx' is supported. Reserved for future modes. */
-  mode?: 'sbx'
-  /** Enable sandboxed execution. When false, loops run in worktree-only mode even if sbx is available. Default: true. */
+  /** Sandbox mode. Currently only 'msb' is supported. Reserved for future modes. */
+  mode?: 'msb'
+  /** Enable sandboxed execution. When false, loops run in worktree-only mode even if msb is available. Default: true. */
   enabled?: boolean
-  /** sbx template tag to use for sandboxed execution. */
+  /** msb image reference (tag) to use for sandboxed execution. */
   image?: string
   imageFeatures?: SandboxImageFeaturesConfig
   /** Resource limits. Defaults to memory=8g, cpus=4. */
   resources?: SandboxResources
   /** Mount the source project directory read-only. Defaults to true. */
   mountProjectReadonly?: boolean
-  /** Additional host directories to mount into the sbx sandbox. */
+  /** Additional host directories to mount into the msb sandbox. */
   mounts?: SandboxMountConfig[]
-  /** Network access configuration (egress allow-list, env passthrough). */
+  /** Network access configuration (egress allow-list, env passthrough, host-held secrets). */
   network?: SandboxNetworkConfig
 }
 

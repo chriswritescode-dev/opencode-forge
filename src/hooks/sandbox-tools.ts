@@ -55,7 +55,7 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
 
       try {
         const result = await executeSandboxGlob(
-          { runtime, containerName, hostDir: sandbox.hostDir, envFile: sandbox.envFile },
+          { runtime, containerName, hostDir: sandbox.hostDir },
           args.pattern,
           args.path,
         )
@@ -74,7 +74,7 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
 
       try {
         const result = await executeSandboxGrep(
-          { runtime, containerName, hostDir: sandbox.hostDir, envFile: sandbox.envFile },
+          { runtime, containerName, hostDir: sandbox.hostDir },
           args.pattern,
           { path: args.path, include: args.include },
         )

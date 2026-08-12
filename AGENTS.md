@@ -29,9 +29,9 @@
 
 ## Sandbox
 
-- `src/sandbox/sbx.ts` is the only module invoking the `sbx` CLI; route through its `SandboxRuntime` facade. `src/sandbox/process.ts` is the only child-process spawner; all shell execution goes through `runCommand`.
-- `getSandboxState` is the only liveness primitive; four states: `running`, `stopped` (reusable, never create/evict), `unknown` (query failed), `missing` (may create or evict). `registerActiveSandbox` is the only place a usable sandbox is recorded.
-- `container/Dockerfile` must derive from `docker.io/docker/sandbox-templates:shell-docker`; no `ENTRYPOINT`, `CMD`, or `WORKDIR`.
+- `src/sandbox/msb.ts` is the sole TypeScript runtime/lifecycle facade and `msb` CLI argument owner; route runtime operations through its `SandboxRuntime` facade. The one required exception is the generated shell shim (`src/sandbox/shell-shim.ts`), which invokes `msb exec` directly when an agent shell command must run inside a sandbox. `src/sandbox/process.ts` is the only child-process spawner; all TypeScript shell execution goes through `runCommand`.
+- `getSandboxState` is the only liveness primitive; four states: `running`, `stopped` (reusable, never create/evict), `unknown` (query failed), `missing` (may create or evict). `Stopped`/`Crashed` map to the reusable `stopped` state because `msb exec` starts them in place. `registerActiveSandbox` is the only place a usable sandbox is recorded.
+- `container/Dockerfile` must derive from a plain OCI base and keep the final `USER agent`; `ENTRYPOINT`/`CMD` are ignored because msb runs `agentd` as PID 1.
 
 ## Dashboard, storage, and paths
 

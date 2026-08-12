@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest'
 import { createShellEnvHook } from '../../src/hooks/shell-env'
-import { SHIM_ENV_CONTAINER, SHIM_ENV_ENV_FILE, SHIM_ENV_HOST_SHELL } from '../../src/sandbox/shell-shim'
+import { SHIM_ENV_CONTAINER, SHIM_ENV_HOST_SHELL } from '../../src/sandbox/shell-shim'
 import type { Logger } from '../../src/types'
 import type { SandboxContext } from '../../src/sandbox/context'
 
@@ -17,13 +17,12 @@ function makeSandboxContext(overrides: Partial<SandboxContext> = {}): SandboxCon
 }
 
 describe('createShellEnvHook', () => {
-  test('injects container and env file when a sandbox context is resolved', async () => {
+  test('injects the container name when a sandbox context is resolved', async () => {
     const hook = createShellEnvHook({
       resolveSandboxForSession: vi.fn(async () =>
         makeSandboxContext({
           containerName: 'forge-loop-a',
           hostDir: '/wt',
-          envFile: '/data/forge/sandbox-env/forge-loop-a.env',
         }),
       ),
       getUserConfiguredShell: () => undefined,
@@ -34,22 +33,7 @@ describe('createShellEnvHook', () => {
     await hook({ cwd: '/wt', sessionID: 'ses_1' }, output)
 
     expect(output.env[SHIM_ENV_CONTAINER]).toBe('forge-loop-a')
-    expect(output.env[SHIM_ENV_ENV_FILE]).toBe('/data/forge/sandbox-env/forge-loop-a.env')
     expect(output.env[SHIM_ENV_HOST_SHELL]).toBeUndefined()
-  })
-
-  test('injects container without an env-file variable when the sandbox has none', async () => {
-    const hook = createShellEnvHook({
-      resolveSandboxForSession: vi.fn(async () => makeSandboxContext({ containerName: 'forge-loop-a', hostDir: '/wt' })),
-      getUserConfiguredShell: () => undefined,
-      logger,
-    })
-    const output = { env: {} as Record<string, string> }
-
-    await hook({ cwd: '/wt', sessionID: 'ses_1' }, output)
-
-    expect(output.env[SHIM_ENV_CONTAINER]).toBe('forge-loop-a')
-    expect(output.env[SHIM_ENV_ENV_FILE]).toBeUndefined()
   })
 
   test('injects nothing container-related when no sandbox is resolved', async () => {

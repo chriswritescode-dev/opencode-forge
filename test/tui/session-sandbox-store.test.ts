@@ -320,7 +320,7 @@ describe('session-sandbox-store (TUI bridge)', () => {
     })
 
     test('derives OFF for a matching revision carrying an error or disabled desired', () => {
-      const errored = writeApplied({ revision: 'r1', enabled: true, error: 'sbx failed' })
+      const errored = writeApplied({ revision: 'r1', enabled: true, error: 'msb failed' })
       expect(deriveSessionSandboxAcknowledged({ desired: desired(), applied: errored })).toBeNull()
       const disabledDesired = desired({ enabled: false })
       expect(deriveSessionSandboxAcknowledged({ desired: disabledDesired, applied: errored })).toBeNull()
@@ -365,7 +365,7 @@ describe('session-sandbox-store (TUI bridge)', () => {
     test('is settled once the applied revision matches, including OFF and error', () => {
       const off = writeApplied({ revision: 'r1', enabled: false, error: null })
       expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: off })).toBe(true)
-      const errored = writeApplied({ revision: 'r1', enabled: false, error: 'sbx failed to start' })
+      const errored = writeApplied({ revision: 'r1', enabled: false, error: 'msb failed to start' })
       expect(isSessionSandboxPreferenceSettled({ desired: desired(), applied: errored })).toBe(true)
     })
   })

@@ -167,7 +167,7 @@ describe('createForgePlugin', () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
       sandbox: {
-        mode: 'sbx',
+        mode: 'msb',
       },
     }
 
@@ -580,7 +580,7 @@ describe('createForgePlugin', () => {
   test('Plugin initializes successfully with sandbox.enabled=false', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
 
     const plugin = createForgePlugin(config)
@@ -638,6 +638,35 @@ describe('createForgePlugin', () => {
     expect(logContents).toContain('sandbox.mounts[].container is ignored')
   })
 
+  test('Logs exactly one msb-replacement warning for a legacy sbx-mode config and still initializes', async () => {
+    const logFile = join(testDir, 'forge.log')
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      logging: { enabled: true, file: logFile },
+      sandbox: { mode: 'sbx', enabled: false } as PluginConfig['sandbox'],
+    }
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    const logContents = readFileSync(logFile, 'utf-8')
+    const warningLines = logContents.split('\n').filter((line) => line.includes('sandbox.mode'))
+    expect(warningLines).toHaveLength(1)
+    expect(warningLines[0]).toContain('msb')
+    expect(warningLines[0]).toContain('use mode')
+    expect(hooks).toBeDefined()
+  })
+
   test('Logs loop.permissions config warnings for a bad config on plugin init', async () => {
     const logFile = join(testDir, 'forge.log')
     const config: PluginConfig = {
@@ -666,7 +695,7 @@ describe('createForgePlugin', () => {
   test('host session sandbox startup does not block init and routing waits fail-closed', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
 
     const setupDb = initializeDatabase(config.dataDir!)
@@ -756,7 +785,7 @@ describe('createForgePlugin', () => {
   test('a transient ancestry lookup failure does not block native tools in tool.execute.before', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx' },
+      sandbox: { mode: 'msb' },
     }
 
     const plugin = createForgePlugin(config)
@@ -799,7 +828,7 @@ describe('createForgePlugin', () => {
   test('shell.env retains host behavior for sessions with no sandbox via the unified resolver', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx' },
+      sandbox: { mode: 'msb' },
     }
 
     const plugin = createForgePlugin(config)
@@ -832,11 +861,11 @@ describe('createForgePlugin', () => {
   test('a failed host-sandbox start makes the selected session fail closed while others stay host', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx' },
+      sandbox: { mode: 'msb' },
     }
 
     // Persist a desired ON for a selected session. Sandbox routing stays enabled so this exercises
-    // a genuine container-start failure rather than the unavailable-runtime path; `sbx` is forced
+    // a genuine container-start failure rather than the unavailable-runtime path; `msb` is forced
     // off PATH below so the start fails whether or not the CLI is installed on the host.
     const setupDb = initializeDatabase(config.dataDir!)
     createSessionSandboxPreferencesRepo(setupDb).setDesired(TEST_PROJECT_ID, {
@@ -892,7 +921,7 @@ describe('createForgePlugin', () => {
   test('two plugin instances for one project share a single refcounted sandbox controller', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
 
     const setupDb = initializeDatabase(config.dataDir!)
@@ -952,7 +981,7 @@ describe('createForgePlugin', () => {
   test('a forge worktree instance initializing first still reconciles the root session via project.worktree', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
     const projectRoot = join(testDir, 'root')
     const worktreeDir = join(testDir, 'worktree')
@@ -1007,7 +1036,7 @@ describe('createForgePlugin', () => {
   test('a later forge worktree instance cannot leave a root-session toggle pending', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
     const projectRoot = join(testDir, 'root')
     const worktreeDir = join(testDir, 'worktree')
@@ -1061,7 +1090,7 @@ describe('createForgePlugin', () => {
   test('after the creating instance is disposed, a survivor processes a new desired revision without closed-db callback failure', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
 
     const setupDb = initializeDatabase(config.dataDir!)
@@ -1130,7 +1159,7 @@ describe('createForgePlugin', () => {
   test('unavailable sandbox runtime acknowledges a requested ON as OFF-with-error and blocks the selected session', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
 
     // Persist a desired ON for a selected session. Sandbox routing is unavailable (disabled), so
@@ -1188,9 +1217,9 @@ describe('createForgePlugin', () => {
       dataDir: `${testDir}/.opencode/memory`,
       // Sandbox routing is disabled so the deterministic unavailable manager is used (ensureRunning
       // fails closed, stop is a no-op). This makes the OFF-with-error acknowledgement independent of
-      // whether the `sbx` CLI is installed on the host, exercising the same fail-closed surface as a
+      // whether the `msb` CLI is installed on the host, exercising the same fail-closed surface as a
       // manager that fails to initialize.
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
 
     const setupDb = initializeDatabase(config.dataDir!)
@@ -1267,20 +1296,20 @@ describe('PluginConfig', () => {
   test('Accepts sandbox config', () => {
     const config: PluginConfig = {
       sandbox: {
-        mode: 'sbx',
+        mode: 'msb',
         image: 'custom-image:latest',
       },
     }
 
-    expect(config.sandbox?.mode).toBe('sbx')
+    expect(config.sandbox?.mode).toBe('msb')
   })
 
   test('Accepts sandbox.enabled flag for opting out of Docker', () => {
     const enabledConfig: PluginConfig = {
-      sandbox: { mode: 'sbx', enabled: true },
+      sandbox: { mode: 'msb', enabled: true },
     }
     const disabledConfig: PluginConfig = {
-      sandbox: { mode: 'sbx', enabled: false },
+      sandbox: { mode: 'msb', enabled: false },
     }
 
     expect(enabledConfig.sandbox?.enabled).toBe(true)

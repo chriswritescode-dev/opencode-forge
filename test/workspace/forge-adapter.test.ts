@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createForgeWorkspaceAdapter, type ForgeAdapterDeps } from '../../src/workspace/forge-adapter'
+import { createSandboxManager } from '../../src/sandbox/manager'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { join, isAbsolute } from 'path'
 import { mkdtempSync, existsSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -297,6 +299,30 @@ describe('createForgeWorkspaceAdapter', () => {
 
       expect(sandboxManager.stop).toHaveBeenCalledWith('sandbox-fail-loop')
       expect(existsSync(configured.directory)).toBe(false)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create never removes a sandbox when provisioning fails on an unknown state query', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-unknown-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const runtime = createMockSandboxRuntime()
+      runtime.setSandboxState('forge-sandbox-unknown-loop', 'unknown')
+      const sandboxManager = createSandboxManager(runtime, { image: 'oc-forge-sandbox:latest' }, logger)
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const configured = adapter.configure(makeInfo('sandbox-unknown-loop', tmpRepo))
+
+      await expect(adapter.create(configured, {})).rejects.toThrow(/state query failed/)
+
+      // The rollback path calls stop(), which must also fail closed: `unknown` says nothing about
+      // the sandbox, so `msb rm` is never issued and a possibly-live sandbox is never destroyed.
+      expect(runtime.getRemoveSandboxCalls()).toEqual([])
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

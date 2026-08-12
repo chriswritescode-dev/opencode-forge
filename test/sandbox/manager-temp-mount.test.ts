@@ -97,7 +97,7 @@ describe('SandboxManager temp mount', () => {
     const active = manager.getActive('test')
     const tmpResolved = resolve(tmpDir)
     // The tmp dir overlaps the read-only tool-output mount (its ancestor) and arrives after it
-    // in priority order, so it is dropped — `sbx` rejects overlapping workspace paths.
+    // in priority order, so it is dropped — `msb` rejects overlapping workspace paths.
     expect(active?.mounts).toContainEqual({ hostDir: resolve(root), containerDir: resolve(root), readOnly: true })
     expect(active?.mounts.some((m) => m.hostDir === tmpResolved)).toBe(false)
     expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))

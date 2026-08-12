@@ -1,15 +1,18 @@
-# Forge sandbox image, derived from Docker's official sbx shell template.
-# Deriving (rather than building from scratch) preserves the labels, default
-# `agent` user, entrypoint and command contract that `sbx` expects from a
-# -t/--template image; the shell-docker flavour already ships a working
-# in-sandbox Docker Engine, so no Docker installation is needed here.
-FROM docker.io/docker/sandbox-templates:shell-docker
+# Forge sandbox image, built on a plain Ubuntu base for the microsandbox (msb)
+# runtime. msb boots this image as a microVM and runs its own `agentd` as PID 1,
+# so the image's ENTRYPOINT/CMD are never executed; the Docker-authored sandbox
+# template (and the in-VM Docker Engine it started) would be dead weight.
+FROM ubuntu:24.04
 
-# The base template runs as a non-root `agent` user (with sudo). System-level
-# package installs below run as root; the final USER directive returns to the
-# agent user so `sbx exec` commands run unprivileged, matching the template
-# contract. The sandbox manager does not pass `-u` to `sbx exec`.
+# Create the runtime user explicitly: the plain Ubuntu base ships a default
+# `ubuntu` user holding uid/gid 1000, which is removed so the `agent` user
+# (uid/gid 1000, home /home/agent) replaces it, matching the built-in user the
+# Docker template used to provide. System-level installs below run as root; the
+# final USER directive returns to `agent` so `msb exec` commands run
+# unprivileged. The sandbox manager does not pass `-u` to `msb exec`.
 USER root
+RUN userdel -r ubuntu 2>/dev/null || true; groupdel ubuntu 2>/dev/null || true; \
+    useradd --create-home --shell /bin/bash --uid 1000 --user-group agent
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -21,10 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Guarantee passwordless root elevation for the `agent` user, independent of the
-# base template's sudo configuration, so system-wide package installs (apt, gem,
-# npm -g, pip) work inside sandbox loops. `sbx` commands stay unprivileged as
-# `agent`; installs use an explicit `sudo` prefix.
+# Guarantee passwordless root elevation for the `agent` user so system-wide
+# package installs (apt, gem, npm -g, pip) work inside sandbox loops. `msb exec`
+# commands stay unprivileged as `agent`; installs use an explicit `sudo` prefix.
 RUN apt-get update && apt-get install -y --no-install-recommends sudo \
     && echo 'agent ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/forge-agent \
     && chmod 0440 /etc/sudoers.d/forge-agent \
@@ -58,7 +60,7 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
 #
 # npm_config_store_dir pins pnpm's content-addressable store to a
 # container-internal path. Without it, pnpm places the store on the project
-# filesystem (the sbx-mounted project directory), which floods the host file
+# filesystem (the msb-mounted project directory), which floods the host file
 # watcher and is slow over the macOS bind mount.
 ENV HOME=/opt/forge \
     XDG_CACHE_HOME=/opt/forge/.cache \
@@ -77,9 +79,9 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.np
 # The trailing chmod is load-bearing: this global install runs as root and populates the
 # pnpm store (store/v10/{files,index,projects}) with root-owned 0755 dirs, AFTER the earlier
 # `chmod -R 0777 /opt/forge`. Because the container runs as root but agent commands run as the
-# template's `agent` user via `sbx exec`, that UID could not write into the root-owned store and
+# image's `agent` user via `msb exec`, that UID could not write into the root-owned store and
 # `pnpm install` failed with EACCES when registering the project — which previously drove the
-# agent to relocate the store onto the sbx-mounted project directory (huge, slow file transfers).
+# agent to relocate the store onto the msb-mounted project directory (huge, slow file transfers).
 # Re-asserting 0777 here, as the last build step that touches /opt/forge, keeps the store
 # writable by any exec UID. Any future build step that runs pnpm as root must do the same.
 ARG INSTALL_BROWSER_CONTROL=false
@@ -96,9 +98,9 @@ RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
     fi \
     && chmod -R 0777 /opt/forge
 
-# Allow git to operate on the sbx-mounted project directory regardless of owner UID.
+# Allow git to operate on the msb-mounted project directory regardless of owner UID.
 RUN git config --system --add safe.directory '*'
 
-# Return to the template's default user. `sbx exec` (without `-u`) runs commands
-# as this user, so agent commands are unprivileged by default.
+# Return to the image's default user. `msb exec` (without `-u`) runs commands as
+# this user, so agent commands are unprivileged by default.
 USER agent

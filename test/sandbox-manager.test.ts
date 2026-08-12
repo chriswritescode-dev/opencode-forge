@@ -133,7 +133,7 @@ describe('SandboxManager', () => {
   })
 
   describe('start', () => {
-    test('throws when sbx daemon is not available', async () => {
+    test('throws when the msb host is not available', async () => {
       const mockRuntime = createMockSandboxRuntime()
       mockRuntime.setAvailable(false)
       const logger = createMockLogger()
@@ -143,7 +143,7 @@ describe('SandboxManager', () => {
         logger
       )
 
-      await expect(manager.start('test', '/path')).rejects.toThrow('daemon is not running')
+      await expect(manager.start('test', '/path')).rejects.toThrow('This host cannot run microVMs')
     })
 
     test('throws actionable error when image does not exist, without building', async () => {
@@ -379,9 +379,46 @@ describe('SandboxManager', () => {
         logger
       )
 
+      mockRuntime.setSandboxState('forge-unknown', 'running')
       await manager.stop('unknown')
 
       expect(mockRuntime.getRemoveSandboxCalls()).toContain('forge-unknown')
+    })
+
+    test('refuses to remove on an unknown state query (fail-closed)', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      await manager.start('test', '/path')
+      mockRuntime.setSandboxState('forge-test', 'unknown')
+      await expect(manager.stop('test')).rejects.toThrow(/state query failed/)
+
+      // `unknown` says nothing about the sandbox: no removal is issued and the active-map entry
+      // is preserved so callers can observe the indeterminate state.
+      expect(mockRuntime.getRemoveSandboxCalls()).not.toContain('forge-test')
+      expect(manager.isActive('test')).toBe(true)
+    })
+
+    test('clears stale local state without removal when the sandbox is confirmed missing', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      await manager.start('test', '/path')
+      mockRuntime.setSandboxState('forge-test', 'missing')
+      await manager.stop('test')
+
+      expect(mockRuntime.getRemoveSandboxCalls()).not.toContain('forge-test')
+      expect(manager.isActive('test')).toBe(false)
     })
   })
 
@@ -534,7 +571,7 @@ describe('SandboxManager', () => {
       await manager.start('test', '/path')
       mockRuntime.setSandboxState('forge-test', 'stopped')
 
-      // sbx suspends idle microVMs; exec resumes them, so stopped is not dead
+      // msb suspends idle microVMs; exec resumes them, so stopped is not dead
       expect(await manager.isLive('test')).toBe(true)
       expect(manager.isActive('test')).toBe(true)
     })
@@ -572,13 +609,13 @@ describe('SandboxManager', () => {
       const result = await manager.start('test', '/path')
 
       expect(result.containerName).toBe('forge-test')
-      // Creating over an existing sandbox is what sbx answers with 409 Conflict
+      // Creating over an existing sandbox is what msb answers with 409 Conflict
       expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
       expect(mockRuntime.getRemoveSandboxCalls()).toHaveLength(0)
       expect(manager.isActive('test')).toBe(true)
     })
 
-    test('does not create when the state query fails (unknown)', async () => {
+    test('fails closed when the state query fails (unknown)', async () => {
       const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
@@ -589,10 +626,13 @@ describe('SandboxManager', () => {
 
       mockRuntime.setSandboxState('forge-test', 'unknown')
 
-      await manager.start('test', '/path')
-
+      // `unknown` says nothing about the sandbox: it must neither be created over nor
+      // adopted as usable, so start refuses and no secret refresh is issued.
+      await expect(manager.start('test', '/path')).rejects.toThrow(/refusing to start/)
       expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
       expect(mockRuntime.getRemoveSandboxCalls()).toHaveLength(0)
+      expect(mockRuntime.getRefreshSecretCalls()).toHaveLength(0)
+      expect(manager.isActive('test')).toBe(false)
     })
 
     test('creates only when the sandbox is confirmed missing', async () => {
@@ -623,7 +663,7 @@ describe('SandboxManager', () => {
         logger
       )
 
-      // sbx accepts nested workspaces, so a writable ancestor mounts alongside the primary
+      // msb accepts nested workspaces, so a writable ancestor mounts alongside the primary
       // workspace instead of being dropped — this is what keeps git metadata available.
       expect(result).toHaveLength(3)
       expect(result.map((w) => w.hostDir)).toEqual(['/a/b', '/a', '/c'])

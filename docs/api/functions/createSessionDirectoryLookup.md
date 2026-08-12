@@ -6,13 +6,13 @@
 
 # Function: createSessionDirectoryLookup()
 
-> **createSessionDirectoryLookup**(`__namedParameters`): (`sessionId`) => `Promise`\<`string` \| `null`\>
+> **createSessionDirectoryLookup**(`options`): (`sessionId`) => `Promise`\<`string` \| `null`\>
 
-Defined in: [index.ts:154](https://github.com/chriswritescode-dev/opencode-forge/blob/bae347e91d162356f5d88217fa4b5258e5c999ac/src/index.ts#L154)
+Defined in: [index.ts:198](https://github.com/chriswritescode-dev/opencode-forge/blob/452ee7d80cf3f35b3fecfa2083478115036194ad/src/index.ts#L198)
 
 ## Parameters
 
-### \_\_namedParameters
+### options
 
 [`CreateSessionDirectoryLookupOptions`](../interfaces/CreateSessionDirectoryLookupOptions.md)
 

@@ -52,6 +52,7 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.cleanupWorktree` | `false` | Auto-remove worktree on cancel. |
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
+| `loop.busyStallTimeoutMs` | `900000` | How long a session may stay busy with no sign of progress before the watchdog aborts the wedged message and sends a continue prompt. Both tool activity and streamed content (including reasoning/thinking deltas) count as progress, in the loop session or any of its subagent sessions, so a long thinking stretch is not mistaken for a wedged stream. `0` disables nudging. |
 | `loop.allowExternalDirectories` | unset | Absolute host directories that loop, audit, and post-action sessions may read despite worktree isolation. |
 | `loop.permissions` | unset | Per-tool `deny` overrides for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
@@ -74,7 +75,7 @@ Configured rules are layered into the ruleset in this order:
 
 1. Blanket allow-all (worktree/audit isolation).
 2. Blanket `external_directory` deny.
-3. `external_directory` allows (opencode's tool-output directory, then `loop.allowExternalDirectories`).
+3. `external_directory` allows (opencode's tool-output and temp directories, then `loop.allowExternalDirectories`).
 4. Configured `deny` rules.
 5. Forge structural denies.
 
@@ -133,7 +134,7 @@ The written file is added to the worktree's git exclude so it never appears in `
 
 Notes:
 - The written file is ephemeral. Forge deletes its own `opencode.jsonc` before any teardown commit (and the whole worktree is removed on completion), so it can never land in loop history — even if the git-exclude write failed. A repository-tracked `opencode.jsonc` is never deleted (forge did not write it). Because the file is removed at teardown, a restarted loop is rewritten from the current `loop.worktreeOpencodeConfig`, so edits take effect on the next run.
-- MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the sandbox; the MCP commands themselves are not sandbox-isolated. To run an MCP server *inside* the loop's sandbox, use the placeholder below with an `sbx exec -i` command.
+- MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the sandbox; the MCP commands themselves are not sandbox-isolated. To run an MCP server *inside* the loop's sandbox, use the placeholder below with an `msb exec` command.
 - The string `{{FORGE_SANDBOX_CONTAINER}}` in any config value is replaced with the loop's sandbox container name (`forge-<loop>`) when the file is written. For loops without a sandbox, `mcp` entries referencing the placeholder are dropped instead, so the same config works with and without the sandbox.
 
 ## Group Launch
@@ -205,7 +206,7 @@ Example:
 | `remotes[].password` | unset | Basic-auth password (`OPENCODE_SERVER_PASSWORD` on the remote). Omit when the remote runs without auth. Stored in plaintext in this config file. |
 | `remotes[].username` | `"opencode"` | Basic-auth username (`OPENCODE_SERVER_USERNAME` default). |
 | `remotes[].gitRemote` | `"origin"` | Git remote name, configured on **both** machines' clones, used for code sync. |
-| `remotes[].sandbox` | `true` | Whether the remote loop runs sandboxed. Must mirror the remote server's actual `sandbox.enabled`/sbx capability — see below. |
+| `remotes[].sandbox` | `true` | Whether the remote loop runs sandboxed. Must mirror the remote server's actual `sandbox.enabled`/msb capability — see below. |
 
 Example:
 
@@ -243,15 +244,35 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 
 | Option | Default | Description |
 |---|---:|---|
-| `sandbox.enabled` | `true` | Enable sandboxed execution when the `sbx` daemon is available. |
-| `sandbox.mode` | `"sbx"` | Sandbox mode. `sbx` is currently the only supported mode. |
-| `sandbox.image` | `"oc-forge-sandbox:latest"` | sbx template tag used for sandboxed execution. |
-| `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`sbx create --memory`). |
-| `sandbox.resources.cpus` | `"4"` | CPU count (`sbx create --cpus`; integer-only). |
+| `sandbox.enabled` | `true` | Enable sandboxed execution. When enabled and the msb CLI or host virtualization is unavailable, sandbox startup fails rather than falling back to the host; set `false` to run worktree-only. |
+| `sandbox.mode` | `"msb"` | Sandbox mode. `msb` is currently the only supported mode. |
+| `sandbox.image` | `"oc-forge-sandbox:latest"` | msb image reference used for sandboxed execution. |
+| `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the image after changing it. |
+| `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`msb create -m`). |
+| `sandbox.resources.cpus` | `"4"` | CPU count (`msb create -c`; integer-only). |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
-| `sandbox.network.allow` | `[]` | Hosts the sandbox may reach (deny-by-default proxy). |
-| `sandbox.network.env` | `[]` | Host environment variables to pass into each sandbox command via the env file. |
+| `sandbox.network.allow` | `[]` | Hosts the sandbox may reach (per-sandbox deny-by-default egress proxy, applied at create time). |
+| `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
+| `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. |
+
+### Sandbox secrets
+
+Credentials that should never be readable inside the guest belong in `sandbox.network.secrets`, not `env`. msb keeps a host-side source reference, exposes a `$MSB_<ENV>` placeholder inside the sandbox, and substitutes the real value only for the listed hosts at the network boundary:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "secrets": [
+        { "env": "GITHUB_TOKEN", "hosts": ["api.github.com"] }
+      ]
+    }
+  }
+}
+```
+
+Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure is logged and never blocks a loop from starting. The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is gone.
 
 ## Bundled Assets & Installer
 

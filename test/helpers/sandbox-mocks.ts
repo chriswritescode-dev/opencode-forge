@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
-import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/sbx'
-import type { SandboxResources } from '../../src/types'
+import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/msb'
+import type { SandboxResources, SandboxSecretConfig } from '../../src/types'
 
 /**
  * Mock SandboxRuntime plus the test helpers used by the manager suites. Extending
@@ -9,8 +9,13 @@ import type { SandboxResources } from '../../src/types'
  */
 export interface MockSandboxRuntime extends SandboxRuntime {
   getCreateSandboxCalls(): Array<
-    [string, SandboxWorkspace[], { template?: string; resources?: SandboxResources } | undefined]
+    [
+      string,
+      SandboxWorkspace[],
+      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] } | undefined,
+    ]
   >
+  getRefreshSecretCalls(): Array<[string, SandboxSecretConfig[]]>
   getRemoveSandboxCalls(): string[]
   setSandboxes(newSandboxes: string[]): void
   setRunning(name: string, running: boolean): void
@@ -26,9 +31,14 @@ export interface MockSandboxRuntime extends SandboxRuntime {
  */
 export function createMockSandboxRuntime(): MockSandboxRuntime {
   const createSandboxCalls: Array<
-    [string, SandboxWorkspace[], { template?: string; resources?: SandboxResources } | undefined]
+    [
+      string,
+      SandboxWorkspace[],
+      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] } | undefined,
+    ]
   > = []
   const removeSandboxCalls: string[] = []
+  const refreshSecretCalls: Array<[string, SandboxSecretConfig[]]> = []
   let sandboxes = ['forge-foo', 'forge-bar']
   const sandboxStates = new Map<string, SandboxState>()
   let shouldBeAvailable = true
@@ -38,13 +48,13 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
   const mock: MockSandboxRuntime = {
     checkAvailable: async () => shouldBeAvailable
       ? { available: true as const }
-      : { available: false as const, reason: 'daemon-down' as const, detail: 'mock daemon down' },
+      : { available: false as const, reason: 'host-unsupported' as const, detail: 'mock daemon down' },
     templateExists: async () => shouldTemplateExist,
     loadTemplate: async () => {},
     createSandbox: async (
       name: string,
       workspaces: SandboxWorkspace[],
-      opts?: { template?: string; resources?: SandboxResources },
+      opts?: { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] },
     ) => {
       createSandboxCalls.push([name, workspaces, opts])
       sandboxStates.set(name, 'running')
@@ -56,12 +66,15 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       }
     },
     exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-    execPipe: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     getSandboxState: async (name: string) => sandboxStates.get(name) ?? 'missing',
     sandboxContainerName: (worktreeName: string) => `forge-${worktreeName}`,
     listSandboxesByPrefix: async (prefix: string) => sandboxes.filter((n) => n.startsWith(prefix)),
-    allowNetworkHost: async () => true,
+    refreshSandboxSecrets: async (name: string, secrets: SandboxSecretConfig[]) => {
+      refreshSecretCalls.push([name, secrets])
+      return true
+    },
     getCreateSandboxCalls: () => createSandboxCalls,
+    getRefreshSecretCalls: () => refreshSecretCalls,
     getRemoveSandboxCalls: () => removeSandboxCalls,
     setSandboxes: (newSandboxes: string[]) => {
       sandboxes = newSandboxes

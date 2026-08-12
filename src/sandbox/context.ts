@@ -1,4 +1,4 @@
-import type { SandboxRuntime } from './sbx'
+import type { SandboxRuntime } from './msb'
 import type { PluginConfig } from '../types'
 import type { SandboxMount } from './path'
 
@@ -7,7 +7,6 @@ export interface SandboxContext {
   containerName: string
   hostDir: string
   mounts: SandboxMount[]
-  envFile?: string
 }
 
 /**
@@ -34,7 +33,7 @@ export interface SandboxLoopContextState {
 export interface SandboxContextManager {
   runtime: SandboxRuntime
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
-  getActive(worktreeName: string): { containerName: string; projectDir: string; mounts: SandboxMount[]; envFile?: string } | null
+  getActive(worktreeName: string): { containerName: string; projectDir: string; mounts: SandboxMount[] } | null
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
@@ -63,7 +62,6 @@ export async function resolveSandboxContextForLoop(
     containerName: active.containerName,
     hostDir: active.projectDir,
     mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
-    envFile: active.envFile,
   }
 }
 
@@ -82,7 +80,7 @@ export function isSandboxConfigEnabled(config: PluginConfig | undefined): boolea
  *
  * A sandbox is only usable when BOTH conditions hold:
  * - the user has not opted out via `sandbox.enabled: false`, and
- * - a sandbox manager was constructed (Docker mode active).
+ * - a sandbox manager was constructed (msb mode active).
  *
  * Honoring the config here (not just the manager's existence) keeps this the single
  * source of truth for the bash/sh permission routing: when the sandbox is off, loops

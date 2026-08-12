@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'path'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
 import type { SandboxContext } from './context'
-import type { SandboxRuntime } from './sbx'
+import type { SandboxRuntime } from './msb'
 import type { ActiveSandbox } from './manager'
 import { findSessionAncestor } from '../utils/session-ancestry'
 
@@ -105,7 +105,7 @@ const MAX_FAST_IDLE_POLLS = 4
 
 /**
  * Derives the logical manager key for a project. This is a stable, non-final key passed to
- * `SandboxManager.ensureRunning`/`stop`; `sbx.sandboxContainerName` remains the only place the
+ * `SandboxManager.ensureRunning`/`stop`; `msb.sandboxContainerName` remains the only place the
  * `forge-` prefix is added. Keyed by project id to match the granularity of the desired/applied
  * preference rows, which are stored per project: one project row therefore maps to exactly one
  * host container even when the project spans several checkout directories. Deterministic so a
@@ -424,7 +424,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
 
   /**
    * Acts on a single desired/applied pair. Returns the desired revision processed, or null
-   * when there is no desired state (controller remains off). Actual SBX start/stop always
+   * when there is no desired state (controller remains off). Actual msb start/stop always
    * completes before the matching applied row is written.
    */
   async function reconcilePair(
@@ -622,7 +622,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         // `restoringPersistedOn` was already set before the ownership check, so a restore that
         // aborts before `hostActive` is confirmed still tears the manager key down on disposal.
         // Recheck that the selected session has not since entered an active loop. Loop-first
-        // resolution ignores the host binding, so a session that started a loop while host SBX was
+        // resolution ignores the host binding, so a session that started a loop while host msb was
         // ON must have its host sandbox stopped and the acknowledgement flipped to OFF-with-error;
         // otherwise the container keeps running and the sidebar stays ON while the loop actually
         // runs unsandboxed. This runs on every trusted-ON tick (the cheap lookup, not container
@@ -729,7 +729,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     if (desired.enabled) {
       // Reject an ON request that carries no session to bind: starting a container for a null
       // session would orphan it (bind(null) clears ownership, so it could never be used or
-      // cleaned up). Acknowledge OFF-with-error instead of starting SBX.
+      // cleaned up). Acknowledge OFF-with-error instead of starting msb.
       if (!desired.sessionId) {
         // No container is ever started for a null-session request; only stop a live container from
         // a prior binding (hostActive) to avoid leaking it when the selection becomes session-less.
@@ -757,7 +757,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         return desired.revision
       }
       // Refuse to bind a host sandbox to an active loop session: loop-first resolution ignores
-      // the host binding, so acknowledging ON here would report an SBX state that is never used.
+      // the host binding, so acknowledging ON here would report an msb state that is never used.
       if (deps.resolveActiveLoopForSession) {
         const inLoop = await deps.resolveActiveLoopForSession(desired.sessionId)
         if (inLoop?.active) {
@@ -1001,7 +1001,6 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         containerName: active.containerName,
         hostDir: active.projectDir,
         mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
-        envFile: active.envFile,
       }
     })
   }

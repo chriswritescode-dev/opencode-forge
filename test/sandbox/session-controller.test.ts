@@ -167,7 +167,7 @@ describe('SessionSandboxController', () => {
   test('failed start is acknowledged as OFF with an error and exposes no host fallback', async () => {
     repo.setDesired(PROJECT, makeDesired({ revision: 'r-fail' }))
     manager.setEnsureRunningImpl(async () => {
-      throw new Error('sbx daemon is not running')
+      throw new Error('msb create failed')
     })
     const controller = createController()
     await controller.start()
@@ -175,11 +175,11 @@ describe('SessionSandboxController', () => {
     const applied = repo.getApplied(PROJECT)
     expect(applied?.revision).toBe('r-fail')
     expect(applied?.enabled).toBe(false)
-    expect(applied?.error).toMatch(/sbx daemon is not running/)
+    expect(applied?.error).toMatch(/msb create failed/)
 
     // A failed start must never expose a host fallback for the selected session: resolution
     // fails closed (throws) rather than returning null (which hooks treat as host permission).
-    await expect(controller.resolveSandboxForSession(ROOT_SESSION)).rejects.toThrow(/sbx daemon is not running/)
+    await expect(controller.resolveSandboxForSession(ROOT_SESSION)).rejects.toThrow(/msb create failed/)
     await controller.dispose()
   })
 
@@ -1695,7 +1695,7 @@ describe('SessionSandboxController', () => {
     }
   })
 
-  test('an ON request without a session is acknowledged OFF-with-error and never starts SBX', async () => {
+  test('an ON request without a session is acknowledged OFF-with-error and never starts MSB', async () => {
     repo.setDesired(PROJECT, makeDesired({ revision: 'r-null-session', enabled: true, sessionId: null }))
     const controller = createController()
     await controller.start()

@@ -69,7 +69,7 @@ describe('SandboxManager project mount', () => {
     expect(workspaces).toHaveLength(1)
   })
 
-  test('does not pass a stale source project directory to sbx', async () => {
+  test('does not pass a stale source project directory to msb', async () => {
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const manager = createSandboxManager(runtime, {

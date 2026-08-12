@@ -107,11 +107,11 @@ Execution flow dialog with mode and model selection:
 
 - **Plans** — architect authors validated plans directly into SQL storage with `plan-write`/`plan-edit`
 - **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](docs/configuration.md#remotes)); grouped execution launches features from a PRD as parallel loops
-- **Loops** — iterative coding/auditing with isolated git worktree and optional sbx sandbox
+- **Loops** — iterative coding/auditing with isolated git worktree and optional msb sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **Group tools** — `launch-group`, `group-status`, `group-cancel` for parallel feature orchestration
 - **TUI** — sidebar and execution dialog
-- **Sandbox** — Optional sbx worktree loop isolation with bind-mounted project files
+- **Sandbox** — Optional msb worktree loop isolation with bind-mounted project files
 
 ## Agents
 
@@ -142,9 +142,9 @@ Forge provides these tool groups:
 - **Plan tools** — `plan-write`, `plan-edit`, `plan-read`, `section-read`, `plan-adjust`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
 - **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
-- **Sandbox routing** — native `bash`, `glob`, and `grep` tools route into sbx for sandboxed sessions
+- **Sandbox routing** — native `bash`, `glob`, and `grep` tools route into msb for sandboxed sessions
 
-Loops always run in an isolated git worktree; sbx is used when enabled, configured, and available.
+Loops always run in an isolated git worktree; msb is used when enabled, configured, and available.
 
 | Tool | Description |
 |------|-------------|
@@ -227,7 +227,7 @@ The plugin includes a TUI sidebar widget and an execution dialog for launching p
 
 The sidebar shows Forge's connection status and version. Captured plans live on the server in the `plansRepo` SQL store; the TUI no longer keeps a local archive or in-TUI editor.
 
-When sandboxing is configured, the sidebar displays the current session's sbx state. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
+When sandboxing is configured, the sidebar displays the current session's msb state. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
 
 ### Additional Commands
 
@@ -251,7 +251,7 @@ Choose from three execution modes:
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (sbx is used when enabled, configured, and available)
+3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (msb is used when enabled, configured, and available)
 
 #### Model Selection
 
@@ -353,7 +353,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions sbx when enabled, configured, and available.
+- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions msb when enabled, configured, and available.
 
 | Mode | When to choose it |
 |------|-------------------|
@@ -401,7 +401,7 @@ Loop sessions rotate between code and auditor work, so Forge persists per-sessio
 
 ### Worktree Isolation
 
-Loops always run in an isolated git worktree. Sandbox is optional and enabled only when the `sbx` daemon is available and configured (`sandbox.mode = 'sbx'`): when available, a sandbox is provisioned automatically alongside the worktree; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
+Loops always run in an isolated git worktree. Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`: when enabled, a sandbox is provisioned automatically alongside the worktree. If the `msb` CLI is missing or the host cannot run microVMs, sandbox startup fails and the loop start is rolled back — it never silently falls back to the host. Set `sandbox.enabled: false` to run worktree-only. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
 
 ### Auditor Integration
 
@@ -490,7 +490,7 @@ All worktree-based execution paths require a git repository with at least one ro
 When a worktree loop starts with `OPENCODE_EXPERIMENTAL_WORKSPACES=true`, forge:
 
 1. Calls `experimental.workspace.create` with `type: "forge"`, `branch: null`, and `extra: { loopName, projectDirectory, workspaceCreatedAt }` to register the workspace through the `forge` adapter
-2. The adapter's `create` hook creates the git worktree (reusing an orphaned branch when possible) and, when configured, provisions the sbx sandbox
+2. The adapter's `create` hook creates the git worktree (reusing an orphaned branch when possible) and, when configured, provisions the msb sandbox
 3. Creates a new Code session pointed at the worktree directory
 4. Calls `experimental.workspace.warp` to bind the session to that workspace
 5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
@@ -526,29 +526,29 @@ Worktree loops require a git repository with at least one commit. OpenCode scope
 
 ## Sandbox
 
-Run loop iterations inside an isolated `sbx` sandbox when the `sbx` daemon is available and configured. Sandbox is optional: when `sbx` is enabled, Forge provisions a loop sandbox automatically; otherwise loops run in worktree-only mode.
+Run loop iterations inside an isolated `msb` sandbox. Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`: when enabled, Forge provisions a loop sandbox automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop is rolled back rather than silently falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
-See [Sandbox](docs/sandbox.md) for setup, native in-sandbox Docker, network access, environment passthrough, custom bind mounts, large-output handling, and resource defaults.
+See [Sandbox](docs/sandbox.md) for setup, host requirements, image building and loading, network access, environment passthrough and secrets, custom bind mounts, large-output handling, and resource defaults.
 
 ### Prerequisites
 
-- The `sbx` CLI installed and authenticated (`sbx login`), with the `sbx` daemon running (`sbx daemon start`) on a supported platform (macOS 14+ Apple silicon, Windows 11 with Hypervisor Platform, or Ubuntu 24.04+ with KVM).
-- Docker, used only to build the sandbox template.
+- The `msb` CLI installed — no account or login step. Install with `curl -fsSL https://install.microsandbox.dev | sh` and verify with `msb doctor` on a supported platform (Linux with KVM, macOS on Apple silicon, or Windows 11 with Windows Hypervisor Platform).
+- Docker, used only to build the sandbox image (the msb runtime itself does not need it).
 - OpenCode >= 1.15.5 — sandbox shell routing relies on the session-aware `shell.env` plugin hook. Enforced via `engines.opencode`, so older versions refuse to load the plugin rather than silently running sandbox commands on the host. (Loops additionally require OpenCode >= 1.17.8 for workspace integration, see [Requirements](#requirements).)
 
 ### Setup
 
-**1. Build and load the sandbox template:**
+**1. Build and load the sandbox image:**
 
 ```bash
 docker build -t oc-forge-sandbox:latest container/
 docker save oc-forge-sandbox:latest -o forge-sandbox.tar
-sbx template load forge-sandbox.tar
+msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 ```
 
 The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, and jq. Chromium and Browser Control are an opt-in image feature: set `sandbox.imageFeatures.browserControl` to `true`, then run `Build sandbox template` from the command palette to rebuild and load the configured image tag.
 
-The `container/Dockerfile` ships with the plugin package. If the template is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox template" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically.
+The `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox template" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically.
 
 Restart OpenCode after changing sandbox configuration.
 

@@ -1,30 +1,16 @@
-import { describe, test, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
+import { describe, test, expect, afterEach, vi } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 
-describe('SandboxManager env passthrough file lifecycle', () => {
-  const tmpDirs: string[] = []
+describe('SandboxManager create-time env and secrets', () => {
   const savedEnv: Record<string, string | undefined> = {}
 
   afterEach(() => {
-    for (const d of tmpDirs) {
-      rmSync(d, { recursive: true, force: true })
-    }
-    tmpDirs.length = 0
     for (const [k, v] of Object.entries(savedEnv)) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v
     }
     Object.keys(savedEnv).forEach((k) => delete savedEnv[k])
   })
-
-  function createTempDataDir(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-env-passthrough-'))
-    tmpDirs.push(dir)
-    return dir
-  }
 
   function setEnv(name: string, value: string | undefined) {
     if (!(name in savedEnv)) {
@@ -33,126 +19,232 @@ describe('SandboxManager env passthrough file lifecycle', () => {
     if (value === undefined) delete process.env[name]; else process.env[name] = value
   }
 
-  test('writes a 0600 env file after start, exposes it on the active entry, and deletes it on stop', async () => {
-    setEnv('FORGE_TEST_TOKEN', 'abc123')
-    setEnv('FORGE_TEST_EMPTY', undefined)
-    const dataDir = createTempDataDir()
+  test('start forwards only env names that are set on the host and logs the omissions', async () => {
+    setEnv('FORGE_TEST_DEFINED', 'abc123')
+    setEnv('FORGE_TEST_UNDEFINED', undefined)
 
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      dataDir,
-      network: { env: ['FORGE_TEST_TOKEN', 'FORGE_TEST_EMPTY', 'FORGE_TEST_UNSET'] },
+      network: { env: ['FORGE_TEST_DEFINED', 'FORGE_TEST_UNDEFINED'] },
     }
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
-    const envFile = manager.getActive('test')?.envFile
-    expect(envFile).toBeDefined()
-    const expectedPath = join(dataDir, 'sandbox-env', 'forge-test.env')
-    expect(envFile).toBe(expectedPath)
-
-    expect(existsSync(expectedPath)).toBe(true)
-    expect(readFileSync(expectedPath, 'utf-8')).toBe('FORGE_TEST_TOKEN=abc123\n')
-    // Only the set variable is listed; unset/absent names are omitted.
-    expect(readFileSync(expectedPath, 'utf-8')).not.toMatch(/FORGE_TEST_EMPTY/)
-    expect(statSync(expectedPath).mode & 0o777).toBe(0o600)
-
-    await manager.stop('test')
-
-    expect(existsSync(expectedPath)).toBe(false)
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['FORGE_TEST_DEFINED'])
+    expect(createCall[2]?.env).not.toContain('FORGE_TEST_UNDEFINED')
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_UNDEFINED'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('not set'))
   })
 
-  test('with no network.env configured, no env file is created and envFile is undefined', async () => {
-    setEnv('FORGE_TEST_TOKEN', 'abc123')
-    const dataDir = createTempDataDir()
+  test('start forwards configured secrets only when their host variable is set', async () => {
+    setEnv('FORGE_TEST_SECRET', 's3cr3t-value')
+    setEnv('FORGE_TEST_UNSET', undefined)
 
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      dataDir,
+      network: {
+        secrets: [
+          { env: 'FORGE_TEST_SECRET', hosts: ['api.github.com'] },
+          { env: 'FORGE_TEST_UNSET', hosts: ['api.github.com'] },
+          { env: '', hosts: ['api.github.com'] },
+          { env: 'FORGE_TEST_NO_HOSTS', hosts: [] },
+        ],
+      },
     }
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
-    expect(manager.getActive('test')?.envFile).toBeUndefined()
-    expect(existsSync(join(dataDir, 'sandbox-env'))).toBe(false)
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([{ env: 'FORGE_TEST_SECRET', hosts: ['api.github.com'] }])
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_UNSET'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('not set'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('no allowed hosts'))
   })
 
-  test('no sandbox-env directory is created when no listed variable is set', async () => {
-    setEnv('FORGE_TEST_TOKEN', undefined)
-    const dataDir = createTempDataDir()
-
+  test('omits secrets with whitespace-only names or hosts and logs the accurate reason', async () => {
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      dataDir,
-      network: { env: ['FORGE_TEST_TOKEN'] },
+      network: {
+        secrets: [
+          { env: '   ', hosts: ['api.github.com'] },
+          { env: 'FORGE_TEST_WS_HOSTS', hosts: ['   '] },
+          { env: 'FORGE_TEST_WS_HOSTS_2', hosts: ['api.example.com', '  '] },
+        ],
+      },
     }
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
-    expect(manager.getActive('test')?.envFile).toBeUndefined()
-    expect(existsSync(join(dataDir, 'sandbox-env'))).toBe(false)
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([])
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('missing env name'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_WS_HOSTS'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('no allowed hosts'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_WS_HOSTS_2'))
   })
 
-  test('stop deletes the env file even when it holds no sandbox-env dir entry', async () => {
-    setEnv('FORGE_TEST_TOKEN', 'abc123')
-    const dataDir = createTempDataDir()
+  test('trims and forwards secret env names and hosts that are otherwise valid', async () => {
+    setEnv('FORGE_TEST_PADDED', 'v')
+    setEnv('FORGE_TEST_PADDED_HOSTS', 'v')
 
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      dataDir,
-      network: { env: ['FORGE_TEST_TOKEN'] },
+      network: {
+        secrets: [
+          { env: ' FORGE_TEST_PADDED ', hosts: [' api.github.com '] },
+          { env: 'FORGE_TEST_PADDED_HOSTS', hosts: [' *.githubusercontent.com '] },
+        ],
+      },
     }
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
-    const envFile = manager.getActive('test')?.envFile!
-    expect(existsSync(envFile)).toBe(true)
 
-    // Simulate a stale active entry without a sandbox-env directory listing.
-    await manager.stop('test')
-
-    expect(existsSync(envFile)).toBe(false)
-    expect(readdirSync(join(dataDir, 'sandbox-env'))).toHaveLength(0)
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.secrets).toEqual([
+      { env: 'FORGE_TEST_PADDED', hosts: ['api.github.com'] },
+      { env: 'FORGE_TEST_PADDED_HOSTS', hosts: ['*.githubusercontent.com'] },
+    ])
+    expect(logger.log).not.toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_PADDED'))
   })
 
-  test('stop clears the active map entry even when the env file cannot be removed', async () => {
-    setEnv('FORGE_TEST_TOKEN', 'abc123')
-    const dataDir = createTempDataDir()
+  test('no credential value leaks into the create arguments', async () => {
+    setEnv('FORGE_TEST_TOKEN', 'super-secret-value')
 
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      dataDir,
-      network: { env: ['FORGE_TEST_TOKEN'] },
+      network: {
+        env: ['FORGE_TEST_TOKEN'],
+        secrets: [{ env: 'FORGE_TEST_TOKEN', hosts: ['api.example.com'] }],
+      },
     }
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
-    const envFile = manager.getActive('test')?.envFile!
-    expect(existsSync(envFile)).toBe(true)
 
-    // Replace the env file with a non-empty directory so its deletion throws (filesystem access),
-    // while the container removal itself succeeds.
-    rmSync(envFile)
-    mkdirSync(envFile)
-    writeFileSync(join(envFile, 'block'), 'x')
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual(['FORGE_TEST_TOKEN'])
+    expect(createCall[2]?.secrets).toEqual([{ env: 'FORGE_TEST_TOKEN', hosts: ['api.example.com'] }])
+    // Only names (bare `-e NAME`) and references (`ENV@HOST`) are forwarded, never values.
+    expect(JSON.stringify(createCall)).not.toContain('super-secret-value')
+    expect(JSON.stringify(createCall)).not.toContain('=')
+  })
 
-    await expect(manager.stop('test')).resolves.toBeUndefined()
+  test('with no network config, start forwards empty env and secrets lists', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
 
-    // The container was removed and the stale in-memory entry is gone despite the env-file failure,
-    // so no fail-closed retries are triggered for an already-removed container.
-    expect(manager.getActive('test')).toBeNull()
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual([])
+    expect(createCall[2]?.secrets).toEqual([])
+  })
+
+  test('adopting an existing running sandbox refreshes secrets with the current filtered list', async () => {
+    setEnv('FORGE_TEST_SECRET', 's3cr3t-value')
+    setEnv('FORGE_TEST_ROTATED', 'rotated-value')
+    setEnv('FORGE_TEST_UNSET', undefined)
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: {
+        secrets: [
+          { env: 'FORGE_TEST_SECRET', hosts: ['api.github.com'] },
+          { env: 'FORGE_TEST_ROTATED', hosts: ['api.github.com'] },
+          { env: 'FORGE_TEST_UNSET', hosts: ['api.github.com'] },
+        ],
+      },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+    const calls = runtime.getRefreshSecretCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('forge-test')
+    expect(calls[0][1]).toEqual([
+      { env: 'FORGE_TEST_SECRET', hosts: ['api.github.com'] },
+      { env: 'FORGE_TEST_ROTATED', hosts: ['api.github.com'] },
+    ])
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_UNSET'))
+  })
+
+  test('adopting a stopped sandbox through ensureRunning refreshes secrets exactly once', async () => {
+    setEnv('FORGE_TEST_SECRET', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'stopped')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.ensureRunning('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
+    expect(runtime.getRefreshSecretCalls()[0][1]).toEqual([
+      { env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] },
+    ])
+  })
+
+  test('creating a new sandbox issues no refreshSandboxSecrets call', async () => {
+    setEnv('FORGE_TEST_SECRET', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(1)
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(0)
+  })
+
+  test('a failed secret refresh is logged and does not block adopting the sandbox', async () => {
+    setEnv('FORGE_TEST_SECRET', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.refreshSandboxSecrets = vi.fn(async () => false)
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await expect(manager.start('test', '/home/user/worktrees/feature')).resolves.toEqual({
+      containerName: 'forge-test',
+    })
+    expect(runtime.refreshSandboxSecrets).toHaveBeenCalledTimes(1)
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: failed to refresh secrets for forge-test')
   })
 })

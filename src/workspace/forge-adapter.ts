@@ -9,7 +9,7 @@ import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
-import { sandboxContainerName } from '../sandbox/sbx'
+import { sandboxContainerName } from '../sandbox/msb'
 
 
 /**

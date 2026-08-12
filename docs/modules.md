@@ -19,7 +19,7 @@ src/
 ├── hooks/                   # Plugin event/lifecycle hooks
 ├── loop/                    # Core loop state machine & runtime
 ├── services/                # Business logic services
-├── sandbox/                 # sbx sandbox management
+├── sandbox/                 # msb sandbox management
 ├── storage/                 # SQLite persistence layer
 ├── tools/                   # Plugin tools callable by AI agents
 ├── tui/                     # TUI-specific components
@@ -268,39 +268,40 @@ Source: [src/services/execution.ts](../src/services/execution.ts)
 
 ---
 
-## `sandbox/` — sbx Sandboxing
+## `sandbox/` — msb Sandboxing
 
-Drives the `sbx` CLI to provision isolated sandboxes for loop execution.
+Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 
 ### Files
 
 | File | Purpose |
 |------|---------|
-| `sbx.ts` | `SandboxRuntime` facade over the `sbx` CLI (create/exec/remove/list, availability probe) |
+| `msb.ts` | `SandboxRuntime` facade over the `msb` CLI (create/exec/remove/list, availability probe) |
 | `process.ts` | Child-process runner (`runCommand`) shared by the sandbox helpers |
-| `template.ts` | Template build/save/load helper (`docker build`/`docker save`/`sbx template load`) |
+| `template.ts` | Image build/save/load helper (`docker build`/`docker save`/`msb load`) |
 | `config-warnings.ts` | Warnings for legacy Docker-era sandbox config keys |
-| `manager.ts` | `SandboxManager` lifecycle management (start/stop/getActive/isLive) |
+| `manager.ts` | `SandboxManager` lifecycle management (start/stop/ensureRunning/isLive, orphan cleanup) |
 | `reconcile.ts` | Sandbox reconciliation with loop states |
 | `context.ts` | `SandboxContext`, `isSandboxEnabled()` |
 | `path.ts` | Sandbox path utilities |
-| `exec-fs.ts` | Filesystem operations through `sbx exec` |
+| `exec-fs.ts` | Filesystem operations through `msb exec` |
+| `shell-shim.ts` | Generated shim routing the native `bash` tool through `msb exec` |
+| `session-controller.ts` | Per-session host sandbox selection and ownership |
 
 ### SandboxRuntime Interface
 
 ```typescript
 interface SandboxRuntime {
-  checkAvailable(): Promise<SbxAvailability>
+  checkAvailable(): Promise<MsbAvailability>
   templateExists(ref: string): Promise<boolean>
-  loadTemplate(tarPath: string): Promise<void>
-  createSandbox(name: string, workspaces: SandboxWorkspace[], opts?: CreateSandboxOpts): Promise<void>
+  loadTemplate(tarPath: string, ref: string): Promise<void>
+  createSandbox(name: string, workspaces: SandboxWorkspace[], opts: CreateSandboxOpts): Promise<void>
   removeSandbox(name: string): Promise<void>
   exec(name: string, command: string, opts?: SandboxExecOpts): Promise<CommandResult>
-  execPipe(name: string, command: string, stdin: string, opts?: ...): Promise<CommandResult>
-  isRunning(name: string): Promise<boolean>
+  getSandboxState(name: string): Promise<SandboxState>
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
-  allowNetworkHost(host: string): Promise<boolean>
+  refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean>
 }
 ```
 
@@ -308,18 +309,19 @@ interface SandboxRuntime {
 
 ```typescript
 interface SandboxManager {
-  start(loopName: string, worktreeDir: string): Promise<void>
-  stop(loopName: string): Promise<void>
-  getActive(): Map<string, { sandbox: string; worktreeDir: string }>
-  isActive(loopName: string): boolean
-  isLive(sandboxName: string): Promise<boolean>
-  isLiveByName(loopName: string): Promise<boolean>
-  cleanupOrphans(preserveNames: Set<string>): Promise<number>
-  restore(loopName: string): Promise<void>
+  runtime: SandboxRuntime
+  start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }>
+  stop(worktreeName: string): Promise<void>
+  getActive(worktreeName: string): ActiveSandbox | null
+  isActive(worktreeName: string): boolean
+  isLive(worktreeName: string): Promise<boolean>
+  cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
+  restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
+  ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 ```
 
-Source: [src/sandbox/sbx.ts](../src/sandbox/sbx.ts), [src/sandbox/manager.ts](../src/sandbox/manager.ts)
+Source: [src/sandbox/msb.ts](../src/sandbox/msb.ts), [src/sandbox/manager.ts](../src/sandbox/manager.ts)
 
 ---
 
@@ -488,7 +490,7 @@ createLoopService(...)            // State management
 createSandboxManager(config, logger) // Sandbox
 createTools(ctx)                  // Tool registry
 createForgeWorkspaceAdapter(deps) // Workspace
-createSbxRuntime(logger)          // Sandbox
+createMsbRuntime(logger)          // Sandbox
 createLogger(config)              // Logging
 ```
 
