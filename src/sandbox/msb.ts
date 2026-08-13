@@ -16,26 +16,32 @@ export function sandboxContainerName(worktreeName: string): string {
 }
 
 export interface SandboxWorkspace {
+  /**
+   * Host path msb mounts from. Must already be canonicalized: msb cannot mount a host path that
+   * traverses a symlink and fails the whole sandbox with `ENOTDIR`, which on macOS hits every
+   * `os.tmpdir()` path because `/var` is a symlink to `private/var`.
+   */
   hostDir: string
+  /** Path the mount appears at inside the sandbox. Kept uncanonicalized so absolute host paths the agent was given still resolve. */
+  containerDir: string
   readOnly?: boolean
 }
 
 export interface BuildMsbExecOpts {
   workdir?: string
-  user?: string
   timeoutMs?: number
 }
 
 export function buildMsbExecArgs(name: string, command: string, opts?: BuildMsbExecOpts): string[] {
-  const args = ['exec', name, '--no-tty']
+  const args = ['exec', name, '--no-tty', '--quiet']
   if (opts?.workdir) args.push('-w', opts.workdir)
-  if (opts?.user) args.push('-u', opts.user)
   if (opts?.timeoutMs) args.push('--timeout', `${Math.ceil(opts.timeoutMs / 1000)}s`)
   args.push('--', 'sh', '-c', command)
   return args
 }
 
-const MSB_MEMORY_RE = /^\d+(\.\d+)?[kmg]b?$/i
+const MSB_SIZE_RE = /^\d+(\.\d+)?[kmg]b?$/i
+const MSB_DOCKER_DISK_DEFAULT = '16g'
 
 export function parseMsbCpus(raw: string | undefined, logger: Logger): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined
@@ -51,10 +57,10 @@ export function parseMsbCpus(raw: string | undefined, logger: Logger): number | 
   return Math.max(1, floored)
 }
 
-export function normalizeMsbMemory(raw: string | undefined, logger: Logger): string | undefined {
+export function normalizeMsbSize(raw: string | undefined, logger: Logger): string | undefined {
   if (raw === undefined || raw.trim() === '') return undefined
-  if (!MSB_MEMORY_RE.test(raw)) {
-    logger.log(`Sandbox: unrecognized --memory value ${JSON.stringify(raw)} ignored`)
+  if (!MSB_SIZE_RE.test(raw)) {
+    logger.log(`Sandbox: unrecognized size value ${JSON.stringify(raw)} ignored`)
     return undefined
   }
   return raw.toLowerCase().replace(/b$/, '')
@@ -78,7 +84,7 @@ function normalizeSecrets(secrets: SandboxSecretConfig[] | undefined): Array<{ e
 }
 
 /** Builds `--secret <env>@<hosts>` flag pairs, one pair per normalized secret. */
-export function buildSecretFlags(secrets: SandboxSecretConfig[] | undefined): string[] {
+function buildSecretFlags(secrets: SandboxSecretConfig[] | undefined): string[] {
   const flags: string[] = []
   for (const secret of normalizeSecrets(secrets)) {
     flags.push('--secret', `${secret.env}@${secret.hosts.join(',')}`)
@@ -86,25 +92,99 @@ export function buildSecretFlags(secrets: SandboxSecretConfig[] | undefined): st
   return flags
 }
 
+const EGRESS_ALLOW_ALL_TOKENS = new Set(['*', '**'])
+
 /**
- * Unions the configured egress allow-list with the destination hosts of the configured secrets.
- * msb's per-sandbox network proxy is deny-by-default, so a secret whose hosts are not also
- * allow-listed could never reach its destination. Entries are trimmed, blanks dropped, and the
- * result deduplicated; the create arg builder stays defensive about the same rules.
+ * Reports whether the configured allow-list explicitly opens sandbox egress to everything.
+ * An explicit `*` or `**` must behave identically to an omitted allow-list (no net flags,
+ * msb's own allow-by-default applies), because treating it as a host and flipping to
+ * `--net-default deny` with zero rules silently inverts "allow everything" into a total
+ * lockout. Scope is the allow list only: a secret's destination hosts declare where that
+ * secret may be sent, not global egress policy, so a wildcard there remains invalid and is
+ * still rejected by the host validator. Precedence: a wildcard entry anywhere in the list
+ * beats narrower entries in the same list rather than intersecting with them.
+ */
+export function egressAllowsAll(allow: string[] | undefined): boolean {
+  return (allow ?? []).some((entry) => EGRESS_ALLOW_ALL_TOKENS.has(entry.trim()))
+}
+
+function egressHostRejectionReason(host: string): string | undefined {
+  if (host.includes(',')) return 'commas separate rule tokens, not hosts'
+  if (host.includes(':')) return 'port-qualified hosts need the tcp/udp rule form'
+  if (host.includes('@')) return 'the @ character is reserved for rule targets'
+  if (host === '*') return 'the bare wildcard is not a valid egress host'
+  if (host.startsWith('*.') && host.slice(2).split('.').filter(Boolean).length < 2) {
+    return 'wildcard suffixes need at least two labels'
+  }
+  if (host.startsWith('suffix=') && host.slice(7).split('.').filter(Boolean).length < 2) {
+    return 'suffix= domains need at least two labels'
+  }
+  if (!host.includes('.') && !host.startsWith('domain=')) {
+    return 'bare single-label hosts are ambiguous; use domain=name'
+  }
+  return undefined
+}
+
+function collectEgressHostTokens(allow: string[] | undefined, secrets: SandboxSecretConfig[] | undefined): string[] {
+  const tokens: string[] = []
+  for (const raw of allow ?? []) {
+    const host = raw.trim()
+    if (host) tokens.push(host)
+  }
+  for (const secret of normalizeSecrets(secrets)) {
+    for (const host of secret.hosts) {
+      const trimmed = host.trim()
+      if (trimmed) tokens.push(trimmed)
+    }
+  }
+  return tokens
+}
+
+/**
+ * Unions the configured egress allow-list with the destination hosts of the configured secrets
+ * and validates each token. Egress restriction is opt-in: an empty configuration emits no network
+ * flags and msb's own allow-by-default applies, while any configured token flips the sandbox to
+ * deny-by-default, so a secret whose hosts are not also allow-listed could never reach its
+ * destination. An explicit allow-all wildcard (`*` or `**`) short-circuits to an empty rule set,
+ * leaving egress unrestricted exactly as an omitted allow-list would. Entries are trimmed, blanks
+ * dropped, and the result deduplicated.
  */
 export function buildNetworkAllow(
   allow: string[] | undefined,
   secrets: SandboxSecretConfig[] | undefined,
+  logger?: Logger,
 ): string[] {
+  if (egressAllowsAll(allow)) {
+    logger?.log('Sandbox: wildcard allow-list leaves sandbox egress unrestricted')
+    return []
+  }
+  const tokens = collectEgressHostTokens(allow, secrets)
   const hosts = new Set<string>()
-  for (const raw of allow ?? []) {
-    const host = raw.trim()
-    if (host) hosts.add(host)
+  for (const host of tokens) {
+    const reason = egressHostRejectionReason(host)
+    if (reason) {
+      logger?.log(`Sandbox: skipping egress host ${JSON.stringify(host)}: ${reason}`)
+      continue
+    }
+    hosts.add(host)
   }
-  for (const secret of normalizeSecrets(secrets)) {
-    for (const host of secret.hosts) hosts.add(host)
+  const result = [...hosts]
+  if (logger && tokens.length > 0 && result.length === 0) {
+    logger.log('Sandbox: every configured egress host was rejected as invalid; sandbox egress is fully denied')
   }
-  return [...hosts]
+  return result
+}
+
+export function egressRestrictionRequested(
+  allow: string[] | undefined,
+  secrets: SandboxSecretConfig[] | undefined,
+): boolean {
+  if (egressAllowsAll(allow)) return false
+  return collectEgressHostTokens(allow, secrets).length > 0
+}
+
+export function dockerDataVolumeName(containerName: string): string {
+  return `${sanitizeMsbName(containerName)}-docker-data`
 }
 
 export function buildMsbCreateArgs(
@@ -113,8 +193,12 @@ export function buildMsbCreateArgs(
   opts: {
     image: string
     memory?: string
+    maxMemory?: string
     cpus?: number
+    maxCpus?: number
     networkAllow?: string[]
+    restrictEgress?: boolean
+    dockerDisk?: string
     env?: string[]
     secrets?: SandboxSecretConfig[]
   },
@@ -124,14 +208,22 @@ export function buildMsbCreateArgs(
   }
   const args = ['create', opts.image, '--name', name, '--quiet']
   if (opts.cpus !== undefined) args.push('-c', String(opts.cpus))
+  if (opts.maxCpus !== undefined) args.push('--max-cpus', String(opts.maxCpus))
   if (opts.memory) args.push('-m', opts.memory)
+  if (opts.maxMemory) args.push('--max-memory', opts.maxMemory)
   for (const ws of workspaces) {
-    args.push('-v', ws.readOnly ? `${ws.hostDir}:${ws.hostDir}:ro` : `${ws.hostDir}:${ws.hostDir}`)
+    args.push('-v', ws.readOnly ? `${ws.hostDir}:${ws.containerDir}:ro` : `${ws.hostDir}:${ws.containerDir}`)
   }
-  args.push('--net-default', 'deny', '--net-rule', 'allow@dns')
-  for (const host of opts.networkAllow ?? []) {
-    const trimmed = host.trim()
-    if (trimmed) args.push('--net-rule', `allow@${trimmed}`)
+  const dockerDisk = opts.dockerDisk || MSB_DOCKER_DISK_DEFAULT
+  args.push('--mount-named', `${dockerDataVolumeName(name)}:/var/lib/docker:kind=disk,size=${dockerDisk}`)
+  const restrictEgress =
+    opts.restrictEgress === true || (opts.networkAllow ?? []).some((host) => host.trim() !== '')
+  if (restrictEgress) {
+    args.push('--net-default', 'deny')
+    for (const host of opts.networkAllow ?? []) {
+      const trimmed = host.trim()
+      if (trimmed) args.push('--net-rule', `allow@${trimmed}`)
+    }
   }
   // Bare `-e <NAME>` only: msb resolves the key from its own environment at start, so the value
   // never appears in forge's argv (and never in `ps` output), unlike `-e NAME=VALUE`.
@@ -147,7 +239,7 @@ export function buildMsbCreateArgs(
   return args
 }
 
-export type SandboxState = 'running' | 'stopped' | 'missing' | 'unknown'
+export type SandboxState = 'running' | 'stopped' | 'transient' | 'missing' | 'unknown'
 
 export interface MsbSandboxEntry {
   name: string
@@ -162,12 +254,18 @@ export function mapMsbStatus(status: string): SandboxState {
     case 'stopped':
     case 'crashed':
       return 'stopped'
+    case 'created':
+    case 'starting':
+    case 'draining':
+    case 'paused':
+      // Known msb states that are not directly executable but prove the sandbox exists
+      // (`Created`/`Starting` are cloud-only upstream today; `Draining`/`Paused` occur on local
+      // runtimes). They must never collapse into `unknown`, which callers read as a query failure
+      // and refuse to act on.
+      return 'transient'
     default:
-      // `Draining` (removal in progress), `Starting`, `Created`, and `Paused` all reject new
-      // `msb exec` calls, and an unfamiliar future status cannot be trusted as usable: keep
-      // only statuses that `msb exec` actually resolves as `running`/`stopped` (see
-      // `resolve_and_start`), and fall everything else to `unknown` so the caller never
-      // recreates or destroys a sandbox on a status it cannot execute into.
+      // An unrecognized status string is not evidence of any particular state: keep it on the
+      // fail-closed `unknown` path rather than trusting it as usable or absent.
       return 'unknown'
   }
 }
@@ -326,6 +424,7 @@ export interface CreateSandboxOpts {
   image: string
   resources?: SandboxResources
   networkAllow?: string[]
+  restrictEgress?: boolean
   /** Host environment variable names injected into the guest via bare `-e <NAME>`. */
   env?: string[]
   /** Host-held credentials bound via `--secret <env>@<hosts>`; values never enter the guest. */
@@ -364,6 +463,16 @@ export interface SandboxRuntime {
 
 const MSB_TEMPLATE_LOAD_TIMEOUT = 600000
 const MSB_REMOVE_MISSING_RE = /not found|no such sandbox|unknown sandbox|does not exist/i
+const MSB_VOLUME_REMOVE_MISSING_RE = /not found|no such volume|unknown volume|does not exist/i
+
+/**
+ * Matches msb's "already exists" failure from `create`. A create that fails partway through leaves
+ * an orphaned sandbox directory that msb still counts as existing, while `ls` omits it and `rm`
+ * reports it as missing. `getSandboxState` therefore resolves `missing`, so every retry fails
+ * identically and the sandbox is permanently unusable until the directory is deleted by hand.
+ * Recreating with `--replace` is msb's own documented way out.
+ */
+const MSB_CREATE_EXISTS_RE = /already exists/i
 
 /**
  * Assembles a `SandboxRuntime` from the pure `msb` helpers, routing every method through an
@@ -403,15 +512,35 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
   ): Promise<void> {
     const args = buildMsbCreateArgs(name, workspaces, {
       image: opts.image,
-      memory: normalizeMsbMemory(opts.resources?.memory, logger),
+      memory: normalizeMsbSize(opts.resources?.memory, logger),
+      maxMemory: normalizeMsbSize(opts.resources?.maxMemory, logger),
       cpus: parseMsbCpus(opts.resources?.cpus, logger),
+      maxCpus: parseMsbCpus(opts.resources?.maxCpus, logger),
       networkAllow: opts.networkAllow,
+      restrictEgress: opts.restrictEgress,
+      dockerDisk: normalizeMsbSize(opts.resources?.dockerDisk, logger),
       env: opts.env,
       secrets: opts.secrets,
     })
     const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
-    if (result.exitCode !== 0) {
+    if (result.exitCode === 0) return
+    if (!MSB_CREATE_EXISTS_RE.test(`${result.stdout}\n${result.stderr}`)) {
       throw new Error(`Failed to create sandbox: ${result.stderr}`)
+    }
+    logger.log(
+      `Sandbox: msb reports ${name} already exists but it was not reusable (orphaned state); recreating with --replace`,
+    )
+    const replaced = await run([...args, '--replace'], { timeout: MSB_DEFAULT_TIMEOUT })
+    if (replaced.exitCode !== 0) {
+      throw new Error(`Failed to create sandbox: ${replaced.stderr}`)
+    }
+  }
+
+  async function removeDockerDataVolume(name: string): Promise<void> {
+    const volume = dockerDataVolumeName(name)
+    const result = await run(['volume', 'rm', volume])
+    if (result.exitCode !== 0 && !MSB_VOLUME_REMOVE_MISSING_RE.test(`${result.stdout}\n${result.stderr}`)) {
+      throw new Error(`Failed to remove docker data volume: ${result.stderr}`)
     }
   }
 
@@ -419,6 +548,12 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     const result = await run(['rm', '--force', name, '--quiet'])
     if (result.exitCode !== 0 && !MSB_REMOVE_MISSING_RE.test(`${result.stdout}\n${result.stderr}`)) {
       throw new Error(`Failed to remove sandbox: ${result.stderr}`)
+    }
+    try {
+      await removeDockerDataVolume(name)
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      logger.log(`Sandbox: failed to remove docker data volume for ${name}: ${errMsg}`)
     }
   }
 
@@ -484,7 +619,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     const args = ['modify', name]
     if (introduced) args.push('--restart')
     for (const staleName of stale) args.push('--secret-rm', staleName)
-    for (const secret of desired) args.push('--secret', `${secret.env}@${secret.hosts.join(',')}`)
+    args.push(...buildSecretFlags(secrets))
     try {
       const result = await run(args, { timeout: MSB_QUERY_TIMEOUT })
       return result.exitCode === 0

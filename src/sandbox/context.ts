@@ -21,6 +21,7 @@ export const SANDBOX_CONTEXT_NOTE = [
   'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
   'Run long commands in the foreground with a raised bash timeout: if the sandbox stops while idle it reboots the VM, so backgrounded work (&, nohup, setsid) and in-memory state are not guaranteed to survive, though files on disk do.',
   'Passwordless sudo is available for installing missing tools system-wide.',
+  'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
 ].join('\n')
 
 export interface SandboxLoopContextState {

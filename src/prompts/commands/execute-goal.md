@@ -16,7 +16,7 @@ Call the `execute-goal` tool with the full, self-contained goal text:
 - loopName: Optional loop name. Forge slugifies it and auto-increments on collision.
 - maxIterations: Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`.
 
-This creates an isolated Forge worktree and a new dedicated code session inside it, sends the goal as that session's initial prompt, and starts the watchdog. Docker sandboxing is used automatically when configured and available.
+This creates an isolated Forge worktree and a new dedicated code session inside it, sends the goal as that session's initial prompt, and starts the watchdog. `msb` microVM sandboxing is used automatically when configured and available.
 
 ## Step 3: You Are Done
 

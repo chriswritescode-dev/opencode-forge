@@ -245,16 +245,29 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | Option | Default | Description |
 |---|---:|---|
 | `sandbox.enabled` | `true` | Enable sandboxed execution. When enabled and the msb CLI or host virtualization is unavailable, sandbox startup fails rather than falling back to the host; set `false` to run worktree-only. |
-| `sandbox.mode` | `"msb"` | Sandbox mode. `msb` is currently the only supported mode. |
+| `sandbox.mode` | `"msb"` | Sandbox mode. `msb` is currently the only supported mode. A stale `"mode": "sbx"` from an older install is reported as a migration warning in the log and, when running in the TUI, as a toast. |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | msb image reference used for sandboxed execution. |
 | `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the image after changing it. |
-| `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`msb create -m`). |
-| `sandbox.resources.cpus` | `"4"` | CPU count (`msb create -c`; integer-only). |
+| `sandbox.resources.memory` | `"8g"` | Memory the sandbox boots with (`msb create -m`). |
+| `sandbox.resources.maxMemory` | unset | Boot-time ceiling for hotpluggable memory (`msb create --max-memory`). Unset pins the sandbox at `memory`; msb rejects a value below `memory`. |
+| `sandbox.resources.cpus` | `"4"` | CPU count the sandbox boots with (`msb create -c`; integer-only). |
+| `sandbox.resources.maxCpus` | unset | Boot-time ceiling for virtual CPUs (`msb create --max-cpus`; integer-only). Unset pins the sandbox at `cpus`; msb rejects a value below `cpus`. |
+| `sandbox.resources.dockerDisk` | `"16g"` | Size of the dedicated block device backing the sandbox's in-VM Docker Engine data dir (`/var/lib/docker`, `--mount-named ...:kind=disk,size=<size>`). The disk is sparse, so the generous default costs no real disk up front. |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
-| `sandbox.network.allow` | `[]` | Hosts the sandbox may reach (per-sandbox deny-by-default egress proxy, applied at create time). |
+| `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. Restriction is opt-in: an empty list, or a list containing the `*`/`**` allow-all wildcard, passes no network flags and msb's default allows all public egress; configuring any concrete host flips the sandbox to deny-by-default (`--net-default deny`) with one `--net-rule allow@<host>` per validated host. |
 | `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
-| `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. |
+| `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. The named variable must be exported in the environment that launches opencode — a bound secret with a missing variable breaks every sandboxed shell command. |
+
+### Sandbox network egress
+
+`sandbox.network.allow`, plus the destination hosts of any configured secrets, controls the sandbox's outbound access. Restriction is opt-in: when nothing is configured — or the allow list is set to `["*"]`/`["**"]` — forge passes no network flags and msb's own default applies, all public egress is allowed. A wildcard entry anywhere in the list makes the whole list unrestricted, overriding any narrower entries in the same list. Configuring even one concrete host flips the sandbox to deny-by-default: forge passes `--net-default deny` plus one `--net-rule allow@<host>` per validated host, and only those hosts are reachable.
+
+- Invalid host entries are skipped and logged rather than failing the loop launch. Verified rejections include commas (a comma separates whole rule tokens, not hosts), port-qualified hosts (colon), `@`, a suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (use `domain=myhost`). `domain=` and `suffix=` forms pass through. A wildcard in a secret's destination hosts stays invalid — those hosts declare where that secret may be sent, not global egress policy.
+- If every configured host is invalid, forge emits `--net-default deny` with no allow rules and logs that egress is fully denied — it deliberately does not fall back to allow-all.
+- DNS is gateway-mediated and needs no rule; the old `--net-rule allow@dns` form was rejected by msb 0.6.8, and its presence made every sandbox creation fail.
+- The host's loopback interface remains unreachable from inside the sandbox: `host.microsandbox.internal` and the gateway IP are both blocked, because the private range is not part of msb's `public` egress group.
+- Egress rules cannot be changed on a live sandbox (`msb modify` has no `--net-rule`), so a newly configured host requires recreating the sandbox.
 
 ### Sandbox secrets
 
@@ -272,7 +285,9 @@ Credentials that should never be readable inside the guest belong in `sandbox.ne
 }
 ```
 
-Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure is logged and never blocks a loop from starting. The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is gone.
+Each named variable must be exported in the environment that **launches opencode**. Once a secret is bound, every `msb exec` fails with `invalid config: secret <name>: host environment variable <name> is not set` if the variable is absent from the invoking process's environment; because the shell shim inherits opencode's environment, a missing variable breaks every sandboxed shell command. Forge logs an explicit warning naming the variable.
+
+Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify` exactly once per adoption per plugin instance: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure is logged and never blocks a loop from starting. The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is gone.
 
 ## Bundled Assets & Installer
 
@@ -313,3 +328,61 @@ pnpm setup                 # from a checkout
 | `--no-prune` | Only report orphaned files; never delete them. |
 
 Without a flag the installer is interactive: for each conflicting file it offers overwrite / keep / diff, and for each orphan it offers delete / keep. When you choose **keep** on a conflict, the manifest is updated so future startup syncs continue to preserve your version.
+
+### Plugin-directory install
+
+The installer can also write the plugin itself into opencode's plugin directory, instead of hand-editing the `plugin` arrays:
+
+| Flag | Behavior |
+|---|---|
+| `--link` | Writes `<configDir>/plugin/opencode-forge.js`, a one-line re-export shim whose target is the absolute path of the current build's `dist/index.js`. Because the shim re-exports the live build, a rebuild is picked up on the next opencode start with no reinstall. The shim is tied to that checkout path, so it is not portable to another machine. |
+| `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6 MB) and writes the shim with the relative target `./opencode-forge/dist/index.js`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
+| `--unlink` | Removes the shim, the vendored directory, and the `tui.json` entry. |
+
+From a source checkout the same flags are `pnpm setup --link`, `pnpm setup --vendor`, and `pnpm setup --unlink`. In a non-interactive shell, `--link` and `--vendor` still require one of `-y`, `-f`, or `-k`, matching every other non-interactive use of the installer.
+
+Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loading](#server-vs-tui-loading)).
+
+#### Resolved layout
+
+`--link` leaves only the shim in the config dir:
+
+```text
+<configDir>/
+├── plugin/
+│   └── opencode-forge.js          # export { default } from "/abs/path/to/dist/index.js"
+└── tui.json                       # plugin: ["/abs/path/to/dist/tui.js"]
+```
+
+`--vendor` copies the whole package:
+
+```text
+<configDir>/
+├── plugin/
+│   ├── opencode-forge.js          # export { default } from "./opencode-forge/dist/index.js"
+│   └── opencode-forge/
+│       ├── package.json
+│       ├── forge-config.jsonc
+│       ├── dist/
+│       │   ├── index.js
+│       │   └── tui.js
+│       ├── container/
+│       └── skills/
+└── tui.json                       # plugin: ["./plugin/opencode-forge/dist/tui.js"]
+```
+
+The vendored copy mirrors the npm package layout rather than being "just dist": forge resolves its bundled assets as siblings of its package root (`container/`, `skills/`, `forge-config.jsonc`), so the sandbox template and the bundled skill sync resolve inside the vendored copy.
+
+#### Server vs TUI loading
+
+opencode auto-loads server plugins from the config dir by globbing `{plugin,plugins}/*.{ts,js}`. Both the singular `plugin/` and plural `plugins/` directory names work. The scan is not recursive and does not match `.mjs`, which is why the installer uses a top-level shim file and keeps the vendored payload in a subdirectory — the payload itself is never scanned.
+
+That scan serves the server plugin surface only. The TUI surface is loaded exclusively from the `plugin` array in `tui.json`; there is no TUI directory scan. This is why both modes write a `tui.json` entry, and why the plugin directory alone cannot enable the sidebar and execution dialog. Path specs in a config file resolve relative to that config file's own directory, which is what makes the vendored `./plugin/opencode-forge/dist/tui.js` entry portable.
+
+#### Double-loading
+
+Local (`file://`) plugin specs dedup by exact file URL, while npm specs dedup by package name. So keeping a `plugin` array entry for forge AND installing the shim makes opencode initialize forge twice under the same id `oc-forge`. The installer detects an existing forge entry in the global `opencode.json`/`opencode.jsonc`; when run interactively it offers to comment the entry out, and in non-interactive mode it warns and changes nothing.
+
+#### Verification
+
+`opencode debug config` prints the resolved config. Its `plugin` array should list the shim's `file://` URL exactly once, with no duplicate forge entry.

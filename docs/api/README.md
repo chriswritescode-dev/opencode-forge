@@ -41,6 +41,24 @@ Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and ag
 }
 ```
 
+### Plugin-directory install
+
+Instead of editing the `plugin` arrays by hand, the installer can wire the plugin into opencode's config directory:
+
+```bash
+bunx opencode-forge --link        # re-export shim for the current build
+bunx opencode-forge --vendor      # self-contained copy (portable)
+```
+
+From a source checkout, use `pnpm setup --link` or `pnpm setup --vendor`. Both modes also write the `tui.json` `plugin` entry automatically — opencode does not auto-load the TUI plugin from the plugin directory, so the plugin directory alone cannot enable the sidebar and execution dialog. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
+
+| | `--link` | `--vendor` |
+| --- | --- | --- |
+| Picks up a rebuild | Yes — re-exports the live build | No — re-run after upgrade |
+| Portable to another machine | No — absolute path to this checkout | Yes |
+| Payload in config dir | Shim only | Full copy (~6 MB) |
+| Needs re-run after upgrade | No | Yes |
+
 As of OpenCode 1.17.8, `OPENCODE_EXPERIMENTAL_WORKSPACES=true` is required for the plugin's loop functionality to work. Set it in the environment that launches `opencode`:
 
 ```bash
@@ -55,7 +73,7 @@ Forge ships two plugin entrypoints plus standalone management surfaces:
 
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
-- **Installer CLI** — a standalone CLI accessible via `bunx opencode-forge` or `pnpm setup` (from a source checkout) for installing/upgrading bundled prompts and skills.
+- **Installer CLI** — a standalone CLI accessible via `bunx opencode-forge` or `pnpm setup` (from a source checkout) for installing/upgrading bundled prompts and skills, and for installing the plugin itself into opencode's plugin directory (`--link`/`--vendor`/`--unlink`).
 - **Dashboard** — a read-only observability interface launchable from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only).
 
 The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on the sidebar and execution dialog.
@@ -535,7 +553,7 @@ See [Sandbox](_media/sandbox.md) for setup, host requirements, image building an
 ### Prerequisites
 
 - The `msb` CLI installed — no account or login step. Install with `curl -fsSL https://install.microsandbox.dev | sh` and verify with `msb doctor` on a supported platform (Linux with KVM, macOS on Apple silicon, or Windows 11 with Windows Hypervisor Platform).
-- Docker, used only to build the sandbox image (the msb runtime itself does not need it).
+- Docker, required on the host only to build the sandbox image (the msb runtime itself does not need it; Docker *inside* the sandbox is a separate in-image stack).
 - OpenCode >= 1.15.5 — sandbox shell routing relies on the session-aware `shell.env` plugin hook. Enforced via `engines.opencode`, so older versions refuse to load the plugin rather than silently running sandbox commands on the host. (Loops additionally require OpenCode >= 1.17.8 for workspace integration, see [Requirements](#requirements).)
 
 ### Setup
@@ -548,7 +566,7 @@ docker save oc-forge-sandbox:latest -o forge-sandbox.tar
 msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 ```
 
-The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, and jq. Chromium and Browser Control are an opt-in image feature: set `sandbox.imageFeatures.browserControl` to `true`, then run `Build sandbox template` from the command palette to rebuild and load the configured image tag.
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and a full Docker Engine (docker-ce, CLI, containerd, Buildx, and Compose from Docker's official apt repo) that runs natively inside the microVM — `docker run`, `docker build`, and `docker compose` all work in-sandbox. The daemon is started on demand by `forge-dockerd-start` (msb boots its own `agentd` as PID 1 and ignores the image's entrypoint, so nothing runs dockerd at boot); `/var/lib/docker` is backed by a dedicated block device because overlayfs cannot run on a virtiofs mount. The built image is roughly 1.65 GB. Chromium and Browser Control are an opt-in image feature: set `sandbox.imageFeatures.browserControl` to `true`, then run `Build sandbox template` from the command palette to rebuild and load the configured image tag.
 
 The `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox template" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically.
 

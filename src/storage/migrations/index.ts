@@ -1,11 +1,9 @@
 import { Database } from 'bun:sqlite'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { fileURLToPath } from 'url'
-import { dirname } from 'path'
+import { resolveShippedRoot } from '../../utils/shipped-paths'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
+const migrationsDir = join(resolveShippedRoot(import.meta.url), 'storage', 'migrations')
 
 interface Migration {
   id: string
@@ -14,7 +12,7 @@ interface Migration {
 }
 
 function loadSql(filename: string): string {
-  return readFileSync(join(__dirname, filename), 'utf-8')
+  return readFileSync(join(migrationsDir, filename), 'utf-8')
 }
 
 export const migrations: Migration[] = [

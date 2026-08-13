@@ -1,6 +1,6 @@
 import { homedir, platform } from 'os'
-import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
+import { join } from 'path'
+import { resolveShippedRoot } from '../utils/shipped-paths'
 
 /**
  * Single source of truth for every filesystem location the bundled-asset
@@ -14,12 +14,15 @@ import { fileURLToPath } from 'url'
  */
 
 /**
- * Directory containing the loaded plugin module set — `dist/` in a published
- * build, `src/` when running from source. This module lives at
- * `<pluginDir>/install/paths.(ts|js)`, so step up one level.
+ * Root of the shipped module tree — `dist/` in a published build, `src/` when
+ * running from source. Bundling-safe: it walks up from this module to the
+ * nearest `dist`/`src` ancestor instead of assuming a fixed relative position,
+ * so it resolves identically for the unbundled layout
+ * (`<pluginDir>/install/paths.js`), a future bundled `dist/index.js`, and
+ * source runs (`<pluginDir>/src/install/paths.ts`).
  */
 export function resolvePluginDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), '..')
+  return resolveShippedRoot(import.meta.url)
 }
 
 /** `~/.config/opencode` (or the `XDG_CONFIG_HOME`/Windows equivalent). */
@@ -32,6 +35,11 @@ export function resolveConfigDir(): string {
 /** Installed plugin config file. */
 export function resolveConfigPath(): string {
   return join(resolveConfigDir(), 'forge-config.jsonc')
+}
+
+/** opencode's TUI config file, which lists plugin entries for the TUI surface. */
+export function resolveTuiConfigPath(): string {
+  return join(resolveConfigDir(), 'tui.json')
 }
 
 /** Bundled default config shipped with the package. */
@@ -67,6 +75,51 @@ export function resolveSkillsDir(): string {
 /** Bundled skills shipped with the package. */
 export function resolveBundledSkillsDir(): string {
   return join(resolvePluginDir(), '..', 'skills')
+}
+
+/** Filename of the one-line server re-export shim installed into opencode's config dir. */
+export const PLUGIN_SHIM_FILENAME = 'opencode-forge.js'
+
+/** opencode's global plugin scan directory (`<configDir>/plugin`, non-recursive glob). */
+export function resolvePluginShimDir(): string {
+  return join(resolveConfigDir(), 'plugin')
+}
+
+/** Absolute path of the installed server re-export shim. */
+export function resolvePluginShimPath(): string {
+  return join(resolvePluginShimDir(), PLUGIN_SHIM_FILENAME)
+}
+
+/** Directory name of the vendored package copy inside the plugin shim dir. */
+export const VENDOR_DIR_NAME = 'opencode-forge'
+
+/** Absolute path of the vendored forge package copy (`<configDir>/plugin/opencode-forge`). */
+export function resolveVendorDir(): string {
+  return join(resolvePluginShimDir(), VENDOR_DIR_NAME)
+}
+
+/**
+ * The package-layout assets copied verbatim into the vendored dir. They mirror
+ * the npm package layout because forge resolves its bundled assets as siblings
+ * of the loaded module's package root (`<pluginDir>/../forge-config.jsonc`,
+ * `container`, `skills`), so a vendored copy must preserve that sibling
+ * structure for the sandbox template and bundled skill sync to resolve.
+ */
+export const VENDORED_ASSETS: readonly string[] = ['package.json', 'forge-config.jsonc', 'dist', 'container', 'skills']
+
+/**
+ * Ordered candidates for the built server entry. The first hits a published/built
+ * layout where this module lives in `dist/`; the second covers running the
+ * installer from source (`pnpm setup` runs `bun src/install/cli.ts`, so
+ * `resolvePluginDir()` is `src/`) where the real entry is the sibling `dist/index.js`.
+ */
+export function resolveServerEntryCandidates(): string[] {
+  return [join(resolvePluginDir(), 'index.js'), join(resolvePluginDir(), '..', 'dist', 'index.js')]
+}
+
+/** Candidate filenames for the global opencode config, in lookup order. */
+export function resolveOpencodeConfigCandidates(): string[] {
+  return ['opencode.jsonc', 'opencode.json'].map((f) => join(resolveConfigDir(), f))
 }
 
 /** Declarative description of one installable bundle directory. */

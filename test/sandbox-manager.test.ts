@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, realpathSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { execSync } from 'child_process'
@@ -251,7 +251,7 @@ describe('SandboxManager', () => {
         // The hooks directory is the one read-only carve-out: the sandbox must not be able to
         // plant a hook that the user's host git would execute.
         const hooksDir = join(absoluteCommonDir, 'hooks')
-        expect(workspaces).toContainEqual({ hostDir: hooksDir, readOnly: true })
+        expect(workspaces).toContainEqual({ hostDir: hooksDir, containerDir: hooksDir, readOnly: true })
         expect(workspaces.filter(w => w.readOnly === true)).toHaveLength(1)
       } finally {
         rmSync(tempDir, { recursive: true, force: true })
@@ -320,12 +320,16 @@ describe('SandboxManager', () => {
 
         // The loop's own worktree is the primary writable workspace and is never dropped, even
         // though it lives inside the git common dir and the source project.
-        expect(workspaces[0]).toEqual({ hostDir: worktreeDir })
+        expect(workspaces[0]).toEqual({ hostDir: realpathSync(worktreeDir), containerDir: worktreeDir })
         // The git common dir (an ancestor of the worktree) is read-write and mounted alongside it,
         // so in-sandbox git reads/writes keep working for concurrent loops in the same project.
         expect(workspaces.some(w => w.hostDir === commonDir && w.readOnly !== true)).toBe(true)
         // ...but its hooks directory is carved out read-only so the sandbox cannot plant a hook.
-        expect(workspaces).toContainEqual({ hostDir: join(commonDir, 'hooks'), readOnly: true })
+        expect(workspaces).toContainEqual({
+          hostDir: join(commonDir, 'hooks'),
+          containerDir: join(commonDir, 'hooks'),
+          readOnly: true,
+        })
         // The read-only project mount, an ancestor of the writable worktree, is still dropped.
         expect(workspaces.some(w => w.hostDir === projectDir)).toBe(false)
         expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
@@ -402,6 +406,24 @@ describe('SandboxManager', () => {
       // is preserved so callers can observe the indeterminate state.
       expect(mockRuntime.getRemoveSandboxCalls()).not.toContain('forge-test')
       expect(manager.isActive('test')).toBe(true)
+    })
+
+    test('removes a transient sandbox instead of refusing', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      await manager.start('test', '/path')
+      mockRuntime.setSandboxState('forge-test', 'transient')
+      await manager.stop('test')
+
+      // A transient state is a confirmed existence, so removal proceeds; only `unknown` refuses.
+      expect(mockRuntime.getRemoveSandboxCalls()).toContain('forge-test')
+      expect(manager.isActive('test')).toBe(false)
     })
 
     test('clears stale local state without removal when the sandbox is confirmed missing', async () => {
@@ -615,6 +637,28 @@ describe('SandboxManager', () => {
       expect(manager.isActive('test')).toBe(true)
     })
 
+    test('adopts a transient sandbox instead of failing or duplicating it', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      mockRuntime.setSandboxState('forge-test', 'transient')
+
+      const result = await manager.start('test', '/path')
+
+      // A transient state (draining/paused/starting/created) proves the sandbox exists, so the
+      // start is adopted rather than refused as a query failure or duplicated into a 409.
+      expect(result.containerName).toBe('forge-test')
+      expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
+      expect(mockRuntime.getRemoveSandboxCalls()).toHaveLength(0)
+      expect(manager.isActive('test')).toBe(true)
+      expect(logger.log).not.toHaveBeenCalledWith(expect.stringMatching(/state query failed/))
+    })
+
     test('fails closed when the state query fails (unknown)', async () => {
       const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
@@ -713,7 +757,7 @@ describe('SandboxManager', () => {
 
       // Restricting a subtree read-only is safe: it only narrows writable access.
       expect(result).toHaveLength(2)
-      expect(result[1]).toEqual({ hostDir: '/a/sub', readOnly: true })
+      expect(result[1]).toEqual({ hostDir: '/a/sub', containerDir: '/a/sub', readOnly: true })
       expect(logger.log).not.toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
     })
 
@@ -729,7 +773,7 @@ describe('SandboxManager', () => {
 
       // The read-only ancestor shadows the descendant, so mounting it read-write is useless.
       expect(result).toHaveLength(1)
-      expect(result[0]).toEqual({ hostDir: '/a', readOnly: true })
+      expect(result[0]).toEqual({ hostDir: '/a', containerDir: '/a', readOnly: true })
       expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))
     })
   })

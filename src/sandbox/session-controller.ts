@@ -102,6 +102,7 @@ export interface SessionSandboxController {
 /** Cap on reconcile re-runs within a single tick when the desired revision keeps moving. */
 const MAX_SUPERSEDE_ITERATIONS = 8
 const MAX_FAST_IDLE_POLLS = 4
+const MAX_REMOVAL_RETRY_DELAY_MS = 30_000
 
 /**
  * Derives the logical manager key for a project. This is a stable, non-final key passed to
@@ -192,6 +193,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   let selectedProjectDirectory: string | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let idlePolls = 0
+  let removalRetryDelayMs = 0
+  let removalRetryRevision: string | null = null
   let reconciling = false
   let disposed = false
   let startPromise: Promise<void> | null = null
@@ -374,8 +377,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     lastValidatedRevision = null
     failedSelection = { sessionId, error: msg }
     // A failed start may leave a partially-started (or previously running) container, even on a
-    // first start: ensureRunning can create the container and then fail (e.g. env-file
-    // generation). Always attempt deterministic-key cleanup; if it fails, retain retryable
+    // first start: ensureRunning can create the container and then fail (e.g. create-time
+    // secret binding). Always attempt deterministic-key cleanup; if it fails, retain retryable
     // ownership so the next reconcile tick retries the removal rather than acknowledging the
     // failure settled while a container is still live.
     const stopped = await bestEffortStop()
@@ -698,8 +701,14 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
           acknowledgedSessionId = null
           hostActive = true
           failedSelection = desired.sessionId ? { sessionId: desired.sessionId, error: String(err) } : null
+          removalRetryRevision = desired.revision
+          removalRetryDelayMs = removalRetryDelayMs === 0
+            ? pollIntervalMs
+            : Math.min(removalRetryDelayMs * 2, MAX_REMOVAL_RETRY_DELAY_MS)
           return desired.revision
         }
+        removalRetryDelayMs = 0
+        removalRetryRevision = null
         hostActive = false
         acknowledgedSessionId = null
         failedSelection = null
@@ -889,14 +898,19 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   function schedulePoll(): void {
     if (disposed || pollTimer !== null) return
     const desired = preferences.getDesired(projectId)
+    if (removalRetryDelayMs > 0 && desired?.revision !== removalRetryRevision) {
+      removalRetryDelayMs = 0
+      removalRetryRevision = null
+    }
     const active = hostActive || pendingCleanup || (desired?.enabled === true && failedSelection === null)
     if (active) idlePolls = 0
     const fast = active || idlePolls < MAX_FAST_IDLE_POLLS
     if (!active) idlePolls += 1
+    const delay = removalRetryDelayMs > 0 ? removalRetryDelayMs : (fast ? pollIntervalMs : pollIntervalMs * 10)
     pollTimer = setTimeout(() => {
       pollTimer = null
       void tick()
-    }, fast ? pollIntervalMs : pollIntervalMs * 10)
+    }, delay)
   }
 
   async function resolveSandboxForSession(
@@ -949,7 +963,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         logger.log(`[session-sandbox] ensureRunning failed during restore: ${msg}`)
-        // A container-restore failure (e.g. env-file generation) can leave a partially-created or
+        // A container-restore failure (e.g. create-time secret binding) can leave a partially-created or
         // orphaned container and a stale applied-ON row. Route through the same cleanup and
         // OFF-with-error transition as a failed start so the live container is removed, the stale
         // acknowledgement is corrected, and the selected session stays fail-closed. Attribute the

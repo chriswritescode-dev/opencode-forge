@@ -19,11 +19,14 @@
 
 import Database from 'bun:sqlite'
 import { existsSync, rmSync } from 'fs'
-import { homedir } from 'os'
 import { join } from 'path'
 import { spawnSync } from 'child_process'
 import { readFlagValue } from '../src/utils/cli-flags'
+import { defaultGitService } from '../src/utils/git-service'
+import { resolveDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
+
+const worktreesRoot = join(resolveDataDir(), 'worktrees')
 
 interface Args {
   loopName: string
@@ -67,7 +70,7 @@ async function logAction(dryRun: boolean, label: string, action: () => Promise<v
 }
 
 async function cleanupForgeDb(loopName: string, dryRun: boolean): Promise<void> {
-  const path = join(homedir(), '.local/share/opencode/forge/forge.db')
+  const path = resolveForgeDbPath()
   if (!existsSync(path)) {
     console.log(`forge.db not found at ${path} — skipping`)
     return
@@ -84,20 +87,29 @@ async function cleanupForgeDb(loopName: string, dryRun: boolean): Promise<void> 
       console.log(`  no loops rows for ${loopName}`)
       return
     }
-    for (const row of rows) {
-      await logAction(dryRun, `delete loops row project=${row.project_id} status=${row.status}`, () => {
-        db.run('DELETE FROM loops WHERE project_id = ? AND loop_name = ?', [row.project_id, loopName])
-      })
+    const dependentTables = ['loop_large_fields', 'section_plans', 'review_findings']
+    const labels = [
+      ...rows.map((row) => `delete loops row project=${row.project_id} status=${row.status}`),
+      ...dependentTables.map((table) => `delete ${table} entries for loop=${loopName}`),
+    ]
+    if (dryRun) {
+      for (const label of labels) {
+        await logAction(dryRun, label, () => {})
+      }
+      return
     }
-    // Also clean dependent tables
-    for (const table of ['loop_large_fields', 'section_plans', 'review_findings']) {
-      await logAction(dryRun, `delete ${table} entries for loop=${loopName}`, () => {
+    db.transaction(() => {
+      db.run('DELETE FROM loops WHERE loop_name = ?', [loopName])
+      for (const table of dependentTables) {
         try {
           db.run(`DELETE FROM ${table} WHERE loop_name = ?`, [loopName])
         } catch {
           // some tables may not exist on older schemas
         }
-      })
+      }
+    })()
+    for (const label of labels) {
+      console.log(`  ✓ ${label}`)
     }
   } finally {
     db.close()
@@ -105,7 +117,7 @@ async function cleanupForgeDb(loopName: string, dryRun: boolean): Promise<void> 
 }
 
 async function cleanupOpencodeDb(loopName: string, dryRun: boolean): Promise<void> {
-  const path = join(homedir(), '.local/share/opencode/opencode.db')
+  const path = join(resolveOpencodeDataDir(), 'opencode.db')
   if (!existsSync(path)) {
     console.log(`\nopencode.db not found at ${path} — skipping`)
     return
@@ -121,20 +133,32 @@ async function cleanupOpencodeDb(loopName: string, dryRun: boolean): Promise<voi
       console.log(`  no forge workspaces named ${loopName}`)
       return
     }
+    const labels: string[] = []
     for (const ws of workspaces) {
       const sessions = db.query('SELECT id, title FROM session WHERE workspace_id = ?').all(ws.id) as Array<{
         id: string
         title: string
       }>
       for (const sess of sessions) {
-        await logAction(dryRun, `delete session ${sess.id} (title="${sess.title}") in workspace ${ws.id}`, () => {
-          db.run('DELETE FROM session_message WHERE session_id = ?', [sess.id])
-          db.run('DELETE FROM session WHERE id = ?', [sess.id])
-        })
+        labels.push(`delete session ${sess.id} (title="${sess.title}") in workspace ${ws.id}`)
       }
-      await logAction(dryRun, `delete workspace ${ws.id} (project=${ws.project_id})`, () => {
+      labels.push(`delete workspace ${ws.id} (project=${ws.project_id})`)
+    }
+    if (dryRun) {
+      for (const label of labels) {
+        await logAction(dryRun, label, () => {})
+      }
+      return
+    }
+    db.transaction(() => {
+      for (const ws of workspaces) {
+        db.run('DELETE FROM session_message WHERE session_id IN (SELECT id FROM session WHERE workspace_id = ?)', [ws.id])
+        db.run('DELETE FROM session WHERE workspace_id = ?', [ws.id])
         db.run('DELETE FROM workspace WHERE id = ?', [ws.id])
-      })
+      }
+    })()
+    for (const label of labels) {
+      console.log(`  ✓ ${label}`)
     }
   } finally {
     db.close()
@@ -142,7 +166,7 @@ async function cleanupOpencodeDb(loopName: string, dryRun: boolean): Promise<voi
 }
 
 async function cleanupWorktreeDirectory(loopName: string, dryRun: boolean): Promise<void> {
-  const path = join(homedir(), '.local/share/opencode/forge/worktrees', loopName)
+  const path = join(worktreesRoot, loopName)
   if (!existsSync(path)) {
     console.log(`\nworktree directory ${path} — already gone`)
     return
@@ -164,28 +188,24 @@ async function cleanupGitWorktree(loopName: string, projectDir: string | undefin
   }
   console.log(`\ngit (${projectDir}):`)
   const branch = `forge/${loopName}`
+  const worktreePath = join(worktreesRoot, loopName)
 
   await logAction(dryRun, `git worktree prune`, () => {
-    const r = spawnSync('git', ['worktree', 'prune'], { cwd: projectDir, encoding: 'utf-8' })
-    if (r.status !== 0) throw new Error(r.stderr || 'unknown error')
+    const r = defaultGitService.worktreePrune(projectDir)
+    if (!r.ok) throw new Error(r.stderr || 'unknown error')
   })
 
   const list = spawnSync('git', ['worktree', 'list', '--porcelain'], { cwd: projectDir, encoding: 'utf-8' })
-  const worktreePath = join(homedir(), '.local/share/opencode/forge/worktrees', loopName)
   if (list.stdout.includes(worktreePath)) {
     await logAction(dryRun, `git worktree remove --force ${worktreePath}`, () => {
-      const r = spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { cwd: projectDir, encoding: 'utf-8' })
-      if (r.status !== 0) throw new Error(r.stderr || 'unknown error')
+      const r = defaultGitService.worktreeRemove(projectDir, worktreePath)
+      if (!r.ok) throw new Error(r.stderr || 'unknown error')
     })
   } else {
     console.log(`  git worktree registration for ${worktreePath} not found`)
   }
 
-  const branchCheck = spawnSync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
-    cwd: projectDir,
-    encoding: 'utf-8',
-  })
-  if (branchCheck.status === 0) {
+  if (defaultGitService.branchExists(projectDir, branch)) {
     await logAction(dryRun, `git branch -D ${branch}`, () => {
       const r = spawnSync('git', ['branch', '-D', branch], { cwd: projectDir, encoding: 'utf-8' })
       if (r.status !== 0) throw new Error(r.stderr || 'unknown error')

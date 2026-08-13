@@ -107,20 +107,37 @@ describe('shim behavior (executed via sh)', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
     const result = spawnSync(shim, ['-c', 'echo in-container'], {
       cwd,
-      env: { ...cleanEnv(), PATH: binDir, [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
+      env: { ...cleanEnv(), PATH: [binDir, process.env.PATH ?? ''].join(':'), [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
       encoding: 'utf-8',
     })
 
     expect(result.status).toBe(0)
     const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
-    expect(argv).toEqual(['exec', 'forge-loop-x', '--no-tty', '-w', realpathSync(cwd), '--', 'bash', '-c', 'echo in-container'])
+    expect(argv).toEqual(['exec', '--quiet', 'forge-loop-x', '--no-tty', '-w', realpathSync(cwd), '--', 'bash', '-c', 'echo in-container'])
+  })
+
+  test('propagates a non-zero msb exit verbatim', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
+    const binDir = join(dir, 'bin')
+    mkdirSync(binDir)
+    writeFileSync(join(binDir, 'msb'), `#!/bin/sh\nprintf '%s\\n' 'some unrelated failure' >&2\nexit 7\n`, { mode: 0o755 })
+
+    const result = spawnSync(shim, ['-c', 'echo should-not-run'], {
+      env: { ...cleanEnv(), PATH: [binDir, process.env.PATH ?? ''].join(':'), [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
+      encoding: 'utf-8',
+    })
+
+    expect(result.status).toBe(7)
+    expect(result.stderr).toContain('some unrelated failure')
   })
 })
 
 describe('shim content', () => {
   test('routes through msb exec with no docker and no --user', () => {
     const script = buildShimScript('/bin/sh')
-    expect(script).toContain('msb exec "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"')
+    expect(script).toContain('msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"')
     expect(script).not.toContain('sbx')
     expect(script).not.toContain('docker')
     expect(script).not.toContain('--user')

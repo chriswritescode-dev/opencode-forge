@@ -306,13 +306,25 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
 
-    for (const warning of collectLegacySandboxConfigWarnings(config.sandbox as unknown)) {
-      logger.log(warning)
-    }
-
     const forgeClient = createForgeClientFromPluginInput(input)
 
     const dataDir = config.dataDir || resolveDataDir()
+
+    const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox as unknown)
+    for (const warning of legacySandboxWarnings) {
+      logger.log(warning)
+    }
+    if (legacySandboxWarnings.length > 0 && !isForgeWorktreeDir(dataDir, directory)) {
+      publishToast({
+        client: forgeClient,
+        directory,
+        logger,
+        title: 'Forge sandbox config',
+        message: legacySandboxWarnings.join(' '),
+        variant: 'warning',
+        duration: 10_000,
+      })
+    }
 
     emitLoopPermissionConfigWarnings(config, dataDir, directory, {
       logger,
@@ -337,7 +349,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       try {
         sandboxManager = createSandboxManager(runtime, {
           image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
-          dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
           tmpDir: resolveOpencodeTmpDir(),
           sourceProjectDir: projectRoot,

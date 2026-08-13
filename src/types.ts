@@ -137,10 +137,19 @@ export interface SandboxNetworkConfig {
  * gets OOM-killed (exit 137) and shell commands run slowly.
  */
 export interface SandboxResources {
-  /** Memory limit, e.g. '8g', '1024m'. Maps to `msb create -m`. */
+  /** Memory allocated at boot, e.g. '8g', '1024m'. Maps to `msb create -m`. */
   memory?: string
-  /** Number of CPUs. `msb create -c` is integer-only. */
+  /** Boot-time ceiling for hotpluggable memory, e.g. '16g'. Maps to `msb create --max-memory`.
+   *  Omit to pin the sandbox at `memory`. msb requires it to be >= `memory`. */
+  maxMemory?: string
+  /** Number of CPUs allocated at boot. `msb create -c` is integer-only. */
   cpus?: string
+  /** Boot-time ceiling for virtual CPUs. Maps to `msb create --max-cpus`, integer-only.
+   *  Omit to pin the sandbox at `cpus`. msb requires it to be >= `cpus`. */
+  maxCpus?: string
+  /** Size of the dedicated disk backing the sandbox's Docker Engine data dir (`/var/lib/docker`),
+   *  e.g. '16g'. Maps to the `--mount-named ...:kind=disk,size=<size>` volume. Defaults to '16g'. */
+  dockerDisk?: string
 }
 
 /**

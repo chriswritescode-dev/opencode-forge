@@ -321,6 +321,8 @@ interface SandboxManager {
 }
 ```
 
+`SandboxManagerConfig` no longer carries a `dataDir` field — its only reader was the deleted per-sandbox env-file writer. The overlapping-workspace drop rule is a single shared implementation used by both the mount plan and the workspace builder, so a mount conflict resolves identically on either path. `removeSandbox` also removes the sandbox's docker data volume (`<container>-docker-data`), which backs `/var/lib/docker` for the in-VM Docker Engine.
+
 Source: [src/sandbox/msb.ts](../src/sandbox/msb.ts), [src/sandbox/manager.ts](../src/sandbox/manager.ts)
 
 ---

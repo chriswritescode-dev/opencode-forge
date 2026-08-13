@@ -1,7 +1,9 @@
 # Forge sandbox image, built on a plain Ubuntu base for the microsandbox (msb)
-# runtime. msb boots this image as a microVM and runs its own `agentd` as PID 1,
-# so the image's ENTRYPOINT/CMD are never executed; the Docker-authored sandbox
-# template (and the in-VM Docker Engine it started) would be dead weight.
+# runtime. msb boots this image as a microVM with its own kernel and runs its
+# own `agentd` as PID 1, so the image's ENTRYPOINT/CMD are never executed.
+# Docker Engine therefore runs natively inside the microVM; since nothing runs
+# an entrypoint at boot, `forge-dockerd-start` (installed below) is the way to
+# bring the daemon up.
 FROM ubuntu:24.04
 
 # Create the runtime user explicitly: the plain Ubuntu base ships a default
@@ -84,6 +86,82 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.np
 # agent to relocate the store onto the msb-mounted project directory (huge, slow file transfers).
 # Re-asserting 0777 here, as the last build step that touches /opt/forge, keeps the store
 # writable by any exec UID. Any future build step that runs pnpm as root must do the same.
+
+# Docker Engine from Docker's official apt repository. The microVM boots a real
+# kernel, so the daemon runs natively — no privileged-container or nested-
+# virtualization tricks. `/var/lib/docker` is mounted as a dedicated msb block
+# device and public egress is the default, so `docker run` and registry pulls
+# work out of the box. The `agent` user joins the `docker` group for socket
+# access without sudo; starting the daemon itself stays root-only via the
+# passwordless sudo granted above. Installed before the INSTALL_BROWSER_CONTROL
+# toggle so rebuilding with that flag on does not re-fetch the Docker stack.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+    && usermod -aG docker agent \
+    && rm -rf /var/lib/apt/lists/*
+
+# msb ignores ENTRYPOINT/CMD, so nothing starts dockerd at boot. This idempotent
+# helper is the single way to ensure the daemon is running inside a sandbox: it
+# starts dockerd detached (setsid, root-owned, log at /var/log/dockerd.log, stdin
+# from /dev/null) and waits up to 60s for `docker info` to succeed, then exits
+# non-zero with the log tail if the daemon never becomes ready. An flock
+# serializes concurrent invocations so two simultaneous calls cannot start two
+# daemons. It re-execs itself under the passwordless sudo rule above when called
+# unprivileged, so `agent` can invoke it directly.
+RUN cat > /usr/local/bin/forge-dockerd-start <<'EOF' && chmod 0755 /usr/local/bin/forge-dockerd-start
+#!/bin/sh
+set -u
+
+lock=/var/run/forge-dockerd.lock
+log=/var/log/dockerd.log
+ready_timeout=60
+
+# Already serving: nothing to do. `agent` is in the docker group, so this probe
+# needs no elevation.
+docker info >/dev/null 2>&1 && exit 0
+
+# The daemon, its lock and its log all require root, so re-exec once under the
+# passwordless sudo rule. This keeps the command callable as plain
+# `forge-dockerd-start` from an unprivileged sandbox session.
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo -n "$0" "$@"
+fi
+
+# Serialize concurrent starts so only one daemon is ever launched.
+exec 9>"$lock"
+flock 9 || exit 1
+
+# Someone else may have brought the daemon up while we waited for the lock.
+docker info >/dev/null 2>&1 && exit 0
+
+# A daemon is already starting but not yet answering: wait for it below.
+if [ -f /var/run/docker.pid ] && kill -0 "$(cat /var/run/docker.pid)" 2>/dev/null; then
+    :
+else
+    # Launch detached. `9>&-` closes the inherited lock fd in the daemon so the
+    # flock is released when this script exits instead of being held open for
+    # the daemon's lifetime.
+    setsid dockerd >"$log" 2>&1 </dev/null 9>&- &
+fi
+
+elapsed=0
+while [ "$elapsed" -lt "$ready_timeout" ]; do
+    if docker info >/dev/null 2>&1; then
+        exit 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+
+echo "dockerd did not become ready within ${ready_timeout}s; tail of $log:" >&2
+tail -n 20 "$log" 2>/dev/null >&2
+exit 1
+EOF
+
 ARG INSTALL_BROWSER_CONTROL=false
 
 RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \

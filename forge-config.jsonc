@@ -110,14 +110,22 @@
     }
     // Mount the source project directory read-only at its identical host path. Defaults to true.
     // "mountProjectReadonly": true,
-    // Network access configuration. The msb egress proxy is deny-by-default: host loopback is
-    // unreachable, and outbound access is allowed only for hosts listed in "allow". Host
-    // environment variables pass through at create time as bare names (msb resolves each name
+    // Network access configuration. msb egress is allow-by-default: with no hosts configured,
+    // forge passes no network flags and all PUBLIC egress is allowed. Restriction is opt-in —
+    // once any host is listed, forge passes `--net-default deny` plus one `--net-rule allow@<host>`
+    // per validated host, and only those hosts are reachable. Host loopback (host.microsandbox.internal
+    // and the gateway IP) is always unreachable from inside the sandbox. Invalid host entries
+    // (e.g. a bare "*", port-qualified hosts, or single-label hosts) are skipped and logged rather
+    // than failing the loop launch; if every configured host is invalid, egress is fully denied
+    // rather than falling back to allow-all. Egress rules cannot be changed on a live sandbox —
+    // a newly configured host requires recreating the sandbox.
+    // Host environment variables pass through at create time as bare names (msb resolves each name
     // from its own environment, so values never appear on forge's command line); host-held
     // secrets are bound reference-only and exposed inside the sandbox as $MSB_<env> placeholders
     // that msb substitutes only for the listed hosts.
     // "network": {
-    //   // Hosts the sandbox may reach. Defaults to none (deny-by-default).
+    //   // OPT-IN egress restriction: hosts the sandbox may reach. Leave empty (or omit) for
+    //   // msb's default of allowing all public egress.
     //   "allow": ["registry.npmjs.org"],
     //   // Host environment variable names to inject into the sandbox at create time.
     //   // Only names set in the host process are injected, as ordinary guest environment
@@ -127,7 +135,9 @@
     //   "env": ["MY_VAR"],
     //   // Host-held credentials bound at create time. Each entry references a host env var and
     //   // the hostnames allowed to receive its real value at the network boundary; the value
-    //   // never enters the guest.
+    //   // never enters the guest. The named variable must be exported in the environment that
+    //   // launches opencode: a bound secret with a missing variable makes every sandboxed shell
+    //   // command fail, and forge logs a warning naming the variable.
     //   "secrets": [
     //     { "env": "NPM_TOKEN", "hosts": ["registry.npmjs.org"] }
     //   ]

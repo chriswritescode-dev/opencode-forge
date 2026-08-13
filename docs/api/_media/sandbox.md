@@ -12,7 +12,7 @@ See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](lo
   ```
   Verify the host is ready with `msb doctor` (an alias of `msb self doctor`), which checks the hypervisor prerequisites.
 - A host that can run microVMs: Linux with KVM, macOS on Apple silicon, or Windows 11 with Windows Hypervisor Platform.
-- Docker, used only to build the sandbox image (see below) — the msb runtime itself does not need it.
+- Docker on the host, used only to build the sandbox image (see below) — the msb runtime itself does not need it.
 
 Forge probes availability with `msb doctor` bounded at 30s. A probe that does not answer is treated as *indeterminate* rather than "daemon down": Forge logs and continues, letting the actual sandbox operation report the authoritative error. Only a host that answers definitively (or a missing CLI) fails a loop launch with remediation advice.
 
@@ -26,7 +26,7 @@ msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 
 `msb load` registers the archive under the tag Forge looks up (`sandbox.image`, default `oc-forge-sandbox:latest`); list loaded images with `msb images --format json`.
 
-The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq. The image no longer ships an in-VM Docker Engine (see [Nested Docker is gone](#nested-docker-is-gone)).
+The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
@@ -87,7 +87,7 @@ Sandbox loops use opencode's native `bash` tool — streaming output, truncation
 > Requires opencode >= 1.15.5 (the session-aware `shell.env` plugin hook). Enforced via the `engines.opencode` field in Forge's package.json: older opencode versions refuse to load the plugin instead of silently running sandbox loop commands on the host.
 
 1. Forge points opencode's `shell` config at a generated shim (`<dataDir>/forge-shell`).
-2. On every bash tool call, Forge's `shell.env` hook resolves the session. Sessions belonging to an active sandbox loop, or to the acknowledged host-session selection, get `FORGE_SANDBOX_CONTAINER` injected; descendants such as Task-tool subagents inherit the same routing. The shim then runs the command via `msb exec "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
+2. On every bash tool call, Forge's `shell.env` hook resolves the session. Sessions belonging to an active sandbox loop, or to the acknowledged host-session selection, get `FORGE_SANDBOX_CONTAINER` injected; descendants such as Task-tool subagents inherit the same routing. The shim then runs the command via `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
 3. Sessions with no expected sandbox get no container env, and the shim execs the host shell unchanged (respecting a user-configured `shell` via `FORGE_HOST_SHELL`). Active loop routing always takes precedence over host-session preference.
 
 The shim fails closed: if the sandbox is expected but `msb exec` fails (or the loop sandbox cannot be restored), the command errors — it never silently runs on the host. `msb exec` propagates the guest command's exit code verbatim, so the bash tool keeps seeing real exit statuses.
@@ -103,7 +103,7 @@ The shim fails closed: if the sandbox is expected but `msb exec` fails (or the l
 
 ## Network Access
 
-The msb egress proxy is deny-by-default: outbound access is blocked except for hosts explicitly allowed, and the host's loopback interface is unreachable from inside the sandbox. Allow specific hosts with `sandbox.network.allow`:
+Public egress is **allowed by default**: with no hosts configured, Forge passes no network flags and msb's own default applies, letting the sandbox reach any public host. Restriction is opt-in — configuring hosts with `sandbox.network.allow` flips the sandbox to restricted egress, where only allow-listed hosts are reachable:
 
 ```jsonc
 {
@@ -115,7 +115,11 @@ The msb egress proxy is deny-by-default: outbound access is blocked except for h
 }
 ```
 
-Forge applies the rules at sandbox **create time**: every sandbox is created with `--net-default deny`, an explicit `--net-rule allow@dns`, and one `--net-rule allow@<host>` per configured host. Because msb rules are per sandbox (not daemon-global), adopting an existing sandbox never re-applies egress rules to a live sandbox.
+When any host is configured (including secret destination hosts, which are unioned into the same allow list), Forge creates the sandbox with `--net-default deny` plus one `--net-rule allow@<host>` per validated host. Each entry is validated before use; invalid entries are skipped and logged. Verified rejections: a comma (for `--net-rule` a comma separates whole rule tokens, not hosts), a colon (`example.com:443` needs the `example.com:tcp:443` form), an `@`, a bare `*`, a wildcard suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (msb requires the `domain=` form). The `domain=` and `suffix=` forms pass through. If every configured host is rejected as invalid, Forge still emits `--net-default deny` with no allow rules and logs that egress is fully denied — it deliberately does not fall back to allow-all, so a config typo cannot silently remove an intended restriction.
+
+Either way, the host's loopback interface remains unreachable from inside the sandbox: the private range is not part of msb's `public` egress group, so a host listener on e.g. `0.0.0.0:18923` stays unreachable via `host.microsandbox.internal` or the gateway IP even when no net flags are passed.
+
+Forge applies the rules at sandbox **create time** only. msb rules are per sandbox (not daemon-global) and `msb modify` has no `--net-rule` flag, so egress rules cannot be changed on a live sandbox: a newly configured host requires the sandbox to be recreated.
 
 ## Environment Passthrough
 
@@ -149,7 +153,11 @@ Host-held credentials are bound with `sandbox.network.secrets` instead of `env`.
 }
 ```
 
-Each entry maps to `msb create --secret <env>@<hosts>`. Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure is logged and never blocks a loop from starting.
+Each entry maps to `msb create --secret <env>@<hosts>`. Once a sandbox has a secret bound, every `msb exec` fails unless the named host environment variable is present in the environment of the process invoking msb — msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a variable missing there breaks every sandboxed shell command. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
+
+Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. Convergence runs once per sandbox adoption per plugin instance, not on every liveness check. A refresh failure is logged and never blocks a loop from starting.
+
+One placeholder caveat: a secret introduced by `msb modify` on an already-existing sandbox gets a `$<ENV>` placeholder instead of the `$MSB_<ENV>` form, so a newly added secret is most reliable on a freshly created sandbox.
 
 Security notes:
 
@@ -199,9 +207,21 @@ Rules:
 
 Security note: read-write custom mounts give the sandbox write access to host paths. Use them only for trusted directories.
 
-## Nested Docker is gone
+## Nested Docker
 
-The sandbox image no longer ships an in-VM Docker Engine. msb runs its own `agentd` as PID 1, so an image entrypoint that starts `dockerd` would never execute, and the in-VM Docker Engine the image used to ship is dead weight under msb. It was deliberately dropped: Docker remains required on the **host** to build the image, but loops can no longer build or run containers inside the sandbox. Restoring nested Docker would require an msb `--init`/scripts bootstrap and is out of scope.
+The sandbox image ships an in-VM Docker Engine, enabled by default. `container/Dockerfile` installs it from Docker's official apt repository — `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`, `docker-compose-plugin` — and the `agent` user is in the `docker` group.
+
+msb runs its own `agentd` as PID 1 and ignores the image's `ENTRYPOINT`/`CMD`, so the daemon cannot start at boot. Instead the image ships `/usr/local/bin/forge-dockerd-start`: idempotent and safe to run concurrently (an `flock` serializes starts), self-elevating via the passwordless sudo rule so `agent` can call it bare, it starts `dockerd` detached with `setsid` and waits up to 60s for readiness, exiting non-zero with the daemon log tail on failure.
+
+`/var/lib/docker` is backed by a real block device, because Docker's `overlayfs` driver cannot run on a virtiofs workspace mount. Forge passes `--mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>`, configurable via `sandbox.resources.dockerDisk` (default `16g`). The disk is sparse, so the default costs no real disk up front.
+
+Named volumes **survive `msb rm`**, so Forge explicitly removes the sandbox's docker data volume when it removes the sandbox (and during orphan cleanup) — otherwise a multi-gigabyte volume would leak per loop.
+
+Verified working inside the sandbox: `docker info` reports server 29.7.2 with `storage=overlayfs`, `docker run --rm hello-world` succeeds, `docker compose version` works, and `docker build` works. The daemon survives across separate `msb exec` calls.
+
+Registry pulls work with the default allow-public egress posture and need no extra configuration. Under an opt-in restriction, pulling from Docker Hub requires allow-listing `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`, and the CloudFront blob host (`*.cloudfront.net`).
+
+The image derives from a plain OCI base, keeps the final `USER agent`, and declares no `ENTRYPOINT`/`CMD`. Docker remains required on the **host** to build the image. The built image is roughly 1.65 GB, up from about 1 GB, because Docker Engine is heavy.
 
 ## Sandbox Lifecycle
 
@@ -226,3 +246,4 @@ opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool
 |---|---:|---|
 | `sandbox.resources.memory` | `"8g"` | `msb create -m` |
 | `sandbox.resources.cpus` | `"4"` | `msb create -c` (integer-only) |
+| `sandbox.resources.dockerDisk` | `"16g"` | `msb create --mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>` |

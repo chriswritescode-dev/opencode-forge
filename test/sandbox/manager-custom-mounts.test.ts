@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
@@ -43,9 +43,9 @@ describe('SandboxManager custom mounts', () => {
     const workspaces = calls[0][1]
 
     // RW mount: readOnly false
-    expect(workspaces).toContainEqual({ hostDir: resolve(tmpRW), readOnly: false })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync(resolve(tmpRW)), containerDir: resolve(tmpRW), readOnly: false })
     // RO mount: readOnly true
-    expect(workspaces).toContainEqual({ hostDir: resolve(tmpRO), readOnly: true })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync(resolve(tmpRO)), containerDir: resolve(tmpRO), readOnly: true })
   })
 
   test('custom mounts appear in active.mounts', async () => {
@@ -93,7 +93,7 @@ describe('SandboxManager custom mounts', () => {
 
     // Custom mount should not be in the workspaces passed to createSandbox
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
-    expect(workspaces).toEqual([{ hostDir: resolve(workspace) }])
+    expect(workspaces).toEqual([{ hostDir: realpathSync(resolve(workspace)), containerDir: resolve(workspace) }])
   })
 
   test('custom mount whose host equals the project source dir is skipped', async () => {
@@ -117,8 +117,8 @@ describe('SandboxManager custom mounts', () => {
     // Custom mount at the identical host is skipped (collision with project mount)
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
     expect(workspaces).toEqual([
-      { hostDir: '/home/user/worktrees/feature' },
-      { hostDir: resolve(projectDir), readOnly: true },
+      { hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' },
+      { hostDir: realpathSync(resolve(projectDir)), containerDir: resolve(projectDir), readOnly: true },
     ])
   })
 
@@ -145,8 +145,8 @@ describe('SandboxManager custom mounts', () => {
     // Only the first custom mount appears in workspaces
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
     expect(workspaces).toEqual([
-      { hostDir: '/home/user/worktrees/feature' },
-      { hostDir: resolve(shared), readOnly: false },
+      { hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' },
+      { hostDir: realpathSync(resolve(shared)), containerDir: resolve(shared), readOnly: false },
     ])
   })
 
@@ -171,7 +171,7 @@ describe('SandboxManager custom mounts', () => {
     expect(active?.mounts[2]).toEqual({ hostDir: resolve(tmpCustom), containerDir: resolve(tmpCustom), readOnly: false })
 
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
-    expect(workspaces).toContainEqual({ hostDir: '/tmp', readOnly: true })
-    expect(workspaces).toContainEqual({ hostDir: resolve(tmpCustom), readOnly: false })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync('/tmp'), containerDir: '/tmp', readOnly: true })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync(resolve(tmpCustom)), containerDir: resolve(tmpCustom), readOnly: false })
   })
 })

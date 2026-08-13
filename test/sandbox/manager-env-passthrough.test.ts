@@ -190,25 +190,36 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_UNSET'))
   })
 
-  test('adopting a stopped sandbox through ensureRunning refreshes secrets exactly once', async () => {
+  test('adopting a stopped sandbox through ensureRunning refreshes secrets exactly once across repeated calls past the TTL', async () => {
     setEnv('FORGE_TEST_SECRET', 'v')
+    vi.useFakeTimers()
+    try {
+      const runtime = createMockSandboxRuntime()
+      runtime.setSandboxState('forge-test', 'stopped')
+      const logger = createMockLogger()
+      const config: SandboxManagerConfig = {
+        image: 'oc-forge-sandbox:latest',
+        network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+      }
 
-    const runtime = createMockSandboxRuntime()
-    runtime.setSandboxState('forge-test', 'stopped')
-    const logger = createMockLogger()
-    const config: SandboxManagerConfig = {
-      image: 'oc-forge-sandbox:latest',
-      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+      const manager = createSandboxManager(runtime, config, logger)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+
+      expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+      expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
+      expect(runtime.getRefreshSecretCalls()[0][1]).toEqual([
+        { env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] },
+      ])
+
+      vi.advanceTimersByTime(3_000)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+      vi.advanceTimersByTime(3_000)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+
+      expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
     }
-
-    const manager = createSandboxManager(runtime, config, logger)
-    await manager.ensureRunning('test', '/home/user/worktrees/feature')
-
-    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
-    expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
-    expect(runtime.getRefreshSecretCalls()[0][1]).toEqual([
-      { env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] },
-    ])
   })
 
   test('creating a new sandbox issues no refreshSandboxSecrets call', async () => {
@@ -246,5 +257,111 @@ describe('SandboxManager create-time env and secrets', () => {
     })
     expect(runtime.refreshSandboxSecrets).toHaveBeenCalledTimes(1)
     expect(logger.log).toHaveBeenCalledWith('Sandbox: failed to refresh secrets for forge-test')
+  })
+
+  test('adopting an existing sandbox with no secrets configured never refreshes', async () => {
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'stopped')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.ensureRunning('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(0)
+  })
+
+  test('warns at most once per missing secret host variable across repeated calls', async () => {
+    setEnv('FORGE_TEST_UNSET', undefined)
+    vi.useFakeTimers()
+    try {
+      const runtime = createMockSandboxRuntime()
+      runtime.setSandboxState('forge-test', 'stopped')
+      const logger = createMockLogger()
+      const config: SandboxManagerConfig = {
+        image: 'oc-forge-sandbox:latest',
+        network: { secrets: [{ env: 'FORGE_TEST_UNSET', hosts: ['api.example.com'] }] },
+      }
+
+      const manager = createSandboxManager(runtime, config, logger)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+      vi.advanceTimersByTime(3_000)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+      vi.advanceTimersByTime(3_000)
+      await manager.ensureRunning('test', '/home/user/worktrees/feature')
+
+      const warnings = logger.log.mock.calls.filter((c) => String(c[0]).includes('FORGE_TEST_UNSET'))
+      expect(warnings).toHaveLength(1)
+      expect(String(warnings[0][0])).toContain('sandboxed shell commands will fail')
+      expect(String(warnings[0][0])).toContain('sandbox.network.secrets')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('adopting an existing sandbox warns that new secret hosts may be unreachable until recreation', async () => {
+    setEnv('FORGE_TEST_SECRET', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('may be unreachable'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('recreate the sandbox'))
+  })
+
+  test('stop clears the convergence so a recreated sandbox converges again', async () => {
+    setEnv('FORGE_TEST_SECRET', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
+
+    await manager.stop('test')
+
+    runtime.setSandboxState('forge-test', 'stopped')
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(2)
+  })
+
+  test('cleanupOrphans clears the convergence so a recreated sandbox converges again', async () => {
+    setEnv('FORGE_TEST_SECRET', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'running')
+    runtime.setSandboxes(['forge-test'])
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(1)
+
+    await manager.cleanupOrphans()
+    expect(manager.isActive('test')).toBe(false)
+
+    runtime.setSandboxState('forge-test', 'stopped')
+    await manager.start('test', '/home/user/worktrees/feature')
+    expect(runtime.getRefreshSecretCalls()).toHaveLength(2)
   })
 })

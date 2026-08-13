@@ -4,9 +4,11 @@ import {
   sandboxContainerName,
   buildMsbExecArgs,
   parseMsbCpus,
-  normalizeMsbMemory,
+  normalizeMsbSize,
   buildMsbCreateArgs,
   buildNetworkAllow,
+  egressRestrictionRequested,
+  dockerDataVolumeName,
   parseMsbSandboxList,
   parseMsbSandboxListOrNull,
   mapMsbStatus,
@@ -55,6 +57,7 @@ describe('exec args', () => {
       'exec',
       'forge-c',
       '--no-tty',
+      '--quiet',
       '--',
       'sh',
       '-c',
@@ -67,24 +70,11 @@ describe('exec args', () => {
       'exec',
       'forge-c',
       '--no-tty',
+      '--quiet',
       '-w',
       '/w',
       '--timeout',
       '30s',
-      '--',
-      'sh',
-      '-c',
-      'ls',
-    ])
-  })
-
-  test('emits -u when a user is given', () => {
-    expect(buildMsbExecArgs('forge-c', 'ls', { user: '1000:1000' })).toEqual([
-      'exec',
-      'forge-c',
-      '--no-tty',
-      '-u',
-      '1000:1000',
       '--',
       'sh',
       '-c',
@@ -97,6 +87,7 @@ describe('exec args', () => {
       'exec',
       'forge-c',
       '--no-tty',
+      '--quiet',
       '--',
       'sh',
       '-c',
@@ -112,7 +103,7 @@ describe('exec args', () => {
 
 describe('create args', () => {
   test('emits the base vector with image positional after create', () => {
-    expect(buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], { image: 'oc-forge-sandbox:latest' })).toEqual([
+    expect(buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], { image: 'oc-forge-sandbox:latest' })).toEqual([
       'create',
       'oc-forge-sandbox:latest',
       '--name',
@@ -120,18 +111,22 @@ describe('create args', () => {
       '--quiet',
       '-v',
       '/a:/a',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
     ])
+  })
+
+  test('never emits the allow@dns rule that msb 0.6.8 rejects', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], { image: 'oc-forge-sandbox:latest' })
+    expect(args).not.toContain('allow@dns')
+    expect(args.join(' ')).not.toContain('allow@dns')
   })
 
   test('suffixes read-only workspaces with :ro and leaves read-write bare', () => {
     expect(
       buildMsbCreateArgs(
         'forge-c',
-        [{ hostDir: '/a' }, { hostDir: '/b', readOnly: true }],
+        [{ hostDir: '/a', containerDir: '/a' }, { hostDir: '/b', containerDir: '/b', readOnly: true }],
         { image: 'oc-forge-sandbox:latest' },
       ),
     ).toEqual([
@@ -144,16 +139,14 @@ describe('create args', () => {
       '/a:/a',
       '-v',
       '/b:/b:ro',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
     ])
   })
 
   test('includes cpus and memory flags when present', () => {
     expect(
-      buildMsbCreateArgs('forge-c', [{ hostDir: '/work' }], {
+      buildMsbCreateArgs('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
         image: 'oc-forge-sandbox:latest',
         memory: '8g',
         cpus: 4,
@@ -170,16 +163,14 @@ describe('create args', () => {
       '8g',
       '-v',
       '/work:/work',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
     ])
   })
 
   test('emits deny-by-default network flags plus one allow rule per non-blank host', () => {
     expect(
-      buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+      buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
         image: 'oc-forge-sandbox:latest',
         networkAllow: ['github.com', ' '],
       }),
@@ -191,17 +182,17 @@ describe('create args', () => {
       '--quiet',
       '-v',
       '/a:/a',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--net-default',
       'deny',
-      '--net-rule',
-      'allow@dns',
       '--net-rule',
       'allow@github.com',
     ])
   })
 
   test('emits bare -e flags for env names and never inlines a value', () => {
-    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       env: ['GITHUB_TOKEN', 'CI'],
     })
@@ -213,10 +204,8 @@ describe('create args', () => {
       '--quiet',
       '-v',
       '/a:/a',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '-e',
       'GITHUB_TOKEN',
       '-e',
@@ -226,7 +215,7 @@ describe('create args', () => {
   })
 
   test('drops env entries that are blank or contain an equals sign so no value enters argv', () => {
-    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       env: ['KEEP', 'GITHUB_TOKEN=secret', '  ', 'LEAK=value'],
     })
@@ -238,20 +227,19 @@ describe('create args', () => {
       '--quiet',
       '-v',
       '/a:/a',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '-e',
       'KEEP',
     ])
     expect(args.join(' ')).not.toContain('secret')
     expect(args.join(' ')).not.toContain('value')
-    expect(args.join(' ')).not.toContain('=')
+    expect(args.join(' ')).not.toContain('GITHUB_TOKEN=')
+    expect(args.join(' ')).not.toContain('LEAK=')
   })
 
   test('trims whitespace around env names before emitting -e', () => {
-    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       env: [' GITHUB_TOKEN '],
     })
@@ -261,7 +249,7 @@ describe('create args', () => {
   })
 
   test('emits one --secret env@hosts flag per secret with hosts joined by commas', () => {
-    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       secrets: [{ env: 'GITHUB_TOKEN', hosts: ['api.github.com', '*.githubusercontent.com'] }],
     })
@@ -273,10 +261,8 @@ describe('create args', () => {
       '--quiet',
       '-v',
       '/a:/a',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--secret',
       'GITHUB_TOKEN@api.github.com,*.githubusercontent.com',
     ])
@@ -284,7 +270,7 @@ describe('create args', () => {
   })
 
   test('drops secrets with a blank env name, a value-bearing env name, or an empty host list', () => {
-    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       secrets: [
         { env: 'KEEP', hosts: ['api.example.com'] },
@@ -302,10 +288,8 @@ describe('create args', () => {
       '--quiet',
       '-v',
       '/a:/a',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--secret',
       'KEEP@api.example.com',
     ])
@@ -313,7 +297,7 @@ describe('create args', () => {
   })
 
   test('normalizes padded secret env names and hosts into the reference form', () => {
-    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       secrets: [{ env: ' TOKEN ', hosts: [' api.example.com ', '*.github.com'] }],
     })
@@ -323,14 +307,15 @@ describe('create args', () => {
   })
 
   test('no credential value appears in any argument vector produced by buildMsbCreateArgs', () => {
-    const vector = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const vector = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       env: ['GITHUB_TOKEN'],
       secrets: [{ env: 'NPM_TOKEN', hosts: ['registry.npmjs.org'] }],
     })
     // The bare `-e NAME` and `--secret ENV@HOST` reference forms never inline a value, so no
     // `NAME=VALUE` fragment can appear in the vector.
-    expect(vector.join(' ')).not.toContain('=')
+    expect(vector.join(' ')).not.toContain('GITHUB_TOKEN=')
+    expect(vector.join(' ')).not.toContain('NPM_TOKEN=')
   })
 
   test('throws on an empty workspace array', () => {
@@ -340,7 +325,7 @@ describe('create args', () => {
   })
 
   test('a host shared by allow and secrets emits exactly one matching --net-rule allow@host', () => {
-    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a' }], {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
       image: 'oc-forge-sandbox:latest',
       networkAllow: buildNetworkAllow(
         ['api.github.com', 'pypi.org'],
@@ -354,6 +339,87 @@ describe('create args', () => {
     expect(args).toContain('allow@*.githubusercontent.com')
     expect(args).toContain('--secret')
     expect(args).toContain('GITHUB_TOKEN@api.github.com,*.githubusercontent.com')
+  })
+
+  test('emits no net flags at all when no egress hosts are configured', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      networkAllow: [],
+    })
+    expect(args).not.toContain('--net-default')
+    expect(args).not.toContain('--net-rule')
+    expect(args.join(' ')).not.toContain('deny')
+  })
+
+  test('an all-invalid allow list keeps deny with no allow rules instead of silently widening to allow-all', () => {
+    const log = vi.fn()
+    const effective = buildNetworkAllow(['localhost', '*.com'], undefined, { ...logger, log })
+    expect(effective).toEqual([])
+    expect(log).toHaveBeenCalledWith(
+      'Sandbox: every configured egress host was rejected as invalid; sandbox egress is fully denied',
+    )
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      networkAllow: effective,
+      restrictEgress: true,
+    })
+    expect(args).toContain('--net-default')
+    expect(args).toContain('deny')
+    expect(args.filter((a) => a.startsWith('--net-rule'))).toHaveLength(0)
+  })
+
+  test('an allow-all wildcard emits no net flags at all', () => {
+    const effective = buildNetworkAllow(['**'], undefined, logger)
+    expect(effective).toEqual([])
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      networkAllow: effective,
+      restrictEgress: egressRestrictionRequested(['**'], undefined),
+    })
+    expect(args).not.toContain('--net-default')
+    expect(args.filter((a) => a.startsWith('--net-rule'))).toHaveLength(0)
+    expect(args.join(' ')).not.toContain('deny')
+  })
+
+  test('a concrete allow-list entry still flips the sandbox to deny-by-default', () => {
+    const effective = buildNetworkAllow(['api.github.com'], undefined, logger)
+    expect(effective).toEqual(['api.github.com'])
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      networkAllow: effective,
+      restrictEgress: egressRestrictionRequested(['api.github.com'], undefined),
+    })
+    expect(args).toContain('--net-default')
+    expect(args).toContain('deny')
+    expect(args).toContain('allow@api.github.com')
+  })
+
+  test('emits the docker data volume mount with a deterministic per-sandbox name', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+    })
+    expect(args).toContain('--mount-named')
+    expect(args).toContain('forge-c-docker-data:/var/lib/docker:kind=disk,size=16g')
+
+    const other = buildMsbCreateArgs('forge-other', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+    })
+    expect(other).toContain('forge-other-docker-data:/var/lib/docker:kind=disk,size=16g')
+    expect(other).not.toContain('forge-c-docker-data:')
+  })
+
+  test('uses the configured docker disk size when provided', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      dockerDisk: '32g',
+    })
+    expect(args).toContain('forge-c-docker-data:/var/lib/docker:kind=disk,size=32g')
+  })
+
+  test('dockerDataVolumeName derives a stable per-container volume name', () => {
+    expect(dockerDataVolumeName('forge-my-worktree')).toBe('forge-my-worktree-docker-data')
+    expect(dockerDataVolumeName('Forge/C!')).toBe('forge-c-docker-data')
+    expect(dockerDataVolumeName('forge-a')).not.toBe(dockerDataVolumeName('forge-b'))
   })
 })
 
@@ -387,6 +453,125 @@ describe('network allow union', () => {
       ]),
     ).toEqual(['api.example.com'])
   })
+
+  test('rejects a comma-laden host because a comma separates whole rule tokens', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['a.com,b.com'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith(
+      'Sandbox: skipping egress host "a.com,b.com": commas separate rule tokens, not hosts',
+    )
+  })
+
+  test('rejects a port-qualified host that lacks the tcp/udp rule form', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['example.com:443'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith(
+      'Sandbox: skipping egress host "example.com:443": port-qualified hosts need the tcp/udp rule form',
+    )
+  })
+
+  test('rejects a host containing the @ target separator', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['user@example.com'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith(
+      'Sandbox: skipping egress host "user@example.com": the @ character is reserved for rule targets',
+    )
+  })
+
+  test('a bare * wildcard leaves egress unrestricted instead of being rejected as an invalid host', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['*'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith('Sandbox: wildcard allow-list leaves sandbox egress unrestricted')
+    expect(log).not.toHaveBeenCalledWith(
+      'Sandbox: skipping egress host "*": the bare wildcard is not a valid egress host',
+    )
+  })
+
+  test('rejects a wildcard suffix with fewer than two labels', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['*.com'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith(
+      'Sandbox: skipping egress host "*.com": wildcard suffixes need at least two labels',
+    )
+  })
+
+  test('rejects a bare single-label host that msb requires to be domain=-prefixed', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['barehost'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith(
+      'Sandbox: skipping egress host "barehost": bare single-label hosts are ambiguous; use domain=name',
+    )
+  })
+
+  test('rejects a suffix= domain with fewer than two labels', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['suffix=com'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith(
+      'Sandbox: skipping egress host "suffix=com": suffix= domains need at least two labels',
+    )
+  })
+
+  test('applies the same rejection rules to secret destination hosts', () => {
+    const log = vi.fn()
+    expect(
+      buildNetworkAllow(
+        undefined,
+        [{ env: 'KEEP', hosts: ['api.example.com', '*.com', 'bad,host'] }],
+        { ...logger, log },
+      ),
+    ).toEqual(['api.example.com'])
+    expect(log).toHaveBeenCalledTimes(2)
+  })
+
+  test('accepts a multi-label wildcard and the domain=/suffix= forms unchanged', () => {
+    expect(
+      buildNetworkAllow(['*.example.com', 'domain=myhost', 'suffix=example.com'], undefined, logger),
+    ).toEqual(['*.example.com', 'domain=myhost', 'suffix=example.com'])
+  })
+
+  test('still unions, trims, and deduplicates when no logger is supplied', () => {
+    expect(
+      buildNetworkAllow(
+        ['*.github.com', ' github.com ', '*.com'],
+        [{ env: 'T', hosts: ['github.com', '*.com'] }],
+      ),
+    ).toEqual(['*.github.com', 'github.com'])
+  })
+
+  test('an allow-all wildcard short-circuits validation and leaves egress unrestricted', () => {
+    const log = vi.fn()
+    expect(buildNetworkAllow(['**'], undefined, { ...logger, log })).toEqual([])
+    expect(log).toHaveBeenCalledWith('Sandbox: wildcard allow-list leaves sandbox egress unrestricted')
+    expect(log).not.toHaveBeenCalledWith(
+      'Sandbox: every configured egress host was rejected as invalid; sandbox egress is fully denied',
+    )
+  })
+
+  test('an allow-all wildcard beats narrower entries in the same allow list', () => {
+    expect(buildNetworkAllow(['*', 'api.github.com'], undefined, logger)).toEqual([])
+  })
+
+  test('a wildcard suffix stays a normal restricted allow-list entry', () => {
+    expect(buildNetworkAllow(['*.github.com'], undefined, logger)).toEqual(['*.github.com'])
+  })
+
+  test('egressRestrictionRequested is false for an allow-all wildcard even with secret hosts', () => {
+    expect(egressRestrictionRequested(['**'], undefined)).toBe(false)
+    expect(egressRestrictionRequested(['**'], [{ env: 'TOKEN', hosts: ['api.github.com'] }])).toBe(false)
+  })
+
+  test('egressRestrictionRequested is false only when no host token is configured at all', () => {
+    expect(egressRestrictionRequested(undefined, undefined)).toBe(false)
+    expect(egressRestrictionRequested([], [])).toBe(false)
+    expect(egressRestrictionRequested(['  ', ''], undefined)).toBe(false)
+    expect(egressRestrictionRequested(undefined, [{ env: 'NO_HOSTS', hosts: [] }])).toBe(false)
+  })
+
+  test('egressRestrictionRequested is true for any configured token, valid or not', () => {
+    expect(egressRestrictionRequested(['github.com'], undefined)).toBe(true)
+    expect(egressRestrictionRequested(['localhost'], undefined)).toBe(true)
+    expect(egressRestrictionRequested(undefined, [{ env: 'T', hosts: ['bad,host'] }])).toBe(true)
+  })
 })
 
 describe('resource coercion', () => {
@@ -408,15 +593,20 @@ describe('resource coercion', () => {
     expect(parseMsbCpus(undefined, logger)).toBeUndefined()
   })
 
-  test('normalizeMsbMemory passes lowercased value without trailing b', () => {
-    expect(normalizeMsbMemory('8g', logger)).toBe('8g')
-    expect(normalizeMsbMemory('8GB', logger)).toBe('8g')
-    expect(normalizeMsbMemory('1024m', logger)).toBe('1024m')
+  test('normalizeMsbSize passes lowercased value without trailing b', () => {
+    expect(normalizeMsbSize('8g', logger)).toBe('8g')
+    expect(normalizeMsbSize('8GB', logger)).toBe('8g')
+    expect(normalizeMsbSize('1024m', logger)).toBe('1024m')
   })
 
-  test('normalizeMsbMemory returns undefined for unrecognized input', () => {
-    expect(normalizeMsbMemory('lots', logger)).toBeUndefined()
-    expect(normalizeMsbMemory(undefined, logger)).toBeUndefined()
+  test('normalizeMsbSize returns undefined for unrecognized input', () => {
+    expect(normalizeMsbSize('lots', logger)).toBeUndefined()
+    expect(normalizeMsbSize(undefined, logger)).toBeUndefined()
+  })
+
+  test('normalizeMsbSize applies to the docker disk size string as well', () => {
+    expect(normalizeMsbSize('16g', logger)).toBe('16g')
+    expect(normalizeMsbSize('32GB', logger)).toBe('32g')
   })
 })
 
@@ -455,19 +645,20 @@ describe('sandbox list', () => {
     expect(entries.map((e) => e.name)).toEqual(['forge-c'])
   })
 
-  test('mapMsbStatus classifies only msb-executable statuses as running or stopped', () => {
+  test('mapMsbStatus classifies all seven upstream msb variants', () => {
+    expect(mapMsbStatus('Created')).toBe('transient')
+    expect(mapMsbStatus('Starting')).toBe('transient')
     expect(mapMsbStatus('Running')).toBe('running')
+    expect(mapMsbStatus('Draining')).toBe('transient')
+    expect(mapMsbStatus('Paused')).toBe('transient')
     expect(mapMsbStatus('Stopped')).toBe('stopped')
     expect(mapMsbStatus('Crashed')).toBe('stopped')
   })
 
-  test('mapMsbStatus maps non-executable and unrecognized statuses to unknown', () => {
-    expect(mapMsbStatus('Starting')).toBe('unknown')
-    expect(mapMsbStatus('Draining')).toBe('unknown')
-    expect(mapMsbStatus('Created')).toBe('unknown')
-    expect(mapMsbStatus('Paused')).toBe('unknown')
+  test('mapMsbStatus keeps unrecognized statuses on the fail-closed unknown path', () => {
     expect(mapMsbStatus('Suspended')).toBe('unknown')
     expect(mapMsbStatus('')).toBe('unknown')
+    expect(mapMsbStatus('Quarantined')).toBe('unknown')
   })
 })
 
@@ -646,6 +837,9 @@ describe('runtime', () => {
     return { calls, runner }
   }
 
+  const alreadyExistsStderr =
+    "error: sandbox already exists: sandbox 'forge-x' already exists; remove it, start the stopped sandbox, or recreate with .replace()"
+
   test('exec maps cwd and default timeout into native flags with no cd prefix', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
@@ -654,6 +848,7 @@ describe('runtime', () => {
       'exec',
       'forge-c',
       '--no-tty',
+      '--quiet',
       '-w',
       '/w',
       '--timeout',
@@ -686,6 +881,7 @@ describe('runtime', () => {
       'exec',
       'forge-c',
       '--no-tty',
+      '--quiet',
       '--timeout',
       '120s',
       '--',
@@ -698,7 +894,7 @@ describe('runtime', () => {
   test('createSandbox builds create args with the image and coerced resources', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
-    await rt.createSandbox('forge-c', [{ hostDir: '/work' }], {
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
       image: 'oc-forge-sandbox:latest',
       resources: { memory: '8GB', cpus: '2.5' },
     })
@@ -714,18 +910,66 @@ describe('runtime', () => {
       '8g',
       '-v',
       '/work:/work',
-      '--net-default',
-      'deny',
-      '--net-rule',
-      'allow@dns',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
     ])
     expect(calls[0].opts?.timeout).toBe(120000)
+  })
+
+  test('createSandbox forwards coerced boot ceilings as --max-cpus and --max-memory', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      resources: { memory: '2g', maxMemory: '16GB', cpus: '2', maxCpus: '8.5' },
+    })
+    expect(calls[0].args).toEqual([
+      'create',
+      'oc-forge-sandbox:latest',
+      '--name',
+      'forge-c',
+      '--quiet',
+      '-c',
+      '2',
+      '--max-cpus',
+      '8',
+      '-m',
+      '2g',
+      '--max-memory',
+      '16g',
+      '-v',
+      '/work:/work',
+      '--mount-named',
+      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+    ])
+  })
+
+  test('createSandbox omits the boot ceilings when only one of them is configured', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      resources: { memory: '2g', maxMemory: '16g', cpus: '2' },
+    })
+    expect(calls[0].args).toContain('--max-memory')
+    expect(calls[0].args).not.toContain('--max-cpus')
+  })
+
+  test('createSandbox drops unparsable boot ceilings instead of passing them to msb', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      resources: { memory: '2g', maxMemory: 'lots', cpus: '2', maxCpus: 'many' },
+    })
+    expect(calls[0].args).not.toContain('--max-memory')
+    expect(calls[0].args).not.toContain('--max-cpus')
   })
 
   test('createSandbox forwards networkAllow into the create args', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
-    await rt.createSandbox('forge-c', [{ hostDir: '/work' }], {
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
       image: 'oc-forge-sandbox:latest',
       networkAllow: ['github.com', ' '],
     })
@@ -734,10 +978,24 @@ describe('runtime', () => {
     expect(calls[0].args).not.toContain('allow@ ')
   })
 
+  test('createSandbox forwards restrictEgress and the docker disk size into the create args', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      restrictEgress: true,
+      resources: { dockerDisk: '32g' },
+    })
+    expect(calls[0].args).toContain('--net-default')
+    expect(calls[0].args).toContain('deny')
+    expect(calls[0].args).toContain('--mount-named')
+    expect(calls[0].args).toContain('forge-c-docker-data:/var/lib/docker:kind=disk,size=32g')
+  })
+
   test('createSandbox forwards env and secrets into the create args', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
-    await rt.createSandbox('forge-c', [{ hostDir: '/work' }], {
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
       image: 'oc-forge-sandbox:latest',
       env: ['GITHUB_TOKEN'],
       secrets: [{ env: 'API_KEY', hosts: ['api.example.com'] }],
@@ -746,28 +1004,139 @@ describe('runtime', () => {
     expect(calls[0].args).toContain('GITHUB_TOKEN')
     expect(calls[0].args).toContain('--secret')
     expect(calls[0].args).toContain('API_KEY@api.example.com')
-    expect(calls[0].args.join(' ')).not.toContain('=')
+    expect(calls[0].args.join(' ')).not.toContain('GITHUB_TOKEN=')
+    expect(calls[0].args.join(' ')).not.toContain('API_KEY=')
   })
 
   test('createSandbox throws on non-zero exit', async () => {
     const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 }))
     const rt = createMsbRuntime(logger, { run: runner })
     await expect(
-      rt.createSandbox('forge-c', [{ hostDir: '/work' }], { image: 'oc-forge-sandbox:latest' }),
+      rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], { image: 'oc-forge-sandbox:latest' }),
     ).rejects.toThrow('Failed to create sandbox: boom')
   })
 
-  test('removeSandbox records rm --force --quiet', async () => {
+  test('createSandbox on success performs exactly one invocation and never appends --replace', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].args).not.toContain('--replace')
+  })
+
+  test('createSandbox retries once with a trailing --replace when an already-exists failure hides an orphaned directory', async () => {
+    const { calls, runner } = recordingRunner((rec) =>
+      rec.args.includes('--replace')
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: alreadyExistsStderr, exitCode: 1 },
+    )
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(
+      rt.createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], { image: 'oc-forge-sandbox:latest' }),
+    ).resolves.toBeUndefined()
+    expect(calls).toHaveLength(2)
+    expect(calls[1].args).toEqual([...calls[0].args, '--replace'])
+  })
+
+  test('createSandbox surfaces the second --replace failure rather than the first already-exists error', async () => {
+    const { calls, runner } = recordingRunner((rec) =>
+      rec.args.includes('--replace')
+        ? { stdout: '', stderr: 'disk corrupt', exitCode: 2 }
+        : { stdout: '', stderr: alreadyExistsStderr, exitCode: 1 },
+    )
+    const rt = createMsbRuntime(logger, { run: runner })
+    const err = await rt
+      .createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], { image: 'oc-forge-sandbox:latest' })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    if (err instanceof Error) {
+      expect(err.message).toContain('Failed to create sandbox: disk corrupt')
+      expect(err.message).not.toContain('remove it, start the stopped sandbox')
+    }
+    expect(calls).toHaveLength(2)
+    expect(calls[1].args).toEqual([...calls[0].args, '--replace'])
+  })
+
+  test('createSandbox does not retry with --replace on an unrelated failure', async () => {
+    const { calls, runner } = recordingRunner(() => ({ stdout: '', stderr: 'no space left on device', exitCode: 1 }))
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(
+      rt.createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], { image: 'oc-forge-sandbox:latest' }),
+    ).rejects.toThrow('Failed to create sandbox: no space left on device')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].args).not.toContain('--replace')
+  })
+
+  test('createSandbox retries when the already-exists wording differs in capitalization', async () => {
+    const { calls, runner } = recordingRunner((rec) =>
+      rec.args.includes('--replace')
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: 'Sandbox Already Exists: duplicate', exitCode: 1 },
+    )
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(
+      rt.createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], { image: 'oc-forge-sandbox:latest' }),
+    ).resolves.toBeUndefined()
+    expect(calls).toHaveLength(2)
+    expect(calls[1].args).toEqual([...calls[0].args, '--replace'])
+  })
+
+  test('createSandbox logs the orphaned-state recovery naming the sandbox and --replace', async () => {
+    const log = vi.fn()
+    const { runner } = recordingRunner((rec) =>
+      rec.args.includes('--replace')
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: alreadyExistsStderr, exitCode: 1 },
+    )
+    const rt = createMsbRuntime({ ...logger, log }, { run: runner })
+    await expect(
+      rt.createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], { image: 'oc-forge-sandbox:latest' }),
+    ).resolves.toBeUndefined()
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('forge-x'))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('--replace'))
+  })
+
+  test('removeSandbox removes the sandbox and then its derived docker data volume', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
     await rt.removeSandbox('forge-a')
     expect(calls[0].args).toEqual(['rm', '--force', 'forge-a', '--quiet'])
+    expect(calls[1].args).toEqual(['volume', 'rm', 'forge-a-docker-data'])
   })
 
   test('removeSandbox tolerates a not-found failure', async () => {
-    const { runner } = recordingRunner(() => ({ stdout: '', stderr: 'no such sandbox forge-a', exitCode: 1 }))
+    const { runner } = recordingRunner((rec) =>
+      rec.args[0] === 'rm'
+        ? { stdout: '', stderr: 'no such sandbox forge-a', exitCode: 1 }
+        : { stdout: '', stderr: '', exitCode: 0 },
+    )
     const rt = createMsbRuntime(logger, { run: runner })
     await expect(rt.removeSandbox('forge-a')).resolves.toBeUndefined()
+  })
+
+  test('removeSandbox treats an already-removed docker data volume as success', async () => {
+    const { runner } = recordingRunner((rec) =>
+      rec.args[0] === 'rm'
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: 'volume forge-a-docker-data not found', exitCode: 1 },
+    )
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(rt.removeSandbox('forge-a')).resolves.toBeUndefined()
+  })
+
+  test('a docker data volume removal failure is logged but does not fail sandbox removal', async () => {
+    const log = vi.fn()
+    const rt = createMsbRuntime({ ...logger, log }, {
+      run: async (args) =>
+        args[0] === 'rm'
+          ? { stdout: '', stderr: '', exitCode: 0 }
+          : { stdout: '', stderr: 'permission denied', exitCode: 1 },
+    })
+    await expect(rt.removeSandbox('forge-a')).resolves.toBeUndefined()
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('failed to remove docker data volume'))
   })
 
   test('removeSandbox throws on an unexpected failure', async () => {
@@ -776,21 +1145,34 @@ describe('runtime', () => {
     await expect(rt.removeSandbox('forge-a')).rejects.toThrow('Failed to remove sandbox')
   })
 
-  test('getSandboxState reports running, stopped for a Crashed entry, unknown for a non-executable entry, and missing for an absent name', async () => {
+  test('a failed sandbox removal leaves the docker data volume untouched', async () => {
+    const { calls, runner } = recordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 }))
+    const rt = createMsbRuntime(logger, { run: runner })
+    await expect(rt.removeSandbox('forge-a')).rejects.toThrow('Failed to remove sandbox')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].args).toEqual(['rm', '--force', 'forge-a', '--quiet'])
+  })
+
+  test('getSandboxState reports running, reusable stopped, transient for known non-executable states, and missing for an absent name', async () => {
     const stdout = JSON.stringify([
       { name: 'forge-a', status: 'Running' },
       { name: 'forge-b', status: 'Crashed' },
+      { name: 'forge-c', status: 'Created' },
       { name: 'forge-d', status: 'Starting' },
       { name: 'forge-e', status: 'Draining' },
+      { name: 'forge-f', status: 'Paused' },
     ])
     const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
     const rt = createMsbRuntime(logger, { run: runner })
     await expect(rt.getSandboxState('forge-a')).resolves.toBe('running')
     await expect(rt.getSandboxState('forge-b')).resolves.toBe('stopped')
-    // `Starting` and `Draining` both reject new exec calls, so neither is adopted as usable.
-    await expect(rt.getSandboxState('forge-d')).resolves.toBe('unknown')
-    await expect(rt.getSandboxState('forge-e')).resolves.toBe('unknown')
-    await expect(rt.getSandboxState('forge-c')).resolves.toBe('missing')
+    // `Created`/`Starting`/`Draining`/`Paused` are real msb states, so they report transient
+    // rather than a query failure: the sandbox exists even though it is not directly executable.
+    await expect(rt.getSandboxState('forge-c')).resolves.toBe('transient')
+    await expect(rt.getSandboxState('forge-d')).resolves.toBe('transient')
+    await expect(rt.getSandboxState('forge-e')).resolves.toBe('transient')
+    await expect(rt.getSandboxState('forge-f')).resolves.toBe('transient')
+    await expect(rt.getSandboxState('forge-x')).resolves.toBe('missing')
   })
 
   test('getSandboxState reports unknown on a failing ls rather than claiming missing', async () => {

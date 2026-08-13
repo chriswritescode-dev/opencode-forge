@@ -115,11 +115,15 @@ Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with dr
 4. File operations (`read`, `write`, `edit`) operate on the host directly
 5. On loop completion, the sandbox is stopped and removed
 
+### State Model
+
+The sandbox state model has five states. `running` and `stopped` are both usable: msb suspends idle microVMs to `stopped` and `msb exec` resumes them in place, so forge never recreates a merely-stopped sandbox. `transient` covers msb's `Created`/`Starting`/`Draining`/`Paused` statuses — real but not directly executable, and never collapsed into `unknown`. `unknown` means the state query failed and says nothing about the sandbox, so forge fails closed and refuses to create or remove on that basis. `missing` is the one confirmed-absent state, and the only one in which forge creates a sandbox.
+
 ### Tool Redirection
 
 The sandbox isolates shell and search tools while file tools keep operating on the host:
 
-- **Shell** — Forge points opencode's `shell` config at a generated shim (`sandbox/shell-shim.ts`). The `shell.env` hook injects `FORGE_SANDBOX_CONTAINER` for sandboxed sessions, and the shim runs the command via `msb exec --no-tty -w "$PWD" -- bash "$@"`.
+- **Shell** — Forge points opencode's `shell` config at a generated shim (`sandbox/shell-shim.ts`). The `shell.env` hook injects `FORGE_SANDBOX_CONTAINER` for sandboxed sessions, and the shim runs the command via `msb exec --quiet --no-tty -w "$PWD" -- bash "$@"`.
 - **Search tools** — the `tool.execute.before` hook intercepts `glob` and `grep`, runs them through `msb exec` inside the sandbox, and the `tool.execute.after` hook replaces the tool output with the guest result (`hooks/sandbox-tools.ts`).
 
 ## Hook System

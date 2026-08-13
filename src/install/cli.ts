@@ -8,6 +8,8 @@ import {
   resolveConfigDir,
   resolveConfigPath,
   resolveBundledConfigPath,
+  resolveTuiConfigPath,
+  resolveVendorDir,
 } from './paths'
 import {
   runInteractiveInstall,
@@ -16,6 +18,18 @@ import {
   type InstallSummary,
   type OrphanChoice,
 } from './installer'
+import {
+  disableConfigRegistration,
+  ensureTuiRegistration,
+  findConfigRegistrations,
+  linkPlugin,
+  removeTuiRegistration,
+  resolveTuiEntry,
+  unlinkPlugin,
+  unvendorPlugin,
+  vendorPlugin,
+  VENDORED_TUI_SPEC,
+} from './plugin-link'
 import type { OrphanFile, PlannedFile } from '../utils/bundled-sync'
 
 interface CliOptions {
@@ -23,10 +37,11 @@ interface CliOptions {
   prune: boolean
   dryRun: boolean
   help: boolean
+  link: 'prompt' | 'external' | 'vendored' | 'off'
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const opts: CliOptions = { mode: 'interactive', prune: true, dryRun: false, help: false }
+  const opts: CliOptions = { mode: 'interactive', prune: true, dryRun: false, help: false, link: 'prompt' }
   for (const arg of argv) {
     switch (arg) {
       case '-f':
@@ -51,6 +66,15 @@ function parseArgs(argv: string[]): CliOptions {
       case '--no-prune':
         opts.prune = false
         break
+      case '--link':
+        opts.link = 'external'
+        break
+      case '--vendor':
+        opts.link = 'vendored'
+        break
+      case '--unlink':
+        opts.link = 'off'
+        break
       case '-h':
       case '--help':
         opts.help = true
@@ -73,12 +97,22 @@ installed silently; when an installed file differs from the bundle you are
 prompted to overwrite or keep your version. Orphaned files from older layouts
 are offered for removal.
 
+The --link mode always loads the current build, so a rebuild needs no
+reinstall, but is tied to this machine's checkout path. The --vendor mode copies
+forge into the config dir, so the whole config folder can be version-controlled
+and moved to another machine, at the cost of re-running after an upgrade. Both
+modes write the tui.json entry, because the TUI plugin is not auto-loaded from
+the plugin directory.
+
 Options:
   -f, --force      Overwrite all conflicting files and delete all orphans
   -k, --keep       Keep all local versions; never delete anything
   -y, --yes        Non-interactive: keep edited files, prune orphans
   -n, --dry-run    Show what would change without writing anything
       --no-prune   Do not touch orphaned files (only report them)
+      --link       Install into opencode's plugin dir from the current build
+      --vendor     Install a self-contained copy into the config dir (portable)
+      --unlink     Remove the plugin-dir installation
   -h, --help       Show this help
 `
 
@@ -97,8 +131,13 @@ function showDiff(file: PlannedFile): void {
   stdout.write(`\n${res.stdout || '  (no textual diff)\n'}\n`)
 }
 
+/** Interactive yes/no question for the plugin-directory step. */
+interface LinkPrompter {
+  confirm(question: string, defaultYes: boolean): Promise<boolean>
+}
+
 /** Interactive prompter backed by a readline interface. */
-function interactivePrompter(rl: ReturnType<typeof createInterface>): InstallerPrompter {
+function interactivePrompter(rl: ReturnType<typeof createInterface>): InstallerPrompter & LinkPrompter {
   return {
     async fileConflict(file: PlannedFile): Promise<ConflictChoice> {
       const label = file.state === 'edited' ? 'locally edited' : file.state
@@ -127,6 +166,19 @@ function interactivePrompter(rl: ReturnType<typeof createInterface>): InstallerP
         if (answer === 'd' || answer === 'delete') return 'delete'
         if (answer === '' || answer === 'k' || answer === 'keep') return 'keep'
         stdout.write('  Please answer d or k.\n')
+      }
+    },
+    async confirm(question: string, defaultYes: boolean): Promise<boolean> {
+      for (;;) {
+        const answer = (
+          await rl.question(`  ${question} — [y]es / [n]o (default ${defaultYes ? 'yes' : 'no'}): `)
+        )
+          .trim()
+          .toLowerCase()
+        if (answer === 'y' || answer === 'yes') return true
+        if (answer === 'n' || answer === 'no') return false
+        if (answer === '') return defaultYes
+        stdout.write('  Please answer y or n.\n')
       }
     },
   }
@@ -187,6 +239,86 @@ function printSummary(summary: InstallSummary): void {
   }
 }
 
+/**
+ * Perform the plugin-directory step after the bundle install: install or remove
+ * the server re-export shim, register the TUI entry, and surface any
+ * double-loading config registrations.
+ */
+async function runPluginLinkStep(
+  opts: CliOptions,
+  prompter: InstallerPrompter & Partial<LinkPrompter>,
+): Promise<void> {
+  if (opts.link === 'prompt') {
+    if (!prompter.confirm) return
+    const yes = await prompter.confirm("Install forge into opencode's plugin dir?", true)
+    if (!yes) return
+    const selfContained = await prompter.confirm('Make it self-contained so the config folder is portable?', false)
+    opts.link = selfContained ? 'vendored' : 'external'
+  }
+  stdout.write('\nPlugin directory:\n')
+  if (opts.link === 'off') {
+    const unlinked = unlinkPlugin({ dryRun: opts.dryRun })
+    stdout.write(`  ${unlinked.action}: ${unlinked.shimPath}\n`)
+    const unvendored = unvendorPlugin({ dryRun: opts.dryRun })
+    stdout.write(`  ${unvendored}: ${resolveVendorDir()}\n`)
+    const tuiRemoved = removeTuiRegistration({ dryRun: opts.dryRun })
+    stdout.write(`  ${tuiRemoved}: ${resolveTuiConfigPath()}\n`)
+    return
+  }
+  if (opts.link === 'vendored') {
+    const vendor = vendorPlugin({ dryRun: opts.dryRun })
+    if (vendor.action !== 'vendored') {
+      stdout.write(`  ${vendor.action}: ${vendor.vendorDir}\n`)
+      if (vendor.action === 'missing-entry') {
+        stdout.write('  The built package could not be found. Run `pnpm build` first, then re-run.\n')
+      }
+      process.exitCode = 1
+      return
+    }
+    stdout.write(`  copied: ${vendor.vendorDir}\n`)
+    list('copied', vendor.copied)
+    list('missing', vendor.missing)
+    const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'vendored' })
+    stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
+    if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
+    const tui = ensureTuiRegistration({ dryRun: opts.dryRun, spec: VENDORED_TUI_SPEC })
+    stdout.write(`  ${tui.action}: ${tui.file} ${JSON.stringify(tui.spec)}\n`)
+    return
+  }
+  const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'external' })
+  if (linked.action === 'missing-entry') {
+    stdout.write(`  missing-entry: ${linked.shimPath}\n`)
+    stdout.write('  The built server entry could not be found. Run `pnpm build` first, then re-run.\n')
+    process.exitCode = 1
+    return
+  }
+  stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
+  if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
+  const tuiEntry = resolveTuiEntry()
+  if (tuiEntry) {
+    const tui = ensureTuiRegistration({ dryRun: opts.dryRun, spec: tuiEntry })
+    stdout.write(`  ${tui.action}: ${tui.file} ${JSON.stringify(tui.spec)}\n`)
+  } else {
+    stdout.write('  warning: TUI entry skipped because dist/tui.js was not found.\n')
+  }
+  for (const reg of findConfigRegistrations()) {
+    stdout.write(`  config registration: ${reg.file}:${reg.line} "${reg.spec}"\n`)
+    stdout.write('    Leaving it in place makes opencode load forge twice under the same id (oc-forge).\n')
+    if (prompter.confirm) {
+      const disable = await prompter.confirm('Disable this entry?', true)
+      if (!disable) {
+        stdout.write('    kept: left in place\n')
+        continue
+      }
+      stdout.write(`    disabled: ${disableConfigRegistration(reg, { dryRun: opts.dryRun })}\n`)
+    } else {
+      stdout.write(
+        '    warning: not modified. Re-run interactively to disable it, or remove this entry by hand.\n',
+      )
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2))
   if (opts.help) {
@@ -213,12 +345,15 @@ async function main(): Promise<void> {
 
   const rl = interactive ? createInterface({ input: stdin, output: stdout }) : null
   try {
-    const prompter = rl ? interactivePrompter(rl) : autoPrompter(opts.mode as 'force' | 'keep' | 'yes')
+    const prompter: InstallerPrompter & Partial<LinkPrompter> = rl
+      ? interactivePrompter(rl)
+      : autoPrompter(opts.mode as 'force' | 'keep' | 'yes')
     const summary = await runInteractiveInstall(getBundleSpecs(), prompter, {
       prune: opts.prune,
       dryRun: opts.dryRun,
     })
     printSummary(summary)
+    await runPluginLinkStep(opts, prompter)
   } finally {
     rl?.close()
   }

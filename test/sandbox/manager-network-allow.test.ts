@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
+import { egressAllowsAll } from '../../src/sandbox/msb'
 import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 
 function makeConfig(allow?: string[]): SandboxManagerConfig {
@@ -160,5 +161,51 @@ describe('SandboxManager network allowlist', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+  })
+
+  test('invalid egress host tokens are dropped and logged, and still flip the sandbox to deny-by-default', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+
+    const manager = createSandboxManager(runtime, makeConfig(['localhost']), logger)
+
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCalls = runtime.getCreateSandboxCalls()
+    expect(createCalls).toHaveLength(1)
+    expect(createCalls[0][2]?.networkAllow).toEqual([])
+    expect((createCalls[0][2] as { restrictEgress?: boolean }).restrictEgress).toBe(true)
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('skipping egress host'))
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('egress is fully denied'))
+  })
+
+  test('no configured hosts forwards restrictEgress false so msb allow-by-default applies', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+
+    const manager = createSandboxManager(runtime, makeConfig(undefined), logger)
+
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.networkAllow).toEqual([])
+    expect((createCall[2] as { restrictEgress?: boolean }).restrictEgress).toBe(false)
+    expect(logger.log).not.toHaveBeenCalledWith(expect.stringContaining('egress is fully denied'))
+  })
+})
+
+describe('egressAllowsAll', () => {
+  test('is true for an explicit allow-all wildcard in any position, trimmed', () => {
+    expect(egressAllowsAll(['*'])).toBe(true)
+    expect(egressAllowsAll(['**'])).toBe(true)
+    expect(egressAllowsAll(['  * '])).toBe(true)
+    expect(egressAllowsAll(['api.github.com', '*'])).toBe(true)
+  })
+
+  test('is false when no allow-all wildcard is present', () => {
+    expect(egressAllowsAll([])).toBe(false)
+    expect(egressAllowsAll(undefined)).toBe(false)
+    expect(egressAllowsAll(['api.github.com'])).toBe(false)
+    expect(egressAllowsAll(['*.github.com'])).toBe(false)
   })
 })

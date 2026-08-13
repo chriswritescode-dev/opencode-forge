@@ -667,6 +667,52 @@ describe('createForgePlugin', () => {
     expect(hooks).toBeDefined()
   })
 
+  test('publishes legacy sandbox config warnings as a toast on plugin init', async () => {
+    const published: Array<{ url: string; body: string }> = []
+    const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
+      let url: string
+      let body = ''
+      if (typeof input === 'string') {
+        url = input
+      } else if (input instanceof Request) {
+        url = input.url
+        body = await input.clone().text()
+      } else {
+        url = String(input)
+      }
+      published.push({ url, body })
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'sbx', enabled: false } as PluginConfig['sandbox'],
+    }
+
+    const plugin = createForgePlugin(config)
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: { _client: { getConfig: () => ({ fetch: mockFetch }) } } as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+    await sleep(100)
+
+    const toastPublish = published.find((p) => p.url.includes('/tui/publish'))
+    expect(toastPublish).toBeDefined()
+    const body = JSON.parse(toastPublish!.body) as { properties: { title: string; variant: string; message: string } }
+    expect(body.properties.title).toBe('Forge sandbox config')
+    expect(body.properties.variant).toBe('warning')
+    expect(body.properties.message).toContain('sandbox.mode')
+  })
+
   test('Logs loop.permissions config warnings for a bad config on plugin init', async () => {
     const logFile = join(testDir, 'forge.log')
     const config: PluginConfig = {

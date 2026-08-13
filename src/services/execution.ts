@@ -739,22 +739,7 @@ export async function attachLoopToSession(
 
         if (!waitResult.ready) {
           deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason}${waitResult.error ? `: ${waitResult.error}` : ''})`)
-          try {
-            const { createMsbRuntime } = await import('../sandbox/msb')
-            const runtime = createMsbRuntime(deps.logger as unknown as Console)
-            const cn = runtime.sandboxContainerName(loopName)
-            const state = await runtime.getSandboxState(cn)
-            // Only a confirmed existing sandbox (running or stopped) is removed. `unknown` means
-            // the state query itself failed and says nothing about the sandbox, so removing on it
-            // could destroy a live microVM; log and skip instead.
-            if (state === 'running' || state === 'stopped') {
-              await runtime.removeSandbox(cn)
-            } else if (state === 'unknown') {
-              deps.logger.log(`attachLoopToSession: sandbox ${cn} state unknown; skipping destructive cleanup`)
-            }
-          } catch (cleanupErr) {
-            deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
-          }
+          await deps.sandboxManager.stop(loopName).catch((err) => deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', err))
           deps.loop.unregisterSessionReverseIndex(sessionId)
           deps.loop.service.deleteState(loopName)
           return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }

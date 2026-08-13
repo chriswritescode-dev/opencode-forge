@@ -9,7 +9,6 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
-import type { SandboxState as RuntimeSandboxState } from '../../src/sandbox/msb'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
@@ -19,10 +18,6 @@ const PROJECT_ID = 'test-project'
 
 vi.mock('../../src/utils/sandbox-ready', () => ({
   waitForSandboxReady: vi.fn(),
-}))
-
-vi.mock('../../src/sandbox/msb', () => ({
-  createMsbRuntime: vi.fn(),
 }))
 
 describe('attachLoopToSession sandbox-not-ready cleanup', () => {
@@ -62,6 +57,11 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
 
     const { client } = createFakeForgeClient()
 
+    const stop = vi.fn(async () => {})
+    const sandboxManager = { stop }
+    const unregisterSessionReverseIndex = vi.fn()
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
+
     const deps = {
       projectId: PROJECT_ID,
       directory: '/tmp/test',
@@ -70,7 +70,7 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
       },
-      logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
+      logger,
       dataDir: tempDir,
       client,
       plansRepo,
@@ -83,7 +83,7 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
         generateUniqueLoopName: (...a: any[]) => loopService.generateUniqueLoopName(...a as any),
         findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
         registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
+        unregisterSessionReverseIndex,
         handleAuditorProviderLimit: async () => false,
       } as any,
       loopHandler: {
@@ -91,7 +91,7 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
         startWatchdog: vi.fn(),
         clearLoopTimers: noopFn,
       },
-      sandboxManager: {},
+      sandboxManager,
       workspaceStatusRegistry: {
         recordEvent: vi.fn(),
         getStatus: vi.fn().mockReturnValue('connected' as const),
@@ -100,29 +100,12 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
       },
     }
 
-    return { deps, loopService }
+    return { deps, loopService, sandboxManager, unregisterSessionReverseIndex, logger }
   }
 
-  async function runAttachWithSandboxState(state: RuntimeSandboxState): Promise<{
-    removeSandbox: ReturnType<typeof vi.fn>
-    getSandboxState: ReturnType<typeof vi.fn>
-    result: Awaited<ReturnType<typeof attach>>
-  }> {
-    const { waitForSandboxReady } = await import('../../src/utils/sandbox-ready')
-    const { createMsbRuntime } = await import('../../src/sandbox/msb')
-    vi.mocked(waitForSandboxReady).mockResolvedValue({ ready: false, reason: 'timeout' })
-
-    const getSandboxState = vi.fn(async () => state)
-    const removeSandbox = vi.fn(async () => {})
-    vi.mocked(createMsbRuntime).mockReturnValue({
-      sandboxContainerName: (name: string) => `forge-${name}`,
-      getSandboxState,
-      removeSandbox,
-    } as any)
-
-    const { deps } = buildDeps()
+  async function attach(deps: ReturnType<typeof buildDeps>['deps'], sendInitialPrompt = true) {
     const { attachLoopToSession } = await import('../../src/services/execution')
-    const result = await attachLoopToSession(
+    return attachLoopToSession(
       deps as any,
       { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
       {
@@ -138,66 +121,54 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
         selectSession: false,
         selectSessionTiming: 'after-prompt',
         startWatchdog: false,
+        sendInitialPrompt,
       },
     )
-    return { removeSandbox, getSandboxState, result }
   }
 
-  test('removes the sandbox when its state is confirmed running', async () => {
-    const { removeSandbox, getSandboxState, result } = await runAttachWithSandboxState('running')
-    expect(getSandboxState).toHaveBeenCalledWith('forge-msb-loop')
-    expect(removeSandbox).toHaveBeenCalledWith('forge-msb-loop')
-    expect(result).toEqual({ ok: false, code: 'internal_error', message: 'Sandbox not ready: timeout' })
-  })
-
-  test('removes the sandbox when its state is confirmed stopped', async () => {
-    const { removeSandbox, result } = await runAttachWithSandboxState('stopped')
-    expect(removeSandbox).toHaveBeenCalledWith('forge-msb-loop')
-    expect(result).toEqual({ ok: false, code: 'internal_error', message: 'Sandbox not ready: timeout' })
-  })
-
-  test('never removes a sandbox whose state query returned unknown', async () => {
-    const { removeSandbox, result } = await runAttachWithSandboxState('unknown')
-    expect(removeSandbox).not.toHaveBeenCalled()
-    expect(result).toEqual({ ok: false, code: 'internal_error', message: 'Sandbox not ready: timeout' })
-  })
-
-  test('never removes a sandbox that is already missing', async () => {
-    const { removeSandbox, result } = await runAttachWithSandboxState('missing')
-    expect(removeSandbox).not.toHaveBeenCalled()
-    expect(result).toEqual({ ok: false, code: 'internal_error', message: 'Sandbox not ready: timeout' })
-  })
-
-  test('a throwing cleanup does not mask the not-ready failure', async () => {
+  test('rollback calls sandboxManager.stop with the loop name and still unregisters state', async () => {
     const { waitForSandboxReady } = await import('../../src/utils/sandbox-ready')
-    const { createMsbRuntime } = await import('../../src/sandbox/msb')
     vi.mocked(waitForSandboxReady).mockResolvedValue({ ready: false, reason: 'timeout' })
-    vi.mocked(createMsbRuntime).mockReturnValue({
-      sandboxContainerName: (name: string) => `forge-${name}`,
-      getSandboxState: async () => 'running' as const,
-      removeSandbox: async () => { throw new Error('rm failed') },
-    } as any)
 
-    const { deps } = buildDeps()
-    const { attachLoopToSession } = await import('../../src/services/execution')
-    const result = await attachLoopToSession(
-      deps as any,
-      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        sessionId: 'sess_msb',
-        workspaceId: 'ws_msb',
-        worktreeDir: '/tmp/wt/msb',
-        loopName: 'msb-loop',
-        displayName: 'MSB Loop',
-        executionName: 'msb-loop',
-        maxIterations: 50,
-        sandboxEnabled: true,
-        planText: 'NEW_PLAN',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
-        startWatchdog: false,
-      },
-    )
+    const { deps, loopService, sandboxManager, unregisterSessionReverseIndex } = buildDeps()
+    const deleteState = vi.spyOn(loopService, 'deleteState')
+
+    const result = await attach(deps)
+
+    expect(sandboxManager.stop).toHaveBeenCalledWith('msb-loop')
+    expect(unregisterSessionReverseIndex).toHaveBeenCalledWith('sess_msb')
+    expect(deleteState).toHaveBeenCalledWith('msb-loop')
     expect(result).toEqual({ ok: false, code: 'internal_error', message: 'Sandbox not ready: timeout' })
+  })
+
+  test('a rejected stop (unknown-state throw) is logged and does not mask the not-ready failure', async () => {
+    const { waitForSandboxReady } = await import('../../src/utils/sandbox-ready')
+    vi.mocked(waitForSandboxReady).mockResolvedValue({ ready: false, reason: 'timeout' })
+
+    const { deps, loopService, sandboxManager, unregisterSessionReverseIndex, logger } = buildDeps()
+    const deleteState = vi.spyOn(loopService, 'deleteState')
+
+    const stopError = new Error('Could not determine whether sandbox forge-msb-loop exists (state query failed); refusing to remove')
+    vi.mocked(sandboxManager.stop).mockRejectedValue(stopError)
+
+    const result = await attach(deps)
+
+    expect(sandboxManager.stop).toHaveBeenCalledWith('msb-loop')
+    expect(logger.error).toHaveBeenCalledWith('attachLoopToSession: failed to remove sandbox container after timeout', stopError)
+    expect(unregisterSessionReverseIndex).toHaveBeenCalledWith('sess_msb')
+    expect(deleteState).toHaveBeenCalledWith('msb-loop')
+    expect(result).toEqual({ ok: false, code: 'internal_error', message: 'Sandbox not ready: timeout' })
+  })
+
+  test('does not stop the sandbox when it is ready', async () => {
+    const { waitForSandboxReady } = await import('../../src/utils/sandbox-ready')
+    vi.mocked(waitForSandboxReady).mockResolvedValue({ ready: true, containerName: 'forge-msb-loop' })
+
+    const { deps, sandboxManager } = buildDeps()
+
+    const result = await attach(deps, false)
+
+    expect(sandboxManager.stop).not.toHaveBeenCalled()
+    expect(result).toEqual({ ok: true, loopName: 'msb-loop' })
   })
 })
