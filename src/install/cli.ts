@@ -29,6 +29,7 @@ import {
   unvendorPlugin,
   vendorPlugin,
   VENDORED_TUI_SPEC,
+  type TuiRegistrationResult,
 } from './plugin-link'
 import type { OrphanFile, PlannedFile } from '../utils/bundled-sync'
 
@@ -239,6 +240,33 @@ function printSummary(summary: InstallSummary): void {
   }
 }
 
+function reportTuiRegistration(tui: TuiRegistrationResult): void {
+  stdout.write(`  ${tui.action}: ${tui.file} ${JSON.stringify(tui.spec)}\n`)
+  if (tui.action === 'failed') process.exitCode = 1
+}
+
+async function handleConfigRegistrations(
+  opts: CliOptions,
+  prompter: InstallerPrompter & Partial<LinkPrompter>,
+): Promise<void> {
+  for (const reg of findConfigRegistrations()) {
+    stdout.write(`  config registration: ${reg.file}:${reg.line} "${reg.spec}"\n`)
+    stdout.write('    Leaving it in place makes opencode load forge twice under the same id (oc-forge).\n')
+    if (prompter.confirm) {
+      const disable = await prompter.confirm('Disable this entry?', true)
+      if (!disable) {
+        stdout.write('    kept: left in place\n')
+        continue
+      }
+      stdout.write(`    disabled: ${disableConfigRegistration(reg, { dryRun: opts.dryRun })}\n`)
+    } else {
+      stdout.write(
+        '    warning: not modified. Re-run interactively to disable it, or remove this entry by hand.\n',
+      )
+    }
+  }
+}
+
 /**
  * Perform the plugin-directory step after the bundle install: install or remove
  * the server re-export shim, register the TUI entry, and surface any
@@ -281,8 +309,8 @@ async function runPluginLinkStep(
     const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'vendored' })
     stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
     if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
-    const tui = ensureTuiRegistration({ dryRun: opts.dryRun, spec: VENDORED_TUI_SPEC })
-    stdout.write(`  ${tui.action}: ${tui.file} ${JSON.stringify(tui.spec)}\n`)
+    reportTuiRegistration(ensureTuiRegistration({ dryRun: opts.dryRun, spec: VENDORED_TUI_SPEC }))
+    await handleConfigRegistrations(opts, prompter)
     return
   }
   const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'external' })
@@ -296,27 +324,11 @@ async function runPluginLinkStep(
   if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
   const tuiEntry = resolveTuiEntry()
   if (tuiEntry) {
-    const tui = ensureTuiRegistration({ dryRun: opts.dryRun, spec: tuiEntry })
-    stdout.write(`  ${tui.action}: ${tui.file} ${JSON.stringify(tui.spec)}\n`)
+    reportTuiRegistration(ensureTuiRegistration({ dryRun: opts.dryRun, spec: tuiEntry }))
   } else {
     stdout.write('  warning: TUI entry skipped because dist/tui.js was not found.\n')
   }
-  for (const reg of findConfigRegistrations()) {
-    stdout.write(`  config registration: ${reg.file}:${reg.line} "${reg.spec}"\n`)
-    stdout.write('    Leaving it in place makes opencode load forge twice under the same id (oc-forge).\n')
-    if (prompter.confirm) {
-      const disable = await prompter.confirm('Disable this entry?', true)
-      if (!disable) {
-        stdout.write('    kept: left in place\n')
-        continue
-      }
-      stdout.write(`    disabled: ${disableConfigRegistration(reg, { dryRun: opts.dryRun })}\n`)
-    } else {
-      stdout.write(
-        '    warning: not modified. Re-run interactively to disable it, or remove this entry by hand.\n',
-      )
-    }
-  }
+  await handleConfigRegistrations(opts, prompter)
 }
 
 async function main(): Promise<void> {

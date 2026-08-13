@@ -433,21 +433,24 @@ export function createSandboxManager(
    * bindings are captured once, but adoption reuses a long-lived container across plugin
    * restarts, so a rotated host token would otherwise stay stale for the life of the sandbox.
    * Runs only on adopt paths: the fresh-create path already bound the same filtered list.
-   * A failure is logged and swallowed so a rotation failure cannot block a loop from starting.
+   * Returns false (without marking the container converged) when the rotation fails, so the
+   * caller fails the adoption and a later attempt can retry.
    */
-  async function refreshSecrets(containerName: string): Promise<void> {
-    if (convergedSecrets.has(containerName)) return
+  async function refreshSecrets(containerName: string): Promise<boolean> {
+    if (convergedSecrets.has(containerName)) return true
     const secrets = resolveSandboxSecrets()
     if (secrets.length === 0) {
       convergedSecrets.add(containerName)
-      return
+      return true
     }
     warnUncoveredSecretHosts(containerName, secrets)
     if (!(await runtime.refreshSandboxSecrets(containerName, secrets))) {
       logger.log(`Sandbox: failed to refresh secrets for ${containerName}`)
+      return false
     }
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)
+    return true
   }
 
   function recordHandledSecretEnvs(containerName: string, secrets: SandboxSecretConfig[]): void {
@@ -481,7 +484,9 @@ export function createSandboxManager(
     }
     if (state !== 'missing') {
       logger.log(`Sandbox ${containerName} already exists (${state}), adopting`)
-      await refreshSecrets(containerName)
+      if (!(await refreshSecrets(containerName))) {
+        throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
+      }
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       return { containerName }
     }
@@ -651,7 +656,9 @@ export function createSandboxManager(
     const state = await runtime.getSandboxState(containerName)
 
     if (state === 'running' || state === 'stopped') {
-      await refreshSecrets(containerName)
+      if (!(await refreshSecrets(containerName))) {
+        throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
+      }
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       lastLivenessCheck.set(worktreeName, Date.now())
       return containerName

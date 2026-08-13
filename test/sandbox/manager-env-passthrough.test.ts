@@ -239,12 +239,13 @@ describe('SandboxManager create-time env and secrets', () => {
     expect(runtime.getRefreshSecretCalls()).toHaveLength(0)
   })
 
-  test('a failed secret refresh is logged and does not block adopting the sandbox', async () => {
+  test('a failed secret refresh rejects the adoption and is retried on the next attempt', async () => {
     setEnv('FORGE_TEST_SECRET', 'v')
 
     const runtime = createMockSandboxRuntime()
     runtime.setSandboxState('forge-test', 'running')
-    runtime.refreshSandboxSecrets = vi.fn(async () => false)
+    const refresh = vi.fn(async () => false)
+    runtime.refreshSandboxSecrets = refresh
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
@@ -252,11 +253,40 @@ describe('SandboxManager create-time env and secrets', () => {
     }
 
     const manager = createSandboxManager(runtime, config, logger)
+    await expect(manager.start('test', '/home/user/worktrees/feature')).rejects.toThrow(/Failed to refresh secrets/)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(logger.log).toHaveBeenCalledWith('Sandbox: failed to refresh secrets for forge-test')
+    expect(manager.isActive('test')).toBe(false)
+
+    refresh.mockResolvedValue(true)
     await expect(manager.start('test', '/home/user/worktrees/feature')).resolves.toEqual({
       containerName: 'forge-test',
     })
-    expect(runtime.refreshSandboxSecrets).toHaveBeenCalledTimes(1)
-    expect(logger.log).toHaveBeenCalledWith('Sandbox: failed to refresh secrets for forge-test')
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(manager.isActive('test')).toBe(true)
+  })
+
+  test('a failed secret refresh on the ensureRunning adopt path rejects and can be retried', async () => {
+    setEnv('FORGE_TEST_SECRET', 'v')
+
+    const runtime = createMockSandboxRuntime()
+    runtime.setSandboxState('forge-test', 'stopped')
+    const refresh = vi.fn(async () => false)
+    runtime.refreshSandboxSecrets = refresh
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      network: { secrets: [{ env: 'FORGE_TEST_SECRET', hosts: ['api.example.com'] }] },
+    }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await expect(manager.ensureRunning('test', '/home/user/worktrees/feature')).rejects.toThrow(/Failed to refresh secrets/)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(manager.isActive('test')).toBe(false)
+
+    refresh.mockResolvedValue(true)
+    await expect(manager.ensureRunning('test', '/home/user/worktrees/feature')).resolves.toBe('forge-test')
+    expect(refresh).toHaveBeenCalledTimes(2)
   })
 
   test('adopting an existing sandbox with no secrets configured never refreshes', async () => {

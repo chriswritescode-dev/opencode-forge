@@ -108,14 +108,16 @@ describe('SandboxManager caching', () => {
 
   it('should report an unavailable host rather than a missing template', async () => {
     // `msb images` failing looks identical to an absent template, so the availability error wins.
-    mockRuntime.checkAvailable = vi.fn(async (): Promise<MsbAvailability> => available)
+    mockRuntime.checkAvailable = vi.fn()
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce(hostUnsupported)
     mockRuntime.templateExists = vi.fn(async () => false)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
-    mockRuntime.checkAvailable = vi.fn(async (): Promise<MsbAvailability> => hostUnsupported)
     await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('This host cannot run microVMs')
+    expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
   })
 
   it('should defer an indeterminate template query to sandbox creation', async () => {

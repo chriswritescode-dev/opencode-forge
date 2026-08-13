@@ -1499,6 +1499,51 @@ describe('SessionSandboxController', () => {
     }
   })
 
+  test('the first ON-to-OFF stop failure initializes the retry schedule and the second failure doubles it', async () => {
+    vi.useFakeTimers()
+    try {
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-on-to-off-up', sessionId: ROOT_SESSION }))
+      const controller = createController({ pollIntervalMs: 20 })
+      await controller.start()
+      expect(repo.getApplied(PROJECT)?.enabled).toBe(true)
+
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-on-to-off', enabled: false, sessionId: ROOT_SESSION }))
+      let stopFails = true
+      manager.stop = async (key) => {
+        manager.stopCalls.push(key)
+        if (stopFails) throw new Error('transient removal failure')
+        manager.active = null
+      }
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(1)
+      let applied = repo.getApplied(PROJECT)
+      expect(applied?.revision).toBe('r-on-to-off')
+      expect(applied?.enabled).toBe(false)
+      expect(applied?.error).toMatch(/transient removal failure/)
+
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(2)
+
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(3)
+
+      stopFails = false
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(3)
+      await vi.advanceTimersByTimeAsync(60)
+      expect(manager.stopCalls).toHaveLength(4)
+      applied = repo.getApplied(PROJECT)
+      expect(applied?.enabled).toBe(false)
+      expect(applied?.error).toBeNull()
+
+      await controller.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('a failed stop during absent-desired teardown is retried until removal succeeds', async () => {
     vi.useFakeTimers()
     try {

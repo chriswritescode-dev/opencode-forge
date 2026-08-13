@@ -17,6 +17,7 @@ RUN userdel -r ubuntu 2>/dev/null || true; groupdel ubuntu 2>/dev/null || true; 
     useradd --create-home --shell /bin/bash --uid 1000 --user-group agent
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ca-certificates \
     curl \
     git \

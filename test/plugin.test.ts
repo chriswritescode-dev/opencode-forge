@@ -601,6 +601,28 @@ describe('createForgePlugin', () => {
     expect(typeof hooks).toBe('object')
   })
 
+  test('Plugin init fails closed when the sandbox is enabled but the shell shim cannot be installed', async () => {
+    const blocker = join(testDir, 'blocker')
+    writeFileSync(blocker, 'x')
+    const config: PluginConfig = {
+      dataDir: join(blocker, '.opencode', 'memory'),
+      sandbox: { mode: 'msb' },
+    }
+
+    const plugin = createForgePlugin(config)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    await expect(plugin(mockInput as unknown as PluginInput)).rejects.toThrow(/shell shim unavailable/)
+  })
+
   test('Logs legacy sandbox config warnings for a Docker config', async () => {
     const logFile = join(testDir, 'forge.log')
     const legacySandbox = {
@@ -668,7 +690,10 @@ describe('createForgePlugin', () => {
   })
 
   test('publishes legacy sandbox config warnings as a toast on plugin init', async () => {
-    const published: Array<{ url: string; body: string }> = []
+    let resolveToastPublish!: (entry: { url: string; body: string }) => void
+    const toastPublished = new Promise<{ url: string; body: string }>((resolve) => {
+      resolveToastPublish = resolve
+    })
     const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
       let url: string
       let body = ''
@@ -680,7 +705,10 @@ describe('createForgePlugin', () => {
       } else {
         url = String(input)
       }
-      published.push({ url, body })
+      const entry = { url, body }
+      if (url.includes('/tui/publish')) {
+        resolveToastPublish(entry)
+      }
       return new Response(JSON.stringify({}), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -703,11 +731,9 @@ describe('createForgePlugin', () => {
 
     const hooks = await plugin(mockInput as unknown as PluginInput)
     currentHooks = hooks as { getCleanup?: () => Promise<void> }
-    await sleep(100)
 
-    const toastPublish = published.find((p) => p.url.includes('/tui/publish'))
-    expect(toastPublish).toBeDefined()
-    const body = JSON.parse(toastPublish!.body) as { properties: { title: string; variant: string; message: string } }
+    const toastPublish = await toastPublished
+    const body = JSON.parse(toastPublish.body) as { properties: { title: string; variant: string; message: string } }
     expect(body.properties.title).toBe('Forge sandbox config')
     expect(body.properties.variant).toBe('warning')
     expect(body.properties.message).toContain('sandbox.mode')

@@ -115,7 +115,7 @@ Public egress is **allowed by default**: when `sandbox.network.allow` is omitted
 }
 ```
 
-When any concrete host is configured (including secret destination hosts, which are unioned into the same allow list), Forge creates the sandbox with `--net-default deny` plus one `--net-rule allow@<host>` per validated host. Each entry is validated before use; invalid entries are skipped and logged. Verified rejections: a comma (for `--net-rule` a comma separates whole rule tokens, not hosts), a colon (`example.com:443` needs the `example.com:tcp:443` form), an `@`, a wildcard suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (msb requires the `domain=` form). The `domain=` and `suffix=` forms pass through. A wildcard in a secret's destination hosts stays invalid — those hosts declare where that secret may be sent, not global egress policy. If every configured host is rejected as invalid, Forge still emits `--net-default deny` with no allow rules and logs that egress is fully denied — it deliberately does not fall back to allow-all, so a config typo cannot silently remove an intended restriction.
+When any concrete host is configured (including secret destination hosts, which are unioned into the same allow list) and no `*`/`**` entry is present in `sandbox.network.allow`, Forge creates the sandbox with `--net-default deny` plus one `--net-rule allow@<host>` per validated host. Each entry is validated before use; invalid entries are skipped and logged. Verified rejections: a comma (for `--net-rule` a comma separates whole rule tokens, not hosts), a colon (`example.com:443` needs the `example.com:tcp:443` form), an `@`, a wildcard suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (msb requires the `domain=` form). The `domain=` and `suffix=` forms pass through. A wildcard in a secret's destination hosts stays invalid — those hosts declare where that secret may be sent, not global egress policy. If every configured host is rejected as invalid, Forge still emits `--net-default deny` with no allow rules and logs that egress is fully denied — it deliberately does not fall back to allow-all, so a config typo cannot silently remove an intended restriction.
 
 Either way, the host's loopback interface remains unreachable from inside the sandbox: the private range is not part of msb's `public` egress group, so a host listener on e.g. `0.0.0.0:18923` stays unreachable via `host.microsandbox.internal` or the gateway IP even when no net flags are passed.
 
@@ -155,7 +155,7 @@ Host-held credentials are bound with `sandbox.network.secrets` instead of `env`.
 
 Each entry maps to `msb create --secret <env>@<hosts>`. Once a sandbox has a secret bound, every `msb exec` fails unless the named host environment variable is present in the environment of the process invoking msb — msb reports `error: invalid config: secret X: host environment variable X is not set`. Because the shell shim inherits opencode's process environment, a variable missing there breaks every sandboxed shell command. The variables named in `sandbox.network.secrets` must therefore be exported in the environment that **launches opencode**, not merely present in an interactive shell. Forge logs an explicit warning naming the variable when a configured secret's host variable is unset.
 
-Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. Convergence runs once per sandbox adoption per plugin instance, not on every liveness check. A refresh failure is logged and never blocks a loop from starting.
+Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify`: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. Convergence runs once per sandbox adoption per plugin instance, not on every liveness check. A refresh failure blocks adoption without marking the sandbox converged, so a later startup can retry.
 
 One placeholder caveat: a secret introduced by `msb modify` on an already-existing sandbox gets a `$<ENV>` placeholder instead of the `$MSB_<ENV>` form, so a newly added secret is most reliable on a freshly created sandbox.
 
@@ -239,6 +239,15 @@ opencode spills large tool outputs to its truncation directory (`<opencode-data>
 - **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop — the ruleset's blanket allow covers the `read` permission itself, but a `loop.permissions` rule that denies or asks for `read` is layered after these grants and still applies. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
 
 opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises to agents as pre-approved scratch space) is handled the same way, but for writes: it is granted an `external_directory` allow rule for host file tools **and** bind-mounted read-write at the identical sandbox path, so scratch files an agent writes at that path resolve identically on the host and inside the sandbox. It is opencode's own directory — Forge provides no separate scratch directory, and agents can use the advertised OS temp path without issue.
+
+## External Directory Access
+
+`loop.allowExternalDirectories` entries are granted the same two ways, so host and container agree on what exists:
+
+- **Host file tools** (`read`, `write`, `edit`): an `external_directory` allow rule layered after the blanket deny.
+- **Sandbox tools** (`bash`, `glob`, `grep`): a **read-only** bind mount at the identical sandbox path, added automatically. Entries that do not exist on the host are skipped with a log line.
+
+The mount is read-only because the setting exists to grant read access. To make an external directory writable from inside the sandbox, add it to `sandbox.mounts` with `"readonly": false`; explicit `sandbox.mounts` entries are resolved first, so they win for any path listed in both.
 
 ## Resource Defaults
 

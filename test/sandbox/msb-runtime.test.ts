@@ -18,6 +18,7 @@ import {
   checkMsbAvailability,
   describeMsbUnavailable,
   createMsbRuntime,
+  MSB_DEFAULT_TIMEOUT,
 } from '../../src/sandbox/msb'
 import type { CommandRunner, SandboxRuntime } from '../../src/sandbox/msb'
 import { COMMAND_TIMEOUT_EXIT_CODE } from '../../src/sandbox/process'
@@ -1274,7 +1275,8 @@ describe('runtime', () => {
       '--secret',
       'NPM_TOKEN@registry.npmjs.org',
     ])
-    expect(calls[1].opts?.timeout).toBe(30000)
+    // A restart-backed modify (--restart restarts the VM) gets the long default timeout.
+    expect(calls[1].opts?.timeout).toBe(MSB_DEFAULT_TIMEOUT)
   })
 
   test('refreshSandboxSecrets adds --restart only when introducing a new secret name', async () => {
@@ -1285,6 +1287,8 @@ describe('runtime', () => {
       rt.refreshSandboxSecrets('forge-c', [{ env: 'KEEP', hosts: ['api.example.com'] }]),
     ).resolves.toBe(true)
     expect(rotation.calls[1].args).toEqual(['modify', 'forge-c', '--secret', 'KEEP@api.example.com'])
+    // A live (restart-free) modify keeps the short query timeout.
+    expect(rotation.calls[1].opts?.timeout).toBe(30000)
 
     // A new name is a placeholder addition, which msb classifies as restart-required.
     const added = refreshRunner(['KEEP'])

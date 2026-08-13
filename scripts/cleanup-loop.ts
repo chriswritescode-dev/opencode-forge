@@ -20,13 +20,11 @@
 import Database from 'bun:sqlite'
 import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
-import { spawnSync } from 'child_process'
 import { readFlagValue } from '../src/utils/cli-flags'
 import { defaultGitService } from '../src/utils/git-service'
+import { loadPluginConfig } from '../src/setup'
 import { resolveDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
-
-const worktreesRoot = join(resolveDataDir(), 'worktrees')
 
 interface Args {
   loopName: string
@@ -69,8 +67,8 @@ async function logAction(dryRun: boolean, label: string, action: () => Promise<v
   }
 }
 
-async function cleanupForgeDb(loopName: string, dryRun: boolean): Promise<void> {
-  const path = resolveForgeDbPath()
+async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string): Promise<void> {
+  const path = resolveForgeDbPath(dataDir)
   if (!existsSync(path)) {
     console.log(`forge.db not found at ${path} — skipping`)
     return
@@ -165,7 +163,7 @@ async function cleanupOpencodeDb(loopName: string, dryRun: boolean): Promise<voi
   }
 }
 
-async function cleanupWorktreeDirectory(loopName: string, dryRun: boolean): Promise<void> {
+async function cleanupWorktreeDirectory(loopName: string, dryRun: boolean, worktreesRoot: string): Promise<void> {
   const path = join(worktreesRoot, loopName)
   if (!existsSync(path)) {
     console.log(`\nworktree directory ${path} — already gone`)
@@ -177,7 +175,12 @@ async function cleanupWorktreeDirectory(loopName: string, dryRun: boolean): Prom
   })
 }
 
-async function cleanupGitWorktree(loopName: string, projectDir: string | undefined, dryRun: boolean): Promise<void> {
+async function cleanupGitWorktree(
+  loopName: string,
+  projectDir: string | undefined,
+  dryRun: boolean,
+  worktreesRoot: string,
+): Promise<void> {
   if (!projectDir) {
     console.log(`\ngit cleanup skipped — pass --project-dir=/path/to/project to enable`)
     return
@@ -195,8 +198,10 @@ async function cleanupGitWorktree(loopName: string, projectDir: string | undefin
     if (!r.ok) throw new Error(r.stderr || 'unknown error')
   })
 
-  const list = spawnSync('git', ['worktree', 'list', '--porcelain'], { cwd: projectDir, encoding: 'utf-8' })
-  if (list.stdout.includes(worktreePath)) {
+  const worktrees = defaultGitService.worktreeList(projectDir)
+  if (!worktrees.ok) {
+    console.error(`  ✗ git worktree list --porcelain: ${worktrees.stderr || 'unknown error'}`)
+  } else if (worktrees.stdout.includes(worktreePath)) {
     await logAction(dryRun, `git worktree remove --force ${worktreePath}`, () => {
       const r = defaultGitService.worktreeRemove(projectDir, worktreePath)
       if (!r.ok) throw new Error(r.stderr || 'unknown error')
@@ -207,8 +212,8 @@ async function cleanupGitWorktree(loopName: string, projectDir: string | undefin
 
   if (defaultGitService.branchExists(projectDir, branch)) {
     await logAction(dryRun, `git branch -D ${branch}`, () => {
-      const r = spawnSync('git', ['branch', '-D', branch], { cwd: projectDir, encoding: 'utf-8' })
-      if (r.status !== 0) throw new Error(r.stderr || 'unknown error')
+      const r = defaultGitService.branchDelete(projectDir, branch)
+      if (!r.ok) throw new Error(r.stderr || 'unknown error')
     })
   } else {
     console.log(`  branch ${branch} not present`)
@@ -251,12 +256,15 @@ async function main(): Promise<void> {
   const args = parseArgs()
   console.log(`Cleanup loop: ${args.loopName}${args.dryRun ? ' [DRY RUN]' : ''}\n`)
 
+  const dataDir = loadPluginConfig().dataDir || resolveDataDir()
+  const worktreesRoot = join(dataDir, 'worktrees')
+
   const runtime = createMsbRuntime({ log: console.log, error: console.error, debug: () => {} })
 
-  await cleanupForgeDb(args.loopName, args.dryRun)
+  await cleanupForgeDb(args.loopName, args.dryRun, dataDir)
   await cleanupOpencodeDb(args.loopName, args.dryRun)
-  await cleanupWorktreeDirectory(args.loopName, args.dryRun)
-  await cleanupGitWorktree(args.loopName, args.projectDir, args.dryRun)
+  await cleanupWorktreeDirectory(args.loopName, args.dryRun, worktreesRoot)
+  await cleanupGitWorktree(args.loopName, args.projectDir, args.dryRun, worktreesRoot)
   const sandboxClean = await cleanupSandbox(args.loopName, args.dryRun, runtime)
 
   if (!sandboxClean) {

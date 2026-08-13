@@ -621,7 +621,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     for (const staleName of stale) args.push('--secret-rm', staleName)
     args.push(...buildSecretFlags(secrets))
     try {
-      const result = await run(args, { timeout: MSB_QUERY_TIMEOUT })
+      const result = await run(args, { timeout: introduced ? MSB_DEFAULT_TIMEOUT : MSB_QUERY_TIMEOUT })
       return result.exitCode === 0
     } catch {
       return false

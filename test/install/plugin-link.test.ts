@@ -22,6 +22,7 @@ import {
 import { resolvePluginShimDir, resolvePluginShimPath, resolveTuiConfigPath, resolveVendorDir } from '../../src/install/paths'
 
 let configHome: string
+const inheritedXdgConfigHome = process.env.XDG_CONFIG_HOME
 
 beforeEach(() => {
   configHome = mkdtempSync(join(tmpdir(), 'forge-link-'))
@@ -29,7 +30,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  delete process.env.XDG_CONFIG_HOME
+  if (inheritedXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = inheritedXdgConfigHome
+  }
   rmSync(configHome, { recursive: true, force: true })
 })
 

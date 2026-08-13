@@ -53,7 +53,7 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
 | `loop.busyStallTimeoutMs` | `900000` | How long a session may stay busy with no sign of progress before the watchdog aborts the wedged message and sends a continue prompt. Both tool activity and streamed content (including reasoning/thinking deltas) count as progress, in the loop session or any of its subagent sessions, so a long thinking stretch is not mistaken for a wedged stream. `0` disables nudging. |
-| `loop.allowExternalDirectories` | unset | Absolute host directories that loop, audit, and post-action sessions may read despite worktree isolation. |
+| `loop.allowExternalDirectories` | unset | Absolute host directories that loop, audit, and post-action sessions may read despite worktree isolation. In sandboxed loops each entry is also bind-mounted read-only, so in-container `bash`/`glob`/`grep` see the same tree as host `read`. |
 | `loop.permissions` | unset | Per-tool `deny` overrides for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
 
@@ -248,20 +248,22 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.mode` | `"msb"` | Sandbox mode. `msb` is currently the only supported mode. A stale `"mode": "sbx"` from an older install is reported as a migration warning in the log and, when running in the TUI, as a toast. |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | msb image reference used for sandboxed execution. |
 | `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the image after changing it. |
-| `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`msb create -m`). |
-| `sandbox.resources.cpus` | `"4"` | CPU count (`msb create -c`; integer-only). |
+| `sandbox.resources.memory` | `"8g"` | Memory the sandbox boots with (`msb create -m`). |
+| `sandbox.resources.maxMemory` | unset | Boot-time ceiling for hotpluggable memory (`msb create --max-memory`). Unset pins the sandbox at `memory`; msb rejects a value below `memory`. |
+| `sandbox.resources.cpus` | `"4"` | CPU count the sandbox boots with (`msb create -c`; integer-only). |
+| `sandbox.resources.maxCpus` | unset | Boot-time ceiling for virtual CPUs (`msb create --max-cpus`; integer-only). Unset pins the sandbox at `cpus`; msb rejects a value below `cpus`. |
 | `sandbox.resources.dockerDisk` | `"16g"` | Size of the dedicated block device backing the sandbox's in-VM Docker Engine data dir (`/var/lib/docker`, `--mount-named ...:kind=disk,size=<size>`). The disk is sparse, so the generous default costs no real disk up front. |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
-| `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. Restriction is opt-in: an empty list passes no network flags and msb's default allows all public egress; configuring any host flips the sandbox to deny-by-default (`--net-default deny`) with one `--net-rule allow@<host>` per validated host. |
+| `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. Restriction is opt-in: an empty list, or a list containing the `*`/`**` allow-all wildcard, passes no network flags and msb's default allows all public egress; configuring any concrete host flips the sandbox to deny-by-default (`--net-default deny`) with one `--net-rule allow@<host>` per validated host. |
 | `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
 | `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. The named variable must be exported in the environment that launches opencode — a bound secret with a missing variable breaks every sandboxed shell command. |
 
 ### Sandbox network egress
 
-`sandbox.network.allow`, plus the destination hosts of any configured secrets, controls the sandbox's outbound access. Restriction is opt-in: when nothing is configured, forge passes no network flags and msb's own default applies — all public egress is allowed. Configuring even one host flips the sandbox to deny-by-default: forge passes `--net-default deny` plus one `--net-rule allow@<host>` per validated host, and only those hosts are reachable.
+`sandbox.network.allow`, plus the destination hosts of any configured secrets, controls the sandbox's outbound access. Restriction is opt-in: when nothing is configured — or the allow list contains `*`/`**` — forge passes no network flags and msb's own default applies, so all public egress is allowed. A wildcard entry anywhere in the list makes the whole list unrestricted, overriding any narrower entries in the same list. When at least one concrete host or secret destination is configured and no allow-all wildcard is present, forge flips the sandbox to deny-by-default with `--net-default deny` plus one `--net-rule allow@<host>` per validated host.
 
-- Invalid host entries are skipped and logged rather than failing the loop launch. Verified rejections include commas (a comma separates whole rule tokens, not hosts), port-qualified hosts (colon), `@`, a bare `*`, a suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (use `domain=myhost`). `domain=` and `suffix=` forms pass through.
+- Invalid host entries are skipped and logged rather than failing the loop launch. Verified rejections include commas (a comma separates whole rule tokens, not hosts), port-qualified hosts (colon), `@`, a suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (use `domain=myhost`). `domain=` and `suffix=` forms pass through. A wildcard in a secret's destination hosts stays invalid — those hosts declare where that secret may be sent, not global egress policy.
 - If every configured host is invalid, forge emits `--net-default deny` with no allow rules and logs that egress is fully denied — it deliberately does not fall back to allow-all.
 - DNS is gateway-mediated and needs no rule; the old `--net-rule allow@dns` form was rejected by msb 0.6.8, and its presence made every sandbox creation fail.
 - The host's loopback interface remains unreachable from inside the sandbox: `host.microsandbox.internal` and the gateway IP are both blocked, because the private range is not part of msb's `public` egress group.
@@ -285,7 +287,7 @@ Credentials that should never be readable inside the guest belong in `sandbox.ne
 
 Each named variable must be exported in the environment that **launches opencode**. Once a secret is bound, every `msb exec` fails with `invalid config: secret <name>: host environment variable <name> is not set` if the variable is absent from the invoking process's environment; because the shell shim inherits opencode's environment, a missing variable breaks every sandboxed shell command. Forge logs an explicit warning naming the variable.
 
-Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify` exactly once per adoption per plugin instance: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure is logged and never blocks a loop from starting. The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is gone.
+Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify` exactly once per adoption per plugin instance: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure blocks adoption without marking the sandbox converged, so a later startup can retry. The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is gone.
 
 ## Bundled Assets & Installer
 

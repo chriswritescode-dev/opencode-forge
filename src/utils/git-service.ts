@@ -26,8 +26,10 @@ export interface GitService {
   push(cwd: string, remote: string, refspec: string, force: boolean): GitResult
   fetchRef(cwd: string, remote: string, ref: string): GitResult
   worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult
+  worktreeList(cwd: string): GitResult
   worktreeRemove(cwd: string, directory: string): GitResult
   worktreePrune(cwd: string): GitResult
+  branchDelete(cwd: string, branch: string): GitResult
 }
 
 /**
@@ -121,12 +123,20 @@ export function createGitService(): GitService {
       return runGit(createBranch ? ['worktree', 'add', directory, '-b', branch] : ['worktree', 'add', directory, branch], cwd)
     },
 
+    worktreeList(cwd: string): GitResult {
+      return runGit(['worktree', 'list', '--porcelain'], cwd)
+    },
+
     worktreeRemove(cwd: string, directory: string): GitResult {
       return runGit(['worktree', 'remove', '-f', directory], cwd)
     },
 
     worktreePrune(cwd: string): GitResult {
       return runGit(['worktree', 'prune'], cwd)
+    },
+
+    branchDelete(cwd: string, branch: string): GitResult {
+      return runGit(['branch', '-D', branch], cwd)
     },
   }
 }

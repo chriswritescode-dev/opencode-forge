@@ -45,7 +45,7 @@ const projectDirs: string[] = []
 
 function runCleanup(
   loopName: string,
-  opts: { lsOut?: string; lsExit?: number; rmExit?: number; rmErr?: string; args?: string[]; xdgDataHome?: string } = {},
+  opts: { lsOut?: string; lsExit?: number; rmExit?: number; rmErr?: string; args?: string[]; xdgDataHome?: string; xdgConfigHome?: string } = {},
 ): CleanupRun {
   const logPath = join(homeDir, 'msb.log')
   rmSync(logPath, { force: true })
@@ -53,7 +53,8 @@ function runCleanup(
     ...process.env,
     PATH: `${binDir}:${process.env.PATH ?? ''}`,
     HOME: homeDir,
-    ...(opts.xdgDataHome ? { XDG_DATA_HOME: opts.xdgDataHome } : {}),
+    XDG_DATA_HOME: opts.xdgDataHome ?? join(homeDir, 'xdg-data'),
+    XDG_CONFIG_HOME: opts.xdgConfigHome ?? join(homeDir, 'xdg-config'),
     FAKE_MSB_LOG: logPath,
     FAKE_MSB_LS_OUT: opts.lsOut ?? '',
     FAKE_MSB_LS_EXIT: String(opts.lsExit ?? 0),

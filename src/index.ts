@@ -13,7 +13,7 @@ import { createLogger, slugify } from './utils/logger'
 import { createMsbRuntime, describeMsbUnavailable } from './sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
-import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs } from './sandbox/context'
 import { resolveOpencodeTmpDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from './constants/loop'
@@ -346,6 +346,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     if (!isSandboxConfigEnabled(config)) {
       logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
+      const sandboxMountConfigs = resolveSandboxMountConfigs(config)
       try {
         sandboxManager = createSandboxManager(runtime, {
           image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
@@ -353,7 +354,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           tmpDir: resolveOpencodeTmpDir(),
           sourceProjectDir: projectRoot,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
-          ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
+          ...(sandboxMountConfigs.length > 0 ? { customMounts: sandboxMountConfigs } : {}),
           ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
           buildContextDir: resolveBundledContainerDir(),
           browserControl: config.sandbox?.imageFeatures?.browserControl === true,
@@ -361,22 +362,21 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }, logger, defaultGitService)
         logger.log('Sandbox manager initialized')
       } catch (err) {
-        logger.error('Failed to initialize msb sandbox manager', err)
+        logger.error('Failed to initialize msb sandbox manager; refusing to run worktree-only while sandbox is enabled', err)
+        throw err
       }
     }
 
     // Sandbox shell routing: opencode's native bash tool is pointed at a shim (via the `shell`
     // config key) that routes commands into the loop container when the shell.env hook injects
     // the container name. Without a working shim there is no safe way to route sandbox loop
-    // commands, so degrade to worktree-only mode rather than silently executing on the host.
-    // Known ceiling: the shim is POSIX sh, so Windows hosts run worktree-only; a cmd/pwsh shim
-    // would be the upgrade path.
+    // commands, so refuse to start with the sandbox enabled rather than silently executing on
+    // the host. The shim is POSIX sh, so Windows hosts (no shim) fail closed too.
     let shellShimPath: string | null = null
     if (sandboxManager) {
       shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger)
       if (!shellShimPath) {
-        logger.error('Sandbox shell shim unavailable; falling back to worktree-only mode')
-        sandboxManager = null
+        throw new Error('Sandbox shell shim unavailable on this host; refusing to run worktree-only mode while sandbox is enabled')
       }
     }
     // The shell the user had configured before forge overrode `shell` with the shim; injected

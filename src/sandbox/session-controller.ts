@@ -840,6 +840,10 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         hostActive = true
         lastValidatedRevision = null
         failedSelection = desired.sessionId ? { sessionId: desired.sessionId, error: msg } : null
+        removalRetryRevision = desired.revision
+        removalRetryDelayMs = removalRetryDelayMs === 0
+          ? pollIntervalMs
+          : Math.min(removalRetryDelayMs * 2, MAX_REMOVAL_RETRY_DELAY_MS)
         writeApplied({
           version: 1,
           revision: desired.revision,
@@ -854,6 +858,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       acknowledgedSessionId = null
       failedSelection = null
       lastValidatedRevision = null
+      removalRetryDelayMs = 0
+      removalRetryRevision = null
       writeApplied({
         version: 1,
         revision: desired.revision,

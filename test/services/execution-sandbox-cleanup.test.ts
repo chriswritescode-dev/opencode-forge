@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
-import { mkdtempSync, writeFileSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -35,6 +35,9 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
   afterEach(() => {
     try {
       db.close()
+    } catch {}
+    try {
+      rmSync(tempDir, { recursive: true, force: true })
     } catch {}
   })
 

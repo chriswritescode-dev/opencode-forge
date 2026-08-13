@@ -121,10 +121,18 @@ The sandbox state model has five states. `running` and `stopped` are both usable
 
 ### Tool Redirection
 
-The sandbox isolates shell and search tools while file tools keep operating on the host:
+`bash` and the search tools reach the sandbox through two different mechanisms:
 
-- **Shell** — Forge points opencode's `shell` config at a generated shim (`sandbox/shell-shim.ts`). The `shell.env` hook injects `FORGE_SANDBOX_CONTAINER` for sandboxed sessions, and the shim runs the command via `msb exec --quiet --no-tty -w "$PWD" -- bash "$@"`.
-- **Search tools** — the `tool.execute.before` hook intercepts `glob` and `grep`, runs them through `msb exec` inside the sandbox, and the `tool.execute.after` hook replaces the tool output with the guest result (`hooks/sandbox-tools.ts`).
+- **`bash`** is redirected out of band, not through a tool hook. The `config` hook points
+  `cfg.shell` at the `forge-shell` shim (`sandbox/shell-shim.ts`) and the `shell.env` hook
+  injects `FORGE_SANDBOX_CONTAINER`. The shim `exec`s `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
+  Tool arguments are never rewritten.
+- **`glob` and `grep`** use output replacement. `tool.execute.before` runs the equivalent
+  `rg` command inside the container and stores the result by `callID`; `tool.execute.after`
+  overwrites `output.output` with it. Because `tool.execute.before` cannot cancel a tool call,
+  the native host search still executes and its result is discarded. The before-hook rejects
+  absolute paths outside the sandbox mounts, so that host execution stays confined to the
+  mounted worktree.
 
 ## Hook System
 
