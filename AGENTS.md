@@ -19,7 +19,7 @@
 - `scripts/build.ts` runs `tsc` first, then `Bun.build` overwrites `dist/index.js` (server) and `dist/tui.js` (TUI) with self-contained bundles. Both must stay bundled so the plugin loads without resolving `node_modules`; the vendored installer mode (`bunx opencode-forge --vendor`) depends on it. `@opentui/*`, `@opencode-ai/plugin/tui`, `solid-js`, and `bun:sqlite` stay external because opencode's runtime provides them.
 - `resolveShippedRoot` in `src/utils/shipped-paths.ts` is the only way to locate shipped files on disk. Never derive paths from `import.meta.url` directly: bundling collapses it, which would silently break the migration SQL loader, prompt loading, and bundled-asset sync.
 - Bundled prompts (`src/prompts/`) and skills (`skills/`) sync on every plugin load, preserving user edits. The standalone installer handles conflicts and orphan pruning.
-- Keep section-summary markers in `src/prompts/agents/auditor-loop-addendum.md` synchronized with constants in `src/utils/section-summary.ts`.
+- The section-summary block template is the single `SECTION_SUMMARY_TEMPLATE` in `src/loop/prompts.ts`, built from the marker constants in `src/utils/section-summary.ts`; do not hand-write the marker strings into prompt markdown files or other prompt builders.
 
 ## Loop runtime
 

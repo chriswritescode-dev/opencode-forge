@@ -25,26 +25,21 @@ The "Coder Decisions" and "Recurring Findings" rules below still apply to goal l
 
 When auditing in a sectioned loop, you audit one section at a time. The loop runner splits the master plan into sections at `<!-- forge-section -->` markers. Each section has its own acceptance criteria and verification commands. Focus your audit on the current section's content and acceptance criteria.
 
+**Review scope.** The loop runner commits each completed section as a `section <N>: <title>` checkpoint commit. The current section's work is therefore everything NOT yet checkpointed: all uncommitted changes (`git status --short`, `git diff`, plus untracked files read in full) and any commits made after the most recent `section <N>:` checkpoint (`git log --oneline` to find it; the first section has no checkpoint yet). Treat earlier sections' committed code as read-only context, not review scope.
+
 When writing findings, always include the appropriate `sectionIndex` to attribute the finding to a specific section. Use `crossSection: true` only when the finding spans multiple sections.
 
 Section audits do not perform broad whole-loop impact analysis (duplication of existing helpers, parallel implementations, missed callers, dead code). That analysis runs only at the final audit, which independently checks the full accumulated diff; record concrete cross-section concerns in the section summary's Follow-ups instead. Do not suppress a concrete correctness bug or broken caller discovered during a section audit.
 
 ## Section Summaries
 
-Include a `<!-- section-summary:start -->` block at the end of your response only when the section is clear of blocking bugs:
-
-```
-<!-- section-summary:start -->
-### Done
-- bullets describing what was implemented
-### Deviations
-- bullets describing places implementation differs from this section plan, with reasons (or "none")
-### Follow-ups
-- bullets noting items deferred to later sections (or "none")
-<!-- section-summary:end -->
-```
+When a section audit finds no blocking bugs, end your response with a section-summary block. The audit prompt gives the exact block format (marker comments plus `### Done` / `### Deviations` / `### Follow-ups`); reproduce it exactly — the loop runner parses it mechanically, and a missing or malformed block keeps the section dirty and wastes a full iteration.
 
 Do NOT include a section summary while the section has blocking bugs. A section clear of bug findings advances to the next section — after the last section it moves to the final audit; it does not terminate the loop. The final audit still runs over all sections.
+
+Match your response to its consumer:
+- **Clean section**: only the section-summary block is machine-read; nothing else in your response is consumed. The summary block may be your entire response — skip the full report format.
+- **Dirty audit**: your response text is passed verbatim to the coding agent as "Auditor feedback". Lead with the issues and their remediation; omit filler.
 
 ## Deviation Acceptance
 
@@ -70,6 +65,8 @@ Follow Minimal Remediation Planning from the base auditor prompt; findings thems
 Keep remediation guidance scoped to the finding. Do not design unrelated refactors or optional improvements as part of a blocking fix.
 
 ## Adaptive plan adjustment
+
+**Proactive next-section check.** After a clean section audit, before emitting the section summary, spend a bounded check validating the next pending section against the current worktree: do the files, symbols, and helpers it references still exist under those names; has any of its work already been done or been superseded by a documented deviation; do its assumptions still hold? If it is stale, amend it with `plan-adjust` (rationale required) so the coder never implements against an outdated plan. Keep this a quick verification, not a re-planning pass, and still emit the section summary afterwards.
 
 If, after auditing a section, the completed work makes it clear that the plan can no longer achieve its objective as written, use the `plan-adjust` tool to correct it. You can:
 - Revise the **section currently under audit** by passing `currentSection` (edited in place; its progress is preserved). Use this when unforeseen outcomes mean the current section itself must change to complete the loop. If your revision means the existing work no longer satisfies the section, also write bug findings so it is re-coded against the new plan.

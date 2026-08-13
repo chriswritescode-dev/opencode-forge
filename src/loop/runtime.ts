@@ -44,6 +44,9 @@ import { findSessionAncestor } from '../utils/session-ancestry'
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { parseCoderDecisions } from '../utils/coder-decisions'
 import { resolvePostActionConfig } from './post-action-config'
+import type { GitService } from '../utils/git-service'
+import { commitWorktreeChanges } from '../workspace/worktree-commit'
+import { buildSectionSummaryRepromptText } from './prompts'
 
 export interface LoopEvent {
   type: string
@@ -75,6 +78,12 @@ export interface LoopRuntimeDeps {
   planAmendmentsRepo?: PlanAmendmentsRepo
   /** Optional injected LoopService (test seam). Defaults to a real one built from the repos. */
   loopService?: LoopService
+  /**
+   * Git service used for per-section checkpoint commits. Optional: when absent
+   * (tests), sections are not checkpointed. Production wiring passes the real
+   * service from hooks/loop.ts.
+   */
+  gitService?: GitService
   /** Optional parent-session lookup for ancestor-aware session→loop resolution (child/subagent support). */
   getParentSessionId?: (sessionId: string) => Promise<string | null>
   /**
@@ -146,7 +155,7 @@ export interface Loop {
 export { isWorkspaceNotFoundError } from './runtime-workspace'
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
-  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo } = deps
+  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, gitService } = deps
 
   // `runExclusive` (the in-loop lock using withStateLock) is declared later
   // in this function but is hoisted, so it's always available here.
@@ -163,6 +172,34 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
   const stateLocks = new Map<string, Promise<unknown>>()
+
+  /**
+   * Sections that already received their one summary re-prompt this audit
+   * round (loopName → sectionIndex). A section audit that reports zero
+   * blocking bugs but omits the parseable section-summary block gets exactly
+   * one follow-up prompt asking for the block before the loop falls back to a
+   * dirty rotation (which would burn a full coder iteration on nothing).
+   */
+  const summaryRepromptedSections = new Map<string, number>()
+
+  /**
+   * Commit the just-completed section's work as a `section <N>: <title>`
+   * checkpoint so the next section's audit can scope its review to changes
+   * made after this commit. Best-effort: failures are logged and never block
+   * section advancement — the next audit then simply sees the accumulated diff.
+   */
+  function commitSectionCheckpoint(state: LoopState, idx: number): void {
+    if (!gitService) return
+    if (!state.worktree || !state.worktreeDir) return
+    const title = loopService.getSectionPlan(state, idx)?.title.trim()
+    const message = `section ${idx + 1}: ${title || 'checkpoint'}`
+    const outcome = commitWorktreeChanges(gitService, logger, state.worktreeDir, message)
+    if (outcome === 'committed') {
+      logger.log(`Loop: committed section checkpoint "${message}" for ${state.loopName ?? 'unknown'}`)
+    } else if (outcome === 'failed') {
+      logger.log(`Loop: section checkpoint commit failed for ${state.loopName ?? 'unknown'}; next section audit will see the accumulated diff`)
+    }
+  }
 
   const instanceDirectory = deps.directory ? canonicalizePath(deps.directory) : null
 
@@ -892,6 +929,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     idleRetryAttempts.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
+    summaryRepromptedSections.delete(loopName)
     clearPromptPending(loopName, logger)
     clearPromptInFlight(loopName)
 
@@ -1868,12 +1906,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         if (sectionSummary && sectionBugFindings.length === 0) {
           logger.log(`Loop: section ${idx} audit clean, marking completed`)
+          summaryRepromptedSections.delete(loopName)
 
           // Reset recurrence for this section so resolved findings don't falsely escalate later
           loopService.resetSectionRecurrence(loopName, idx)
 
           loopService.setLastAuditResult(loopName, auditText || '')
           loopService.completeSection(loopName, idx, sectionSummary)
+          commitSectionCheckpoint(currentState, idx)
 
           // Pre-check: rewind fast-path — all sections completed even though we
           // are not on the last one (possible after a rewind). This bypasses the
@@ -1968,9 +2008,33 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           return
         }
 
+        // Clean-but-no-summary guard: the audit reported zero blocking bugs for
+        // this section but its response had no parseable summary block. Rotating
+        // to the coder would waste a full iteration with nothing to fix, so
+        // re-prompt the same audit session once for the block (or real findings).
+        if (!sectionSummary && sectionBugFindings.length === 0 && summaryRepromptedSections.get(loopName) !== idx) {
+          summaryRepromptedSections.set(loopName, idx)
+          logger.log(`Loop: section ${idx} audit has no blocking findings but no summary block; re-prompting auditor for ${loopName}`)
+          const repromptChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
+          const { error } = await sendPromptWithFallback({
+            loopName,
+            sessionId: currentState.sessionId,
+            promptText: buildSectionSummaryRepromptText(),
+            agent: 'auditor-loop',
+            model: repromptChoice.model,
+            variant: repromptChoice.variant,
+          })
+          if (!error) {
+            watchdog.recordActivity(loopName, 'summary-reprompt')
+            return
+          }
+          logger.error(`Loop: summary re-prompt failed for ${loopName}; falling back to dirty rotation`, error)
+        }
+
         const dirtyTrans = nextTransition(currentState, { type: 'section-dirty' })
         if (dirtyTrans.kind !== 'rotate') return
 
+        summaryRepromptedSections.delete(loopName)
         logger.log(`Loop: section ${idx} audit dirty, retrying same section`)
 
         const nextIter = await nextIterationOrTerminate(loopName, currentState)

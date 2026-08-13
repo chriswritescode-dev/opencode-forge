@@ -34,14 +34,13 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
 
   return {
     'review-write': tool({
-      description: 'Store a code review finding with file location, severity, and description. Automatically injects loopName and sectionIndex from the current loop section. Use crossSection: true to write a cross-section finding (sectionIndex null). Use sectionIndex to override the auto-injected value.',
+      description: 'Store a code review finding with file location, severity, and description. Automatically injects loopName and sectionIndex from the current loop section (not during the final audit — pass sectionIndex explicitly there). Use crossSection: true to write a cross-section finding (sectionIndex null). Use sectionIndex to override the auto-injected value.',
       args: {
         file: z.string().describe('The file path where the finding is located'),
         line: z.number().describe('The line number of the finding'),
         severity: z.enum(['bug', 'warning']).describe('The severity of the finding'),
         description: z.string().describe('Clear description of the issue'),
         scenario: z.string().optional().describe('The specific conditions under which this issue manifests'),
-        status: z.string().default('open').describe('The status of the finding (default: "open")'),
         crossSection: z.boolean().optional().describe('Set true if the finding spans multiple sections. Defaults to false.'),
         sectionIndex: z.number().optional().describe('Explicitly set section index. Defaults to current section in a sectioned loop.'),
       },
@@ -60,7 +59,10 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         row.loopName = await resolveLoopName(toolCtx)
         if (row.loopName) {
           const loopState = loop.service.getActiveState(row.loopName)
-          if (loopState && loopState.totalSections > 0) {
+          // During the final audit the "current section" is just the last section;
+          // auto-injecting it would misattribute cross-section findings, so the
+          // final audit must pass sectionIndex explicitly (matching read/delete).
+          if (loopState && loopState.totalSections > 0 && !isFinalAuditScope(loopState.phase)) {
             row.sectionIndex = loopState.currentSectionIndex
           }
         }

@@ -1,6 +1,6 @@
 import { join } from 'path'
 import { mkdir } from 'fs/promises'
-import { existsSync, readFileSync, appendFileSync, rmSync } from 'fs'
+import { existsSync, readFileSync, appendFileSync } from 'fs'
 import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
@@ -9,6 +9,7 @@ import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
+import { commitWorktreeChanges } from './worktree-commit'
 import { sandboxContainerName } from '../sandbox/msb'
 
 
@@ -108,51 +109,20 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     }
   }
 
-  /**
-   * Remove the forge-written `opencode.jsonc` before a teardown commit so the
-   * inline per-loop config never enters loop history. Only an untracked file is
-   * removed: when the repository already tracks an `opencode.jsonc`, forge never
-   * wrote it (skip-if-exists), so it is left untouched and its edits still commit.
-   * The worktree itself is torn down at teardown, so the removed file is not lost.
-   */
-  function removeForgeWrittenOpencodeConfig(directory: string): void {
-    const configPath = join(directory, WORKTREE_OPENCODE_CONFIG_FILENAME)
-    if (!existsSync(configPath)) return
-    if (git.isPathTracked(directory, WORKTREE_OPENCODE_CONFIG_FILENAME)) return
-    try {
-      rmSync(configPath, { force: true })
-      logger.log(`forge-adapter: removed forge-written ${WORKTREE_OPENCODE_CONFIG_FILENAME} before commit in ${directory}`)
-    } catch (err) {
-      logger.log(`forge-adapter: could not remove ${WORKTREE_OPENCODE_CONFIG_FILENAME}: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
   async function stepCommitChanges(loopName: string, directory: string, branchLabel: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doCommit || !existsSync(directory)) return
 
-    removeForgeWrittenOpencodeConfig(directory)
-
     try {
-      const addResult = git.addAll(directory)
-      if (!addResult.ok) {
-        logger.log(`forge-adapter: git add failed during teardown: ${addResult.stderr.trim() || 'unknown error'}`)
-        return
-      }
-
-      const statusResult = git.statusPorcelain(directory)
-      if (!statusResult.ok || !statusResult.stdout.trim()) {
-        logger.log(`forge-adapter: no pending changes to commit on ${branchLabel}`)
-        return
-      }
-
       const iterLabel = ctx.iteration === 1 ? 'iteration' : 'iterations'
       const message = `loop: ${loopName} ${ctx.reasonLabel} after ${ctx.iteration} ${iterLabel}`
-      const commitResult = git.commit(directory, message)
+      const outcome = commitWorktreeChanges(git, logger, directory, message)
 
-      if (commitResult.ok) {
+      if (outcome === 'committed') {
         logger.log(`forge-adapter: committed pending changes on ${branchLabel}`)
+      } else if (outcome === 'no-changes') {
+        logger.log(`forge-adapter: no pending changes to commit on ${branchLabel}`)
       } else {
-        logger.log(`forge-adapter: commit failed on ${branchLabel}: ${commitResult.stderr.trim() || 'unknown error'}`)
+        logger.log(`forge-adapter: commit failed on ${branchLabel}`)
       }
     } catch (err) {
       logger.error('forge-adapter: commit step threw during teardown', err)

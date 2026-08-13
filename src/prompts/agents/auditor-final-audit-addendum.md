@@ -5,7 +5,7 @@ This addendum applies only when the invocation is `[Final integration audit]`. S
 
 ### Scope
 
-This is the integration review of the loop's full accumulated changes: all tracked and untracked changes in the worktree, the master plan's top-level acceptance criteria and verification commands, interactions across sections, and unresolved findings across all sections.
+This is the integration review of the loop's full accumulated changes: every `section <N>:` checkpoint commit on this branch since its merge-base with the base branch, plus all uncommitted and untracked changes in the worktree; the master plan's top-level acceptance criteria and verification commands; interactions across sections; and unresolved findings across all sections.
 
 ### Verification
 
