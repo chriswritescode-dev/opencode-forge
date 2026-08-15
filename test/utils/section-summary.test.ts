@@ -1,66 +1,37 @@
-import { describe, test, expect, vi } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync } from 'fs'
-import { join } from 'path'
-import { hasSectionSummaryMarkers, SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/utils/section-summary'
-import { buildAuditorLoopAgent } from '../../src/agents/auditor'
+import { describe, test, expect } from 'vitest'
+import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/utils/section-summary'
+import { buildSectionAuditPrompt } from '../../src/loop/prompts'
+import type { PromptContext } from '../../src/loop/prompts'
+import type { LoopState } from '../../src/loop/state'
 
-describe('hasSectionSummaryMarkers', () => {
-  test('returns true when text contains both markers', () => {
-    const text = `some content\n${SECTION_SUMMARY_START_MARKER}\nmid\n${SECTION_SUMMARY_END_MARKER}\nmore`
-    expect(hasSectionSummaryMarkers(text)).toBe(true)
+describe('section-summary markers', () => {
+  test('constants are HTML comment markers', () => {
+    expect(SECTION_SUMMARY_START_MARKER).toBe('<!-- section-summary:start -->')
+    expect(SECTION_SUMMARY_END_MARKER).toBe('<!-- section-summary:end -->')
   })
 
-  test('returns false when missing start marker', () => {
-    const text = `some content\n${SECTION_SUMMARY_END_MARKER}`
-    expect(hasSectionSummaryMarkers(text)).toBe(false)
-  })
+  test('buildSectionAuditPrompt is the single owner of the summary template', () => {
+    const ctx: PromptContext = {
+      getPlanTextForState: () => null,
+      getOutstandingFindings: () => [],
+      formatReviewFindings: () => 'No review findings found.',
+      getSectionPlan: () => ({
+        projectId: 'p', loopName: 'l', sectionIndex: 0, title: 'S1', content: 'Section plan',
+        status: 'in_progress', attempts: 0, summaryDone: null, summaryDeviations: null,
+        summaryFollowUps: null, startedAt: null, completedAt: null, createdAt: 0,
+      }),
+      getCompletedSectionDigest: () => [],
+      getCoderDecisions: () => null,
+      getFindingRecurrence: () => new Map(),
+    }
+    const state = {
+      loopName: 'l', sessionId: 's', active: true, phase: 'auditing',
+      iteration: 1, maxIterations: 5, errorCount: 0,
+      currentSectionIndex: 0, totalSections: 2,
+    } as unknown as LoopState
 
-  test('returns false when missing end marker', () => {
-    const text = `some content\n${SECTION_SUMMARY_START_MARKER}`
-    expect(hasSectionSummaryMarkers(text)).toBe(false)
-  })
-
-  test('returns false for empty string', () => {
-    expect(hasSectionSummaryMarkers('')).toBe(false)
-  })
-})
-
-describe('buildLoopPrompt marker warning', () => {
-  test('warns when auditor-loop-addendum.md lacks markers', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-    const tmpDir = join(import.meta.dirname, '..', '..', '.forge', 'tmp', 'section-marker-test-' + Date.now())
-    mkdirSync(join(tmpDir, 'agents'), { recursive: true })
-    writeFileSync(join(tmpDir, 'agents', 'auditor-loop-addendum.md'), 'NO MARKERS HERE', 'utf-8')
-    writeFileSync(join(tmpDir, 'agents', 'auditor.md'), 'BASE', 'utf-8')
-    writeFileSync(join(tmpDir, 'agents', 'auditor-final-audit-addendum.md'), 'FINAL', 'utf-8')
-
-    buildAuditorLoopAgent(tmpDir)
-
-    expect(warnSpy).toHaveBeenCalledTimes(1)
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[forge] auditor-loop-addendum.md is missing section-summary markers; loop section parsing may fail'
-    )
-
-    warnSpy.mockRestore()
-    rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  test('does not warn when markers are present', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-    const tmpDir = join(import.meta.dirname, '..', '..', '.forge', 'tmp', 'section-marker-ok-' + Date.now())
-    mkdirSync(join(tmpDir, 'agents'), { recursive: true })
-    writeFileSync(join(tmpDir, 'agents', 'auditor-loop-addendum.md'),
-      `${SECTION_SUMMARY_START_MARKER}\ncontent\n${SECTION_SUMMARY_END_MARKER}`, 'utf-8')
-    writeFileSync(join(tmpDir, 'agents', 'auditor.md'), 'BASE', 'utf-8')
-    writeFileSync(join(tmpDir, 'agents', 'auditor-final-audit-addendum.md'), 'FINAL', 'utf-8')
-
-    buildAuditorLoopAgent(tmpDir)
-
-    expect(warnSpy).not.toHaveBeenCalled()
-
-    warnSpy.mockRestore()
-    rmSync(tmpDir, { recursive: true, force: true })
+    const prompt = buildSectionAuditPrompt(ctx, state)
+    expect(prompt).toContain(SECTION_SUMMARY_START_MARKER)
+    expect(prompt).toContain(SECTION_SUMMARY_END_MARKER)
   })
 })

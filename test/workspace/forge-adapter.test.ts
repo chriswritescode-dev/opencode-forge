@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createForgeWorkspaceAdapter, type ForgeAdapterDeps } from '../../src/workspace/forge-adapter'
+import { createSandboxManager } from '../../src/sandbox/manager'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { join, isAbsolute } from 'path'
 import { mkdtempSync, existsSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -108,7 +110,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create invokes git worktree add and creates worktree directory', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
@@ -130,7 +132,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create adds .forge/ to git exclude in the worktree', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-exclude-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
@@ -157,7 +159,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create uses info.extra.projectDirectory as the git cwd, ignoring deps', async () => {
     const realRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-projdir-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: realRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: realRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
       const configured = adapter.configure({
         id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
@@ -209,7 +211,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create ensures parent worktree directory exists before calling git', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo2-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const nestedDataDir = join(tmpDataDir, 'nested', 'deep')
       const adapter = createForgeWorkspaceAdapter({
         dataDir: nestedDataDir,
@@ -231,7 +233,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create starts sandbox after creating the worktree', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-sandbox-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -255,7 +257,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create skips sandbox provisioning when forgeLoop.sandboxEnabled is false', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-optout-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const sandboxManager = {
         start: vi.fn().mockRejectedValue(new Error('Docker is not available. Please ensure Docker is running.')),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -281,7 +283,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create cleans up worktree and sandbox when sandbox start fails', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-fail-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const sandboxManager = {
         start: vi.fn().mockRejectedValue(new Error('docker unavailable')),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -302,10 +304,34 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
+  it('create never removes a sandbox when provisioning fails on an unknown state query', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-unknown-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const runtime = createMockSandboxRuntime()
+      runtime.setSandboxState('forge-sandbox-unknown-loop', 'unknown')
+      const sandboxManager = createSandboxManager(runtime, { image: 'oc-forge-sandbox:latest' }, logger)
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const configured = adapter.configure(makeInfo('sandbox-unknown-loop', tmpRepo))
+
+      await expect(adapter.create(configured, {})).rejects.toThrow(/state query failed/)
+
+      // The rollback path calls stop(), which must also fail closed: `unknown` says nothing about
+      // the sandbox, so `msb rm` is never issued and a possibly-live sandbox is never destroyed.
+      expect(runtime.getRemoveSandboxCalls()).toEqual([])
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
   it('remove runs git worktree remove and prune', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo3-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
@@ -329,7 +355,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('remove is idempotent: skips remove when directory does not exist', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo4-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
@@ -466,7 +492,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create writes opencode.jsonc and adds it to git exclude', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-opencode-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const config = { mcp: { demo: { type: 'local', command: ['x'], enabled: true } } }
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
@@ -497,7 +523,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create substitutes the sandbox container placeholder when a sandbox is provisioned', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-placeholder-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-placeholder-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -532,7 +558,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create drops placeholder mcp entries when the loop opts out of the sandbox', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-placeholder-optout-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'unused' }),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -601,7 +627,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create does not write opencode.jsonc when no config provided', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-no-opencode-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,

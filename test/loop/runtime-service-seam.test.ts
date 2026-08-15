@@ -214,6 +214,20 @@ describe('LoopService seam — sectioned dirty audit max-iterations safety net',
       kind: 'plan',
     }
     const fakeService = makeStatefulFakeLoopService(initialState)
+    // An outstanding bug finding makes the audit genuinely dirty; a summary-less
+    // audit with zero findings would take the summary re-prompt path instead.
+    fakeService.getOutstandingFindings = vi.fn(() => [
+      {
+        projectId: 'test-project',
+        file: 'src/broken.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'remaining bug',
+        scenario: null,
+        loopName: initialState.loopName,
+        sectionIndex: 0,
+      } as any,
+    ])
     const { client: fakeClient } = createFakeForgeClient({
       session: {
         messages: async () => [

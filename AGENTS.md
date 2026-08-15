@@ -15,9 +15,11 @@
 ## Generated and bundled files
 
 - `pnpm build` rewrites `src/version.ts`, `src/dashboard/marked-source.ts`, and `src/dashboard/app-bundle.ts`. Edit `package.json`, `src/dashboard/marked.min.js`, or `src/dashboard/app/` respectively, never the generated files.
-- The build does not clean `dist/`; remove stale output when deleting or renaming source modules.
+- `pnpm build` removes the output directory before compiling (`scripts/build.ts`), so deleting or renaming source modules cannot leave stale output in `dist/`.
+- `scripts/build.ts` runs `tsc` first, then `Bun.build` overwrites `dist/index.js` (server) and `dist/tui.js` (TUI) with self-contained bundles. Both must stay bundled so the plugin loads without resolving `node_modules`; the vendored installer mode (`bunx opencode-forge --vendor`) depends on it. `@opentui/*`, `@opencode-ai/plugin/tui`, `solid-js`, and `bun:sqlite` stay external because opencode's runtime provides them.
+- `resolveShippedRoot` in `src/utils/shipped-paths.ts` is the only way to locate shipped files on disk. Never derive paths from `import.meta.url` directly: bundling collapses it, which would silently break the migration SQL loader, prompt loading, and bundled-asset sync.
 - Bundled prompts (`src/prompts/`) and skills (`skills/`) sync on every plugin load, preserving user edits. The standalone installer handles conflicts and orphan pruning.
-- Keep section-summary markers in `src/prompts/agents/auditor-loop-addendum.md` synchronized with constants in `src/utils/section-summary.ts`.
+- The section-summary block template is the single `SECTION_SUMMARY_TEMPLATE` in `src/loop/prompts.ts`, built from the marker constants in `src/utils/section-summary.ts`; do not hand-write the marker strings into prompt markdown files or other prompt builders.
 
 ## Loop runtime
 
@@ -29,9 +31,10 @@
 
 ## Sandbox
 
-- `src/sandbox/sbx.ts` is the only module invoking the `sbx` CLI; route through its `SandboxRuntime` facade. `src/sandbox/process.ts` is the only child-process spawner; all shell execution goes through `runCommand`.
-- `getSandboxState` is the only liveness primitive; four states: `running`, `stopped` (reusable, never create/evict), `unknown` (query failed), `missing` (may create or evict). `registerActiveSandbox` is the only place a usable sandbox is recorded.
-- `container/Dockerfile` must derive from `docker.io/docker/sandbox-templates:shell-docker`; no `ENTRYPOINT`, `CMD`, or `WORKDIR`.
+- `src/sandbox/msb.ts` is the sole TypeScript runtime/lifecycle facade and `msb` CLI argument owner; route runtime operations through its `SandboxRuntime` facade. The one required exception is the generated shell shim (`src/sandbox/shell-shim.ts`), which invokes `msb exec` directly when an agent shell command must run inside a sandbox. `src/sandbox/process.ts` is the only child-process spawner; all TypeScript shell execution goes through `runCommand`.
+- `buildSandboxWorkspaces` canonicalizes the host side of every mount and leaves `containerDir` as the original path. msb refuses a host path that traverses a symlink and fails the whole sandbox with `ENOTDIR`, which on macOS breaks every `os.tmpdir()` mount because `/var` is a symlink to `private/var`. Never canonicalize the container side: absolute paths handed to the agent must resolve identically inside the sandbox.
+- `getSandboxState` is the only liveness primitive; five states: `running`, `stopped` (reusable, never create/evict), `transient` (real but not directly executable: `Created`/`Starting`/`Draining`/`Paused` map here), `unknown` (query failed), `missing` (may create or evict). `Stopped`/`Crashed` map to the reusable `stopped` state because `msb exec` starts them in place. `registerActiveSandbox` is the only place a usable sandbox is recorded.
+- `container/Dockerfile` must derive from a plain OCI base and keep the final `USER agent`; `ENTRYPOINT`/`CMD` are ignored because msb runs `agentd` as PID 1.
 
 ## Dashboard, storage, and paths
 

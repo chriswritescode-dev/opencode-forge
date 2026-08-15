@@ -9,7 +9,6 @@ import {
   resolveHostShell,
   SHELL_SHIM_FILENAME,
   SHIM_ENV_CONTAINER,
-  SHIM_ENV_ENV_FILE,
   SHIM_ENV_HOST_SHELL,
 } from '../../src/sandbox/shell-shim'
 import type { Logger } from '../../src/types'
@@ -19,7 +18,6 @@ const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Lo
 function cleanEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env }
   delete env[SHIM_ENV_CONTAINER]
-  delete env[SHIM_ENV_ENV_FILE]
   delete env[SHIM_ENV_HOST_SHELL]
   return env
 }
@@ -81,12 +79,12 @@ describe('shim behavior (executed via sh)', () => {
     expect(result.stdout.trim()).toBe('ok')
   })
 
-  test('fail-closed: when a container is set but sbx is unavailable, the command never runs on the host', () => {
+  test('fail-closed: when a container is set but msb is unavailable, the command never runs on the host', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
     const marker = join(dir, 'escaped')
-    // Empty PATH: `sbx` cannot be found, so exec fails. The shim must exit
+    // Empty PATH: `msb` cannot be found, so exec fails. The shim must exit
     // non-zero without falling through to the host shell.
     const result = spawnSync(shim, ['-c', `touch ${marker}`], {
       env: { ...cleanEnv(), PATH: dir, [SHIM_ENV_CONTAINER]: 'forge-some-loop' },
@@ -97,70 +95,50 @@ describe('shim behavior (executed via sh)', () => {
     expect(existsSync(marker)).toBe(false)
   })
 
-  test('routes into sbx exec with cwd, container, and command when container env is set', () => {
+  test('routes into msb exec with container, flags, and command when container env is set', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
-    // Fake sbx on PATH that records its argv.
     const binDir = join(dir, 'bin')
     mkdirSync(binDir)
-    const argsFile = join(dir, 'sbx-args')
-    writeFileSync(join(binDir, 'sbx'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\n`, { mode: 0o755 })
+    const argsFile = join(dir, 'msb-args')
+    writeFileSync(join(binDir, 'msb'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\n`, { mode: 0o755 })
 
     const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
     const result = spawnSync(shim, ['-c', 'echo in-container'], {
       cwd,
-      env: {
-        ...cleanEnv(),
-        PATH: binDir,
-        [SHIM_ENV_CONTAINER]: 'forge-loop-x',
-        [SHIM_ENV_ENV_FILE]: '/data/forge/sandbox-env/forge-loop-x.env',
-      },
+      env: { ...cleanEnv(), PATH: [binDir, process.env.PATH ?? ''].join(':'), [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
       encoding: 'utf-8',
     })
 
     expect(result.status).toBe(0)
     const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
-    expect(argv).toEqual([
-      'exec',
-      '--env-file',
-      '/data/forge/sandbox-env/forge-loop-x.env',
-      '-w',
-      realpathSync(cwd),
-      'forge-loop-x',
-      'bash',
-      '-c',
-      'echo in-container',
-    ])
+    expect(argv).toEqual(['exec', '--quiet', 'forge-loop-x', '--no-tty', '-w', realpathSync(cwd), '--', 'bash', '-c', 'echo in-container'])
   })
 
-  test('routes into sbx exec without --env-file when no env file is set', () => {
+  test('propagates a non-zero msb exit verbatim', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
     const binDir = join(dir, 'bin')
     mkdirSync(binDir)
-    const argsFile = join(dir, 'sbx-args')
-    writeFileSync(join(binDir, 'sbx'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\n`, { mode: 0o755 })
+    writeFileSync(join(binDir, 'msb'), `#!/bin/sh\nprintf '%s\\n' 'some unrelated failure' >&2\nexit 7\n`, { mode: 0o755 })
 
-    const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
-    const result = spawnSync(shim, ['-c', 'echo in-container'], {
-      cwd,
-      env: { ...cleanEnv(), PATH: binDir, [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
+    const result = spawnSync(shim, ['-c', 'echo should-not-run'], {
+      env: { ...cleanEnv(), PATH: [binDir, process.env.PATH ?? ''].join(':'), [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
       encoding: 'utf-8',
     })
 
-    expect(result.status).toBe(0)
-    const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
-    expect(argv).toEqual(['exec', '-w', realpathSync(cwd), 'forge-loop-x', 'bash', '-c', 'echo in-container'])
+    expect(result.status).toBe(7)
+    expect(result.stderr).toContain('some unrelated failure')
   })
 })
 
 describe('shim content', () => {
-  test('routes through sbx exec with no docker and no --user', () => {
+  test('routes through msb exec with no docker and no --user', () => {
     const script = buildShimScript('/bin/sh')
-    expect(script).toContain('sbx exec -w "$PWD"')
-    expect(script).toContain('--env-file "$FORGE_SANDBOX_ENV_FILE"')
+    expect(script).toContain('msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"')
+    expect(script).not.toContain('sbx')
     expect(script).not.toContain('docker')
     expect(script).not.toContain('--user')
     expect(script).toContain('exec "${FORGE_HOST_SHELL:-/bin/sh}" "$@"')

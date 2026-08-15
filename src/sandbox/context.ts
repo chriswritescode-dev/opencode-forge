@@ -1,4 +1,4 @@
-import type { SandboxRuntime } from './sbx'
+import type { SandboxRuntime } from './msb'
 import type { PluginConfig, SandboxMountConfig } from '../types'
 import type { SandboxMount } from './path'
 import { resolveLoopAllowedDirectories } from '../constants/loop'
@@ -8,7 +8,6 @@ export interface SandboxContext {
   containerName: string
   hostDir: string
   mounts: SandboxMount[]
-  envFile?: string
 }
 
 /**
@@ -20,9 +19,15 @@ export interface SandboxContext {
  */
 export const SANDBOX_CONTEXT_NOTE = [
   '[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.',
-  'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
+  'Environment-specific tooling that is missing or incompatible is not acceptable: install or reinstall the required tooling and dependencies in the container, rerun the intended checks, and do not misreport environment-induced failures as code defects.',
   'Run long commands in the foreground with a raised bash timeout: if the sandbox stops while idle it reboots the VM, so backgrounded work (&, nohup, setsid) and in-memory state are not guaranteed to survive, though files on disk do.',
   'Passwordless sudo is available for installing missing tools system-wide.',
+  'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
+].join('\n')
+
+export const SANDBOX_OFF_NOTE = [
+  '[Sandbox] Execution has returned to the host environment. Container tools, packages, processes, and in-memory state must not be assumed to be available here.',
+  'Install or reinstall the required host tooling and dependencies before rerunning any checks.',
 ].join('\n')
 
 export interface SandboxLoopContextState {
@@ -35,7 +40,7 @@ export interface SandboxLoopContextState {
 export interface SandboxContextManager {
   runtime: SandboxRuntime
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
-  getActive(worktreeName: string): { containerName: string; projectDir: string; mounts: SandboxMount[]; envFile?: string } | null
+  getActive(worktreeName: string): { containerName: string; projectDir: string; mounts: SandboxMount[] } | null
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
@@ -64,7 +69,6 @@ export async function resolveSandboxContextForLoop(
     containerName: active.containerName,
     hostDir: active.projectDir,
     mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
-    envFile: active.envFile,
   }
 }
 
@@ -100,7 +104,7 @@ export function resolveSandboxMountConfigs(config: PluginConfig | undefined): Sa
  *
  * A sandbox is only usable when BOTH conditions hold:
  * - the user has not opted out via `sandbox.enabled: false`, and
- * - a sandbox manager was constructed (Docker mode active).
+ * - a sandbox manager was constructed (msb mode active).
  *
  * Honoring the config here (not just the manager's existence) keeps this the single
  * source of truth for the bash/sh permission routing: when the sandbox is off, loops

@@ -6,7 +6,7 @@
 
 # Interface: CreateSessionDirectoryLookupOptions
 
-Defined in: [index.ts:147](https://github.com/chriswritescode-dev/opencode-forge/blob/bae347e91d162356f5d88217fa4b5258e5c999ac/src/index.ts#L147)
+Defined in: [index.ts:138](https://github.com/chriswritescode-dev/opencode-forge/blob/656873914b8ea5b100c4de54d84950e6c289f8bb/src/index.ts#L138)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [index.ts:147](https://github.com/chriswritescode-dev/opencode-forge
 
 > **client**: `ForgeClient`
 
-Defined in: [index.ts:148](https://github.com/chriswritescode-dev/opencode-forge/blob/bae347e91d162356f5d88217fa4b5258e5c999ac/src/index.ts#L148)
+Defined in: [index.ts:139](https://github.com/chriswritescode-dev/opencode-forge/blob/656873914b8ea5b100c4de54d84950e6c289f8bb/src/index.ts#L139)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [index.ts:148](https://github.com/chriswritescode-dev/opencode-forge
 
 > **directory**: `string`
 
-Defined in: [index.ts:149](https://github.com/chriswritescode-dev/opencode-forge/blob/bae347e91d162356f5d88217fa4b5258e5c999ac/src/index.ts#L149)
+Defined in: [index.ts:140](https://github.com/chriswritescode-dev/opencode-forge/blob/656873914b8ea5b100c4de54d84950e6c289f8bb/src/index.ts#L140)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [index.ts:149](https://github.com/chriswritescode-dev/opencode-forge
 
 > **loop**: `Loop`
 
-Defined in: [index.ts:150](https://github.com/chriswritescode-dev/opencode-forge/blob/bae347e91d162356f5d88217fa4b5258e5c999ac/src/index.ts#L150)
+Defined in: [index.ts:141](https://github.com/chriswritescode-dev/opencode-forge/blob/656873914b8ea5b100c4de54d84950e6c289f8bb/src/index.ts#L141)
 
 ***
 
@@ -38,4 +38,4 @@ Defined in: [index.ts:150](https://github.com/chriswritescode-dev/opencode-forge
 
 > `optional` **negativeTtlMs?**: `number`
 
-Defined in: [index.ts:151](https://github.com/chriswritescode-dev/opencode-forge/blob/bae347e91d162356f5d88217fa4b5258e5c999ac/src/index.ts#L151)
+Defined in: [index.ts:142](https://github.com/chriswritescode-dev/opencode-forge/blob/656873914b8ea5b100c4de54d84950e6c289f8bb/src/index.ts#L142)

@@ -67,7 +67,7 @@ The codebase is organized into these module groups under `src/`:
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `plan-capture.ts`, `worktree-log.ts` |
-| `sandbox/` | sbx sandbox management | `sbx.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
+| `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
 | `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `section-read.ts` |
 | `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `pending-teardown.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
@@ -96,22 +96,28 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 ## Sandbox System
 
-Sandbox is optional. When the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise loops run in worktree-only mode.
+Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`. When enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
 ### Components
 
-- **SandboxRuntime** (`sandbox/sbx.ts`) - `sbx` CLI facade (create/exec/remove/list, availability probe)
+- **SandboxRuntime** (`sandbox/msb.ts`) - `msb` CLI facade (create/exec/remove/list, availability probe)
 - **SandboxManager** (`sandbox/manager.ts`) - Sandbox lifecycle management
 - **SandboxContext** (`sandbox/context.ts`) - Tool call redirection
 - **SandboxTools** (`hooks/sandbox-tools.ts`) - Hooks for sandbox integration
+- **Shell shim** (`sandbox/shell-shim.ts`) - Generated shim routing the native `bash` tool through `msb exec`
+- **Shell env hook** (`hooks/shell-env.ts`) - Injects the sandbox container into each shell spawn
 
 ### How It Works
 
-1. When a sandbox loop starts, an `sbx` sandbox is created
+1. When a sandbox loop starts, an `msb` sandbox is created
 2. The worktree directory is mounted at its identical host path inside the sandbox
-3. `bash` runs inside the sandbox; `glob` and `grep` results are produced inside the sandbox
+3. Shell commands and search tools run inside the sandbox: `bash` through the generated shell shim, `glob` and `grep` through the sandbox tool hooks — both backed by `msb exec`
 4. File operations (`read`, `write`, `edit`) operate on the host directly
 5. On loop completion, the sandbox is stopped and removed
+
+### State Model
+
+The sandbox state model has five states. `running` and `stopped` are both usable: msb suspends idle microVMs to `stopped` and `msb exec` resumes them in place, so forge never recreates a merely-stopped sandbox. `transient` covers msb's `Created`/`Starting`/`Draining`/`Paused` statuses — real but not directly executable, and never collapsed into `unknown`. `unknown` means the state query failed and says nothing about the sandbox, so forge fails closed and refuses to create or remove on that basis. `missing` is the one confirmed-absent state, and the only one in which forge creates a sandbox.
 
 ### Tool Redirection
 
@@ -119,7 +125,7 @@ Sandbox is optional. When the `sbx` daemon is available and `sandbox.mode = 'sbx
 
 - **`bash`** is redirected out of band, not through a tool hook. The `config` hook points
   `cfg.shell` at the `forge-shell` shim (`sandbox/shell-shim.ts`) and the `shell.env` hook
-  injects `FORGE_SANDBOX_CONTAINER`. The shim `exec`s `sbx exec -w "$PWD" <container> bash "$@"`.
+  injects `FORGE_SANDBOX_CONTAINER`. The shim `exec`s `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
   Tool arguments are never rewritten.
 - **`glob` and `grep`** use output replacement. `tool.execute.before` runs the equivalent
   `rg` command inside the container and stores the result by `callID`; `tool.execute.after`
@@ -205,7 +211,7 @@ The plugin follows this initialization sequence within `createForgePlugin()`:
 
 1. **Logger** - Always first (`createLogger()`)
 2. **v2 Client** - Create OpenCode v2 SDK client for API calls
-3. **Sandbox Manager** - sbx sandbox management (optional, fails gracefully)
+3. **Sandbox Manager** - msb sandbox management (optional, fails gracefully)
 4. **Pending Teardown Registry** - Track worktree teardown contexts
 5. **Workspace Status Registry** - Track workspace connected/disconnected state
 6. **Workspace Adapter** - Register forge workspace adapter if experimental workspace API available
@@ -250,7 +256,7 @@ graph TD
     end
 
     LoopRuntime --> SandboxManager["Sandbox Manager"]
-    SandboxManager --> Sbx["sbx Sandbox"]
+    SandboxManager --> Msb["msb Sandbox"]
 
     SQLite --> LoopsRepo["Loops Repo"]
     SQLite --> PlansRepo["Plans Repo"]

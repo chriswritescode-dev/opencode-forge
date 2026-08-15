@@ -1,15 +1,14 @@
-import type { SandboxRuntime, SandboxWorkspace } from './sbx'
-import { describeSbxUnavailable, type SbxAvailability } from './sbx'
-import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
+import type { SandboxRuntime, SandboxWorkspace } from './msb'
+import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, type MsbAvailability } from './msb'
+import type { Logger, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
-import { mkdirSync, existsSync, writeFileSync, chmodSync, rmSync } from 'fs'
+import { mkdirSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
 
 export interface SandboxManagerConfig {
   image: string
-  dataDir?: string
   resources?: SandboxResources
   sourceProjectDir?: string
   mountProjectReadonly?: boolean
@@ -29,11 +28,14 @@ export interface SandboxManagerConfig {
    */
   tmpDir?: string
   /**
-   * Network policy for the sbx proxy. `env` lists host environment variable names to pass through
-   * into the sandbox on every exec (written to a per-sandbox env file under `<dataDir>/sandbox-env/`).
-   * `allow` lists egress hosts to permit on the sbx network proxy's default-deny policy.
+   * Network policy for the msb sandbox. `env` lists host environment variable names to inject
+   * into the guest at create time (bare `-e <NAME>`, so values stay off the command line).
+   * `secrets` lists host-held credentials that never enter the guest (msb substitutes them only
+   * for the listed hosts at the network boundary). `allow` opts into egress restriction: when it
+   * is empty msb's own allow-public default applies, and configuring any host switches the
+   * sandbox to deny-by-default with one allow rule per validated host.
    */
-  network?: { env?: string[]; allow?: string[] }
+  network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[] }
 }
 
 const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus'>> = {
@@ -67,7 +69,7 @@ function isStrictDescendantPath(path: string, prefix: string): boolean {
 
 /**
  * Whether a new workspace cannot coexist with an already-accepted one on an overlapping path.
- * sbx accepts nested workspace mounts, but a read-only mount applies to its whole subtree, so
+ * msb accepts nested workspace mounts, but a read-only mount applies to its whole subtree, so
  * flags cannot differ across a nesting boundary: a read-only ancestor silently makes a
  * read-write descendant read-only, and a read-write descendant of a read-only mount never takes
  * effect. The one safe flag mismatch is a read-only mount strictly inside a read-write mount,
@@ -135,7 +137,6 @@ export interface ActiveSandbox {
   projectDir: string
   startedAt: string
   mounts: SandboxMount[]
-  envFile?: string
 }
 
 export interface SandboxManager {
@@ -150,16 +151,9 @@ export interface SandboxManager {
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
-/**
- * Maps the resolved mount plan to `sbx create` workspaces. sbx accepts nested workspace
- * mounts, so overlapping read-write mounts (worktree + git dirs) coexist; a mount is dropped
- * only when its read-only flag conflicts with an accepted mount's (see `mountConflictsWith`).
- * Callers must still pass mounts in priority order (worktree → git dirs → read-only project →
- * tool-output → temp → custom) so the first-accepted flag wins when a conflict is unavoidable.
- */
-export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): SandboxWorkspace[] {
+function dropConflictingMounts(mounts: SandboxMount[], logger: Logger): SandboxMount[] {
   const accepted: SandboxMount[] = []
-  const workspaces: SandboxWorkspace[] = []
+  const kept: SandboxMount[] = []
   for (const mount of mounts) {
     if (accepted.some((existing) => mountConflictsWith(mount, existing))) {
       logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir with conflicting permissions`)
@@ -167,9 +161,29 @@ export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): 
     }
     if (accepted.some((existing) => mountAlreadyCovered(mount, existing))) continue
     accepted.push(mount)
-    workspaces.push({ hostDir: mount.hostDir, readOnly: mount.readOnly })
+    kept.push(mount)
   }
-  return workspaces
+  return kept
+}
+
+/**
+ * Maps the resolved mount plan to `msb create` workspaces. msb accepts nested workspace
+ * mounts, so overlapping read-write mounts (worktree + git dirs) coexist; a mount is dropped
+ * only when its read-only flag conflicts with an accepted mount's (see `mountConflictsWith`).
+ * Callers must still pass mounts in priority order (worktree → git dirs → read-only project →
+ * tool-output → temp → custom) so the first-accepted flag wins when a conflict is unavoidable.
+ *
+ * Host paths are canonicalized here because msb refuses to mount a host path that traverses a
+ * symlink, failing the entire sandbox with `ENOTDIR`. On macOS that breaks every `os.tmpdir()`
+ * mount, since `/var` is a symlink to `private/var`. The container path is deliberately left
+ * uncanonicalized so absolute paths handed to the agent resolve identically inside the sandbox.
+ */
+export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): SandboxWorkspace[] {
+  return dropConflictingMounts(mounts, logger).map((mount) => ({
+    hostDir: canonicalizePath(mount.hostDir),
+    containerDir: mount.containerDir,
+    readOnly: mount.readOnly,
+  }))
 }
 
 export function createSandboxManager(
@@ -182,22 +196,24 @@ export function createSandboxManager(
   const lastLivenessCheck = new Map<string, number>()
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
-  let runtimeAvailableCache: { value: SbxAvailability; at: number } | null = null
+  const convergedSecrets = new Set<string>()
+  const handledSecretEnvs = new Map<string, Set<string>>()
+  const warnedUnsetSecretEnv = new Set<string>()
+  let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
   let imageReady = false
-  let allowListApplied = false
 
   async function ensureRuntimeAvailable(): Promise<void> {
     const now = Date.now()
     if (runtimeAvailableCache && (now - runtimeAvailableCache.at) < DOCKER_AVAILABLE_TTL) {
       if (!runtimeAvailableCache.value.available) {
-        throw new Error(describeSbxUnavailable(runtimeAvailableCache.value))
+        throw new Error(describeMsbUnavailable(runtimeAvailableCache.value))
       }
       return
     }
     const result = await runtime.checkAvailable()
-    // An inconclusive probe says nothing about the daemon: `sbx daemon status` queues behind
-    // in-flight sandbox work, so starting a second loop while the first one is busy can exhaust the
-    // query bound even though the daemon is healthy. Failing on it would block loop launches under
+    // An inconclusive probe says nothing about availability: the probe can exhaust its query
+    // bound under startup load (every worktree probes independently), so a timeout or throw is
+    // not evidence the runtime is unusable. Failing on it would block loop launches under
     // exactly the concurrency forge exists to provide, and caching it would extend one slow probe
     // into a window of refusals. Proceed instead and let the real operation report authoritatively.
     if (!result.available && result.reason === 'unknown') {
@@ -206,7 +222,7 @@ export function createSandboxManager(
     }
     runtimeAvailableCache = { value: result, at: now }
     if (!result.available) {
-      throw new Error(describeSbxUnavailable(result))
+      throw new Error(describeMsbUnavailable(result))
     }
   }
 
@@ -214,12 +230,12 @@ export function createSandboxManager(
     if (imageReady) return
     const exists = await runtime.templateExists(config.image)
     if (!exists) {
-      // A daemon that cannot answer `sbx template ls` is indistinguishable from a missing template,
+      // A runtime that cannot answer `msb images` is indistinguishable from a missing template,
       // so confirm it is really reachable before telling the user to rebuild the image.
       const availability = await runtime.checkAvailable()
       if (!availability.available) {
         if (availability.reason === 'unknown') return
-        throw new Error(describeSbxUnavailable(availability))
+        throw new Error(describeMsbUnavailable(availability))
       }
       const buildHint = `  ${formatTemplateBuildCommands(
         config.buildContextDir ?? '<build-context-dir>',
@@ -236,7 +252,7 @@ export function createSandboxManager(
 
   function buildMountPlan(projectDir: string): { mounts: SandboxMount[] } {
     const absolute = resolve(projectDir)
-    // `sbx` mounts every workspace at its identical host path (there is no separate
+    // `msb` mounts every workspace at its identical host path (there is no separate
     // `/workspace` container path), so the primary worktree mount is hostDir == containerDir.
     const worktreeMount: SandboxMount = { hostDir: absolute, containerDir: absolute }
 
@@ -266,7 +282,7 @@ export function createSandboxManager(
 
     // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
     // it survives any conflict and keeps the whole git metadata region writable), then the
-    // read-only project mount, then tool-output/temp/custom. sbx accepts nested workspaces, so
+    // read-only project mount, then tool-output/temp/custom. msb accepts nested workspaces, so
     // read-write mounts (worktree + git dirs) all mount even when one nests inside another; the
     // read-only project workspace is dropped because it is an ancestor of the writable git
     // workspaces and a read-only ancestor silently makes them read-only inside the sandbox.
@@ -281,17 +297,7 @@ export function createSandboxManager(
       ...customMounts,
     ]
 
-    const mounts: SandboxMount[] = []
-    const accepted: SandboxMount[] = []
-    for (const mount of candidates) {
-      if (accepted.some((existing) => mountConflictsWith(mount, existing))) {
-        logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir with conflicting permissions`)
-        continue
-      }
-      if (accepted.some((existing) => mountAlreadyCovered(mount, existing))) continue
-      accepted.push(mount)
-      mounts.push(mount)
-    }
+    const mounts = dropConflictingMounts(candidates, logger)
 
     return { mounts }
   }
@@ -350,7 +356,7 @@ export function createSandboxManager(
     // The git metadata region is mounted read-write so in-sandbox git works, which would also let
     // the sandbox plant a hook that runs on the host under the user's account. Forge's own git
     // disables hooksPath (see `git-service`), but the user's git in the same repository does not,
-    // so the hooks directory is re-mounted read-only inside the writable region. `sbx` workspaces
+    // so the hooks directory is re-mounted read-only inside the writable region. `msb` workspaces
     // are directories only, so the repo-local config file cannot be protected the same way.
     const hooksDir = join(resolvedCommonDir, 'hooks')
     if (existsSync(hooksDir)) {
@@ -361,75 +367,126 @@ export function createSandboxManager(
     return result
   }
 
-  function writeEnvPassthroughFile(containerName: string): string | undefined {
-    const names = config.network?.env
-    if (!names || names.length === 0) return undefined
-    const dataDir = config.dataDir
-    if (!dataDir) return undefined
-
-    const lines: string[] = []
-    for (const name of names) {
-      const value = process.env[name]
-      if (value !== undefined) {
-        lines.push(`${name}=${value}`)
-      }
-    }
-    if (lines.length === 0) return undefined
-
-    const dir = join(dataDir, 'sandbox-env')
-    mkdirSync(dir, { recursive: true })
-    const filePath = join(dir, `${containerName}.env`)
-    writeFileSync(filePath, lines.join('\n') + '\n', { encoding: 'utf-8' })
-    chmodSync(filePath, 0o600)
-    return filePath
-  }
-
   /**
-   * Applies the configured egress allowlist to the sbx network proxy. Policy rules are global to
-   * sbx, not per sandbox, so they are applied at most once per manager instance. A host that
-   * fails to allow is logged but never throws: an unusable rule must not block a loop that does
-   * not need that host.
+   * Single point that records a usable sandbox in the active map, shared by the create and
+   * adopt paths in `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins
+   * so adopting a sandbox never resets the time it actually came up. A precomputed mount plan
+   * is reused when provided so the create path does not run it twice.
    */
-  async function applyNetworkAllowList(): Promise<void> {
-    if (allowListApplied) return
-    allowListApplied = true
-    for (const host of config.network?.allow ?? []) {
-      const trimmed = host.trim()
-      if (!trimmed) continue
-      const ok = await runtime.allowNetworkHost(trimmed)
-      if (!ok) {
-        logger.log(`Sandbox: failed to allow network host "${trimmed}"`)
-      }
-    }
-  }
-
-  /**
-   * Single point that records a usable sandbox in the active map, shared by the adopt path in
-   * `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins so adopting a
-   * sandbox never resets the time it actually came up.
-   */
-  function registerActiveSandbox(worktreeName: string, containerName: string, projectDir: string, startedAt?: string): void {
+  function registerActiveSandbox(worktreeName: string, containerName: string, projectDir: string, startedAt?: string, mounts?: SandboxMount[]): void {
     const active = activeSandboxes.get(worktreeName)
     activeSandboxes.set(worktreeName, {
       containerName,
       projectDir: resolve(projectDir),
       startedAt: active?.startedAt ?? startedAt ?? new Date().toISOString(),
-      mounts: buildMountPlan(projectDir).mounts,
-      envFile: writeEnvPassthroughFile(containerName),
+      mounts: mounts ?? buildMountPlan(projectDir).mounts,
     })
+  }
+
+  /**
+   * Resolves the configured env passthrough against the live host environment. msb fails the
+   * create when a bare `-e NAME` references an unset host variable, so only defined values are
+   * forwarded and the omission is logged.
+   */
+  function resolvePassthroughEnv(): string[] {
+    return (config.network?.env ?? []).filter((name) => {
+      if (process.env[name] === undefined) {
+        logger.log(`Sandbox: skipping env passthrough ${name}: host variable is not set`)
+        return false
+      }
+      return true
+    })
+  }
+
+  /**
+   * Resolves the configured secrets against the live host environment. Entries without an env
+   * name or allowed hosts are misconfigurations, and msb refuses a secret whose host variable is
+   * unset at create, so each skipped entry is logged with its reason.
+   */
+  function resolveSandboxSecrets(): SandboxSecretConfig[] {
+    const resolved: SandboxSecretConfig[] = []
+    for (const raw of config.network?.secrets ?? []) {
+      const env = raw.env.trim()
+      if (!env) {
+        logger.log('Sandbox: skipping secret: missing env name')
+        continue
+      }
+      const hosts = (raw.hosts ?? []).map((h) => h.trim()).filter(Boolean)
+      if (hosts.length === 0) {
+        logger.log(`Sandbox: skipping secret ${env}: no allowed hosts`)
+        continue
+      }
+      if (process.env[env] === undefined) {
+        if (!warnedUnsetSecretEnv.has(env)) {
+          warnedUnsetSecretEnv.add(env)
+          logger.log(`Sandbox: skipping secret ${env}: host variable is not set; sandboxed shell commands will fail until the variable is exported in the environment that launches opencode (configured under sandbox.network.secrets)`)
+        }
+        continue
+      }
+      resolved.push({ env, hosts })
+    }
+    return resolved
+  }
+
+  /**
+   * Rotates the configured host-held secrets on a sandbox forge is adopting. Create-time
+   * bindings are captured once, but adoption reuses a long-lived container across plugin
+   * restarts, so a rotated host token would otherwise stay stale for the life of the sandbox.
+   * Runs only on adopt paths: the fresh-create path already bound the same filtered list.
+   * Returns false (without marking the container converged) when the rotation fails, so the
+   * caller fails the adoption and a later attempt can retry.
+   */
+  async function refreshSecrets(containerName: string): Promise<boolean> {
+    if (convergedSecrets.has(containerName)) return true
+    const secrets = resolveSandboxSecrets()
+    if (secrets.length === 0) {
+      convergedSecrets.add(containerName)
+      return true
+    }
+    warnUncoveredSecretHosts(containerName, secrets)
+    if (!(await runtime.refreshSandboxSecrets(containerName, secrets))) {
+      logger.log(`Sandbox: failed to refresh secrets for ${containerName}`)
+      return false
+    }
+    convergedSecrets.add(containerName)
+    recordHandledSecretEnvs(containerName, secrets)
+    return true
+  }
+
+  function recordHandledSecretEnvs(containerName: string, secrets: SandboxSecretConfig[]): void {
+    const known = handledSecretEnvs.get(containerName) ?? new Set<string>()
+    for (const secret of secrets) known.add(secret.env)
+    handledSecretEnvs.set(containerName, known)
+  }
+
+  function warnUncoveredSecretHosts(containerName: string, secrets: SandboxSecretConfig[]): void {
+    const known = handledSecretEnvs.get(containerName)
+    const introduced = known ? secrets.filter((s) => !known.has(s.env)) : secrets
+    if (introduced.length === 0) return
+    logger.log(`Sandbox: egress for secret host(s) of ${introduced.map((s) => s.env).join(', ')} may be unreachable in ${containerName}: msb cannot change egress rules on an existing sandbox, so recreate the sandbox for the new host(s) to be allowed`)
   }
 
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
     await ensureRuntimeAvailable()
     await ensureTemplate()
-    await applyNetworkAllowList()
 
     const containerName = runtime.sandboxContainerName(worktreeName)
 
     const absoluteProjectDir = resolve(projectDir)
     const state = await runtime.getSandboxState(containerName)
+    // `unknown` means the state query failed and says nothing about the sandbox: adopting
+    // could register a non-existent container as usable, and creating could collide with a
+    // live one. Fail closed and let the caller surface the indeterminate state.
+    if (state === 'unknown') {
+      throw new Error(
+        `Could not determine whether sandbox ${containerName} exists (state query failed); refusing to start`,
+      )
+    }
     if (state !== 'missing') {
       logger.log(`Sandbox ${containerName} already exists (${state}), adopting`)
+      if (!(await refreshSecrets(containerName))) {
+        throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
+      }
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       return { containerName }
     }
@@ -438,20 +495,28 @@ export function createSandboxManager(
     const workspaces = buildSandboxWorkspaces(mounts, logger)
     const resources: SandboxResources = {
       memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
+      maxMemory: config.resources?.maxMemory,
       cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
+      maxCpus: config.resources?.maxCpus,
+      dockerDisk: config.resources?.dockerDisk,
     }
-    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus})`)
-    await runtime.createSandbox(containerName, workspaces, { template: config.image, resources })
-
-    const active: ActiveSandbox = {
-      containerName,
-      projectDir: absoluteProjectDir,
-      startedAt: startedAt ?? new Date().toISOString(),
-      mounts,
-      envFile: writeEnvPassthroughFile(containerName),
-    }
-
-    activeSandboxes.set(worktreeName, active)
+    // Secret destinations are unioned into the egress allow-list: msb's proxy is deny-by-default
+    // at the sandbox level, so a secrets-only configuration would otherwise never reach its hosts.
+    const secrets = resolveSandboxSecrets()
+    const memoryLabel = resources.maxMemory ? `${resources.memory}/max ${resources.maxMemory}` : resources.memory
+    const cpusLabel = resources.maxCpus ? `${resources.cpus}/max ${resources.maxCpus}` : resources.cpus
+    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${memoryLabel} cpus=${cpusLabel} workspaces=${workspaces.length})`)
+    await runtime.createSandbox(containerName, workspaces, {
+      image: config.image,
+      resources,
+      networkAllow: buildNetworkAllow(config.network?.allow, secrets, logger),
+      restrictEgress: egressRestrictionRequested(config.network?.allow, secrets),
+      env: resolvePassthroughEnv(),
+      secrets,
+    })
+    convergedSecrets.add(containerName)
+    recordHandledSecretEnvs(containerName, secrets)
+    registerActiveSandbox(worktreeName, containerName, projectDir, startedAt, mounts)
     logger.log(`Sandbox ${containerName} started`)
 
     return { containerName }
@@ -461,7 +526,28 @@ export function createSandboxManager(
     const active = activeSandboxes.get(worktreeName)
     const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
 
-    // Cleanup (env file, in-memory map entry) always runs; the removal failure is rethrown so
+    // Fail-closed on the five-state contract: `unknown` means the state query failed and says
+    // nothing about the sandbox, so removal could destroy a live container that a concurrent or
+    // indeterminate query cannot see. Preserve the active-map entry (if any) so callers can
+    // observe the indeterminate state, and refuse to touch the sandbox. `missing` is a confirmed
+    // absence: clear stale local bookkeeping without invoking msb.
+    const state = await runtime.getSandboxState(containerName)
+    if (state === 'unknown') {
+      const err = new Error(
+        `Could not determine whether sandbox ${containerName} exists (state query failed); refusing to remove`,
+      )
+      logger.log(`Sandbox ${containerName} stop: ${err.message}`)
+      throw err
+    }
+    if (state === 'missing') {
+      activeSandboxes.delete(worktreeName)
+      convergedSecrets.delete(containerName)
+      handledSecretEnvs.delete(containerName)
+      logger.log(`Sandbox ${containerName} already gone`)
+      return
+    }
+
+    // Cleanup (in-memory map entry) always runs; the removal failure is rethrown so
     // callers that own the container lifecycle (e.g. the session-sandbox controller) can observe
     // that the container may still be live instead of recording a successful stop.
     let removalError: unknown = null
@@ -473,17 +559,11 @@ export function createSandboxManager(
       const errMsg = err instanceof Error ? err.message : String(err)
       logger.log(`Sandbox ${containerName} removal: ${errMsg}`)
     } finally {
-      // Cleanup of the in-memory map entry must never be skipped: an env-file deletion failure
-      // must not leave stale manager state that would trigger indefinite fail-closed retries for a
-      // container that was already removed.
-      if (active?.envFile) {
-        try {
-          rmSync(active.envFile, { force: true })
-        } catch (err) {
-          logger.log(`Sandbox: failed to remove env file ${active.envFile}: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
+      // Cleanup of the in-memory map entry must never be skipped: a stale entry would leave the
+      // manager believing a removed container is live, blocking recreation.
       activeSandboxes.delete(worktreeName)
+      convergedSecrets.delete(containerName)
+      handledSecretEnvs.delete(containerName)
     }
     if (removalError) throw removalError
   }
@@ -497,7 +577,7 @@ export function createSandboxManager(
   }
 
   /**
-   * A `stopped` sandbox is live: `sbx` suspends idle microVMs and `sbx exec` resumes them in
+   * A `stopped` sandbox is live: msb suspends idle microVMs and `msb exec` resumes them in
    * place. Only a confirmed-`missing` sandbox invalidates the map entry — `unknown` means the
    * status query failed and is not evidence the sandbox is gone.
    */
@@ -534,6 +614,8 @@ export function createSandboxManager(
       try {
         await runtime.removeSandbox(name)
         removed++
+        convergedSecrets.delete(name)
+        handledSecretEnvs.delete(name)
         logger.log(`Removed orphaned sandbox: ${name}`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -543,6 +625,8 @@ export function createSandboxManager(
 
     if (!preserveWorktrees) {
       activeSandboxes.clear()
+      convergedSecrets.clear()
+      handledSecretEnvs.clear()
     } else {
       for (const key of activeSandboxes.keys()) {
         if (!preserveWorktrees.includes(key)) {
@@ -560,8 +644,8 @@ export function createSandboxManager(
 
   /**
    * Single decision point for "is this worktree's sandbox usable?", shared by the mapped and
-   * unmapped paths. `running` and `stopped` are both usable — `sbx` suspends idle microVMs to
-   * `stopped` and `sbx exec` resumes them in place, so recreating one would needlessly destroy
+   * unmapped paths. `running` and `stopped` are both usable — msb suspends idle microVMs to
+   * `stopped` and `msb exec` resumes them in place, so recreating one would needlessly destroy
    * container-local state. `unknown` means the status query failed and says nothing about the
    * sandbox, so an existing entry is kept as-is (without refreshing the liveness timestamp, so
    * the next call re-checks) and only a confirmed-`missing` sandbox is created.
@@ -572,6 +656,9 @@ export function createSandboxManager(
     const state = await runtime.getSandboxState(containerName)
 
     if (state === 'running' || state === 'stopped') {
+      if (!(await refreshSecrets(containerName))) {
+        throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
+      }
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       lastLivenessCheck.set(worktreeName, Date.now())
       return containerName
@@ -597,7 +684,7 @@ export function createSandboxManager(
     }
 
     // Single-flight per worktree: concurrent callers would otherwise each run the create path and
-    // race `sbx`, which answers the loser with `409 Conflict ... has an operation in progress`.
+    // race one another, with the loser's create rejected while the winner's is still in flight.
     const inFlight = ensureRunningInFlight.get(worktreeName)
     if (inFlight) return inFlight
 

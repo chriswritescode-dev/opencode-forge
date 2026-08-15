@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import {
   SANDBOX_CONTEXT_NOTE,
+  SANDBOX_OFF_NOTE,
   isSandboxEnabled,
   isSandboxConfigEnabled,
   resolveSandboxContextForLoop,
@@ -25,6 +26,30 @@ describe('SANDBOX_CONTEXT_NOTE', () => {
 
   it('does not name any specific scratch directory (agents use opencode\'s advertised default)', () => {
     expect(SANDBOX_CONTEXT_NOTE).not.toContain('/tmp/oc-forge')
+  })
+
+  it('requires installing missing or incompatible environment tooling rather than focusing on code alone', () => {
+    expect(SANDBOX_CONTEXT_NOTE).not.toContain('Focus on what the code does')
+    expect(SANDBOX_CONTEXT_NOTE).not.toContain('false positives')
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/missing or incompatible/i)
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/install or reinstall/i)
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/rerun the intended checks/i)
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/not misreport/i)
+  })
+})
+
+describe('SANDBOX_OFF_NOTE', () => {
+  it('warns that execution returned to the host and container state must not be assumed available', () => {
+    expect(SANDBOX_OFF_NOTE).toMatch(/returned to the host/i)
+    expect(SANDBOX_OFF_NOTE).toMatch(/must not be assumed/i)
+    expect(SANDBOX_OFF_NOTE).toMatch(/tools, packages, processes/i)
+    expect(SANDBOX_OFF_NOTE).toMatch(/in-memory state/i)
+  })
+
+  it('tells the agent to install or reinstall required host tooling before rerunning checks', () => {
+    expect(SANDBOX_OFF_NOTE).toMatch(/install or reinstall/i)
+    expect(SANDBOX_OFF_NOTE).toMatch(/host tooling/i)
+    expect(SANDBOX_OFF_NOTE).toMatch(/rerun/i)
   })
 })
 

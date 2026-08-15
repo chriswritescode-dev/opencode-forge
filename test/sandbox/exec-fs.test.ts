@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest'
 import { executeSandboxGlob, executeSandboxGrep } from '../../src/sandbox/exec-fs'
-import type { SandboxRuntime } from '../../src/sandbox/sbx'
+import type { SandboxRuntime } from '../../src/sandbox/msb'
 
 function recordingRuntime() {
   const commands: string[] = []

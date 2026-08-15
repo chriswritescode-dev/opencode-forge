@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve, sep } from 'path'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
 import type { SandboxContext } from './context'
-import type { SandboxRuntime } from './sbx'
+import type { SandboxRuntime } from './msb'
 import type { ActiveSandbox } from './manager'
 import { findSessionAncestor } from '../utils/session-ancestry'
 
@@ -102,10 +102,11 @@ export interface SessionSandboxController {
 /** Cap on reconcile re-runs within a single tick when the desired revision keeps moving. */
 const MAX_SUPERSEDE_ITERATIONS = 8
 const MAX_FAST_IDLE_POLLS = 4
+const MAX_REMOVAL_RETRY_DELAY_MS = 30_000
 
 /**
  * Derives the logical manager key for a project. This is a stable, non-final key passed to
- * `SandboxManager.ensureRunning`/`stop`; `sbx.sandboxContainerName` remains the only place the
+ * `SandboxManager.ensureRunning`/`stop`; `msb.sandboxContainerName` remains the only place the
  * `forge-` prefix is added. Keyed by project id to match the granularity of the desired/applied
  * preference rows, which are stored per project: one project row therefore maps to exactly one
  * host container even when the project spans several checkout directories. Deterministic so a
@@ -192,6 +193,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   let selectedProjectDirectory: string | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let idlePolls = 0
+  let removalRetryDelayMs = 0
+  let removalRetryRevision: string | null = null
   let reconciling = false
   let disposed = false
   let startPromise: Promise<void> | null = null
@@ -374,8 +377,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     lastValidatedRevision = null
     failedSelection = { sessionId, error: msg }
     // A failed start may leave a partially-started (or previously running) container, even on a
-    // first start: ensureRunning can create the container and then fail (e.g. env-file
-    // generation). Always attempt deterministic-key cleanup; if it fails, retain retryable
+    // first start: ensureRunning can create the container and then fail (e.g. create-time
+    // secret binding). Always attempt deterministic-key cleanup; if it fails, retain retryable
     // ownership so the next reconcile tick retries the removal rather than acknowledging the
     // failure settled while a container is still live.
     const stopped = await bestEffortStop()
@@ -424,7 +427,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
 
   /**
    * Acts on a single desired/applied pair. Returns the desired revision processed, or null
-   * when there is no desired state (controller remains off). Actual SBX start/stop always
+   * when there is no desired state (controller remains off). Actual msb start/stop always
    * completes before the matching applied row is written.
    */
   async function reconcilePair(
@@ -622,7 +625,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         // `restoringPersistedOn` was already set before the ownership check, so a restore that
         // aborts before `hostActive` is confirmed still tears the manager key down on disposal.
         // Recheck that the selected session has not since entered an active loop. Loop-first
-        // resolution ignores the host binding, so a session that started a loop while host SBX was
+        // resolution ignores the host binding, so a session that started a loop while host msb was
         // ON must have its host sandbox stopped and the acknowledgement flipped to OFF-with-error;
         // otherwise the container keeps running and the sidebar stays ON while the loop actually
         // runs unsandboxed. This runs on every trusted-ON tick (the cheap lookup, not container
@@ -698,8 +701,14 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
           acknowledgedSessionId = null
           hostActive = true
           failedSelection = desired.sessionId ? { sessionId: desired.sessionId, error: String(err) } : null
+          removalRetryRevision = desired.revision
+          removalRetryDelayMs = removalRetryDelayMs === 0
+            ? pollIntervalMs
+            : Math.min(removalRetryDelayMs * 2, MAX_REMOVAL_RETRY_DELAY_MS)
           return desired.revision
         }
+        removalRetryDelayMs = 0
+        removalRetryRevision = null
         hostActive = false
         acknowledgedSessionId = null
         failedSelection = null
@@ -729,7 +738,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     if (desired.enabled) {
       // Reject an ON request that carries no session to bind: starting a container for a null
       // session would orphan it (bind(null) clears ownership, so it could never be used or
-      // cleaned up). Acknowledge OFF-with-error instead of starting SBX.
+      // cleaned up). Acknowledge OFF-with-error instead of starting msb.
       if (!desired.sessionId) {
         // No container is ever started for a null-session request; only stop a live container from
         // a prior binding (hostActive) to avoid leaking it when the selection becomes session-less.
@@ -757,7 +766,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         return desired.revision
       }
       // Refuse to bind a host sandbox to an active loop session: loop-first resolution ignores
-      // the host binding, so acknowledging ON here would report an SBX state that is never used.
+      // the host binding, so acknowledging ON here would report an msb state that is never used.
       if (deps.resolveActiveLoopForSession) {
         const inLoop = await deps.resolveActiveLoopForSession(desired.sessionId)
         if (inLoop?.active) {
@@ -831,6 +840,10 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         hostActive = true
         lastValidatedRevision = null
         failedSelection = desired.sessionId ? { sessionId: desired.sessionId, error: msg } : null
+        removalRetryRevision = desired.revision
+        removalRetryDelayMs = removalRetryDelayMs === 0
+          ? pollIntervalMs
+          : Math.min(removalRetryDelayMs * 2, MAX_REMOVAL_RETRY_DELAY_MS)
         writeApplied({
           version: 1,
           revision: desired.revision,
@@ -845,6 +858,8 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       acknowledgedSessionId = null
       failedSelection = null
       lastValidatedRevision = null
+      removalRetryDelayMs = 0
+      removalRetryRevision = null
       writeApplied({
         version: 1,
         revision: desired.revision,
@@ -889,14 +904,19 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   function schedulePoll(): void {
     if (disposed || pollTimer !== null) return
     const desired = preferences.getDesired(projectId)
+    if (removalRetryDelayMs > 0 && desired?.revision !== removalRetryRevision) {
+      removalRetryDelayMs = 0
+      removalRetryRevision = null
+    }
     const active = hostActive || pendingCleanup || (desired?.enabled === true && failedSelection === null)
     if (active) idlePolls = 0
     const fast = active || idlePolls < MAX_FAST_IDLE_POLLS
     if (!active) idlePolls += 1
+    const delay = removalRetryDelayMs > 0 ? removalRetryDelayMs : (fast ? pollIntervalMs : pollIntervalMs * 10)
     pollTimer = setTimeout(() => {
       pollTimer = null
       void tick()
-    }, fast ? pollIntervalMs : pollIntervalMs * 10)
+    }, delay)
   }
 
   async function resolveSandboxForSession(
@@ -949,7 +969,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         logger.log(`[session-sandbox] ensureRunning failed during restore: ${msg}`)
-        // A container-restore failure (e.g. env-file generation) can leave a partially-created or
+        // A container-restore failure (e.g. create-time secret binding) can leave a partially-created or
         // orphaned container and a stale applied-ON row. Route through the same cleanup and
         // OFF-with-error transition as a failed start so the live container is removed, the stale
         // acknowledgement is corrected, and the selected session stays fail-closed. Attribute the
@@ -1001,7 +1021,6 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         containerName: active.containerName,
         hostDir: active.projectDir,
         mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
-        envFile: active.envFile,
       }
     })
   }

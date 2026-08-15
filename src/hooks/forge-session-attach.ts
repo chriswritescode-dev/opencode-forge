@@ -338,7 +338,7 @@ async function resolveAttachSandbox(
   worktreeDir: string | undefined,
 ): Promise<{ enabled: boolean; containerName?: string }> {
   // Worktree-only when the loop opted out, or when the sandbox isn't actually usable
-  // (sandbox disabled via config, or no Docker manager). Without a manager a sandbox
+  // (sandbox disabled via config, or no msb manager). Without a manager a sandbox
   // container cannot exist, so the workspace's stale `sandboxEnabled` flag must not be
   // trusted — degrade to host worktree execution so `bash` stays allowed.
   if (cfg?.sandboxEnabled === false) return { enabled: false }

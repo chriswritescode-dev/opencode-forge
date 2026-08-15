@@ -1,10 +1,9 @@
-import type { SandboxRuntime } from './sbx'
+import type { SandboxRuntime } from './msb'
 
 interface SandboxExecutionDeps {
   runtime: SandboxRuntime
   containerName: string
   hostDir: string
-  envFile?: string
 }
 
 function quoteShellArg(value: string): string {
@@ -20,13 +19,13 @@ export async function executeSandboxGlob(
   pattern: string,
   searchPath?: string,
 ): Promise<string> {
-  const { runtime, containerName, hostDir, envFile } = sandbox
+  const { runtime, containerName, hostDir } = sandbox
   const path = searchPath || hostDir
 
   const cmd = `rg --files --glob ${quoteShellArg(pattern)} ${quoteShellArg(path)} 2>/dev/null | head -100`
 
   try {
-    const result = await runtime.exec(containerName, cmd, { timeout: 30000, envFile, cwd: hostDir })
+    const result = await runtime.exec(containerName, cmd, { timeout: 30000, cwd: hostDir })
 
     if (!result.stdout.trim()) return 'No files found'
 
@@ -57,7 +56,7 @@ export async function executeSandboxGrep(
   pattern: string,
   options?: { path?: string; include?: string },
 ): Promise<string> {
-  const { runtime, containerName, hostDir, envFile } = sandbox
+  const { runtime, containerName, hostDir } = sandbox
   const searchPath = options?.path || hostDir
 
   let cmd = `rg -nH --hidden --no-messages --field-match-separator='|' --regexp ${quoteShellArg(pattern)}`
@@ -67,7 +66,7 @@ export async function executeSandboxGrep(
   cmd += ` ${quoteShellArg(searchPath)} 2>/dev/null | head -100`
 
   try {
-    const result = await runtime.exec(containerName, cmd, { timeout: 30000, envFile, cwd: hostDir })
+    const result = await runtime.exec(containerName, cmd, { timeout: 30000, cwd: hostDir })
 
     if (!result.stdout.trim()) return 'No files found'
 

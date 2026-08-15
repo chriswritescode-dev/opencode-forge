@@ -21,8 +21,15 @@ describe('collectLegacySandboxConfigWarnings', () => {
     expect(joined).toContain('sandbox.mounts')
   })
 
-  test('returns [] for a clean sbx config', () => {
-    expect(collectLegacySandboxConfigWarnings({ enabled: true, image: 'oc-forge-sandbox:latest' })).toEqual([])
+  test('reports exactly one msb-replacement warning for the retired sbx mode', () => {
+    const warnings = collectLegacySandboxConfigWarnings({ mode: 'sbx' })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('msb')
+    expect(warnings[0]).toContain('use mode')
+  })
+
+  test('returns [] for a clean msb config', () => {
+    expect(collectLegacySandboxConfigWarnings({ enabled: true, mode: 'msb', image: 'oc-forge-sandbox:latest' })).toEqual([])
   })
 
   test('returns [] for undefined, null and non-object input', () => {

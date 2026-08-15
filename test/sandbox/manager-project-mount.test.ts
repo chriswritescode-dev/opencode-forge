@@ -1,4 +1,5 @@
 import { describe, test, expect } from 'vitest'
+import { realpathSync } from 'fs'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 
@@ -18,7 +19,7 @@ describe('SandboxManager project mount', () => {
     const calls = runtime.getCreateSandboxCalls()
     expect(calls.length).toBe(1)
     const workspaces = calls[0][1]
-    expect(workspaces).toContainEqual({ hostDir: '/tmp', readOnly: true })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync('/tmp'), containerDir: '/tmp', readOnly: true })
   })
 
   test('does not add project mount when mountProjectReadonly is false', async () => {
@@ -69,7 +70,7 @@ describe('SandboxManager project mount', () => {
     expect(workspaces).toHaveLength(1)
   })
 
-  test('does not pass a stale source project directory to sbx', async () => {
+  test('does not pass a stale source project directory to msb', async () => {
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const manager = createSandboxManager(runtime, {
@@ -81,7 +82,7 @@ describe('SandboxManager project mount', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     expect(runtime.getCreateSandboxCalls()[0][1]).toEqual([
-      { hostDir: '/home/user/worktrees/feature', readOnly: undefined },
+      { hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature', readOnly: undefined },
     ])
   })
 

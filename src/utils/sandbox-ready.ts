@@ -7,14 +7,14 @@
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
-import { SBX_DEFAULT_TIMEOUT } from '../sandbox/sbx'
+import { MSB_DEFAULT_TIMEOUT } from '../sandbox/msb'
 
 export interface WaitForSandboxOptions {
   projectId: string
   loopName: string
   dbPath: string
   pollMs?: number       // default 200
-  /** Defaults to the sbx provisioning bound, so the wait never expires while `sbx create` is still allowed to run. */
+  /** Defaults to the msb provisioning bound, so the wait never expires while `msb create` is still allowed to run. */
   timeoutMs?: number
 }
 
@@ -34,7 +34,7 @@ export type WaitForSandboxResult =
 export async function waitForSandboxReady(opts: WaitForSandboxOptions): Promise<WaitForSandboxResult> {
   const { projectId, loopName, dbPath } = opts
   const pollMs = opts.pollMs ?? 200
-  const timeoutMs = opts.timeoutMs ?? SBX_DEFAULT_TIMEOUT
+  const timeoutMs = opts.timeoutMs ?? MSB_DEFAULT_TIMEOUT
   const startTime = Date.now()
 
   // Check if database exists

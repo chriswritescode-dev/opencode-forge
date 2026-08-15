@@ -167,7 +167,7 @@ describe('SessionSandboxController', () => {
   test('failed start is acknowledged as OFF with an error and exposes no host fallback', async () => {
     repo.setDesired(PROJECT, makeDesired({ revision: 'r-fail' }))
     manager.setEnsureRunningImpl(async () => {
-      throw new Error('sbx daemon is not running')
+      throw new Error('msb create failed')
     })
     const controller = createController()
     await controller.start()
@@ -175,11 +175,11 @@ describe('SessionSandboxController', () => {
     const applied = repo.getApplied(PROJECT)
     expect(applied?.revision).toBe('r-fail')
     expect(applied?.enabled).toBe(false)
-    expect(applied?.error).toMatch(/sbx daemon is not running/)
+    expect(applied?.error).toMatch(/msb create failed/)
 
     // A failed start must never expose a host fallback for the selected session: resolution
     // fails closed (throws) rather than returning null (which hooks treat as host permission).
-    await expect(controller.resolveSandboxForSession(ROOT_SESSION)).rejects.toThrow(/sbx daemon is not running/)
+    await expect(controller.resolveSandboxForSession(ROOT_SESSION)).rejects.toThrow(/msb create failed/)
     await controller.dispose()
   })
 
@@ -300,7 +300,7 @@ describe('SessionSandboxController', () => {
   test('persisted-ON restore that partially creates the container cleans up before acknowledging OFF', async () => {
     // A prior run left applied ON at the same revision as desired. On restart the restore
     // validation must run deterministic-key cleanup if ensureRunning creates the container and
-    // then fails (e.g. env-file generation), so the partially-created container is not leaked
+    // then fails (e.g. create-time secret binding), so the partially-created container is not leaked
     // while OFF-with-error is acknowledged.
     repo.setDesired(PROJECT, makeDesired({ revision: 'r-restore-partial' }))
     repo.setApplied(PROJECT, {
@@ -1434,6 +1434,116 @@ describe('SessionSandboxController', () => {
     }
   })
 
+  test('a repeatedly failing OFF-with-error removal backs off exponentially and resets on success', async () => {
+    vi.useFakeTimers()
+    try {
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-removal-backoff', enabled: false, sessionId: ROOT_SESSION }))
+      repo.setApplied(PROJECT, {
+        version: 1,
+        revision: 'r-removal-backoff',
+        enabled: false,
+        sessionId: ROOT_SESSION,
+        error: 'transient removal failure',
+        appliedAt: Date.now(),
+      })
+      let stopFails = true
+      manager.stop = async (key) => {
+        manager.stopCalls.push(key)
+        if (stopFails) throw new Error('transient removal failure')
+        manager.active = null
+      }
+      const controller = createController({ pollIntervalMs: 20 })
+      await controller.start()
+      // Initial reconcile attempts the removal once and fails, retaining ownership.
+      expect(manager.stopCalls).toHaveLength(1)
+
+      // The second attempt at +20 (base interval) fails; the retry delay doubles to 40.
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(2)
+
+      // Consecutive failures must NOT re-attempt at the base interval: 20ms after the second
+      // failure (t=40) nothing runs, and the third attempt only fires at +40 (t=60).
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(3)
+
+      // Removal succeeds; the backoff resets so the next poll returns to the base interval.
+      stopFails = false
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(3)
+      await vi.advanceTimersByTimeAsync(60)
+      expect(manager.stopCalls).toHaveLength(4)
+      const applied = repo.getApplied(PROJECT)
+      expect(applied?.enabled).toBe(false)
+      expect(applied?.error).toBeNull()
+
+      // A fresh failing removal after the success retries at the base interval (20), not at the
+      // previously-backed-off delay: the retry fires 20ms after the new state appears.
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-removal-backoff-2', enabled: false, sessionId: ROOT_SESSION }))
+      repo.setApplied(PROJECT, {
+        version: 1,
+        revision: 'r-removal-backoff-2',
+        enabled: false,
+        sessionId: ROOT_SESSION,
+        error: 'transient removal failure again',
+        appliedAt: Date.now(),
+      })
+      stopFails = true
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(5)
+
+      await controller.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('the first ON-to-OFF stop failure initializes the retry schedule and the second failure doubles it', async () => {
+    vi.useFakeTimers()
+    try {
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-on-to-off-up', sessionId: ROOT_SESSION }))
+      const controller = createController({ pollIntervalMs: 20 })
+      await controller.start()
+      expect(repo.getApplied(PROJECT)?.enabled).toBe(true)
+
+      repo.setDesired(PROJECT, makeDesired({ revision: 'r-on-to-off', enabled: false, sessionId: ROOT_SESSION }))
+      let stopFails = true
+      manager.stop = async (key) => {
+        manager.stopCalls.push(key)
+        if (stopFails) throw new Error('transient removal failure')
+        manager.active = null
+      }
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(1)
+      let applied = repo.getApplied(PROJECT)
+      expect(applied?.revision).toBe('r-on-to-off')
+      expect(applied?.enabled).toBe(false)
+      expect(applied?.error).toMatch(/transient removal failure/)
+
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(2)
+
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(3)
+
+      stopFails = false
+      await vi.advanceTimersByTimeAsync(20)
+      expect(manager.stopCalls).toHaveLength(3)
+      await vi.advanceTimersByTimeAsync(60)
+      expect(manager.stopCalls).toHaveLength(4)
+      applied = repo.getApplied(PROJECT)
+      expect(applied?.enabled).toBe(false)
+      expect(applied?.error).toBeNull()
+
+      await controller.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('a failed stop during absent-desired teardown is retried until removal succeeds', async () => {
     vi.useFakeTimers()
     try {
@@ -1695,7 +1805,7 @@ describe('SessionSandboxController', () => {
     }
   })
 
-  test('an ON request without a session is acknowledged OFF-with-error and never starts SBX', async () => {
+  test('an ON request without a session is acknowledged OFF-with-error and never starts MSB', async () => {
     repo.setDesired(PROJECT, makeDesired({ revision: 'r-null-session', enabled: true, sessionId: null }))
     const controller = createController()
     await controller.start()
@@ -1789,9 +1899,9 @@ describe('SessionSandboxController', () => {
     vi.useFakeTimers()
     try {
       repo.setDesired(PROJECT, makeDesired({ revision: 'r-adopt', sessionId: ROOT_SESSION }))
-      // The first start creates the container and then fails (env-file setup). A subsequent
-      // ensureRunning would now SUCCEED: without a pending-cleanup guard the next reconcile tick
-      // would adopt the partially-initialized container and wrongly acknowledge ON.
+      // The first start creates the container and then fails (create-time secret binding). A
+      // subsequent ensureRunning would now SUCCEED: without a pending-cleanup guard the next
+      // reconcile tick would adopt the partially-initialized container and wrongly acknowledge ON.
       let startCount = 0
       manager.setEnsureRunningImpl(async (key, dir) => {
         startCount++
@@ -1844,8 +1954,8 @@ describe('SessionSandboxController', () => {
     expect(repo.getApplied(PROJECT)?.enabled).toBe(true)
     expect(await controller.resolveSandboxForSession(ROOT_SESSION)).not.toBeNull()
 
-    // The acknowledged container dies; recovery recreates it but fails during env-file setup,
-    // leaving a partially-created container and a stale applied-ON row.
+    // The acknowledged container dies; recovery recreates it but fails during create-time secret
+    // binding, leaving a partially-created container and a stale applied-ON row.
     manager.setEnsureRunningImpl(async (key, dir) => {
       manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
       throw new Error('env setup failed during restore')

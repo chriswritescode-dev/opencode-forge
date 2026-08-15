@@ -76,7 +76,7 @@ interface LoopState {
   completedAt?: string               // ISO timestamp
   worktree?: boolean                 // Whether using worktree isolation
   modelFailed?: boolean              // Whether model error occurred
-  sandbox?: boolean                  // Whether using sbx sandbox
+  sandbox?: boolean                  // Whether using msb sandbox
   sandboxContainer?: string          // Sandbox name if sandboxed
   completionSummary?: string         // Summary of loop completion
   executionModel?: string            // Model used for execution
@@ -173,7 +173,7 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 ## Worktree Isolation
 
-Loops always run in an isolated git worktree. Sandbox is optional: when the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise the loop runs in worktree-only mode.
+Loops always run in an isolated git worktree. Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`: when enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop start is rolled back rather than silently falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
 Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, local or remote TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
 
@@ -200,7 +200,7 @@ Benefits of worktree isolation:
 
 ## Sandbox Integration
 
-Sandbox is optional. When the `sbx` daemon is available and configured, a sandbox is provisioned automatically; otherwise loops run in worktree-only mode.
+Sandbox is optional and controlled by `sandbox.enabled` (default `true`): when enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
 1. Sandbox created with the worktree mounted at its identical host path
 2. `bash`, `glob`, `grep` tools redirect into the sandbox

@@ -122,11 +122,15 @@ describe('Agent definitions', () => {
     test('auditor-loop prompt includes LOOP_ADDENDUM and FINAL_AUDIT_ADDENDUM content', () => {
       const prompt = auditorLoopAgent.systemPrompt
       expect(prompt).toContain('<!-- forge-section -->')
-      expect(prompt).toContain('section-summary:start')
+      expect(prompt).toContain('section-summary block')
       expect(prompt).toContain('### Done')
       expect(prompt).toContain('### Deviations')
       expect(prompt).toContain('### Follow-ups')
       expect(prompt.toLowerCase()).toContain('deviation acceptance')
+    })
+
+    test('auditor-loop system prompt does not duplicate the summary marker template (owned by buildSectionAuditPrompt)', () => {
+      expect(auditorLoopAgent.systemPrompt).not.toContain('section-summary:start')
     })
 
     test('auditor-loop final rules contain direct Whole-Change Impact Analysis with the four concrete categories', () => {

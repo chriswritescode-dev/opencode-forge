@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
+import { ParentLookupUndeterminedError } from '../src/utils/session-ancestry'
 
 describe('createSessionLoopResolver', () => {
   const mockLogger = {
@@ -7,6 +8,42 @@ describe('createSessionLoopResolver', () => {
     debug: () => {},
     error: () => {},
   }
+
+  describe('undetermined ancestry', () => {
+    it('stays unresolved instead of rejecting, so loop bookkeeping never breaks a tool call', async () => {
+      const getParentSessionId = async (sessionId: string): Promise<string | null> => {
+        throw new ParentLookupUndeterminedError(sessionId, 'host:not-found')
+      }
+
+      const resolver = createSessionLoopResolver({
+        loop: {
+          service: { resolveLoopName: () => null, getActiveState: () => null },
+          listActive: () => [],
+        },
+        getParentSessionId,
+        logger: mockLogger,
+      })
+
+      await expect(resolver.resolveActiveLoopForSession('session-unknown')).resolves.toBeNull()
+    })
+
+    it('still propagates a transient lookup failure', async () => {
+      const getParentSessionId = async (): Promise<string | null> => {
+        throw new Error('Unable to connect')
+      }
+
+      const resolver = createSessionLoopResolver({
+        loop: {
+          service: { resolveLoopName: () => null, getActiveState: () => null },
+          listActive: () => [],
+        },
+        getParentSessionId,
+        logger: mockLogger,
+      })
+
+      await expect(resolver.resolveActiveLoopForSession('session-unknown')).rejects.toThrow(/Unable to connect/)
+    })
+  })
 
   describe('direct resolution happy path', () => {
     it('returns active loop without consulting parent', async () => {

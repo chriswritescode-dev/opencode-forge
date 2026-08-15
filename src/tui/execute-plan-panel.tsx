@@ -1,6 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import type { SelectRenderable } from '@opentui/core'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
+import { claimFocusOnMount } from './focus'
 import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
@@ -62,6 +64,9 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     ?? resolveExecutionDialogDefaults(pluginConfig, initialSnapshot?.preferences ?? null)
 
   const hasInitialOverrides = () => props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
+
+  let selectRef: SelectRenderable | undefined
+  claimFocusOnMount(() => selectRef)
 
   const [executionModel, setExecutionModel] = createSignal(
     props.initialExecutionModel ?? initialDefaults.executionModel,
@@ -425,6 +430,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         <text fg={theme().text}><b>Configure and Run Plan</b></text>
       </box>
       <select
+        ref={(el) => { selectRef = el }}
         focused={true}
         selectedIndex={0}
         options={[

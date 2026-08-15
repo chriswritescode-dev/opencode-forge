@@ -96,7 +96,7 @@ describe('SandboxManager.ensureRunning', () => {
     // Advance beyond TTL so the next call performs a real state check
     vi.advanceTimersByTime(3_000)
 
-    // sbx suspends idle microVMs to `stopped`; `sbx exec` resumes them in place
+    // msb suspends idle microVMs to `stopped`; `msb exec` resumes them in place
     mockRuntime.getSandboxState = vi.fn(async () => 'stopped' as const)
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
@@ -126,7 +126,7 @@ describe('SandboxManager.ensureRunning', () => {
     await manager.ensureRunning('test-wt', '/tmp/project')
     vi.advanceTimersByTime(3_000)
 
-    // A failed `sbx ls` says nothing about the sandbox and must not destroy it
+    // A failed `msb ls` says nothing about the sandbox and must not destroy it
     mockRuntime.getSandboxState = vi.fn(async () => 'unknown' as const)
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
@@ -219,6 +219,8 @@ describe('SandboxManager.ensureRunning', () => {
 
     // Runtime removal fails: the container may still be live, so stop() must surface the failure
     // (callers that own the lifecycle can record it) while still cleaning up the in-memory entry.
+    // stop() queries state before removal, so it must confirm the sandbox exists first.
+    mockRuntime.getSandboxState = vi.fn(async () => 'running' as const)
     mockRuntime.removeSandbox = vi.fn(async () => {
       throw new Error('container removal failed')
     })

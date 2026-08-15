@@ -98,7 +98,7 @@ export interface ForgeLoopExtra {
   pendingAttachStartedAt?: number
   /** Whether the loop runs sandboxed. Written by the attach hook and remote launches; read on re-attach. */
   sandboxEnabled?: boolean
-  /** Docker container name when the loop runs sandboxed. */
+  /** msb container name when the loop runs sandboxed. */
   sandboxContainer?: string
 }
 
@@ -739,16 +739,7 @@ export async function attachLoopToSession(
 
         if (!waitResult.ready) {
           deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason}${waitResult.error ? `: ${waitResult.error}` : ''})`)
-          try {
-            const { createSbxRuntime } = await import('../sandbox/sbx')
-            const runtime = createSbxRuntime(deps.logger as unknown as Console)
-            const cn = runtime.sandboxContainerName(loopName)
-            if (await runtime.getSandboxState(cn) !== 'missing') {
-              await runtime.removeSandbox(cn)
-            }
-          } catch (cleanupErr) {
-            deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
-          }
+          await deps.sandboxManager.stop(loopName).catch((err) => deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', err))
           deps.loop.unregisterSessionReverseIndex(sessionId)
           deps.loop.service.deleteState(loopName)
           return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
@@ -1869,8 +1860,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (restartSandbox && deps.sandboxManager) {
         try {
-          const sbxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir)
-          deps.logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
+          const sandboxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir)
+          deps.logger.log(`loop-restart: started sandbox container ${sandboxResult.containerName}`)
         } catch (err) {
           deps.logger.error('loop-restart: failed to start sandbox container', err)
           return { ok: false, error: 'Restart failed: could not start sandbox container.' }

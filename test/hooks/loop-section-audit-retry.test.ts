@@ -122,6 +122,15 @@ describe('Loop Section Audit Retry', () => {
         ],
       })
       loopService.startSection(state.loopName, 0)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Found an issue',
+        loopName: state.loopName,
+        sectionIndex: 0,
+      })
 
       const { logger } = createCapturingLogger()
 
@@ -172,6 +181,15 @@ describe('Loop Section Audit Retry', () => {
         ],
       })
       loopService.startSection(state.loopName, 0)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Found an issue',
+        loopName: state.loopName,
+        sectionIndex: 0,
+      })
 
       loopService.incrementSectionAttempts(state.loopName, 0)
       const planBefore = loopService.getSectionPlan(state, 0)!
@@ -204,6 +222,106 @@ describe('Loop Section Audit Retry', () => {
       const after = loopService.getActiveState(state.loopName)!
       expect(after.currentSectionIndex).toBe(0)
       expect(after.totalSections).toBe(2)
+    })
+  })
+
+  describe('clean-but-no-summary re-prompt guard', () => {
+    test('audit with zero section bug findings and no summary block re-prompts the auditor instead of rotating', async () => {
+      // Unique loop/session: the re-prompt marks the module-global idle-gate
+      // awaiting-busy for this loop, which must not leak into other tests.
+      const state = makeState({ loopName: 'reprompt-loop-1', sessionId: 'reprompt-session-1', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+      loopService.setState(state.loopName, state)
+
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A' },
+          { index: 1, title: 'Section B', content: 'Content B' },
+        ],
+      })
+      loopService.startSection(state.loopName, 0)
+
+      const { logger } = createCapturingLogger()
+      const { client: forgeClient } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Everything looks fine.' }] }],
+        },
+      })
+      const getConfig = () => mockConfig as PluginConfig
+
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+        },
+      })
+
+      // Re-prompted the same audit session for the summary block; no rotation.
+      const repromptCall = (forgeClient.session.promptAsync as any).mock.calls.find(
+        (call: any) => call[0]?.parts?.some((p: any) => typeof p.text === 'string' && p.text.includes('section-summary block'))
+      )
+      expect(repromptCall).toBeDefined()
+      expect(repromptCall[0].sessionID).toBe(state.sessionId)
+
+      const plan = loopService.getSectionPlan(state, 0)!
+      expect(plan.attempts).toBe(0)
+      const after = loopService.getActiveState(state.loopName)!
+      expect(after.phase).toBe('auditing')
+      expect(after.currentSectionIndex).toBe(0)
+      expect(after.iteration).toBe(1)
+    })
+
+    test('second summary-less audit response falls back to dirty rotation (one re-prompt per round)', async () => {
+      const state = makeState({ loopName: 'reprompt-loop-2', sessionId: 'reprompt-session-2', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+      loopService.setState(state.loopName, state)
+
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A' },
+          { index: 1, title: 'Section B', content: 'Content B' },
+        ],
+      })
+      loopService.startSection(state.loopName, 0)
+
+      const { logger } = createCapturingLogger()
+      const { client: forgeClient } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Still no summary block.' }] }],
+        },
+      })
+      const getConfig = () => mockConfig as PluginConfig
+
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+
+      const idleEvent = {
+        event: {
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+        },
+      }
+
+      // First idle → re-prompt. Busy clears the awaiting-busy gate, then the
+      // re-prompted response comes back idle without a summary again.
+      await handler.onEvent(idleEvent)
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'busy' } },
+        },
+      })
+      await handler.onEvent(idleEvent)
+
+      // Fallback: dirty rotation consumed an iteration and incremented attempts.
+      const plan = loopService.getSectionPlan(state, 0)!
+      expect(plan.attempts).toBe(1)
+      const after = loopService.getActiveState(state.loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.currentSectionIndex).toBe(0)
     })
   })
 
@@ -334,6 +452,15 @@ describe('Loop Section Audit Retry', () => {
         ],
       })
       loopService.startSection(state.loopName, 0)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Found an issue',
+        loopName: state.loopName,
+        sectionIndex: 0,
+      })
 
       const { logger } = createCapturingLogger()
 

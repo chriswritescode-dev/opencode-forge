@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
@@ -38,7 +38,7 @@ describe('SandboxManager tool-output mount', () => {
 
     // Appears in workspaces as read-only
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
-    expect(workspaces).toContainEqual({ hostDir: resolved, readOnly: true })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync(resolved), containerDir: resolved, readOnly: true })
 
     const active = manager.getActive('test')
     expect(active?.mounts).toContainEqual({ hostDir: resolved, containerDir: resolved, readOnly: true })

@@ -9,7 +9,6 @@ export const SHELL_SHIM_FILENAME = 'forge-shell'
  * opencode `shell.env` plugin hook, so only agent shell commands are affected.
  */
 export const SHIM_ENV_CONTAINER = 'FORGE_SANDBOX_CONTAINER'
-export const SHIM_ENV_ENV_FILE = 'FORGE_SANDBOX_ENV_FILE'
 export const SHIM_ENV_HOST_SHELL = 'FORGE_HOST_SHELL'
 
 /**
@@ -38,15 +37,14 @@ export function buildShimScript(hostShell: string): string {
 # opencode's native bash tool is pointed at this script via the \`shell\` config
 # key. Forge's shell.env hook sets ${SHIM_ENV_CONTAINER} for sessions that belong
 # to an active sandbox loop, routing the command into the loop microVM via
-# \`sbx exec\`. All other sessions fall through to the host shell unchanged.
+# \`msb exec\`. All other sessions fall through to the host shell unchanged.
 #
-# Fail-closed: when a container is expected, any sbx failure surfaces as a
-# non-zero exit — the command must never silently run on the host instead.
+# Fail-closed: when a container is expected, any msb failure must surface as a
+# non-zero exit — the command must never silently run on the host instead. msb
+# exec propagates the guest command's exit code verbatim, so the bash tool keeps
+# seeing real exit statuses.
 if [ -n "\${${SHIM_ENV_CONTAINER}:-}" ]; then
-  if [ -n "\${${SHIM_ENV_ENV_FILE}:-}" ]; then
-    exec sbx exec --env-file "$${SHIM_ENV_ENV_FILE}" -w "$PWD" "$${SHIM_ENV_CONTAINER}" bash "$@"
-  fi
-  exec sbx exec -w "$PWD" "$${SHIM_ENV_CONTAINER}" bash "$@"
+  exec msb exec --quiet "$${SHIM_ENV_CONTAINER}" --no-tty -w "$PWD" -- bash "$@"
 fi
 exec "\${${SHIM_ENV_HOST_SHELL}:-${hostShell}}" "$@"
 `

@@ -1,7 +1,7 @@
 import type { Logger } from '../types'
 import type { LoopService } from '../loop/service'
 import { resolve } from 'path'
-import { findSessionAncestor } from '../utils/session-ancestry'
+import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 
 export interface SessionLoopResolverDeps {
   loop: {
@@ -42,7 +42,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
       // session is itself a sub-agent with no loop name, so a single hop is not
       // enough.
       let firstParentId: string | null = null
-      const ancestorState = await findSessionAncestor(sessionId, deps.getParentSessionId, (parentId, depth) => {
+      const ancestorState = await tolerateUndeterminedParent(findSessionAncestor(sessionId, deps.getParentSessionId, (parentId, depth) => {
         if (depth === 0) firstParentId = parentId
 
         deps.logger.debug(
@@ -56,7 +56,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
           return parentState
         }
         return null
-      })
+      }))
       if (ancestorState) return ancestorState
 
       if (firstParentId && deps.getSessionDirectory) {

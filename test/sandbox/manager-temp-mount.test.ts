@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync } from 'fs'
+import { mkdtempSync, realpathSync, rmSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
@@ -41,7 +41,7 @@ describe('SandboxManager temp mount', () => {
 
     // Appears in workspaces as read-write
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
-    expect(workspaces).toContainEqual({ hostDir: resolved, readOnly: false })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync(resolved), containerDir: resolved, readOnly: false })
 
     const active = manager.getActive('test')
     expect(active?.mounts).toContainEqual({ hostDir: resolved, containerDir: resolved, readOnly: false })
@@ -96,8 +96,9 @@ describe('SandboxManager temp mount', () => {
 
     const active = manager.getActive('test')
     const tmpResolved = resolve(tmpDir)
-    // The tmp dir overlaps the read-only tool-output mount (its ancestor) and arrives after it
-    // in priority order, so it is dropped — `sbx` rejects overlapping workspace paths.
+    // The tmp dir is a read-write descendant of the earlier read-only tool-output mount, so it
+    // conflicts: the read-only flag applies to the whole subtree, and a read-write descendant
+    // of a read-only ancestor never takes effect. It is therefore dropped in priority order.
     expect(active?.mounts).toContainEqual({ hostDir: resolve(root), containerDir: resolve(root), readOnly: true })
     expect(active?.mounts.some((m) => m.hostDir === tmpResolved)).toBe(false)
     expect(logger.log).toHaveBeenCalledWith(expect.stringMatching(/dropping workspace/))

@@ -593,6 +593,95 @@ describe('Loop Section Advancement', () => {
     })
   })
 
+  describe('Section checkpoint commits', () => {
+    function createFakeGitService(overrides: { statusStdout?: string } = {}) {
+      const commits: Array<{ cwd: string; message: string }> = []
+      const ok = { ok: true, status: 0, stdout: '', stderr: '' }
+      const git = {
+        addAll: () => ({ ...ok }),
+        statusPorcelain: () => ({ ...ok, stdout: overrides.statusStdout ?? ' M src/file.ts' }),
+        commit: (cwd: string, message: string) => {
+          commits.push({ cwd, message })
+          return { ...ok }
+        },
+        isPathTracked: () => false,
+      } as unknown as import('../../src/utils/git-service').GitService
+      return { git, commits }
+    }
+
+    function buildHandler(gitService: import('../../src/utils/git-service').GitService) {
+      const { client: forgeClient } = createFakeForgeClient({
+        session: { messages: async () => assistantMessage(sectionSummaryText('completed section 1 cleanly')) },
+      })
+      return createLoopEventHandler(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
+        forgeClient,
+        mockLogger,
+        () => mockConfig,
+        undefined,
+        tempDir,
+        undefined,
+        sectionPlansRepo,
+        undefined,
+        undefined,
+        undefined,
+        loopTransitionsRepo,
+        undefined,
+        undefined,
+        gitService,
+      )
+    }
+
+    test('a clean section advance commits a "section N: title" checkpoint in the worktree', async () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+
+      const { git, commits } = createFakeGitService()
+      const handler = buildHandler(git)
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { status: { type: 'idle' }, sessionID: 'sess-1' },
+        },
+      })
+
+      expect(commits).toHaveLength(1)
+      expect(commits[0].cwd).toBe(tempDir)
+      expect(commits[0].message).toBe('section 1: Section 1')
+
+      handler.clearAllRetryTimeouts()
+    })
+
+    test('no checkpoint commit when the worktree has no pending changes', async () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+
+      const { git, commits } = createFakeGitService({ statusStdout: '' })
+      const handler = buildHandler(git)
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { status: { type: 'idle' }, sessionID: 'sess-1' },
+        },
+      })
+
+      expect(commits).toHaveLength(0)
+
+      // The section still advanced — the checkpoint is bookkeeping, not a gate.
+      const after = loopService.getActiveState('test-loop')!
+      expect(after.currentSectionIndex).toBe(1)
+
+      handler.clearAllRetryTimeouts()
+    })
+  })
+
   describe('Cross-cutting: persisted transition log', () => {
     /**
      * Drive the real runtime via createLoopEventHandler and assert that each
@@ -662,6 +751,17 @@ describe('Loop Section Advancement', () => {
       insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, iteration: 1, max_iterations: 1 })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+      // An outstanding bug finding makes the audit genuinely dirty (a summary-less
+      // audit with zero findings would take the summary re-prompt path instead).
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Found an issue',
+        loopName: 'test-loop',
+        sectionIndex: 0,
+      })
 
       // Dirty audit text (no section-summary) routes through the section-dirty
       // branch, which calls nextIterationOrTerminate; the cap terminates the

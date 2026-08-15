@@ -45,10 +45,11 @@ describe('loadPrompt', () => {
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  test('auditor-loop-addendum contains the literal section-summary markers', () => {
+  test('auditor-loop-addendum references the summary block without hand-writing the markers (single template owner is prompts.ts)', () => {
     const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
-    expect(prompt).toContain(SECTION_SUMMARY_START_MARKER)
-    expect(prompt).toContain(SECTION_SUMMARY_END_MARKER)
+    expect(prompt).toContain('section-summary block')
+    expect(prompt).not.toContain(SECTION_SUMMARY_START_MARKER)
+    expect(prompt).not.toContain(SECTION_SUMMARY_END_MARKER)
   })
 
   test('auditor-loop-addendum requires remediation guidance for blocking findings', () => {

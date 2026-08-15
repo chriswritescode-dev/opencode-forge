@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync, chmodSync } from 'fs'
+import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync, chmodSync, rmSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import solidPlugin from '@opentui/solid/bun-plugin'
@@ -6,6 +6,10 @@ import { buildDashboardApp } from './build-dashboard-app'
 
 const packageJsonPath = join(__dirname, '..', 'package.json')
 const versionPath = join(__dirname, '..', 'src', 'version.ts')
+
+const distDir = join(__dirname, '..', 'dist')
+rmSync(distDir, { recursive: true, force: true })
+console.log(`Cleaned ${distDir}`)
 
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
 const version = packageJson.version as string
@@ -36,6 +40,21 @@ execSync('tsc -p tsconfig.build.json', {
   cwd: join(__dirname, '..'),
   stdio: 'inherit'
 })
+
+console.log('Bundling server plugin...')
+const serverResult = await Bun.build({
+  entrypoints: [join(__dirname, '..', 'src', 'index.ts')],
+  outdir: join(__dirname, '..', 'dist'),
+  target: 'node',
+  external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', 'solid-js'],
+})
+
+if (!serverResult.success) {
+  for (const log of serverResult.logs) {
+    console.error(log)
+  }
+  process.exit(1)
+}
 
 console.log('Compiling TUI plugin...')
 const result = await Bun.build({

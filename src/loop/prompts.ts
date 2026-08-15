@@ -23,6 +23,24 @@ export interface PromptContext {
   getFindingRecurrence(loopName?: string): Map<string, number>
 }
 
+/**
+ * The one and only section-summary block template shown to the loop auditor.
+ * The loop runner parses this block mechanically (parseSectionSummary), so the
+ * template must never be hand-written elsewhere — prompt markdown files refer
+ * to it, they do not restate it.
+ */
+const SECTION_SUMMARY_TEMPLATE = `${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}`
+
+/**
+ * One-shot follow-up sent to the audit session when it reported no blocking
+ * findings for the section but omitted (or malformed) the section-summary
+ * block. Without the block the section counts as dirty and a full coder
+ * iteration is wasted on nothing.
+ */
+export function buildSectionSummaryRepromptText(): string {
+  return `Your previous audit response did not include a parseable section-summary block, and no blocking bug findings are recorded for this section.\n\n- If the section is clear: reply with ONLY the section-summary block below, reproducing the marker comments exactly.\n${SECTION_SUMMARY_TEMPLATE}\n- If the section is NOT clear: persist each blocking issue with review-write (severity: bug) and do not include the summary block.`
+}
+
 function formatSectionsSummary(digest: SectionDigestEntry[]): string {
   return digest.map(s => {
     let parts = `## Section ${s.index + 1}: ${s.title}`
@@ -300,7 +318,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
 
   header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
 
-  header += `\n\n---\nAudit instructions:\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear, end your response with:\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}\n- If the completed work shows the plan can no longer achieve its objective as written, call \`plan-adjust\` with a rationale: pass \`currentSection\` to revise this section in place (write bug findings too if the existing work no longer satisfies it), and/or \`sections\` to replace the remaining sections. Never use it to relax acceptance criteria or verification; the objective is immutable. Prefer finishing the plan as written when viable.`
+  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules, then end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}\n- If the plan can no longer achieve its objective as written, call \`plan-adjust\` per your Adaptive plan adjustment rules. Never use it to relax acceptance criteria or verification; the objective is immutable. Prefer finishing the plan as written when viable.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {
@@ -418,7 +436,7 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
 
   header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
 
-  header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
+  header += `\n\n---\nFinal audit instructions:\n- Review scope: the loop's full accumulated changes — every \`section <N>:\` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes.\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {

@@ -10,7 +10,7 @@ import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger, slugify } from './utils/logger'
-import { createSbxRuntime, describeSbxUnavailable } from './sandbox/sbx'
+import { createMsbRuntime, describeMsbUnavailable } from './sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs } from './sandbox/context'
@@ -33,6 +33,7 @@ import type { ToolContext } from './tools'
 import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 
 import { LRUCache } from './utils/lru-cache'
+import { ParentLookupUndeterminedError } from './utils/session-ancestry'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createUnifiedSandboxResolver } from './services/unified-sandbox-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
@@ -53,10 +54,7 @@ export interface CreateParentSessionLookupOptions {
   directory: string
   loop: import('./loop').Loop
   logger: ReturnType<typeof createLogger>
-  negativeTtlMs?: number
 }
-
-const PARENT_LOOKUP_NEGATIVE_TTL_MS = 15000
 
 type SessionLookupAttempt = { label: string; directory?: string; input: Record<string, unknown> }
 
@@ -94,20 +92,12 @@ export function createParentSessionLookup({
   directory,
   loop,
   logger,
-  negativeTtlMs = PARENT_LOOKUP_NEGATIVE_TTL_MS,
 }: CreateParentSessionLookupOptions): (sessionId: string) => Promise<string | null> {
   const cache = new LRUCache<string | null>(500)
-  const negativeCache = new Map<string, number>()
 
-    return async (sessionId: string): Promise<string | null> => {
+  return async (sessionId: string): Promise<string | null> => {
     if (cache.has(sessionId)) {
       return cache.get(sessionId) ?? null
-    }
-
-    const negExpiry = negativeCache.get(sessionId)
-    if (negExpiry !== undefined) {
-      if (negExpiry > Date.now()) return null
-      negativeCache.delete(sessionId)
     }
 
     const attempts = buildSessionLookupAttempts(sessionId, directory, loop)
@@ -124,9 +114,9 @@ export function createParentSessionLookup({
         }
         failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:empty`)
       } catch (err) {
-        // Only definitive absence (a not-found response) is treated as a negative
-        // result. Transient failures (connection/unavailable/request) propagate so
-        // sandbox routing fails closed instead of caching a false "no parent".
+        // A not-found on one attempt is not absence: a later attempt (another worktree) may still
+        // resolve the session, so only this attempt is recorded. Every other failure
+        // (connection/unavailable/request) propagates immediately.
         if (err instanceof ForgeClientError && err.kind === 'not-found') {
           failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:not-found`)
           continue
@@ -135,11 +125,13 @@ export function createParentSessionLookup({
       }
     }
 
-    negativeCache.set(sessionId, Date.now() + negativeTtlMs)
-    if (failures.length > 0) {
-      logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${failures.join('; ')}`)
-    }
-    return null
+    // Exhausting every attempt means the parent is unknown, not absent. Returning null here would
+    // read as "no parent" and let a sandboxed session's sub-agent run on the host; throwing makes
+    // routing fail closed. Deliberately not cached: like any other lookup failure it must be
+    // retried, so a session that becomes readable resolves on the very next call.
+    const detail = failures.join('; ')
+    logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${detail}`)
+    throw new ParentLookupUndeterminedError(sessionId, detail)
   }
 }
 
@@ -155,14 +147,16 @@ interface SessionSandboxIdentity {
   directory: string
 }
 
+const SESSION_IDENTITY_NEGATIVE_TTL_MS = 15000
+
 function createSessionIdentityLookup({
   client,
   directory,
   loop,
-  negativeTtlMs = PARENT_LOOKUP_NEGATIVE_TTL_MS,
+  negativeTtlMs = SESSION_IDENTITY_NEGATIVE_TTL_MS,
 }: CreateSessionDirectoryLookupOptions, requireProjectId = true): (sessionId: string) => Promise<SessionSandboxIdentity | null> {
   const cache = new LRUCache<SessionSandboxIdentity>(500)
-  const negativeCache = new Map<string, number>()
+  const negativeCache = new LRUCache<number>(500)
 
   return async (sessionId: string): Promise<SessionSandboxIdentity | null> => {
     if (cache.has(sessionId)) {
@@ -306,13 +300,25 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
 
-    for (const warning of collectLegacySandboxConfigWarnings(config.sandbox as unknown)) {
-      logger.log(warning)
-    }
-
     const forgeClient = createForgeClientFromPluginInput(input)
 
     const dataDir = config.dataDir || resolveDataDir()
+
+    const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox as unknown)
+    for (const warning of legacySandboxWarnings) {
+      logger.log(warning)
+    }
+    if (legacySandboxWarnings.length > 0 && !isForgeWorktreeDir(dataDir, directory)) {
+      publishToast({
+        client: forgeClient,
+        directory,
+        logger,
+        title: 'Forge sandbox config',
+        message: legacySandboxWarnings.join(' '),
+        variant: 'warning',
+        duration: 10_000,
+      })
+    }
 
     emitLoopPermissionConfigWarnings(config, dataDir, directory, {
       logger,
@@ -330,7 +336,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    const runtime = createSbxRuntime(logger)
+    const runtime = createMsbRuntime(logger)
     if (!isSandboxConfigEnabled(config)) {
       logger.log('Sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
@@ -338,7 +344,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       try {
         sandboxManager = createSandboxManager(runtime, {
           image: config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE,
-          dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
           tmpDir: resolveOpencodeTmpDir(),
           sourceProjectDir: projectRoot,
@@ -351,22 +356,21 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }, logger, defaultGitService)
         logger.log('Sandbox manager initialized')
       } catch (err) {
-        logger.error('Failed to initialize sbx sandbox manager', err)
+        logger.error('Failed to initialize msb sandbox manager; refusing to run worktree-only while sandbox is enabled', err)
+        throw err
       }
     }
 
     // Sandbox shell routing: opencode's native bash tool is pointed at a shim (via the `shell`
     // config key) that routes commands into the loop container when the shell.env hook injects
     // the container name. Without a working shim there is no safe way to route sandbox loop
-    // commands, so degrade to worktree-only mode rather than silently executing on the host.
-    // Known ceiling: the shim is POSIX sh, so Windows hosts run worktree-only; a cmd/pwsh shim
-    // would be the upgrade path.
+    // commands, so refuse to start with the sandbox enabled rather than silently executing on
+    // the host. The shim is POSIX sh, so Windows hosts (no shim) fail closed too.
     let shellShimPath: string | null = null
     if (sandboxManager) {
       shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger)
       if (!shellShimPath) {
-        logger.error('Sandbox shell shim unavailable; falling back to worktree-only mode')
-        sandboxManager = null
+        throw new Error('Sandbox shell shim unavailable on this host; refusing to run worktree-only mode while sandbox is enabled')
       }
     }
     // The shell the user had configured before forge overrode `shell` with the shim; injected
@@ -391,7 +395,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
                 directory,
                 logger,
                 title: 'Sandbox unavailable',
-                message: describeSbxUnavailable(available),
+                message: describeMsbUnavailable(available),
                 variant: 'warning',
                 duration: 10_000,
               })
@@ -490,7 +494,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory, defaultGitService)
 
     const promptsDir = resolvePromptsDir()
     const agents = buildAgents(promptsDir)
@@ -665,7 +669,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // Tells the agent its tool calls run in a container. Driven by the same resolver as bash so
     // the note appears for sandbox loops, their subagents, and host-sandbox sessions alike.
     const sandboxMessageHook = createSandboxMessageHook({
-      resolveSandboxForSession: (sessionID) => resolveSandboxForSession(sessionID),
+      resolveSandboxForSession: (sessionID, opts) => resolveSandboxForSession(sessionID, opts),
       logger,
     })
 

@@ -40,6 +40,6 @@ describe('detectGitMount', () => {
     const calls = mockRuntime.getCreateSandboxCalls()
     expect(calls.length).toBe(1)
     // No git mount should be present — only the identical-path worktree workspace remains
-    expect(calls[0][1]).toEqual([{ hostDir: '/some/project', readOnly: undefined }])
+    expect(calls[0][1]).toEqual([{ hostDir: '/some/project', containerDir: '/some/project', readOnly: undefined }])
   })
 })
