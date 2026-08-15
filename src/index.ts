@@ -675,7 +675,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // Tells the agent its tool calls run in a container. Driven by the same resolver as bash so
     // the note appears for sandbox loops, their subagents, and host-sandbox sessions alike.
     const sandboxMessageHook = createSandboxMessageHook({
-      resolveSandboxForSession: (sessionID) => resolveSandboxForSession(sessionID),
+      resolveSandboxForSession: (sessionID, opts) => resolveSandboxForSession(sessionID, opts),
       logger,
     })
 
