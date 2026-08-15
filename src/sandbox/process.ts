@@ -13,6 +13,11 @@ export interface RunCommandOpts {
   stdin?: string
   logger: Logger
   logLabel?: string
+  /**
+   * Receives raw stdout/stderr chunks as they arrive, for callers that must show
+   * live progress for a long command. The buffered `CommandResult` is unaffected.
+   */
+  onOutput?: (chunk: string) => void
 }
 
 const DEFAULT_TIMEOUT = 120000
@@ -77,11 +82,15 @@ export function runCommand(command: string, args: string[], opts: RunCommandOpts
     }
 
     child.stdout!.on('data', (data: Buffer) => {
-      stdout += data.toString()
+      const chunk = data.toString()
+      stdout += chunk
+      opts.onOutput?.(chunk)
     })
 
     child.stderr!.on('data', (data: Buffer) => {
-      stderr += data.toString()
+      const chunk = data.toString()
+      stderr += chunk
+      opts.onOutput?.(chunk)
     })
 
     if (opts.stdin) {

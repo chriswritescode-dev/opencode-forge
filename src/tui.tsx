@@ -7,11 +7,9 @@ import { resolveForgeDbPath, resolveDataDir } from './storage'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
-import { createMsbRuntime } from './sandbox/msb'
-import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE } from './sandbox/template'
-import { runCommand } from './sandbox/process'
+import { DEFAULT_SANDBOX_IMAGE } from './sandbox/template'
+import { SandboxBuildDialog } from './tui/sandbox-build-dialog'
 import { isSandboxConfigEnabled } from './sandbox/context'
-import { tmpdir } from 'os'
 import { existsSync } from 'fs'
 import { resolveLoopPermissionOptions } from './constants/loop'
 import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnings'
@@ -232,92 +230,6 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
   )
 }
 
-function SandboxBuildDialog(props: {
-  api: TuiPluginApi
-  buildContextDir: string
-  image: string
-  browserControl: boolean
-}) {
-  const theme = () => props.api.theme.current
-
-  const doBuild = async () => {
-    props.api.ui.dialog.clear()
-    props.api.ui.toast({ message: `Building sandbox template ${props.image}...`, variant: 'info', duration: 5000 })
-
-    const logger = { log: () => {}, error: () => {}, debug: () => {} }
-
-    try {
-      await buildAndLoadSandboxTemplate(props.buildContextDir, props.image, {
-        runCommand,
-        loadTemplate: (tar, ref) => createMsbRuntime(logger).loadTemplate(tar, ref),
-        logger,
-        tmpDir: tmpdir(),
-      }, { browserControl: props.browserControl })
-      props.api.ui.toast({
-        message: `Sandbox template ${props.image} built and loaded successfully`,
-        variant: 'success',
-        duration: 5000,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      props.api.ui.toast({ message, variant: 'error', duration: 10_000 })
-    }
-  }
-
-  return (
-    <box flexDirection="column" paddingX={2}>
-      <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
-        <text fg={theme().text}>
-          <b>Build sandbox template</b>
-        </text>
-      </box>
-
-      <box paddingBottom={1}>
-        <text fg={theme().textMuted}>
-          This builds the sandbox image with Docker, then loads it into msb.
-        </text>
-      </box>
-      <box paddingBottom={1}>
-        <text fg={theme().textMuted}>Image: {props.image}</text>
-      </box>
-      <box paddingBottom={1}>
-        <text fg={theme().textMuted}>Context: {props.buildContextDir}</text>
-      </box>
-      <box paddingBottom={1}>
-        <text fg={theme().textMuted}>Browser Control: {props.browserControl ? 'included' : 'excluded'}</text>
-      </box>
-
-      <box paddingTop={1} paddingX={1} flexShrink={0}>
-        <select
-          focused={true}
-          selectedIndex={0}
-          options={[
-            { name: 'Build', description: 'Press enter to build the sandbox image', value: 'build' },
-            { name: 'Cancel', description: 'Press enter to close this dialog', value: 'cancel' },
-          ]}
-          onSelect={(_, option) => {
-            if (option?.value === 'build') {
-              void doBuild()
-              return
-            }
-            if (option?.value === 'cancel') {
-              props.api.ui.dialog.clear()
-            }
-          }}
-          showDescription={true}
-          itemSpacing={1}
-          wrapSelection={true}
-          textColor={theme().text}
-          focusedTextColor={theme().text}
-          selectedTextColor="#ffffff"
-          selectedBackgroundColor={theme().borderActive}
-          minHeight={4}
-          flexShrink={0}
-        />
-      </box>
-    </box>
-  )
-}
 
 const id = 'oc-forge'
 
