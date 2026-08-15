@@ -33,6 +33,7 @@ import type { ToolContext } from './tools'
 import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 
 import { LRUCache } from './utils/lru-cache'
+import { ParentLookupUndeterminedError } from './utils/session-ancestry'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createUnifiedSandboxResolver } from './services/unified-sandbox-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
@@ -53,10 +54,7 @@ export interface CreateParentSessionLookupOptions {
   directory: string
   loop: import('./loop').Loop
   logger: ReturnType<typeof createLogger>
-  negativeTtlMs?: number
 }
-
-const PARENT_LOOKUP_NEGATIVE_TTL_MS = 15000
 
 type SessionLookupAttempt = { label: string; directory?: string; input: Record<string, unknown> }
 
@@ -94,20 +92,12 @@ export function createParentSessionLookup({
   directory,
   loop,
   logger,
-  negativeTtlMs = PARENT_LOOKUP_NEGATIVE_TTL_MS,
 }: CreateParentSessionLookupOptions): (sessionId: string) => Promise<string | null> {
   const cache = new LRUCache<string | null>(500)
-  const negativeCache = new Map<string, number>()
 
-    return async (sessionId: string): Promise<string | null> => {
+  return async (sessionId: string): Promise<string | null> => {
     if (cache.has(sessionId)) {
       return cache.get(sessionId) ?? null
-    }
-
-    const negExpiry = negativeCache.get(sessionId)
-    if (negExpiry !== undefined) {
-      if (negExpiry > Date.now()) return null
-      negativeCache.delete(sessionId)
     }
 
     const attempts = buildSessionLookupAttempts(sessionId, directory, loop)
@@ -124,9 +114,9 @@ export function createParentSessionLookup({
         }
         failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:empty`)
       } catch (err) {
-        // Only definitive absence (a not-found response) is treated as a negative
-        // result. Transient failures (connection/unavailable/request) propagate so
-        // sandbox routing fails closed instead of caching a false "no parent".
+        // A not-found on one attempt is not absence: a later attempt (another worktree) may still
+        // resolve the session, so only this attempt is recorded. Every other failure
+        // (connection/unavailable/request) propagates immediately.
         if (err instanceof ForgeClientError && err.kind === 'not-found') {
           failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:not-found`)
           continue
@@ -135,11 +125,13 @@ export function createParentSessionLookup({
       }
     }
 
-    negativeCache.set(sessionId, Date.now() + negativeTtlMs)
-    if (failures.length > 0) {
-      logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${failures.join('; ')}`)
-    }
-    return null
+    // Exhausting every attempt means the parent is unknown, not absent. Returning null here would
+    // read as "no parent" and let a sandboxed session's sub-agent run on the host; throwing makes
+    // routing fail closed. Deliberately not cached: like any other lookup failure it must be
+    // retried, so a session that becomes readable resolves on the very next call.
+    const detail = failures.join('; ')
+    logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${detail}`)
+    throw new ParentLookupUndeterminedError(sessionId, detail)
   }
 }
 
@@ -155,14 +147,16 @@ interface SessionSandboxIdentity {
   directory: string
 }
 
+const SESSION_IDENTITY_NEGATIVE_TTL_MS = 15000
+
 function createSessionIdentityLookup({
   client,
   directory,
   loop,
-  negativeTtlMs = PARENT_LOOKUP_NEGATIVE_TTL_MS,
+  negativeTtlMs = SESSION_IDENTITY_NEGATIVE_TTL_MS,
 }: CreateSessionDirectoryLookupOptions, requireProjectId = true): (sessionId: string) => Promise<SessionSandboxIdentity | null> {
   const cache = new LRUCache<SessionSandboxIdentity>(500)
-  const negativeCache = new Map<string, number>()
+  const negativeCache = new LRUCache<number>(500)
 
   return async (sessionId: string): Promise<SessionSandboxIdentity | null> => {
     if (cache.has(sessionId)) {

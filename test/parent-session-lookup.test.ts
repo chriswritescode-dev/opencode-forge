@@ -3,6 +3,7 @@ import { createParentSessionLookup } from '../src/index'
 import type { Logger } from '../src/types'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { ForgeClientError } from '../src/client/port'
+import { ParentLookupUndeterminedError } from '../src/utils/session-ancestry'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -43,56 +44,65 @@ describe('createParentSessionLookup', () => {
     expect(result2).toBe(parentId)
   })
 
-  test('negative result is cached for TTL then retried', async () => {
-    const sessionId = 'session-fail'
+  test('a session with no parent is definitive absence, not an undetermined lookup', async () => {
     const { client } = createFakeForgeClient({
       session: {
-        get: async () => { throw new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' }) },
+        get: async () => ({ id: 'session-root' }),
       },
     })
     const loop = createMockLoop([])
 
-    const lookup = createParentSessionLookup({
-      client,
-      directory: '/host',
-      loop: loop as any,
-      logger: mockLogger,
-      negativeTtlMs: 100,
-    })
+    const lookup = createParentSessionLookup({ client, directory: '/host', loop: loop as any, logger: mockLogger })
 
-    const result1 = await lookup(sessionId)
-    expect(result1).toBeNull()
-
-    const result2 = await lookup(sessionId)
-    expect(result2).toBeNull()
-
-    await new Promise((resolve) => setTimeout(resolve, 150))
-
-    const result3 = await lookup(sessionId)
-    expect(result3).toBeNull()
+    // A readable root session genuinely has no parent, so it must resolve to null rather than
+    // failing closed; otherwise every ordinary top-level session would lose its shell.
+    expect(await lookup('session-root')).toBeNull()
   })
 
-  test('first call fails, second call succeeds after TTL expiry', async () => {
-    const sessionId = 'session-mixed'
+  test('an unreadable session rejects instead of reporting "no parent"', async () => {
+    const sessionId = 'session-fail'
+    let calls = 0
     const { client } = createFakeForgeClient({
       session: {
-        get: async () => { throw new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' }) },
+        get: async () => {
+          calls++
+          throw new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' })
+        },
       },
     })
     const loop = createMockLoop([])
 
-    const lookup = createParentSessionLookup({
-      client,
-      directory: '/host',
-      loop: loop as any,
-      logger: mockLogger,
-      negativeTtlMs: 50,
+    const lookup = createParentSessionLookup({ client, directory: '/host', loop: loop as any, logger: mockLogger })
+
+    // Returning null would read as "no parent", which sandbox routing treats as "not a descendant
+    // of the sandboxed session" and silently runs the command on the host.
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
+    expect(calls).toBe(1)
+
+    // The failure is not cached, so it can never harden into a lasting wrong answer.
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
+    expect(calls).toBe(2)
+  })
+
+  test('a session that becomes readable resolves on the very next call', async () => {
+    const sessionId = 'session-race'
+    let calls = 0
+    const { client } = createFakeForgeClient({
+      session: {
+        get: async () => {
+          calls++
+          if (calls === 1) throw new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' })
+          return { parentID: 'parent-x' }
+        },
+      },
     })
+    const loop = createMockLoop([])
 
-    const result1 = await lookup(sessionId)
-    expect(result1).toBeNull()
+    const lookup = createParentSessionLookup({ client, directory: '/host', loop: loop as any, logger: mockLogger })
 
-    await new Promise((resolve) => setTimeout(resolve, 60))
+    // A sub-agent whose session record is not queryable yet fails closed for that one call only.
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
+    expect(await lookup(sessionId)).toBe('parent-x')
   })
 
   test('transient session.get failures propagate instead of being cached as absence', async () => {
@@ -172,7 +182,6 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loop as any,
       logger: mockLogger,
-      negativeTtlMs: 10,
     })
 
     const result = await lookup(sessionId)

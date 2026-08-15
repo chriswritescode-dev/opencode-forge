@@ -39,7 +39,7 @@ import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
 import { selectSessionBestEffort } from '../utils/tui-navigation'
-import { findSessionAncestor } from '../utils/session-ancestry'
+import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { parseCoderDecisions } from '../utils/coder-decisions'
@@ -378,11 +378,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (!getParentSessionId) return null
 
-    return findSessionAncestor(sessionId, getParentSessionId, (parentId) => {
+    return tolerateUndeterminedParent(findSessionAncestor(sessionId, getParentSessionId, (parentId) => {
       const parentLoop = loopService.resolveLoopName(parentId)
       if (parentLoop) return parentLoop
       return sessionToLoop.get(parentId) ?? null
-    })
+    }))
   }
 
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })

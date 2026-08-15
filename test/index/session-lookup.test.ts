@@ -19,6 +19,7 @@ vi.mock('../../src/storage', () => ({
 }))
 
 const { createParentSessionLookup, createSessionDirectoryLookup } = await import('../../src/index')
+const { ParentLookupUndeterminedError } = await import('../../src/utils/session-ancestry')
 
 function createMockLogger() {
   return {
@@ -64,10 +65,9 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
-      negativeTtlMs: 50,
     })
 
-    await lookup(sessionId)
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
 
     const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(3)
@@ -104,10 +104,9 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
-      negativeTtlMs: 50,
     })
 
-    await lookup(sessionId)
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
 
     const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(5)
@@ -118,7 +117,7 @@ describe('createParentSessionLookup', () => {
     expect(calls[4]).toEqual({ sessionID: sessionId, directory: '/host' })
   })
 
-  it('failure is logged once per sessionId within negative-TTL window', async () => {
+  it('every unreadable lookup is logged and retried rather than cached as absence', async () => {
     const sessionId = 'ses-3'
     const { client } = createFakeForgeClient({
       session: {
@@ -136,14 +135,16 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loopService as any,
       logger: logger as any,
-      negativeTtlMs: 1000,
     })
 
-    await lookup(sessionId)
-    await lookup(sessionId)
-    await lookup(sessionId)
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
 
-    expect(logger.log).toHaveBeenCalledTimes(1)
+    // Caching the failure would freeze a momentary lookup race into a lasting wrong answer, so
+    // each call re-attempts every candidate directory (3 attempts per call).
+    expect(client.session.get).toHaveBeenCalledTimes(9)
+    expect(logger.log).toHaveBeenCalledTimes(3)
     expect(logger.log).toHaveBeenCalledWith(
       expect.stringContaining(`[session-resolver] session.get failed for ${sessionId}`)
     )
@@ -166,7 +167,6 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
-      negativeTtlMs: 50,
     })
 
     const result1 = await lookup(sessionId)
@@ -193,7 +193,6 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
-      negativeTtlMs: 50,
     })
 
     const result = await lookup(sessionId)
@@ -224,10 +223,9 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
-      negativeTtlMs: 50,
     })
 
-    await lookup(sessionId)
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
 
     const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(2)
@@ -239,49 +237,6 @@ describe('createParentSessionLookup', () => {
       sessionID: sessionId,
       directory: '/host',
     })
-  })
-
-  it('negative cache TTL is 15s by default', async () => {
-    const sessionId = 'ses-ttl'
-    const { client } = createFakeForgeClient({
-      session: {
-        get: async () => { throw notFoundErr() },
-      },
-    })
-
-    const loopService = createMockLoop([
-      { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
-    ])
-    const logger = createMockLogger()
-
-    const originalNow = Date.now
-    let now = 1000
-    vi.spyOn(Date, 'now').mockImplementation(() => now)
-
-    try {
-      const lookup = createParentSessionLookup({
-        client,
-        directory: '/host',
-        loop: loopService as any,
-        logger: logger as any,
-      })
-
-      // First call: sets negative cache entry at 1000 + 15000 = 16000
-      // 3 attempts: loop:/wt (workspace), loop-ws:test-loop, host
-      await lookup(sessionId)
-      expect(client.session.get).toHaveBeenCalledTimes(3)
-
-      // Second call within TTL (now still 1000): returns null without re-attempting
-      await lookup(sessionId)
-      expect(client.session.get).toHaveBeenCalledTimes(3) // no additional calls
-
-      // Third call after TTL expires (now = 17000 > 16000): re-attempts
-      now = 17000
-      await lookup(sessionId)
-      expect(client.session.get).toHaveBeenCalledTimes(6) // 3 more calls
-    } finally {
-      vi.restoreAllMocks()
-    }
   })
 
   it('no log noise on zero-attempt empty path', async () => {
@@ -303,11 +258,9 @@ describe('createParentSessionLookup', () => {
       directory: '/host',
       loop: loopService as any,
       logger: logger as any,
-      negativeTtlMs: 50,
     })
 
-    const result = await lookup(sessionId)
-    expect(result).toBeNull()
+    await expect(lookup(sessionId)).rejects.toBeInstanceOf(ParentLookupUndeterminedError)
     // Only host directory attempt is made because active loop worktreeDir is empty
     expect(client.session.get).toHaveBeenCalledTimes(1)
     expect(client.session.get).toHaveBeenCalledWith({
