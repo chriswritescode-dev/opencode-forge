@@ -47,7 +47,7 @@ bunx opencode-forge --link        # re-export shim for the current build
 bunx opencode-forge --vendor      # self-contained copy (portable)
 ```
 
-From a source checkout, use `pnpm setup --link` or `pnpm setup --vendor`. Both modes also write the `tui.json` `plugin` entry automatically — opencode does not auto-load the TUI plugin from the plugin directory, so the plugin directory alone cannot enable the sidebar and execution dialog. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
+From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`. Both modes also write the `tui.json` `plugin` entry automatically — opencode does not auto-load the TUI plugin from the plugin directory, so the plugin directory alone cannot enable the sidebar and execution dialog. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
 
 | | `--link` | `--vendor` |
 | --- | --- | --- |
@@ -70,7 +70,7 @@ Forge ships two plugin entrypoints plus standalone management surfaces:
 
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
-- **Installer CLI** — a standalone CLI accessible via `bunx opencode-forge` or `pnpm setup` (from a source checkout) for installing/upgrading bundled prompts and skills, and for installing the plugin itself into opencode's plugin directory (`--link`/`--vendor`/`--unlink`).
+- **Installer CLI** — a standalone CLI accessible via `bunx opencode-forge` or `pnpm run setup` (from a source checkout) for installing/upgrading bundled prompts and skills, and for installing the plugin itself into opencode's plugin directory (`--link`/`--vendor`/`--unlink`).
 - **Dashboard** — a read-only observability interface launchable from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only).
 
 The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on the sidebar and execution dialog.
@@ -233,7 +233,7 @@ Flags for non-interactive use:
 | `-n`, `--dry-run` | Show what would change without writing anything |
 | `--no-prune` | Only report orphaned files; never delete them |
 
-From a checkout, the same tool is available as `pnpm setup` (runs `bun src/install/cli.ts`).
+From a checkout, the same tool is available as `pnpm run setup` (runs `bun src/install/cli.ts`). The `run` is required — `setup` is a built-in pnpm command, so `pnpm setup` never reaches this script.
 
 Enable `logging.enabled` to write logs to disk. To use the default log path, omit `logging.file` or set it to `null` (an empty string is not treated as a default). Set `logging.debug` for more verbose output.
 

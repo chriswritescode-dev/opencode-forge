@@ -316,7 +316,7 @@ Run the bundled installer for deliberate (re)installation, conflict resolution, 
 
 ```bash
 bunx opencode-forge        # or: npx opencode-forge
-pnpm setup                 # from a checkout
+pnpm run setup             # from a checkout
 ```
 
 | Flag | Behavior |
@@ -339,7 +339,7 @@ The installer can also write the plugin itself into opencode's plugin directory,
 | `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6 MB) and writes the shim with the relative target `./opencode-forge/dist/index.js`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
 | `--unlink` | Removes the shim, the vendored directory, and the `tui.json` entry. |
 
-From a source checkout the same flags are `pnpm setup --link`, `pnpm setup --vendor`, and `pnpm setup --unlink`. In a non-interactive shell, `--link` and `--vendor` still require one of `-y`, `-f`, or `-k`, matching every other non-interactive use of the installer.
+From a source checkout the same flags are `pnpm run setup --link`, `pnpm run setup --vendor`, and `pnpm run setup --unlink` (the `run` is required — `setup` is a built-in pnpm command). In a non-interactive shell, `--link` and `--vendor` still require one of `-y`, `-f`, or `-k`, matching every other non-interactive use of the installer.
 
 Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loading](#server-vs-tui-loading)).
 

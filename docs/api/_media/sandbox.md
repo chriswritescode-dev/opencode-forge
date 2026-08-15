@@ -254,5 +254,9 @@ The mount is read-only because the setting exists to grant read access. To make 
 | Option | Default | msb flag |
 |---|---:|---|
 | `sandbox.resources.memory` | `"8g"` | `msb create -m` |
+| `sandbox.resources.maxMemory` | unset | `msb create --max-memory` |
 | `sandbox.resources.cpus` | `"4"` | `msb create -c` (integer-only) |
+| `sandbox.resources.maxCpus` | unset | `msb create --max-cpus` (integer-only) |
 | `sandbox.resources.dockerDisk` | `"16g"` | `msb create --mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>` |
+
+`memory` and `cpus` are what the microVM boots with. `maxMemory` and `maxCpus` are boot-time ceilings the guest can grow into; leaving them unset pins the sandbox at its boot allocation, which is why `msb inspect` reports identical `Memory` and `Max Memory` by default. Set a small boot allocation with a large ceiling (for example `memory: "2g"` with `maxMemory: "16g"`) to keep idle sandboxes cheap while still allowing a heavy build to expand. msb rejects a ceiling below the boot allocation and the sandbox fails to create, so keep `maxMemory` >= `memory` and `maxCpus` >= `cpus`.

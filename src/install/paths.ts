@@ -110,7 +110,7 @@ export const VENDORED_ASSETS: readonly string[] = ['package.json', 'forge-config
 /**
  * Ordered candidates for the built server entry. The first hits a published/built
  * layout where this module lives in `dist/`; the second covers running the
- * installer from source (`pnpm setup` runs `bun src/install/cli.ts`, so
+ * installer from source (`pnpm run setup` runs `bun src/install/cli.ts`, so
  * `resolvePluginDir()` is `src/`) where the real entry is the sibling `dist/index.js`.
  */
 export function resolveServerEntryCandidates(): string[] {
