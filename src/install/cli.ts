@@ -31,6 +31,7 @@ import {
   VENDORED_TUI_SPEC,
   type TuiRegistrationResult,
 } from './plugin-link'
+import { MSB_INSTALL_COMMAND } from '../sandbox/msb'
 import type { OrphanFile, PlannedFile } from '../utils/bundled-sync'
 
 interface CliOptions {
@@ -331,6 +332,46 @@ async function runPluginLinkStep(
   await handleConfigRegistrations(opts, prompter)
 }
 
+/** True when the msb binary resolves on PATH. Deliberately not `msb doctor`, which costs 30s. */
+function isMsbInstalled(): boolean {
+  return spawnSync('msb', ['--version'], { stdio: 'ignore' }).error === undefined
+}
+
+/**
+ * Offer to install the sandbox runtime. The shipped config enables the sandbox, so without msb the
+ * first loop launch fails with a rollback; this is the only point in the flow where the
+ * prerequisite is surfaced before that happens. Defaults to no: it pipes a remote script into a
+ * shell, which nobody should get without asking for it.
+ */
+async function runSandboxPrerequisiteStep(
+  opts: CliOptions,
+  prompter: InstallerPrompter & Partial<LinkPrompter>,
+): Promise<void> {
+  if (!prompter.confirm || process.platform === 'win32' || isMsbInstalled()) return
+
+  stdout.write('\nSandbox prerequisite:\n')
+  stdout.write('  Loops run inside an msb microVM by default, but the msb CLI was not found.\n')
+  stdout.write('  Without it, starting a loop fails until you install it or set "sandbox": { "enabled": false }.\n')
+  stdout.write(`  Install command: ${MSB_INSTALL_COMMAND}\n`)
+
+  if (!(await prompter.confirm('Run it now?', false))) {
+    stdout.write('  skipped: run the command above later, then verify the host with `msb doctor`.\n')
+    return
+  }
+  if (opts.dryRun) {
+    stdout.write('  dry run — not executed.\n')
+    return
+  }
+
+  const res = spawnSync('sh', ['-c', MSB_INSTALL_COMMAND], { stdio: 'inherit' })
+  if (res.error || res.status !== 0) {
+    stdout.write(`  failed: run \`${MSB_INSTALL_COMMAND}\` by hand.\n`)
+    process.exitCode = 1
+    return
+  }
+  stdout.write('  installed: verify the host with `msb doctor`.\n')
+}
+
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2))
   if (opts.help) {
@@ -366,6 +407,7 @@ async function main(): Promise<void> {
     })
     printSummary(summary)
     await runPluginLinkStep(opts, prompter)
+    await runSandboxPrerequisiteStep(opts, prompter)
   } finally {
     rl?.close()
   }

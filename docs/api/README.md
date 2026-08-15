@@ -552,7 +552,7 @@ See [Sandbox](_media/sandbox.md) for setup, host requirements, image building an
 
 ### Prerequisites
 
-- The `msb` CLI installed — no account or login step. Install with `curl -fsSL https://install.microsandbox.dev | sh` and verify with `msb doctor` on a supported platform (Linux with KVM, macOS on Apple silicon, or Windows 11 with Windows Hypervisor Platform).
+- The `msb` CLI installed — no account or login step. Install with `curl -fsSL https://install.microsandbox.dev | sh` and verify with `msb doctor` on a supported platform (Linux with KVM, macOS on Apple silicon, or Windows 11 with Windows Hypervisor Platform). The interactive installer offers to run this for you when `msb` is not on `PATH`.
 - Docker, required on the host only to build the sandbox image (the msb runtime itself does not need it; Docker *inside* the sandbox is a separate in-image stack).
 - OpenCode >= 1.15.5 — sandbox shell routing relies on the session-aware `shell.env` plugin hook. Enforced via `engines.opencode`, so older versions refuse to load the plugin rather than silently running sandbox commands on the host. (Loops additionally require OpenCode >= 1.17.8 for workspace integration, see [Requirements](#requirements).)
 

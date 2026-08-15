@@ -10,7 +10,7 @@ See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](lo
   ```bash
   curl -fsSL https://install.microsandbox.dev | sh
   ```
-  Verify the host is ready with `msb doctor` (an alias of `msb self doctor`), which checks the hypervisor prerequisites.
+  Verify the host is ready with `msb doctor` (an alias of `msb self doctor`), which checks the hypervisor prerequisites. The interactive installer (`bunx opencode-forge`, or `pnpm run setup` from a checkout) offers to run this command for you when it cannot find `msb` on `PATH`.
 - A host that can run microVMs: Linux with KVM, macOS on Apple silicon, or Windows 11 with Windows Hypervisor Platform.
 - Docker on the host, used only to build the sandbox image (see below) — the msb runtime itself does not need it.
 

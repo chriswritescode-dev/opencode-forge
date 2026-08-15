@@ -376,6 +376,9 @@ export type CommandRunner = (
   opts?: { timeout?: number; stdin?: string; abort?: AbortSignal },
 ) => Promise<CommandResult>
 
+/** Vendor-documented installer for the msb CLI. Shared by the runtime hint and the setup CLI. */
+export const MSB_INSTALL_COMMAND = 'curl -fsSL https://install.microsandbox.dev | sh'
+
 const MSB_QUERY_TIMEOUT = 30000
 const MSB_NOT_INSTALLED_RE = /ENOENT|command not found/i
 
@@ -408,7 +411,7 @@ export function describeMsbUnavailable(
 ): string {
   switch (result.reason) {
     case 'not-installed':
-      return 'The msb sandbox CLI is not installed. Install it with `curl -fsSL https://install.microsandbox.dev | sh`, then try again.'
+      return `The msb sandbox CLI is not installed. Install it with \`${MSB_INSTALL_COMMAND}\`, then try again.`
     case 'host-unsupported':
       return 'This host cannot run microVMs. Run `msb doctor` for details, then try again.'
     case 'unknown':
