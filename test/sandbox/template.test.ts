@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest'
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { buildAndLoadSandboxTemplate, buildTemplateDockerArgs, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep } from '../../src/sandbox/template'
@@ -7,6 +7,13 @@ import type { BuildTemplateDeps, SandboxBuildProgress } from '../../src/sandbox/
 import type { Logger } from '../../src/types'
 
 const logger: Logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
+
+test('sandbox image keeps the pnpm store outside mounted projects', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+
+  expect(dockerfile).toContain('PNPM_CONFIG_STORE_DIR=/opt/forge/.local/share/pnpm/store')
+  expect(dockerfile).not.toContain('npm_config_store_dir=')
+})
 
 function leftoverTars(dir: string): string[] {
   return readdirSync(dir).filter((f) => f.startsWith('forge-sandbox-template-') && f.endsWith('.tar'))
