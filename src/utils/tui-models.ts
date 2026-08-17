@@ -9,7 +9,7 @@
  */
 
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import type { ForgeClient } from '../client/port'
+import type { ForgeClient, ProviderList } from '../client/port'
 
 interface ModelKey {
   providerID: string
@@ -147,6 +147,51 @@ export function readOpenCodeFavoriteModels(api: TuiPluginApi): string[] {
 }
 
 /**
+ * Maps a raw `provider.list` payload to connected providers and their models.
+ * Shared by the TUI model picker and the dashboard model controls so both see
+ * the same catalogue.
+ */
+export function providersFromProviderList(data: ProviderList): {
+  providers: ProviderInfo[]
+  connectedProviderIds: string[]
+} {
+  const providers: ProviderInfo[] = []
+  const allModels = data.all || []
+  const connected = data.connected || []
+  for (const provider of allModels) {
+    if (!connected.includes(provider.id)) continue
+    const models: ModelInfo[] = []
+    if (provider.models) {
+      for (const modelData of Object.values(provider.models)) {
+        const md = modelData as Record<string, unknown>
+        models.push({
+          id: md.id as string,
+          name: md.name as string,
+          providerID: provider.id,
+          providerName: provider.name,
+          fullName: `${provider.id}/${md.id as string}`,
+          releaseDate: (md as { release_date?: string }).release_date,
+          capabilities: {
+            temperature: (md.capabilities as Record<string, unknown> | undefined)?.temperature as boolean | undefined,
+            toolcall: (md.capabilities as Record<string, unknown> | undefined)?.toolcall as boolean | undefined,
+            reasoning: (md.capabilities as Record<string, unknown> | undefined)?.reasoning as boolean | undefined,
+            attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
+          },
+          cost: md.cost as { input?: number; output?: number } | undefined,
+          variants: md.variants as ModelInfo['variants'],
+        })
+      }
+    }
+    providers.push({
+      id: provider.id,
+      name: provider.name,
+      models,
+    })
+  }
+  return { providers, connectedProviderIds: connected }
+}
+
+/**
  * Fetches all available providers and their models from the OpenCode API.
  * Returns a structured result that distinguishes between:
  * - Successful fetch with providers (may be empty if no providers have models)
@@ -158,40 +203,8 @@ export async function fetchAvailableModels(api: TuiPluginApi, client: ForgeClien
   const favoriteModels = readOpenCodeFavoriteModels(api)
   try {
     const data = await client.provider.list({ directory })
-    const providers: ProviderInfo[] = []
-    const allModels = data.all || []
-    const connected = data.connected || []
-    for (const provider of allModels) {
-      if (!connected.includes(provider.id)) continue
-      const models: ModelInfo[] = []
-      if (provider.models) {
-        for (const modelData of Object.values(provider.models)) {
-          const md = modelData as Record<string, unknown>
-          models.push({
-            id: md.id as string,
-            name: md.name as string,
-            providerID: provider.id,
-            providerName: provider.name,
-            fullName: `${provider.id}/${md.id as string}`,
-            releaseDate: (md as { release_date?: string }).release_date,
-            capabilities: {
-              temperature: (md.capabilities as Record<string, unknown> | undefined)?.temperature as boolean | undefined,
-              toolcall: (md.capabilities as Record<string, unknown> | undefined)?.toolcall as boolean | undefined,
-              reasoning: (md.capabilities as Record<string, unknown> | undefined)?.reasoning as boolean | undefined,
-              attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
-            },
-            cost: md.cost as { input?: number; output?: number } | undefined,
-            variants: md.variants as ModelInfo['variants'],
-          })
-        }
-      }
-      providers.push({
-        id: provider.id,
-        name: provider.name,
-        models,
-      })
-    }
-    return { providers, connectedProviderIds: connected, configuredProviderIds, favoriteModels }
+    const { providers, connectedProviderIds } = providersFromProviderList(data)
+    return { providers, connectedProviderIds, configuredProviderIds, favoriteModels }
   } catch (err) {
     return {
       providers: [],

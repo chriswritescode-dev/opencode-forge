@@ -54,6 +54,9 @@ export type TuiSelectSessionParams = NonNullable<Parameters<V2['tui']['selectSes
 export type SyncStartParams = NonNullable<Parameters<V2['sync']['start']>[0]>
 
 // ── Event types ──────────────────────────────────────────────────────────────
+export type EventSubscribeParams = NonNullable<Parameters<V2['event']['subscribe']>[0]>
+/** `{ stream: AsyncGenerator<Event> }` — the live server-sent event feed. */
+export type EventSubscription = Awaited<ReturnType<V2['event']['subscribe']>>
 
 // ── Error model ──────────────────────────────────────────────────────────────
 
@@ -115,5 +118,12 @@ export interface ForgeClient {
   }
   sync: {
     start(params?: SyncStartParams): Promise<void>
+  }
+  event: {
+    /**
+     * Live event feed for the host. The caller owns the returned generator and
+     * must call `stream.return()` to close the underlying connection.
+     */
+    subscribe(params?: EventSubscribeParams): Promise<EventSubscription>
   }
 }

@@ -16,6 +16,7 @@ import type { LoopUsageAggregate } from '../storage'
 import type { LoopTransitionRow } from '../storage'
 import type { PlanAmendmentRow } from '../storage'
 import type { FeatureGroupRow, GroupFeatureRow } from '../storage'
+import { summarizeAmendmentSnapshots, type AmendmentChangeSummary } from './amendment-diff'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 
 export type { LoopRow, LoopTransitionRow }
@@ -27,6 +28,8 @@ export interface DashboardGroup {
   group: Omit<FeatureGroupRow, 'prdText'> & { prdPreview: string | null }
   features: GroupFeatureRow[]
 }
+
+export type DashboardAmendment = Omit<PlanAmendmentRow, 'sectionsBefore' | 'sectionsAfter'> & { summary: AmendmentChangeSummary }
 
 export interface DashboardLoop {
   /** Stable identity for keyed store reconciliation (unique within a project's loop set). */
@@ -49,7 +52,11 @@ export interface DashboardLoop {
   usage: LoopUsageAggregate | null
   duration: string | null
   transitions: LoopTransitionRow[]
-  amendments: PlanAmendmentRow[]
+  /**
+   * Per-amendment change counts. The multi-KB section snapshots stay in
+   * `plan_amendments` and are fetched on demand via the diff endpoint.
+   */
+  amendments: DashboardAmendment[]
 }
 
 export interface DashboardProject {
@@ -125,20 +132,6 @@ function reposFor(db: Database): DashboardRepos {
   return repos
 }
 
-/**
- * The dashboard renders only section index+title from amendment snapshots;
- * strip the multi-KB section content before it enters the poll payload. The
- * full snapshots stay in plan_amendments as the audit trail.
- */
-function projectAmendmentSections(json: string): string {
-  try {
-    const rows = JSON.parse(json) as { index: number; title: string }[]
-    return JSON.stringify(rows.map((r) => ({ index: r.index, title: r.title })))
-  } catch {
-    return '[]'
-  }
-}
-
 export function collectDashboardData(db: Database, scope: DashboardScope = UNSCOPED): DashboardPayload {
   const { loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, amendmentsRepo, featureGroupsRepo } = reposFor(db)
 
@@ -205,10 +198,9 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       const transitions = transitionsByLoop?.get(loopName) ?? []
 
       const amendments = isScopedLoop && amendmentsRepo
-        ? amendmentsRepo.listForLoop(projectId, loopName).map((a) => ({
-            ...a,
-            sectionsBefore: projectAmendmentSections(a.sectionsBefore),
-            sectionsAfter: projectAmendmentSections(a.sectionsAfter),
+        ? amendmentsRepo.listForLoop(projectId, loopName).map(({ sectionsBefore, sectionsAfter, ...rest }) => ({
+            ...rest,
+            summary: summarizeAmendmentSnapshots(sectionsBefore, sectionsAfter),
           }))
         : []
 

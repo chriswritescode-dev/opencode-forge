@@ -112,7 +112,7 @@ function isWildcardHost(host: string): boolean {
 }
 
 /** True when the host is only reachable from the machine itself. */
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase()
   if (NAMED_LOOPBACK_HOSTS.has(normalized)) return true
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized)

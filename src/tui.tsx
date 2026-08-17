@@ -14,6 +14,7 @@ import { existsSync } from 'fs'
 import { resolveLoopPermissionOptions } from './constants/loop'
 import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnings'
 import { connectForgeProject, resolveTuiProjectIdOnce, type ForgeProjectClient } from './utils/tui-client'
+import { createForgeClient } from './client/sdk-adapter'
 import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import {
   awaitSessionSandboxState,
@@ -487,7 +488,11 @@ const tui: TuiPlugin = async (api) => {
   const runOpenDashboard = () => {
     if (!dashboardServer) {
       try {
-        dashboardServer = startDashboardServer({ dbPath: forgeDbPath, config: pluginConfig })
+        dashboardServer = startDashboardServer({
+          dbPath: forgeDbPath,
+          config: pluginConfig,
+          client: createForgeClient(api.client),
+        })
       } catch (err) {
         api.ui.toast({
           message: err instanceof Error ? err.message : 'Failed to start dashboard',

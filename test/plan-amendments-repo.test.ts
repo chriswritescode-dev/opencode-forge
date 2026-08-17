@@ -119,6 +119,39 @@ describe('PlanAmendmentsRepo', () => {
     })
   })
 
+  describe('get', () => {
+    test('returns the row for an existing id', () => {
+      repo.insert(baseRow({ rationale: 'target' }))
+      const row = repo.listForLoop(projectId, loopName)[0]
+      const found = repo.get(projectId, loopName, row.id)
+      expect(found).not.toBeNull()
+      expect(found!.id).toBe(row.id)
+      expect(found!.rationale).toBe('target')
+      expect(found!.appliedAtSection).toBe(3)
+      expect(found!.sectionsBefore).toBe(row.sectionsBefore)
+      expect(found!.sectionsAfter).toBe(row.sectionsAfter)
+    })
+
+    test('returns null for an unknown id', () => {
+      repo.insert(baseRow())
+      expect(repo.get(projectId, loopName, 9999)).toBeNull()
+    })
+
+    test('does not cross project/loop boundaries', () => {
+      const otherLoop = 'other-loop'
+      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
+
+      repo.insert(baseRow({ rationale: 'a' }))
+      repo.insert(baseRow({ loopName: otherLoop, rationale: 'b' }))
+
+      const idA = repo.listForLoop(projectId, loopName)[0].id
+      const idB = repo.listForLoop(projectId, otherLoop)[0].id
+      expect(repo.get(projectId, otherLoop, idA)).toBeNull()
+      expect(repo.get(projectId, loopName, idB)).toBeNull()
+      expect(repo.get('other-project', loopName, idA)).toBeNull()
+    })
+  })
+
   describe('FK cascade on loop delete', () => {
     test('deleting the loop row cascades to plan_amendments', () => {
       repo.insert(baseRow({ rationale: 'a' }))
