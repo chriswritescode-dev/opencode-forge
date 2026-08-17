@@ -420,7 +420,7 @@ describe('tabsForLoop', () => {
     const running = mockDashLoop({ hasPlan: true, sectionCount: 1 })
     expect(tabsForLoop(running)).toContain<LoopTab>('live')
 
-    for (const status of ['completed', 'cancelled', 'errored', 'stalled']) {
+    for (const status of ['completed', 'cancelled', 'errored', 'stalled'] as const) {
       const finished = mockDashLoop({ hasPlan: true, sectionCount: 1, loop: mockLoopRow({ status }) })
       expect(tabsForLoop(finished)).not.toContain<LoopTab>('live')
     }

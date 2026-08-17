@@ -668,6 +668,27 @@ describe('createRequestHandler', () => {
     expect((await post(JSON.stringify({ projectId: 'p1', loopName: 'ghost', text: 'hi' }))).status).toBe(404)
   })
 
+  test('mutating routes reject content types a cross-origin form could send', async () => {
+    seedRunningLoop()
+    const { client } = makeFakeClient()
+    const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
+    // A `text/plain` form body can be shaped into valid JSON and is sent
+    // cross-origin without a preflight, so it must never reach the parser.
+    const formBody = JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' })
+
+    for (const pathname of ['/api/loop/message', '/api/loop/models']) {
+      expect((await handler(new Request('http://localhost' + pathname, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain;charset=UTF-8' },
+        body: formBody,
+      }))).status).toBe(415)
+      expect((await handler(new Request('http://localhost' + pathname, {
+        method: 'POST',
+        body: formBody,
+      }))).status).toBe(415)
+    }
+  })
+
   test('POST /api/loop/message reports a host failure as 502', async () => {
     seedRunningLoop()
     const client = {

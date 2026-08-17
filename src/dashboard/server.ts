@@ -99,6 +99,38 @@ function readVariantField(raw: unknown, label: string): ModelFieldResult {
   return { ok: true, value: raw }
 }
 
+type JsonBodyResult =
+  | { ok: true; record: Record<string, unknown> }
+  | { ok: false; response: Response }
+
+/**
+ * Reads a JSON object body for a mutating route.
+ *
+ * Requiring `application/json` is what keeps a loopback dashboard safe from a
+ * page in the user's browser: form-encodable content types are sent
+ * cross-origin without a preflight, and a `text/plain` form body can be shaped
+ * into valid JSON, so a parse-anything handler would accept it.
+ */
+async function readJsonRecord(req: Request): Promise<JsonBodyResult> {
+  const mediaType = req.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()
+  if (mediaType !== 'application/json') {
+    return {
+      ok: false,
+      response: new Response('content-type must be application/json.', { status: 415 }),
+    }
+  }
+  let body: unknown
+  try {
+    body = await req.json()
+  } catch {
+    return {
+      ok: false,
+      response: new Response('Request body must be valid JSON.', { status: 400 }),
+    }
+  }
+  return { ok: true, record: (body ?? {}) as Record<string, unknown> }
+}
+
 /** How often the stream re-checks the stored transcript when no events arrive. */
 const TRANSCRIPT_POLL_MS = 4000
 
@@ -242,17 +274,27 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
           // Loop sessions are workspace-bound, and the host's event bus is
           // scoped per workspace: subscribing with the directory alone lands
           // on a bus that never carries this session's events.
-          subscription = await live.event.subscribe({
+          const sub = await live.event.subscribe({
             directory: target.directory,
             ...(target.workspaceId ? { workspace: target.workspaceId } : {}),
           })
-          for await (const event of subscription.stream) {
-            if (!open || req.signal.aborted) break
-            const type = eventType(event)
-            if (!type || !LIVE_EVENT_TYPES.has(type)) continue
-            if (eventSessionId(event) !== target.sessionId) continue
-            lastEventAt = Date.now()
-            send('event', event)
+          subscription = sub
+          try {
+            // The request can abort while `subscribe` is in flight, in which
+            // case the abort listener saw a null subscription and could not
+            // close this one.
+            if (open && !req.signal.aborted) {
+              for await (const event of sub.stream) {
+                if (!open || req.signal.aborted) break
+                const type = eventType(event)
+                if (!type || !LIVE_EVENT_TYPES.has(type)) continue
+                if (eventSessionId(event) !== target.sessionId) continue
+                lastEventAt = Date.now()
+                send('event', event)
+              }
+            }
+          } finally {
+            await sub.stream.return(undefined)
           }
         } catch (err) {
           send('failed', { message: `Live stream ended: ${errorMessage(err)}` })
@@ -307,13 +349,9 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
           { status: 403 },
         )
       }
-      let body: unknown
-      try {
-        body = await req.json()
-      } catch {
-        return new Response('Request body must be valid JSON.', { status: 400 })
-      }
-      const record = (body ?? {}) as Record<string, unknown>
+      const parsed = await readJsonRecord(req)
+      if (!parsed.ok) return parsed.response
+      const record = parsed.record
       const text = typeof record.text === 'string' ? record.text.trim() : ''
       if (!text) return new Response('text must be a non-empty string.', { status: 400 })
       if (text.length > MAX_MESSAGE_LENGTH) {
@@ -375,13 +413,9 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
           { status: 403 },
         )
       }
-      let body: unknown
-      try {
-        body = await req.json()
-      } catch {
-        return new Response('Request body must be valid JSON.', { status: 400 })
-      }
-      const record = (body ?? {}) as Record<string, unknown>
+      const parsed = await readJsonRecord(req)
+      if (!parsed.ok) return parsed.response
+      const record = parsed.record
       const projectId = typeof record.projectId === 'string' ? record.projectId : null
       const loopName = typeof record.loopName === 'string' ? record.loopName : null
       if (!projectId || !loopName) {

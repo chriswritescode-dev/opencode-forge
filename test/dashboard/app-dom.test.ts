@@ -2172,6 +2172,7 @@ describe('dashboard App loop detail tabs', () => {
     }
     const prior = (globalThis as any).EventSource
     ;(globalThis as any).EventSource = FakeEventSource
+    const priorVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState')
 
     try {
       window.location.hash = '#p1/loop/loop-a'
@@ -2210,6 +2211,8 @@ describe('dashboard App loop detail tabs', () => {
       expect(opened[2].closed).toBe(false)
     } finally {
       ;(globalThis as any).EventSource = prior
+      if (priorVisibility) Object.defineProperty(document, 'visibilityState', priorVisibility)
+      else Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
     }
   })
 
