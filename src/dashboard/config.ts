@@ -111,11 +111,18 @@ function isWildcardHost(host: string): boolean {
   return WILDCARD_HOSTS.has(host.trim().toLowerCase())
 }
 
+function isValidIpv4Octet(raw: string): boolean {
+  if (!/^(0|[1-9]\d{0,2})$/.test(raw)) return false
+  return Number(raw) <= 255
+}
+
 /** True when the host is only reachable from the machine itself. */
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase()
   if (NAMED_LOOPBACK_HOSTS.has(normalized)) return true
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized)
+  if (!normalized.startsWith('127.')) return false
+  const octets = normalized.split('.')
+  return octets.length === 4 && octets.slice(1).every(isValidIpv4Octet)
 }
 
 /**

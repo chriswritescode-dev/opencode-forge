@@ -625,7 +625,7 @@ describe('createRequestHandler', () => {
 
     const res = await handler(new Request('http://localhost/api/loop/message', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', host: 'localhost' },
       body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: '  focus on tests  ' }),
     }))
 
@@ -658,7 +658,7 @@ describe('createRequestHandler', () => {
     const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
     const post = (body: string) => handler(new Request('http://localhost/api/loop/message', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', host: 'localhost' },
       body,
     }))
 
@@ -679,11 +679,12 @@ describe('createRequestHandler', () => {
     for (const pathname of ['/api/loop/message', '/api/loop/models']) {
       expect((await handler(new Request('http://localhost' + pathname, {
         method: 'POST',
-        headers: { 'content-type': 'text/plain;charset=UTF-8' },
+        headers: { 'content-type': 'text/plain;charset=UTF-8', host: 'localhost' },
         body: formBody,
       }))).status).toBe(415)
       expect((await handler(new Request('http://localhost' + pathname, {
         method: 'POST',
+        headers: { host: 'localhost' },
         body: formBody,
       }))).status).toBe(415)
     }
@@ -702,7 +703,7 @@ describe('createRequestHandler', () => {
 
     const res = await handler(new Request('http://localhost/api/loop/message', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', host: 'localhost' },
       body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
     }))
 
@@ -822,7 +823,7 @@ describe('createRequestHandler', () => {
 
     const res = await handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', host: 'localhost' },
       body: JSON.stringify({
         projectId: 'p1',
         loopName: 'loop-a',
@@ -852,7 +853,7 @@ describe('createRequestHandler', () => {
     const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
     const post = (body: unknown) => handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', host: 'localhost' },
       body: typeof body === 'string' ? body : JSON.stringify(body),
     }))
 
@@ -888,11 +889,141 @@ describe('createRequestHandler', () => {
 
     const res = await handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', host: 'localhost' },
       body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', executionModel: null }),
     }))
 
     expect(res.status).toBe(200)
     expect(loopsRepo.get('p1', 'loop-a')!.executionModel).toBeNull()
+  })
+
+  test('POST /api/loop/models returns 500 and leaves storage unchanged when the update is rejected', async () => {
+    seedRunningLoop()
+    const loopsRepo = createLoopsRepo(db!)
+    db!.run(`
+      CREATE TRIGGER abort_model_update
+      BEFORE UPDATE OF execution_model ON loops
+      BEGIN
+        SELECT RAISE(ABORT, 'model updates blocked by trigger');
+      END
+    `)
+    const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+
+    const res = await handler(new Request('http://localhost/api/loop/models', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', host: 'localhost' },
+      body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', executionModel: 'anthropic/opus' }),
+    }))
+
+    expect(res.status).toBe(500)
+    const body = await res.text()
+    expect(body).toContain('Could not update loop models')
+    expect(body).toContain('model updates blocked by trigger')
+    expect(loopsRepo.get('p1', 'loop-a')!.executionModel).toBe(makeLoopRow().executionModel)
+    expect(loopsRepo.get('p1', 'loop-a')!.executionVariant).toBeNull()
+  })
+
+  describe('mutating POST routes require a loopback Host header', () => {
+    const loopbackHosts = ['localhost', 'LOCALHOST:4747', '127.0.0.1', '127.0.0.1:4747', '[::1]', '[::1]:4747']
+
+    test.each(loopbackHosts)('POST /api/loop/message accepts Host %s', async (host) => {
+      seedRunningLoop()
+      const { client, calls } = makeFakeClient()
+      const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
+
+      const res = await handler(new Request('http://localhost/api/loop/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', host },
+        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
+      }))
+
+      expect(res.status).toBe(200)
+      expect(calls.prompts).toHaveLength(1)
+    })
+
+    test.each(loopbackHosts)('POST /api/loop/models accepts Host %s', async (host) => {
+      seedRunningLoop()
+      const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+
+      const res = await handler(new Request('http://localhost/api/loop/models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', host },
+        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', executionModel: 'anthropic/opus' }),
+      }))
+
+      expect(res.status).toBe(200)
+      expect(createLoopsRepo(db!).get('p1', 'loop-a')!.executionModel).toBe('anthropic/opus')
+    })
+
+    const rejectedHosts = [
+      '',
+      '::1',
+      '[::1',
+      '[::1]:abc',
+      '[::1]:99999',
+      'user@localhost',
+      'localhost,evil.com',
+      'evil.com',
+      '127.0.0.999',
+      'localhost:0',
+    ]
+
+    test.each(rejectedHosts)('POST /api/loop/message rejects Host %s', async (host) => {
+      seedRunningLoop()
+      const { client, calls } = makeFakeClient()
+      const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
+
+      const res = await handler(new Request('http://localhost/api/loop/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', host },
+        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
+      }))
+
+      expect(res.status).toBe(403)
+      expect(calls.prompts).toHaveLength(0)
+    })
+
+    test.each(rejectedHosts)('POST /api/loop/models rejects Host %s', async (host) => {
+      seedRunningLoop()
+      const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+
+      const res = await handler(new Request('http://localhost/api/loop/models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', host },
+        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', executionModel: 'anthropic/opus' }),
+      }))
+
+      expect(res.status).toBe(403)
+      expect(createLoopsRepo(db!).get('p1', 'loop-a')!.executionModel).not.toBe('anthropic/opus')
+    })
+
+    test('POST /api/loop/message rejects a request with no Host header', async () => {
+      seedRunningLoop()
+      const { client, calls } = makeFakeClient()
+      const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
+
+      const res = await handler(new Request('http://localhost/api/loop/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
+      }))
+
+      expect(res.status).toBe(403)
+      expect(calls.prompts).toHaveLength(0)
+    })
+
+    test('POST /api/loop/models rejects a request with no Host header', async () => {
+      seedRunningLoop()
+      const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+
+      const res = await handler(new Request('http://localhost/api/loop/models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', executionModel: 'anthropic/opus' }),
+      }))
+
+      expect(res.status).toBe(403)
+      expect(createLoopsRepo(db!).get('p1', 'loop-a')!.executionModel).not.toBe('anthropic/opus')
+    })
   })
 })

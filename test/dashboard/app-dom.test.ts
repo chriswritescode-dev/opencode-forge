@@ -1385,6 +1385,92 @@ describe('dashboard App plan amendments panel', () => {
     expect(err!.textContent).toBe('boom')
   })
 
+  test('a non-OK amendment fetch retries and succeeds after collapse and re-expansion', async () => {
+    const diff = {
+      sections: [{ index: 4, change: 'modified', title: 'New Section', previousTitle: null, lines: [{ kind: 'add', text: 'fresh' }] }],
+      summary: { added: 0, removed: 0, modified: 1 },
+    }
+    let amendmentCalls = 0
+    const fetchMock = vi.fn(async (url: any) => {
+      if (String(url).startsWith('/api/amendment')) {
+        amendmentCalls += 1
+        if (amendmentCalls === 1) return { ok: false, status: 500, text: async () => 'boom' }
+        return { ok: true, json: async () => diff }
+      }
+      return { json: async () => payload }
+    })
+    ;(globalThis as any).fetch = fetchMock
+    payload = makePayload({
+      dashLoop: {
+        amendments: [amendRow()],
+      },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const head = container.querySelector('.amendment-head') as HTMLElement
+    head.click()
+    await flush()
+
+    // First attempt fails with a non-OK response and shows the error.
+    expect(amendmentCalls).toBe(1)
+    expect(container.querySelector('.amendment-diff-error')!.textContent).toBe('boom')
+    // No retry while still expanded: a second fetch would auto-loop.
+    await flush()
+    expect(amendmentCalls).toBe(1)
+
+    // Collapse, then re-expand: the failed fetch is retried and succeeds.
+    head.click()
+    await flush()
+    head.click()
+    await flush()
+
+    expect(amendmentCalls).toBe(2)
+    expect(container.querySelector('.amendment-diff-error')).toBeNull()
+    expect(container.querySelector('.amendment-diff-line')!.textContent).toBe('+ fresh')
+  })
+
+  test('a rejected amendment fetch retries after collapse and re-expansion', async () => {
+    const diff = {
+      sections: [{ index: 4, change: 'modified', title: 'New Section', previousTitle: null, lines: [{ kind: 'add', text: 'fresh' }] }],
+      summary: { added: 0, removed: 0, modified: 1 },
+    }
+    let amendmentCalls = 0
+    const fetchMock = vi.fn((url: any) => {
+      if (String(url).startsWith('/api/amendment')) {
+        amendmentCalls += 1
+        if (amendmentCalls === 1) return Promise.reject(new Error('network down'))
+        return Promise.resolve({ ok: true, json: async () => diff })
+      }
+      return Promise.resolve({ json: async () => payload })
+    })
+    ;(globalThis as any).fetch = fetchMock
+    payload = makePayload({
+      dashLoop: {
+        amendments: [amendRow()],
+      },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const head = container.querySelector('.amendment-head') as HTMLElement
+    head.click()
+    await flush()
+
+    // First attempt rejects (promise-chain failure) and shows the error.
+    expect(amendmentCalls).toBe(1)
+    expect(container.querySelector('.amendment-diff-error')!.textContent).toBe('network down')
+
+    head.click()
+    await flush()
+    head.click()
+    await flush()
+
+    expect(amendmentCalls).toBe(2)
+    expect(container.querySelector('.amendment-diff-error')).toBeNull()
+    expect(container.querySelector('.amendment-diff-line')!.textContent).toBe('+ fresh')
+  })
+
   test('the loop header calls out that the plan was adjusted', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
@@ -2112,6 +2198,44 @@ describe('dashboard App loop detail tabs', () => {
     await flush()
   }
 
+  const opened: FakeEventSource[] = []
+
+  class FakeEventSource {
+    static CONNECTING = 0
+    static CLOSED = 2
+    url: string
+    readyState = 1
+    closed = false
+    onerror: null | (() => void) = null
+    listeners = new Map<string, (e: { data: string }) => void>()
+    constructor(url: string) {
+      this.url = url
+      opened.push(this)
+    }
+    addEventListener(type: string, cb: (e: { data: string }) => void): void {
+      this.listeners.set(type, cb)
+    }
+    removeEventListener(): void {}
+    close(): void {
+      this.closed = true
+      this.readyState = 2
+    }
+    emit(type: string, data: string): void {
+      this.listeners.get(type)?.({ data })
+    }
+  }
+
+  async function openLiveStream(): Promise<FakeEventSource> {
+    opened.length = 0
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload({ loop: { currentSessionId: 'ses_1' } })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+    await clickTab('live')
+    expect(opened.length).toBe(1)
+    return opened[0]
+  }
+
   function planLoopFixture(): any {
     return makePayload({
       dashLoop: {
@@ -2152,24 +2276,7 @@ describe('dashboard App loop detail tabs', () => {
     // Tab bodies are never torn down once built, so the connection has to be
     // driven by visibility — otherwise a hidden Live tab keeps an SSE
     // connection (and the server-side transcript poll) running for nothing.
-    const opened: Array<{ url: string; closed: boolean }> = []
-    class FakeEventSource {
-      static CLOSED = 2
-      url: string
-      readyState = 1
-      closed = false
-      onerror: null | (() => void) = null
-      constructor(url: string) {
-        this.url = url
-        opened.push(this)
-      }
-      addEventListener(): void {}
-      removeEventListener(): void {}
-      close(): void {
-        this.closed = true
-        this.readyState = 2
-      }
-    }
+    opened.length = 0
     const prior = (globalThis as any).EventSource
     ;(globalThis as any).EventSource = FakeEventSource
     const priorVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState')
@@ -2213,6 +2320,112 @@ describe('dashboard App loop detail tabs', () => {
       ;(globalThis as any).EventSource = prior
       if (priorVisibility) Object.defineProperty(document, 'visibilityState', priorVisibility)
       else Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    }
+  })
+
+  test('a terminal failed frame shows the server message and closes the stream', async () => {
+    const prior = (globalThis as any).EventSource
+    ;(globalThis as any).EventSource = FakeEventSource
+    try {
+      const source = await openLiveStream()
+      expect(source.closed).toBe(false)
+
+      source.emit('failed', JSON.stringify({ message: 'Live stream ended: boom' }))
+      await flush()
+
+      expect(source.closed).toBe(true)
+      expect(container.querySelector('.live-failure')?.textContent).toContain('Live stream ended: boom')
+      expect(container.querySelector('.live-status')?.textContent).toBe('disconnected')
+    } finally {
+      ;(globalThis as any).EventSource = prior
+    }
+  })
+
+  test('a malformed failed frame falls back to the default message and still closes the stream', async () => {
+    const prior = (globalThis as any).EventSource
+    ;(globalThis as any).EventSource = FakeEventSource
+    try {
+      const source = await openLiveStream()
+
+      source.emit('failed', '{not json')
+      await flush()
+
+      expect(source.closed).toBe(true)
+      expect(container.querySelector('.live-failure')?.textContent).toBe('Live stream ended.')
+      expect(container.querySelector('.live-status')?.textContent).toBe('disconnected')
+    } finally {
+      ;(globalThis as any).EventSource = prior
+    }
+  })
+
+  test('an ordinary transport error while connecting leaves the stream open to reconnect', async () => {
+    const prior = (globalThis as any).EventSource
+    ;(globalThis as any).EventSource = FakeEventSource
+    try {
+      const source = await openLiveStream()
+
+      source.readyState = FakeEventSource.CONNECTING
+      source.onerror?.()
+      await flush()
+
+      expect(source.closed).toBe(false)
+      expect(container.querySelector('.live-failure')).toBeNull()
+      expect(container.querySelector('.live-status')?.textContent).toBe('connecting')
+    } finally {
+      ;(globalThis as any).EventSource = prior
+    }
+  })
+
+  test('tool heads are buttons: disabled without output, aria-expanded toggles expandable output', async () => {
+    const prior = (globalThis as any).EventSource
+    ;(globalThis as any).EventSource = FakeEventSource
+    try {
+      const source = await openLiveStream()
+      source.emit('snapshot', JSON.stringify({
+        messages: [
+          {
+            info: { id: 'm1', role: 'assistant' },
+            parts: [
+              { id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash', state: { status: 'completed', title: 'ls -la', output: 'file.txt' } },
+              { id: 'p2', messageID: 'm1', type: 'tool', tool: 'read', state: { status: 'running', title: 'a.ts' } },
+            ],
+          },
+        ],
+      }))
+      await flush()
+
+      const heads = Array.from(container.querySelectorAll('.live-tool-head')) as HTMLButtonElement[]
+      expect(heads).toHaveLength(2)
+      expect(heads.every(h => h.tagName === 'BUTTON')).toBe(true)
+      expect(heads.every(h => h.getAttribute('type') === 'button')).toBe(true)
+
+      const withOutput = heads[0]
+      const withoutOutput = heads[1]
+
+      expect(withOutput.disabled).toBe(false)
+      expect(withOutput.classList.contains('live-tool-head-clickable')).toBe(true)
+      expect(withOutput.getAttribute('aria-expanded')).toBe('false')
+      expect(container.querySelector('.live-tool-output')).toBeNull()
+
+      expect(withoutOutput.disabled).toBe(true)
+      expect(withoutOutput.getAttribute('aria-expanded')).toBeNull()
+      expect(withoutOutput.classList.contains('live-tool-head-clickable')).toBe(false)
+
+      withoutOutput.click()
+      await flush()
+      expect(container.querySelector('.live-tool-output')).toBeNull()
+
+      withOutput.click()
+      await flush()
+      expect(withOutput.getAttribute('aria-expanded')).toBe('true')
+      expect(container.querySelector('.live-tool-output')?.textContent).toBe('file.txt')
+
+      withOutput.click()
+      await flush()
+      expect(withOutput.getAttribute('aria-expanded')).toBe('false')
+      expect(container.querySelector('.live-tool-output')).toBeNull()
+    } finally {
+      ;(globalThis as any).EventSource = prior
     }
   })
 
@@ -2825,6 +3038,164 @@ describe('dashboard App scoped poll', () => {
     expect(fetchCalls().length).toBe(beforeCount + 1)
     expect(fetchCalls()[fetchCalls().length - 1]).toBe('/api/data?project=p2&loop=loop-b')
     expect(fetchCalls()).not.toContain('/api/data?project=p2&loop=loop-a')
+  })
+})
+
+describe('dashboard App live model controls', () => {
+  const CATALOG = {
+    models: [
+      { id: 'model-a', name: 'Model A', provider: 'prov', variants: [] },
+      { id: 'model-b', name: 'Model B', provider: 'prov', variants: [] },
+      { id: 'model-c', name: 'Model C', provider: 'prov', variants: [] },
+    ],
+  }
+
+  let applyResponse: any
+
+  async function openLiveModels(loopOver: Record<string, any> = {}): Promise<() => void> {
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload({ loop: { executionModel: 'model-a', ...loopOver } })
+    const fetchMock = globalThis.fetch as any
+    fetchMock.mockImplementation(async (url: string) => {
+      const u = String(url)
+      if (u.startsWith('/api/models')) {
+        return { ok: true, status: 200, json: async () => CATALOG, text: async () => '' }
+      }
+      if (u.startsWith('/api/loop/models')) {
+        return applyResponse
+      }
+      return { ok: true, status: 200, json: async () => payload, text: async () => '' }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+    const dataPoll = intervalFn!
+    ;(container.querySelector('.tab-item[data-tab="live"]') as HTMLElement).click()
+    await flush()
+    ;(container.querySelector('.live-models-toggle') as HTMLElement).click()
+    await flush()
+    return dataPoll
+  }
+
+  async function pollData(dataPoll: () => void, next: any): Promise<void> {
+    payload = next
+    dataPoll()
+    await flush()
+  }
+
+  function execSelect(): HTMLSelectElement {
+    return container.querySelectorAll('.live-model-row')[0].querySelector('.live-model-select') as HTMLSelectElement
+  }
+
+  function changeExecModel(value: string): void {
+    const select = execSelect()
+    select.value = value
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  test('apply success adopts the response and does not snap to stale loop values', async () => {
+    applyResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        executionModel: 'model-b',
+        executionVariant: null,
+        auditorModel: null,
+        auditorVariant: null,
+      }),
+      text: async () => '',
+    }
+    const dataPoll = await openLiveModels()
+    expect(execSelect().value).toBe('model-a')
+
+    changeExecModel('model-b')
+    await flush()
+    expect(execSelect().value).toBe('model-b')
+
+    ;(container.querySelector('.live-send') as HTMLButtonElement).click()
+    await flush()
+
+    expect(execSelect().value).toBe('model-b')
+    expect(container.querySelector('.live-models-ok')?.textContent).toContain('Models updated.')
+
+    const modelsCall = (globalThis.fetch as any).mock.calls.find((c: any[]) => String(c[0]) === '/api/loop/models')
+    expect(modelsCall).toBeTruthy()
+    expect(modelsCall[1].method).toBe('POST')
+    expect(JSON.parse(modelsCall[1].body)).toEqual({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      executionModel: 'model-b',
+      executionVariant: null,
+      auditorModel: null,
+      auditorVariant: null,
+    })
+
+    await pollData(dataPoll, makePayload({ loop: { executionModel: 'model-b', iteration: 2 } }))
+    expect(execSelect().value).toBe('model-b')
+  })
+
+  test('an external poll does not overwrite an edited draft', async () => {
+    applyResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        executionModel: 'model-a',
+        executionVariant: null,
+        auditorModel: null,
+        auditorVariant: null,
+      }),
+      text: async () => '',
+    }
+    const dataPoll = await openLiveModels()
+    expect(execSelect().value).toBe('model-a')
+
+    changeExecModel('model-b')
+    await flush()
+    expect(execSelect().value).toBe('model-b')
+
+    await pollData(dataPoll, makePayload({ loop: { executionModel: 'model-c' } }))
+    expect(execSelect().value).toBe('model-b')
+  })
+
+  test('untouched controls adopt externally applied model values', async () => {
+    applyResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        executionModel: 'model-a',
+        executionVariant: null,
+        auditorModel: null,
+        auditorVariant: null,
+      }),
+      text: async () => '',
+    }
+    const dataPoll = await openLiveModels()
+    expect(execSelect().value).toBe('model-a')
+
+    await pollData(dataPoll, makePayload({ loop: { executionModel: 'model-c' } }))
+    expect(execSelect().value).toBe('model-c')
+  })
+
+  test('a failed apply keeps the draft and shows an error', async () => {
+    applyResponse = {
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+      text: async () => 'backend rejected',
+    }
+    await openLiveModels()
+    expect(execSelect().value).toBe('model-a')
+
+    changeExecModel('model-b')
+    await flush()
+    ;(container.querySelector('.live-send') as HTMLButtonElement).click()
+    await flush()
+
+    expect(execSelect().value).toBe('model-b')
+    expect(container.querySelector('.live-models-error')?.textContent).toContain('backend rejected')
+    expect(container.querySelector('.live-models-ok')).toBeFalsy()
   })
 })
 

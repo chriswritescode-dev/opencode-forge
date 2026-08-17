@@ -6,6 +6,7 @@ import { parseModelString } from '../utils/model-fallback'
 import { collectDashboardData } from './data'
 import { diffAmendmentSnapshots } from './amendment-diff'
 import { renderDashboardHtml } from './render'
+import { isLoopbackHost } from './config'
 
 // ---------------------------------------------------------------------------
 // Deps
@@ -20,8 +21,9 @@ export interface DashboardDeps {
    */
   client?: ForgeClient
   /**
-   * Whether `POST /api/loop/message` is allowed. Set only for a loopback bind:
-   * the dashboard has no auth, so a reachable bind must not drive the agent.
+   * Whether `POST /api/loop/message` and `POST /api/loop/models` are allowed.
+   * Set only for a loopback bind: the dashboard has no auth, so a reachable
+   * bind must not drive the agent or change its models.
    */
   allowSend?: boolean
 }
@@ -70,6 +72,25 @@ function sseFrame(event: string, data: unknown): string {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function isValidHostPort(raw: string): boolean {
+  if (!/^[1-9]\d{0,4}$/.test(raw)) return false
+  return Number(raw) <= 65535
+}
+
+function isLoopbackHostHeader(host: string | null): boolean {
+  if (host === null || host === '') return false
+  if (/[\s,/@]/.test(host)) return false
+  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(host)
+  if (bracketed) {
+    if (bracketed[2] !== undefined && !isValidHostPort(bracketed[2])) return false
+    return isLoopbackHost(bracketed[1])
+  }
+  const unbracketed = /^([^:]+)(?::(\d+))?$/.exec(host)
+  if (!unbracketed) return false
+  if (unbracketed[2] !== undefined && !isValidHostPort(unbracketed[2])) return false
+  return isLoopbackHost(unbracketed[1])
 }
 
 /** Variants are opaque keys from the provider catalogue; keep them token-shaped. */
@@ -342,9 +363,9 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
           { status: 503 },
         )
       }
-      if (!allowSend) {
+      if (!allowSend || !isLoopbackHostHeader(req.headers.get('host'))) {
         return new Response(
-          'Sending is disabled: the dashboard is bound to a non-loopback address and has no ' +
+          'Sending is disabled: the dashboard must be reached via a loopback address and has no ' +
           'authentication. Open it via localhost to send messages.',
           { status: 403 },
         )
@@ -406,10 +427,10 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
 
     if (pathname === '/api/loop/models') {
       if (req.method !== 'POST') return new Response('Not found', { status: 404 })
-      if (!allowSend) {
+      if (!allowSend || !isLoopbackHostHeader(req.headers.get('host'))) {
         return new Response(
-          'Changing models is disabled: the dashboard is bound to a non-loopback address and has ' +
-          'no authentication. Open it via localhost to change models.',
+          'Changing models is disabled: the dashboard must be reached via a loopback address and ' +
+          'has no authentication. Open it via localhost to change models.',
           { status: 403 },
         )
       }
@@ -436,25 +457,31 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
         return new Response('Provide executionModel and/or auditorModel.', { status: 400 })
       }
 
-      loopsRepo.setModels(projectId, loopName, {
-        ...(executionModel.value !== undefined
-          ? { executionModel: executionModel.value, executionVariant: executionVariant.value ?? null }
-          : {}),
-        ...(auditorModel.value !== undefined
-          ? { auditorModel: auditorModel.value, auditorVariant: auditorVariant.value ?? null }
-          : {}),
-      })
+      try {
+        loopsRepo.setModels(projectId, loopName, {
+          ...(executionModel.value !== undefined
+            ? { executionModel: executionModel.value, executionVariant: executionVariant.value ?? null }
+            : {}),
+          ...(auditorModel.value !== undefined
+            ? { auditorModel: auditorModel.value, auditorVariant: auditorVariant.value ?? null }
+            : {}),
+        })
 
-      const updated = loopsRepo.get(projectId, loopName)
-      return new Response(JSON.stringify({
-        ok: true,
-        executionModel: updated?.executionModel ?? null,
-        executionVariant: updated?.executionVariant ?? null,
-        auditorModel: updated?.auditorModel ?? null,
-        auditorVariant: updated?.auditorVariant ?? null,
-      }), {
-        headers: { 'content-type': 'application/json; charset=utf-8' },
-      })
+        const updated = loopsRepo.get(projectId, loopName)
+        if (!updated) return new Response('Loop not found.', { status: 404 })
+
+        return new Response(JSON.stringify({
+          ok: true,
+          executionModel: updated.executionModel ?? null,
+          executionVariant: updated.executionVariant ?? null,
+          auditorModel: updated.auditorModel ?? null,
+          auditorVariant: updated.auditorVariant ?? null,
+        }), {
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        })
+      } catch (err) {
+        return new Response(`Could not update loop models: ${errorMessage(err)}`, { status: 500 })
+      }
     }
 
     if (req.method !== 'GET') {

@@ -145,6 +145,19 @@ describe('renderDashboardHtml', () => {
     }
   })
 
+  test('live models summary and hint use the stronger fg-1 token over fg-dim', () => {
+    const html = renderDashboardHtml()
+    const style = stylesheet(html)
+
+    for (const sel of ['.live-models-summary', '.live-model-hint']) {
+      const start = style.indexOf(sel)
+      expect(start, `${sel} rule not found`).toBeGreaterThan(0)
+      const rule = style.slice(start, style.indexOf('}', start))
+      expect(rule).toContain('var(--fg-1)')
+      expect(rule).not.toContain('var(--fg-dim)')
+    }
+  })
+
   test('no longer contains inline script or old static dashboard nodes', () => {
     const html = renderDashboardHtml()
 

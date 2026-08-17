@@ -308,6 +308,13 @@ export function renderDashboardHtml(): string {
     display: flex; align-items: baseline; gap: var(--sp-2);
     padding: 1px var(--sp-3); border-radius: var(--r-1);
     background: var(--surface);
+    width: 100%; margin: 0; border: none;
+    font-family: var(--mono); font-size: inherit; color: inherit;
+    text-align: left; cursor: default;
+  }
+  .live-tool-head:disabled { cursor: default; }
+  .live-tool-head:focus-visible {
+    outline: 1px solid var(--ph-coding); outline-offset: 2px; border-radius: var(--r-1);
   }
   .live-tool-head-clickable { cursor: pointer; }
   .live-tool-head-clickable:hover { background: var(--hover); }
@@ -351,7 +358,7 @@ export function renderDashboardHtml(): string {
   }
   .live-models-caret { color: var(--fg-1); width: 12px; }
   .live-models-summary {
-    margin-left: auto; color: var(--fg-dim);
+    margin-left: auto; color: var(--fg-1);
     font-family: var(--mono); font-size: var(--fs-xs);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
@@ -370,7 +377,7 @@ export function renderDashboardHtml(): string {
   .live-variant-select { flex: 0 0 auto; max-width: 180px; }
   .live-variant-select:disabled { opacity: 0.4; cursor: default; }
   .live-model-actions { display: flex; align-items: center; gap: var(--sp-3); }
-  .live-model-hint { flex: 1 1 auto; color: var(--fg-dim); font-size: var(--fs-xs); }
+  .live-model-hint { flex: 1 1 auto; color: var(--fg-1); font-size: var(--fs-xs); }
   .live-models-error { color: var(--status-error); font-size: var(--fs-xs); }
   .live-models-ok { color: var(--status-ok); font-size: var(--fs-xs); }
   .findings-tab { display: flex; flex-direction: column; gap: var(--sp-4); }

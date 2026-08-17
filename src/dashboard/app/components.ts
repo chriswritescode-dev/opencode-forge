@@ -1013,21 +1013,26 @@ function AmendmentRow(props: {
   const [requested, setRequested] = createSignal(false)
 
   createEffect(() => {
-    if (!props.expanded() || requested()) return
-    setRequested(true)
-    setLoading(true)
-    const params = new URLSearchParams({ project: a.projectId, loop: a.loopName, id: String(a.id) })
-    void fetch('/api/amendment?' + params.toString())
-      .then(async res => {
-        if (!res.ok) {
-          setError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
-          return
-        }
-        const payload = await res.json() as AmendmentDiff
-        setDiff(payload)
-      })
-      .catch(err => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
+    if (props.expanded()) {
+      if (requested() || diff() !== null) return
+      setRequested(true)
+      setError('')
+      setLoading(true)
+      const params = new URLSearchParams({ project: a.projectId, loop: a.loopName, id: String(a.id) })
+      void fetch('/api/amendment?' + params.toString())
+        .then(async res => {
+          if (!res.ok) {
+            setError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+            return
+          }
+          const payload = await res.json() as AmendmentDiff
+          setDiff(payload)
+        })
+        .catch(err => setError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setLoading(false))
+      return
+    }
+    if (requested() && !loading() && diff() === null) setRequested(false)
   })
 
   const summaryCounts = () => {
@@ -1346,14 +1351,25 @@ function LiveModelControls(props: { dashLoop: DashboardLoop }) {
   const [applied, setApplied] = createSignal(false)
   const [open, setOpen] = createSignal(false)
 
+  let edited = false
+  let lastObserved: [string, string, string, string] = ['', '', '', '']
+
   // Seed the selects from loop state, and re-seed whenever the poll reports a
   // change made elsewhere (TUI, another tab) while this panel is untouched.
   createEffect(() => {
-    if (applying()) return
-    setExecModel(lp().executionModel ?? '')
-    setExecVariant(lp().executionVariant ?? '')
-    setAuditModel(lp().auditorModel ?? '')
-    setAuditVariant(lp().auditorVariant ?? '')
+    const next: [string, string, string, string] = [
+      lp().executionModel ?? '',
+      lp().executionVariant ?? '',
+      lp().auditorModel ?? '',
+      lp().auditorVariant ?? '',
+    ]
+    if (!edited && (next[0] !== lastObserved[0] || next[1] !== lastObserved[1] || next[2] !== lastObserved[2] || next[3] !== lastObserved[3])) {
+      setExecModel(next[0])
+      setExecVariant(next[1])
+      setAuditModel(next[2])
+      setAuditVariant(next[3])
+    }
+    lastObserved = next
   })
 
   createEffect(() => {
@@ -1397,6 +1413,24 @@ function LiveModelControls(props: { dashLoop: DashboardLoop }) {
         setApplyError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
         return
       }
+      const payload = await res.json() as {
+        executionModel?: string | null
+        executionVariant?: string | null
+        auditorModel?: string | null
+        auditorVariant?: string | null
+      }
+      const appliedModels: [string, string, string, string] = [
+        payload.executionModel ?? '',
+        payload.executionVariant ?? '',
+        payload.auditorModel ?? '',
+        payload.auditorVariant ?? '',
+      ]
+      setExecModel(appliedModels[0])
+      setExecVariant(appliedModels[1])
+      setAuditModel(appliedModels[2])
+      setAuditVariant(appliedModels[3])
+      lastObserved = appliedModels
+      edited = false
       setApplied(true)
     } catch (err) {
       setApplyError(err instanceof Error ? err.message : String(err))
@@ -1412,6 +1446,7 @@ function LiveModelControls(props: { dashLoop: DashboardLoop }) {
   ) => html`<select
     class="live-model-select"
     onchange=${(e: Event) => {
+      edited = true
       setValue((e.currentTarget as HTMLSelectElement).value)
       onModelChange()
     }}
@@ -1430,7 +1465,10 @@ function LiveModelControls(props: { dashLoop: DashboardLoop }) {
   ) => html`<select
     class="live-variant-select"
     disabled=${() => variantsFor(modelId()).length === 0}
-    onchange=${(e: Event) => setValue((e.currentTarget as HTMLSelectElement).value)}
+    onchange=${(e: Event) => {
+      edited = true
+      setValue((e.currentTarget as HTMLSelectElement).value)
+    }}
   >
     <option value="" selected=${() => value() === ''}>default</option>
     ${() => variantsFor(modelId()).map(v => html`<option value=${v.id} selected=${() => value() === v.id}>${v.label}</option>`)}
@@ -1476,15 +1514,18 @@ function LiveToolPart(props: { part: LivePart }) {
   const [open, setOpen] = createSignal(false)
   const hasOutput = () => !!p().output
   return html`<div class=${() => 'live-tool live-tool-' + (p().status ?? 'pending')}>
-    <div
+    <button
+      type="button"
       class=${() => 'live-tool-head' + (hasOutput() ? ' live-tool-head-clickable' : '')}
+      disabled=${() => !hasOutput()}
+      aria-expanded=${() => (hasOutput() ? (open() ? 'true' : 'false') : undefined)}
       onclick=${() => { if (hasOutput()) setOpen(o => !o) }}
     >
       <span class="live-tool-caret">${() => (hasOutput() ? (open() ? '▾' : '▸') : '')}</span>
       <span class="live-tool-name">${() => p().tool ?? 'tool'}</span>
       <span class="live-tool-title">${() => p().title ?? ''}</span>
       <span class="live-tool-status">${() => p().status ?? 'pending'}</span>
-    </div>
+    </button>
     ${() => (open() && hasOutput() ? html`<pre class="live-tool-output">${() => p().output}</pre>` : '')}
   </div>`
 }
@@ -1607,6 +1648,7 @@ function LiveTabBody(props: { dashLoop: DashboardLoop; visible: () => boolean })
         setFailure('Live stream ended.')
       }
       setConnection('failed')
+      source.close()
     })
     source.onerror = () => {
       // EventSource reconnects on its own; only report a hard failure.
