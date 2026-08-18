@@ -145,17 +145,20 @@ describe('renderDashboardHtml', () => {
     }
   })
 
-  test('live models summary and hint use the stronger fg-1 token over fg-dim', () => {
+  test('live models summary renders at primary fg-0 strength and the hint stays on fg-1', () => {
     const html = renderDashboardHtml()
     const style = stylesheet(html)
 
-    for (const sel of ['.live-models-summary', '.live-model-hint']) {
+    const check = (sel: string, token: string) => {
       const start = style.indexOf(sel)
       expect(start, `${sel} rule not found`).toBeGreaterThan(0)
       const rule = style.slice(start, style.indexOf('}', start))
-      expect(rule).toContain('var(--fg-1)')
+      expect(rule).toContain(token)
       expect(rule).not.toContain('var(--fg-dim)')
     }
+
+    check('.live-models-summary', 'var(--fg-0)')
+    check('.live-model-hint', 'var(--fg-1)')
   })
 
   test('no longer contains inline script or old static dashboard nodes', () => {

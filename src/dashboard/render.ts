@@ -358,8 +358,8 @@ export function renderDashboardHtml(): string {
   }
   .live-models-caret { color: var(--fg-1); width: 12px; }
   .live-models-summary {
-    margin-left: auto; color: var(--fg-1);
-    font-family: var(--mono); font-size: var(--fs-xs);
+    margin-left: auto; color: var(--fg-0);
+    font-family: var(--mono); font-size: var(--fs-sm);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .live-models-body {
