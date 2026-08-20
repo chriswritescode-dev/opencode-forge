@@ -699,8 +699,9 @@ describe('collectDashboardData', () => {
     const scopedDl = scoped.projects[0].loops[0]
     expect(scopedDl.amendments).toHaveLength(1)
     expect(scopedDl.amendments[0].rationale).toBe('trim sections')
-    expect(scopedDl.amendments[0].sectionsBefore).toBe(JSON.stringify([{ index: 1, title: 'Old' }]))
-    expect(scopedDl.amendments[0].sectionsAfter).toBe(JSON.stringify([{ index: 1, title: 'New' }]))
+    expect(scopedDl.amendments[0]).not.toHaveProperty('sectionsBefore')
+    expect(scopedDl.amendments[0]).not.toHaveProperty('sectionsAfter')
+    expect(scopedDl.amendments[0].summary).toEqual({ added: 0, removed: 0, modified: 1 })
   })
 
   test('transitions ship for every loop in the scoped project and none outside it', () => {

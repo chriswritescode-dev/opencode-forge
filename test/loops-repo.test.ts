@@ -440,6 +440,68 @@ describe('LoopsRepo', () => {
     })
   })
 
+  describe('setModels', () => {
+    test('sets one role and leaves the other untouched', () => {
+      repo.insert({ ...testRow, executionModel: 'a/one', auditorModel: 'b/two' }, testLarge)
+
+      repo.setModels(testRow.projectId, testRow.loopName, { executionModel: 'c/three' })
+
+      const retrieved = repo.get(testRow.projectId, testRow.loopName)!
+      expect(retrieved.executionModel).toBe('c/three')
+      expect(retrieved.auditorModel).toBe('b/two')
+    })
+
+    test('null clears a role back to the configured default', () => {
+      repo.insert({ ...testRow, executionModel: 'a/one' }, testLarge)
+
+      repo.setModels(testRow.projectId, testRow.loopName, { executionModel: null })
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.executionModel).toBeNull()
+    })
+
+    test('a provided role always overwrites its variant so none can go stale', () => {
+      repo.insert({ ...testRow, executionModel: 'a/one', executionVariant: 'thinking-max' }, testLarge)
+
+      repo.setModels(testRow.projectId, testRow.loopName, { executionModel: 'c/three' })
+      expect(repo.get(testRow.projectId, testRow.loopName)!.executionVariant).toBeNull()
+
+      repo.setModels(testRow.projectId, testRow.loopName, { executionModel: 'c/three', executionVariant: 'high' })
+      expect(repo.get(testRow.projectId, testRow.loopName)!.executionVariant).toBe('high')
+    })
+
+    test('clears model_failed so the new choice is actually attempted', () => {
+      repo.insert(testRow, testLarge)
+      repo.setModelFailed(testRow.projectId, testRow.loopName, true)
+
+      repo.setModels(testRow.projectId, testRow.loopName, { executionModel: 'c/three' })
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.modelFailed).toBe(false)
+    })
+
+    test('rewinds the auditor fallback index only when the auditor model is set', () => {
+      repo.insert(testRow, testLarge)
+      repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 0, 1)
+
+      repo.setModels(testRow.projectId, testRow.loopName, { executionModel: 'c/three' })
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+
+      repo.setModels(testRow.projectId, testRow.loopName, { auditorModel: 'd/four' })
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('an empty change is a no-op', () => {
+      repo.insert({ ...testRow, executionModel: 'a/one', auditorModel: 'b/two' }, testLarge)
+      repo.setModelFailed(testRow.projectId, testRow.loopName, true)
+
+      repo.setModels(testRow.projectId, testRow.loopName, {})
+
+      const retrieved = repo.get(testRow.projectId, testRow.loopName)!
+      expect(retrieved.executionModel).toBe('a/one')
+      expect(retrieved.auditorModel).toBe('b/two')
+      expect(retrieved.modelFailed).toBe(true)
+    })
+  })
+
   describe('auditorFallbackIndex', () => {
     test('a freshly inserted row reads back auditorFallbackIndex === 0', () => {
       repo.insert(testRow, testLarge)

@@ -2,8 +2,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { homedir } from 'os'
 import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from 'path'
 import { fileURLToPath } from 'url'
-import { applyEdits, findNodeAtLocation, modify, parseTree } from 'jsonc-parser'
-import type { Node } from 'jsonc-parser'
+import { applyEdits, findNodeAtLocation, modify, parseTree } from 'jsonc-parser/lib/esm/main.js'
+import type { Node } from 'jsonc-parser/lib/esm/main.js'
 import {
   resolveConfigDir,
   resolveOpencodeConfigCandidates,

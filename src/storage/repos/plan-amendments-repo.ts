@@ -16,6 +16,7 @@ export interface PlanAmendmentRow {
 export interface PlanAmendmentsRepo {
   insert(row: Omit<PlanAmendmentRow, 'id' | 'createdAt'>): void
   listForLoop(projectId: string, loopName: string): PlanAmendmentRow[]
+  get(projectId: string, loopName: string, id: number): PlanAmendmentRow | null
 }
 
 export function createPlanAmendmentsRepo(db: Database, _logger?: Logger): PlanAmendmentsRepo {
@@ -31,6 +32,12 @@ export function createPlanAmendmentsRepo(db: Database, _logger?: Logger): PlanAm
     FROM plan_amendments
     WHERE project_id = ? AND loop_name = ?
     ORDER BY id ASC
+  `)
+
+  const stmtGet = db.prepare(`
+    SELECT id, project_id, loop_name, source, rationale, applied_at_section, sections_before, sections_after, created_at
+    FROM plan_amendments
+    WHERE project_id = ? AND loop_name = ? AND id = ?
   `)
 
   function mapRow(row: Record<string, unknown>): PlanAmendmentRow {
@@ -64,6 +71,11 @@ export function createPlanAmendmentsRepo(db: Database, _logger?: Logger): PlanAm
     listForLoop(projectId, loopName) {
       const rows = stmtList.all(projectId, loopName) as Array<Record<string, unknown>>
       return rows.map(mapRow)
+    },
+
+    get(projectId, loopName, id) {
+      const row = stmtGet.get(projectId, loopName, id) as Record<string, unknown> | null
+      return row ? mapRow(row) : null
     },
   }
 }

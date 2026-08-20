@@ -145,6 +145,22 @@ describe('renderDashboardHtml', () => {
     }
   })
 
+  test('live models summary renders at primary fg-0 strength and the hint stays on fg-1', () => {
+    const html = renderDashboardHtml()
+    const style = stylesheet(html)
+
+    const check = (sel: string, token: string) => {
+      const start = style.indexOf(sel)
+      expect(start, `${sel} rule not found`).toBeGreaterThan(0)
+      const rule = style.slice(start, style.indexOf('}', start))
+      expect(rule).toContain(token)
+      expect(rule).not.toContain('var(--fg-dim)')
+    }
+
+    check('.live-models-summary', 'var(--fg-0)')
+    check('.live-model-hint', 'var(--fg-1)')
+  })
+
   test('no longer contains inline script or old static dashboard nodes', () => {
     const html = renderDashboardHtml()
 

@@ -2,8 +2,9 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { platform } from 'os'
 import { resolveForgeDbPath } from '../storage/database'
+import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
-import { buildDashboardUrls, resolveDashboardConfig, type DashboardUrls } from './config'
+import { buildDashboardUrls, isLoopbackHost, resolveDashboardConfig, type DashboardUrls } from './config'
 import { createRequestHandler } from './server'
 
 export interface DashboardServerHandle extends DashboardUrls {
@@ -26,6 +27,12 @@ export interface StartDashboardOptions {
   maxAttempts?: number
   /** Loaded plugin config; supplies `dataDir` and `dashboard.host`/`dashboard.port`. */
   config?: PluginConfig
+  /**
+   * Live opencode client. Supplied by the TUI launch surface (which has an
+   * in-process client); absent for the standalone dashboard, which then serves
+   * the read-only views only.
+   */
+  client?: ForgeClient
 }
 
 const DEFAULT_MAX_ATTEMPTS = 10
@@ -43,12 +50,17 @@ function isAddrInUse(err: unknown): boolean {
 }
 
 /**
- * Opens the forge database read-only and starts a Bun HTTP server that serves
- * the dashboard. The bind host comes from `resolveDashboardConfig` (precedence:
+ * Opens the forge database and starts a Bun HTTP server that serves the
+ * dashboard. The bind host comes from `resolveDashboardConfig` (precedence:
  * explicit options > `dashboard.*` config > built-in default). Consecutive ports
  * are still tried on `EADDRINUSE` regardless of whether the port was explicitly
  * configured. The returned handle owns both the server and the database
  * connection; calling `stop` releases both.
+ *
+ * The connection is read-write because the loop's model columns are editable
+ * from the dashboard; the runtime re-reads loop state on every prompt, so the
+ * row is the handover point. Every mutating route is gated on a loopback bind:
+ * the dashboard has no auth, so a reachable bind stays strictly read-only.
  */
 export function startDashboardServer(options: StartDashboardOptions = {}): DashboardServerHandle {
   const dbPath = resolveDashboardDbPath(options.dbPath, options.dataDir ?? options.config?.dataDir)
@@ -63,9 +75,13 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
     port: options.port,
   })
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
-  const db = new Database(dbPath, { readonly: true })
+  const db = new Database(dbPath, { readwrite: true, create: false })
   db.run('PRAGMA busy_timeout=5000')
-  const handler = createRequestHandler({ forgeDb: db })
+  const handler = createRequestHandler({
+    forgeDb: db,
+    client: options.client,
+    allowSend: isLoopbackHost(host),
+  })
 
   function closeAll(): void {
     db.close()

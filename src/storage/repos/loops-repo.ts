@@ -67,6 +67,26 @@ export interface LoopsRepo {
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
+  /**
+   * Re-point a live loop at different models. Omitted roles are left alone;
+   * a provided role always overwrites its variant so a stale variant cannot
+   * survive onto a new model.
+   *
+   * Two flags would otherwise silently swallow the change, so both are
+   * corrected here rather than at each call site:
+   * - `model_failed` short-circuits model resolution to the session default
+   *   for *both* roles, so an explicit choice clears it. If the new model
+   *   fails too, the runtime sets the flag again.
+   * - `auditor_fallback_index` parks the loop on an entry of the auditor
+   *   fallback chain, so choosing a new auditor model rewinds it to the
+   *   primary.
+   */
+  setModels(projectId: string, loopName: string, opts: {
+    executionModel?: string | null
+    executionVariant?: string | null
+    auditorModel?: string | null
+    auditorVariant?: string | null
+  }): void
   setLastAuditResult(projectId: string, loopName: string, text: string): void
   clearLastAuditResult(projectId: string, loopName: string): void
   setPostActionReport(projectId: string, loopName: string, text: string): void
@@ -294,6 +314,19 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const setModelFailedStmt = db.prepare(`
     UPDATE loops SET model_failed = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  // One static statement instead of dynamic SQL: the per-role "provided" flag
+  // decides whether the row keeps its current values.
+  const setModelsStmt = db.prepare(`
+    UPDATE loops SET
+      execution_model        = CASE WHEN ? = 1 THEN ? ELSE execution_model END,
+      execution_variant      = CASE WHEN ? = 1 THEN ? ELSE execution_variant END,
+      auditor_model          = CASE WHEN ? = 1 THEN ? ELSE auditor_model END,
+      auditor_variant        = CASE WHEN ? = 1 THEN ? ELSE auditor_variant END,
+      auditor_fallback_index = CASE WHEN ? = 1 THEN 0 ELSE auditor_fallback_index END,
+      model_failed           = 0
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -553,6 +586,21 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
     setModelFailed(projectId: string, loopName: string, failed: boolean): void {
       setModelFailedStmt.run(failed ? 1 : 0, projectId, loopName)
+    },
+
+    setModels(projectId, loopName, opts): void {
+      const setsExecution = opts.executionModel !== undefined ? 1 : 0
+      const setsAuditor = opts.auditorModel !== undefined ? 1 : 0
+      if (!setsExecution && !setsAuditor) return
+      setModelsStmt.run(
+        setsExecution, opts.executionModel ?? null,
+        setsExecution, setsExecution ? (opts.executionVariant ?? null) : null,
+        setsAuditor, opts.auditorModel ?? null,
+        setsAuditor, setsAuditor ? (opts.auditorVariant ?? null) : null,
+        setsAuditor,
+        projectId,
+        loopName,
+      )
     },
 
     setLastAuditResult(projectId: string, loopName: string, text: string): void {

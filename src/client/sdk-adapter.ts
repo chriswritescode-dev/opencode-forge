@@ -181,7 +181,25 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     },
   }
 
-  return { session, workspace, project, provider, tui, sync }
+  // ── event namespace ──────────────────────────────────────────────────────
+  const event: ForgeClient['event'] = {
+    subscribe: async (params) => {
+      if (!v2.event || typeof v2.event.subscribe !== 'function') {
+        throw new ForgeClientError({
+          kind: 'unavailable',
+          method: 'event.subscribe',
+          message: 'event.subscribe not available on this host',
+        })
+      }
+      try {
+        return await v2.event.subscribe(params)
+      } catch (err: unknown) {
+        throw classify(err, 'event.subscribe')
+      }
+    },
+  }
+
+  return { session, workspace, project, provider, tui, sync, event }
 }
 
 // ── Combined factory ─────────────────────────────────────────────────────────

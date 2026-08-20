@@ -33,10 +33,15 @@ import {
   amendedSectionIndexes,
   mergeTimelineEntries,
   capList,
+  snapshotToLiveMessages,
+  normalizeLivePart,
+  applyLiveEvent,
+  liveStatusFromEvent,
 } from '../../src/dashboard/app/helpers'
-import type { LoopTab, PhaseSpan } from '../../src/dashboard/app/helpers'
+import type { LoopTab, PhaseSpan, LiveMessage } from '../../src/dashboard/app/helpers'
 import type { DashboardPayload, DashboardProject, DashboardLoop, LoopTransitionRow } from '../../src/dashboard/app/types'
-import type { PlanAmendmentRow, ReviewFindingRow } from '../../src/storage'
+import type { ReviewFindingRow } from '../../src/storage'
+import type { DashboardAmendment } from '../../src/dashboard/data'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,7 +122,7 @@ function mockFinding(overrides: Partial<ReviewFindingRow> = {}): ReviewFindingRo
   }
 }
 
-function mockAmendment(overrides: Partial<PlanAmendmentRow> = {}): PlanAmendmentRow {
+function mockAmendment(overrides: Partial<DashboardAmendment> = {}): DashboardAmendment {
   return {
     id: 1,
     projectId: 'p1',
@@ -125,8 +130,7 @@ function mockAmendment(overrides: Partial<PlanAmendmentRow> = {}): PlanAmendment
     source: 'auditor',
     rationale: 'adjust plan for missing section',
     appliedAtSection: 4,
-    sectionsBefore: '[]',
-    sectionsAfter: '[]',
+    summary: { added: 0, removed: 0, modified: 1 },
     createdAt: 100,
     ...overrides,
   }
@@ -404,17 +408,27 @@ describe('buildRepoLabels', () => {
 // ---------------------------------------------------------------------------
 
 describe('tabsForLoop', () => {
-  test('plan loop with sections and a plan returns all six tabs in order', () => {
+  test('running plan loop with sections and a plan returns every tab in order', () => {
     const loop = mockDashLoop({
       hasPlan: true,
       sectionCount: 1,
     })
-    expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'timeline', 'sections', 'findings', 'plan', 'usage'])
+    expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'live', 'timeline', 'sections', 'findings', 'plan', 'usage'])
+  })
+
+  test('the live tab only exists while the loop is running', () => {
+    const running = mockDashLoop({ hasPlan: true, sectionCount: 1 })
+    expect(tabsForLoop(running)).toContain<LoopTab>('live')
+
+    for (const status of ['completed', 'cancelled', 'errored', 'stalled'] as const) {
+      const finished = mockDashLoop({ hasPlan: true, sectionCount: 1, loop: mockLoopRow({ status }) })
+      expect(tabsForLoop(finished)).not.toContain<LoopTab>('live')
+    }
   })
 
   test('goal loop with zero sections omits the sections tab', () => {
     const loop = mockDashLoop({ hasPlan: false, sectionCount: 0 })
-    expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'timeline', 'findings', 'usage'])
+    expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'live', 'timeline', 'findings', 'usage'])
   })
 
   test('loop with hasPlan: false omits the plan tab', () => {
@@ -1981,5 +1995,215 @@ describe('capList', () => {
     expect(out.rows).toBe(items)
     expect(out.total).toBe(10)
     expect(out.capped).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Live session transcript reducers
+// ---------------------------------------------------------------------------
+
+describe('snapshotToLiveMessages', () => {
+  test('maps host messages to renderable text and tool parts', () => {
+    const out = snapshotToLiveMessages([
+      {
+        info: { id: 'm1', role: 'user' },
+        parts: [{ id: 'p1', messageID: 'm1', type: 'text', text: 'do the thing' }],
+      },
+      {
+        info: { id: 'm2', role: 'assistant' },
+        parts: [
+          { id: 'p2', messageID: 'm2', type: 'text', text: 'on it' },
+          { id: 'p3', messageID: 'm2', type: 'tool', tool: 'bash', state: { status: 'completed' } },
+          { id: 'p4', messageID: 'm2', type: 'step-start' },
+        ],
+      },
+    ])
+
+    expect(out).toEqual([
+      { id: 'm1', role: 'user', parts: [{ id: 'p1', type: 'text', text: 'do the thing', tool: undefined, status: undefined }] },
+      {
+        id: 'm2',
+        role: 'assistant',
+        parts: [
+          { id: 'p2', type: 'text', text: 'on it', tool: undefined, status: undefined },
+          { id: 'p3', type: 'tool', text: undefined, tool: 'bash', status: 'completed' },
+        ],
+      },
+    ])
+  })
+
+  test('tolerates malformed input', () => {
+    expect(snapshotToLiveMessages(null)).toEqual([])
+    expect(snapshotToLiveMessages('nope')).toEqual([])
+    expect(snapshotToLiveMessages([{ info: {} }, null, { info: { id: 'm1' } }])).toEqual([])
+  })
+
+  test('drops synthetic text parts', () => {
+    const out = snapshotToLiveMessages([
+      {
+        info: { id: 'm1', role: 'user' },
+        parts: [{ id: 'p1', messageID: 'm1', type: 'text', text: 'hidden', synthetic: true }],
+      },
+    ])
+    expect(out[0].parts).toEqual([])
+  })
+})
+
+describe('applyLiveEvent', () => {
+  const base: LiveMessage[] = [
+    { id: 'm1', role: 'assistant', parts: [{ id: 'p1', type: 'text', text: 'hello' }] },
+  ]
+
+  test('message.part.updated replaces a part in place', () => {
+    const out = applyLiveEvent(base, {
+      type: 'message.part.updated',
+      properties: { sessionID: 's1', part: { id: 'p1', messageID: 'm1', type: 'text', text: 'hello world' } },
+    })
+    expect(out[0].parts).toEqual([{ id: 'p1', type: 'text', text: 'hello world' }])
+    expect(out).not.toBe(base)
+  })
+
+  test('message.part.updated appends an unseen part', () => {
+    const out = applyLiveEvent(base, {
+      type: 'message.part.updated',
+      properties: { sessionID: 's1', part: { id: 'p2', messageID: 'm1', type: 'tool', tool: 'read', state: { status: 'running' } } },
+    })
+    expect(out[0].parts).toHaveLength(2)
+    expect(out[0].parts[1]).toEqual({ id: 'p2', type: 'tool', text: undefined, tool: 'read', status: 'running' })
+  })
+
+  test('a part for an unknown message creates a placeholder that message.updated corrects', () => {
+    const withPart = applyLiveEvent(base, {
+      type: 'message.part.updated',
+      properties: { sessionID: 's1', part: { id: 'p9', messageID: 'm2', type: 'text', text: 'new turn' } },
+    })
+    expect(withPart).toHaveLength(2)
+    expect(withPart[1]).toEqual({ id: 'm2', role: 'assistant', parts: [{ id: 'p9', type: 'text', text: 'new turn' }] })
+
+    const corrected = applyLiveEvent(withPart, {
+      type: 'message.updated',
+      properties: { sessionID: 's1', info: { id: 'm2', role: 'user' } },
+    })
+    expect(corrected[1].role).toBe('user')
+    expect(corrected[1].parts).toHaveLength(1)
+  })
+
+  test('message.updated appends an unseen message', () => {
+    const out = applyLiveEvent(base, {
+      type: 'message.updated',
+      properties: { sessionID: 's1', info: { id: 'm2', role: 'user' } },
+    })
+    expect(out.map(m => m.id)).toEqual(['m1', 'm2'])
+  })
+
+  test('removals drop the part and the message', () => {
+    const noPart = applyLiveEvent(base, {
+      type: 'message.part.removed',
+      properties: { sessionID: 's1', messageID: 'm1', partID: 'p1' },
+    })
+    expect(noPart[0].parts).toEqual([])
+
+    const noMessage = applyLiveEvent(base, {
+      type: 'message.removed',
+      properties: { sessionID: 's1', messageID: 'm1' },
+    })
+    expect(noMessage).toEqual([])
+  })
+
+  test('returns the same array when nothing changes', () => {
+    expect(applyLiveEvent(base, { type: 'session.idle', properties: { sessionID: 's1' } })).toBe(base)
+    expect(applyLiveEvent(base, { type: 'message.removed', properties: { sessionID: 's1', messageID: 'nope' } })).toBe(base)
+    expect(applyLiveEvent(base, { type: 'garbage' })).toBe(base)
+    expect(applyLiveEvent(base, null)).toBe(base)
+  })
+})
+
+describe('liveStatusFromEvent', () => {
+  test('reads idle and status events', () => {
+    expect(liveStatusFromEvent({ type: 'session.idle', properties: { sessionID: 's1' } })).toBe('idle')
+    expect(liveStatusFromEvent({ type: 'session.status', properties: { sessionID: 's1', status: { type: 'busy' } } })).toBe('busy')
+  })
+
+  test('returns null for unrelated events', () => {
+    expect(liveStatusFromEvent({ type: 'message.updated', properties: {} })).toBeNull()
+    expect(liveStatusFromEvent(null)).toBeNull()
+  })
+})
+
+describe('live tool parts carry the command and its output', () => {
+  test('completed tool exposes the host title and output', () => {
+    const part = normalizeLivePart({
+      id: 'p1',
+      messageID: 'm1',
+      type: 'tool',
+      tool: 'bash',
+      state: {
+        status: 'completed',
+        title: 'pnpm test',
+        input: { command: 'pnpm test' },
+        output: 'all tests passed',
+      },
+    })
+    expect(part).toEqual({
+      id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash',
+      status: 'completed', title: 'pnpm test', output: 'all tests passed',
+    })
+  })
+
+  test('falls back to the intent-carrying input when the host sends no title', () => {
+    const bash = normalizeLivePart({
+      id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash',
+      state: { status: 'running', input: { command: 'rg -n foo' } },
+    })
+    expect(bash?.title).toBe('rg -n foo')
+
+    const read = normalizeLivePart({
+      id: 'p2', messageID: 'm1', type: 'tool', tool: 'read',
+      state: { status: 'running', input: { filePath: '/src/index.ts' } },
+    })
+    expect(read?.title).toBe('/src/index.ts')
+  })
+
+  test('an errored tool shows the error as its output', () => {
+    const part = normalizeLivePart({
+      id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash',
+      state: { status: 'error', input: { command: 'false' }, error: 'exit code 1' },
+    })
+    expect(part?.status).toBe('error')
+    expect(part?.output).toBe('exit code 1')
+  })
+
+  test('a huge output keeps the tail, which is where failures land', () => {
+    const part = normalizeLivePart({
+      id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash',
+      state: { status: 'completed', title: 'x', input: {}, output: 'a'.repeat(5000) + 'TAIL' },
+    })
+    expect(part!.output!.length).toBeLessThan(5000)
+    expect(part!.output!.endsWith('TAIL')).toBe(true)
+    expect(part!.output!.startsWith('…')).toBe(true)
+  })
+
+  test('a pending tool with no output renders without one', () => {
+    const part = normalizeLivePart({
+      id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash',
+      state: { status: 'pending', input: { command: 'ls' }, raw: '' },
+    })
+    expect(part?.output).toBeUndefined()
+    expect(part?.status).toBe('pending')
+  })
+
+  test('snapshot parts keep the title and output', () => {
+    const out = snapshotToLiveMessages([
+      {
+        info: { id: 'm1', role: 'assistant' },
+        parts: [{
+          id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash',
+          state: { status: 'completed', title: 'ls -la', input: {}, output: 'file.txt' },
+        }],
+      },
+    ])
+    expect(out[0].parts[0]).toEqual({
+      id: 'p1', type: 'tool', tool: 'bash', status: 'completed', title: 'ls -la', output: 'file.txt',
+    })
   })
 })

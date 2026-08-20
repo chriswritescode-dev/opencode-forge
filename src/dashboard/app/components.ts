@@ -1,6 +1,7 @@
 import html from 'solid-js/html'
 import { createMemo, createSignal, createEffect, getOwner, runWithOwner, onCleanup, untrack } from 'solid-js'
 import type { DashboardLoop, DashboardProject, DashboardGroup } from './types'
+import type { AmendmentDiff, AmendmentDiffLine } from '../amendment-diff'
 import type { GroupFeatureRow } from '../../storage'
 import type { RepoSection, SortMode } from './helpers'
 import type { MarkdownHeading } from './helpers'
@@ -42,8 +43,11 @@ import {
   MAX_RENDERED_LOOP_ROWS,
   MAX_RENDERED_FINDING_ROWS,
   MAX_RENDERED_PICKER_OPTIONS,
+  snapshotToLiveMessages,
+  applyLiveEvent,
+  liveStatusFromEvent,
 } from './helpers'
-import type { LoopTab, PhaseSpan } from './helpers'
+import type { LoopTab, PhaseSpan, LiveMessage, LivePart } from './helpers'
 import { formatDuration } from '../../utils/duration'
 import { LoopMachineGraph } from './machine-graph'
 
@@ -994,51 +998,90 @@ function LoopUsage(props: {
 
 // ── Plan Amendments ───────────────────────────────────────────────────────
 
-function parseJsonSections(raw: string): Array<{ index: number; title: string }> {
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return []
-  }
-}
-
-function formatSectionTitle(sec: { index: number; title: string }): string {
-  return '#' + sec.index + ' ' + sec.title
-}
-
-// A single amendment row with an expand/collapse toggle. Expandable body shows
-// the parsed before/after section titles.
+// A single amendment row with an expand/collapse toggle. The expanded body
+// lazily fetches the per-amendment diff on first open and caches it for the
+// row's lifetime — amendments are immutable once written.
 function AmendmentRow(props: {
   amendment: NonNullable<DashboardLoop['amendments']>[number]
   expanded: () => boolean
   onToggle: () => void
 }) {
   const a = props.amendment
-  const before = createMemo(() => parseJsonSections(a.sectionsBefore))
-  const after = createMemo(() => parseJsonSections(a.sectionsAfter))
+  const [diff, setDiff] = createSignal<AmendmentDiff | null>(null)
+  const [loading, setLoading] = createSignal(false)
+  const [error, setError] = createSignal('')
+  const [requested, setRequested] = createSignal(false)
+
+  createEffect(() => {
+    if (props.expanded()) {
+      if (requested() || diff() !== null) return
+      setRequested(true)
+      setError('')
+      setLoading(true)
+      const params = new URLSearchParams({ project: a.projectId, loop: a.loopName, id: String(a.id) })
+      void fetch('/api/amendment?' + params.toString())
+        .then(async res => {
+          if (!res.ok) {
+            setError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+            return
+          }
+          const payload = await res.json() as AmendmentDiff
+          setDiff(payload)
+        })
+        .catch(err => setError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setLoading(false))
+      return
+    }
+    if (requested() && !loading() && diff() === null) setRequested(false)
+  })
+
+  const summaryCounts = () => {
+    const counts: Array<{ cls: string; label: string }> = []
+    if (a.summary.added > 0) counts.push({ cls: 'amendment-count-add', label: '+' + a.summary.added })
+    if (a.summary.removed > 0) counts.push({ cls: 'amendment-count-remove', label: '\u2212' + a.summary.removed })
+    if (a.summary.modified > 0) counts.push({ cls: 'amendment-count-modified', label: '~' + a.summary.modified })
+    return counts
+  }
+
+  const changedSections = () => (diff()?.sections ?? []).filter(sec => sec.change !== 'unchanged')
+  const noChanges = () => diff() !== null && changedSections().length === 0
+
+  const diffLineText = (line: AmendmentDiffLine): string => {
+    if (line.kind === 'add') return '+ ' + line.text
+    if (line.kind === 'remove') return '- ' + line.text
+    if (line.kind === 'context') return '  ' + line.text
+    return line.text
+  }
 
   return html`<div class="amendment-row">
     <div class="amendment-head" onclick=${props.onToggle}>
       <span class="amendment-time">${() => formatRelativeTime(a.createdAt)}</span>
       <span class="amendment-section">${() => 'applied @ section ' + formatSectionNumber(a.appliedAtSection)}</span>
       <span class="amendment-source">${() => a.source}</span>
+      ${() => (summaryCounts().length > 0
+        ? html`<span class="amendment-summary">${summaryCounts().map(c => html`<span class=${'amendment-count ' + c.cls}>${c.label}</span>`)}</span>`
+        : '')}
       <span class="amendment-rationale">${() => a.rationale}</span>
       <span class="amendment-caret">${() => (props.expanded() ? '▾' : '▸')}</span>
     </div>
     <div class="amendment-body" style=${() => props.expanded() ? 'display:block' : 'display:none'}>
       <div class="amendment-diff">
-        ${() => (before().length > 0
-          ? html`<div class="amendment-diff-before">
-              <div class="amendment-diff-label">Before</div>
-              ${() => before().map(s => html`<div class="amendment-diff-item">${() => formatSectionTitle(s)}</div>`) }
-            </div>`
-          : '')}
-        ${() => (after().length > 0
-          ? html`<div class="amendment-diff-after">
-              <div class="amendment-diff-label">After</div>
-              ${() => after().map(s => html`<div class="amendment-diff-item">${() => formatSectionTitle(s)}</div>`) }
-            </div>`
-          : '')}
+        ${() => (loading() ? html`<div class="amendment-diff-loading">Loading diff…</div>` : '')}
+        ${() => (error() ? html`<div class="amendment-diff-error">${error()}</div>` : '')}
+        ${() => (noChanges() ? html`<div class="amendment-diff-empty">No section changes recorded.</div>` : '')}
+        ${() => changedSections().map(sec => html`<div class="amendment-diff-section">
+          <div class="amendment-diff-head">
+            <span class="amendment-diff-index">${() => '#' + formatSectionNumber(sec.index)}</span>
+            <span class="amendment-diff-change">${() => sec.change}</span>
+            <span class="amendment-diff-title">${() => sec.title}</span>
+            ${() => (sec.previousTitle !== null
+              ? html`<span class="amendment-diff-prev">${() => 'was: ' + sec.previousTitle}</span>`
+              : '')}
+          </div>
+          ${() => (sec.lines.length === 0
+            ? html`<div class="amendment-diff-empty">Title changed only.</div>`
+            : sec.lines.map(line => html`<div class=${'amendment-diff-line amendment-diff-line-' + line.kind}>${diffLineText(line)}</div>`))}
+        </div>`)}
       </div>
     </div>
   </div>`
@@ -1066,6 +1109,7 @@ function AmendmentsPanel(props: {
 
 const TAB_LABELS: Record<LoopTab, string> = {
   overview: 'Overview',
+  live: 'Live',
   timeline: 'Timeline',
   sections: 'Sections',
   findings: 'Findings',
@@ -1282,15 +1326,456 @@ function UsageTabBody(props: { dashLoop: DashboardLoop }) {
   </div>`
 }
 
+// ── LiveModelControls ─────────────────────────────────────────────────────
+
+interface CatalogModel {
+  id: string
+  name: string
+  provider: string
+  variants: Array<{ id: string; label: string }>
+}
+
+// Re-point a running loop at different models. The runtime re-reads loop state
+// on every prompt, so a change lands on the next coding prompt (execution) or
+// the next audit dispatch (auditor) — never mid-turn.
+function LiveModelControls(props: { dashLoop: DashboardLoop }) {
+  const lp = () => props.dashLoop.loop
+  const [catalog, setCatalog] = createSignal<CatalogModel[]>([])
+  const [catalogError, setCatalogError] = createSignal('')
+  const [execModel, setExecModel] = createSignal<string>('')
+  const [execVariant, setExecVariant] = createSignal<string>('')
+  const [auditModel, setAuditModel] = createSignal<string>('')
+  const [auditVariant, setAuditVariant] = createSignal<string>('')
+  const [applying, setApplying] = createSignal(false)
+  const [applyError, setApplyError] = createSignal('')
+  const [applied, setApplied] = createSignal(false)
+  const [open, setOpen] = createSignal(false)
+
+  let edited = false
+  let lastObserved: [string, string, string, string] = ['', '', '', '']
+
+  // Seed the selects from loop state, and re-seed whenever the poll reports a
+  // change made elsewhere (TUI, another tab) while this panel is untouched.
+  createEffect(() => {
+    const next: [string, string, string, string] = [
+      lp().executionModel ?? '',
+      lp().executionVariant ?? '',
+      lp().auditorModel ?? '',
+      lp().auditorVariant ?? '',
+    ]
+    if (!edited && (next[0] !== lastObserved[0] || next[1] !== lastObserved[1] || next[2] !== lastObserved[2] || next[3] !== lastObserved[3])) {
+      setExecModel(next[0])
+      setExecVariant(next[1])
+      setAuditModel(next[2])
+      setAuditVariant(next[3])
+    }
+    lastObserved = next
+  })
+
+  createEffect(() => {
+    if (!open() || catalog().length > 0) return
+    const params = new URLSearchParams({ project: lp().projectId, loop: lp().loopName })
+    void fetch('/api/models?' + params.toString())
+      .then(async res => {
+        if (!res.ok) {
+          setCatalogError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+          return
+        }
+        const payload = await res.json() as { models?: CatalogModel[] }
+        setCatalog(payload.models ?? [])
+        setCatalogError('')
+      })
+      .catch(err => setCatalogError(err instanceof Error ? err.message : String(err)))
+  })
+
+  const variantsFor = (modelId: string): Array<{ id: string; label: string }> =>
+    catalog().find(m => m.id === modelId)?.variants ?? []
+
+  const apply = async () => {
+    if (applying()) return
+    setApplying(true)
+    setApplyError('')
+    setApplied(false)
+    try {
+      const res = await fetch('/api/loop/models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          projectId: lp().projectId,
+          loopName: lp().loopName,
+          executionModel: execModel() || null,
+          executionVariant: execVariant() || null,
+          auditorModel: auditModel() || null,
+          auditorVariant: auditVariant() || null,
+        }),
+      })
+      if (!res.ok) {
+        setApplyError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+        return
+      }
+      const payload = await res.json() as {
+        executionModel?: string | null
+        executionVariant?: string | null
+        auditorModel?: string | null
+        auditorVariant?: string | null
+      }
+      const appliedModels: [string, string, string, string] = [
+        payload.executionModel ?? '',
+        payload.executionVariant ?? '',
+        payload.auditorModel ?? '',
+        payload.auditorVariant ?? '',
+      ]
+      setExecModel(appliedModels[0])
+      setExecVariant(appliedModels[1])
+      setAuditModel(appliedModels[2])
+      setAuditVariant(appliedModels[3])
+      lastObserved = appliedModels
+      edited = false
+      setApplied(true)
+    } catch (err) {
+      setApplyError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const modelSelect = (
+    value: () => string,
+    setValue: (v: string) => void,
+    onModelChange: () => void,
+  ) => html`<select
+    class="live-model-select"
+    onchange=${(e: Event) => {
+      edited = true
+      setValue((e.currentTarget as HTMLSelectElement).value)
+      onModelChange()
+    }}
+  >
+    <option value="" selected=${() => value() === ''}>default (config)</option>
+    ${() => catalog().map(m => html`<option value=${m.id} selected=${() => value() === m.id}>${m.name + ' · ' + m.provider}</option>`)}
+    ${() => (value() && !catalog().some(m => m.id === value())
+      ? html`<option value=${value()} selected=${true}>${value()}</option>`
+      : '')}
+  </select>`
+
+  const variantSelect = (
+    modelId: () => string,
+    value: () => string,
+    setValue: (v: string) => void,
+  ) => html`<select
+    class="live-variant-select"
+    disabled=${() => variantsFor(modelId()).length === 0}
+    onchange=${(e: Event) => {
+      edited = true
+      setValue((e.currentTarget as HTMLSelectElement).value)
+    }}
+  >
+    <option value="" selected=${() => value() === ''}>default</option>
+    ${() => variantsFor(modelId()).map(v => html`<option value=${v.id} selected=${() => value() === v.id}>${v.label}</option>`)}
+  </select>`
+
+  return html`<div class="live-models">
+    <button class="live-models-toggle" onclick=${() => setOpen(o => !o)}>
+      <span class="live-models-caret">${() => (open() ? '▾' : '▸')}</span>
+      <span>Models</span>
+      <span class="live-models-summary">${() => (lp().executionModel ?? 'default') + ' · audit ' + (lp().auditorModel ?? 'default')}</span>
+    </button>
+    ${() => {
+      if (!open()) return ''
+      return html`<div class="live-models-body">
+        ${() => (catalogError() ? html`<div class="live-models-error">${() => catalogError()}</div>` : '')}
+        <label class="live-model-row">
+          <span class="live-model-label">Execution</span>
+          ${modelSelect(execModel, setExecModel, () => setExecVariant(''))}
+          ${variantSelect(execModel, execVariant, setExecVariant)}
+        </label>
+        <label class="live-model-row">
+          <span class="live-model-label">Auditor</span>
+          ${modelSelect(auditModel, setAuditModel, () => setAuditVariant(''))}
+          ${variantSelect(auditModel, auditVariant, setAuditVariant)}
+        </label>
+        <div class="live-model-actions">
+          <span class="live-model-hint">Applies to the next prompt, not the turn in flight.</span>
+          <button class="live-send" onclick=${() => void apply()} disabled=${() => applying()}>
+            ${() => (applying() ? 'Applying…' : 'Apply')}
+          </button>
+        </div>
+        ${() => (applyError() ? html`<div class="live-models-error">${() => applyError()}</div>` : '')}
+        ${() => (applied() && !applyError() ? html`<div class="live-models-ok">Models updated.</div>` : '')}
+      </div>`
+    }}
+  </div>`
+}
+
+// One tool call: what was run, and (on demand) what it printed. Output is
+// collapsed by default so a long run of shell calls stays skimmable.
+function LiveToolPart(props: { part: LivePart }) {
+  const p = () => props.part
+  const [open, setOpen] = createSignal(false)
+  const hasOutput = () => !!p().output
+  return html`<div class=${() => 'live-tool live-tool-' + (p().status ?? 'pending')}>
+    <button
+      type="button"
+      class=${() => 'live-tool-head' + (hasOutput() ? ' live-tool-head-clickable' : '')}
+      disabled=${() => !hasOutput()}
+      aria-expanded=${() => (hasOutput() ? (open() ? 'true' : 'false') : undefined)}
+      onclick=${() => { if (hasOutput()) setOpen(o => !o) }}
+    >
+      <span class="live-tool-caret">${() => (hasOutput() ? (open() ? '▾' : '▸') : '')}</span>
+      <span class="live-tool-name">${() => p().tool ?? 'tool'}</span>
+      <span class="live-tool-title">${() => p().title ?? ''}</span>
+      <span class="live-tool-status">${() => p().status ?? 'pending'}</span>
+    </button>
+    ${() => (open() && hasOutput() ? html`<pre class="live-tool-output">${() => p().output}</pre>` : '')}
+  </div>`
+}
+
+// ── LiveTabBody ───────────────────────────────────────────────────────────
+
+/** How long after the last change the session still counts as working. */
+const ACTIVITY_WINDOW_MS = 8000
+/** Distance from the bottom that still counts as "following the output". */
+const BOTTOM_SLACK_PX = 48
+
+/** Tracks whether the browser tab itself is in the foreground. */
+function createDocumentVisibility(): () => boolean {
+  if (typeof document === 'undefined') return () => true
+  const [visible, setVisible] = createSignal(document.visibilityState !== 'hidden')
+  const onChange = () => setVisible(document.visibilityState !== 'hidden')
+  document.addEventListener('visibilitychange', onChange)
+  onCleanup(() => document.removeEventListener('visibilitychange', onChange))
+  return visible
+}
+
+// A window onto the loop's current opencode session: the transcript as the
+// host has it, kept current by the host's own events, plus a box to send the
+// session a message. Nothing here is persisted, and the subscription only
+// exists while the view is actually on screen — see `active` below.
+function LiveTabBody(props: { dashLoop: DashboardLoop; visible: () => boolean }) {
+  const dl = () => props.dashLoop
+  const lp = () => dl().loop
+  const [messages, setMessages] = createSignal<LiveMessage[]>([])
+  const [connection, setConnection] = createSignal<'connecting' | 'live' | 'failed'>('connecting')
+  const [failure, setFailure] = createSignal('')
+  const [sessionStatus, setSessionStatus] = createSignal<string>('')
+  const [draft, setDraft] = createSignal('')
+  const [sending, setSending] = createSignal(false)
+  const [sendError, setSendError] = createSignal('')
+  // 'stream' while the host pushes events; 'poll' once the server had to
+  // refresh the transcript itself, which means this loop is being driven by a
+  // different opencode process than the one serving the dashboard.
+  const [mode, setMode] = createSignal<'stream' | 'poll'>('stream')
+  const [lastActivityAt, setLastActivityAt] = createSignal(0)
+  const [tick, setTick] = createSignal(0)
+
+  const documentVisible = createDocumentVisibility()
+  // Tab bodies stay mounted once opened, so visibility — not mount state — is
+  // what decides whether this session is worth a connection. A backgrounded
+  // browser tab counts as hidden: neither the stream nor the server-side
+  // transcript poll should run for a view nobody is looking at.
+  const active = createMemo(() => props.visible() && documentVisible())
+
+  // Drives the "working" indicator's decay; pointless while hidden.
+  createEffect(() => {
+    if (!active()) return
+    const ticker = setInterval(() => setTick(t => t + 1), 1000)
+    onCleanup(() => clearInterval(ticker))
+  })
+
+  const working = createMemo(() => {
+    tick()
+    if (sessionStatus() === 'busy') return true
+    const at = lastActivityAt()
+    return at > 0 && Date.now() - at < ACTIVITY_WINDOW_MS
+  })
+
+  const streamUrl = createMemo(() => {
+    const params = new URLSearchParams({ project: lp().projectId, loop: lp().loopName })
+    return '/api/loop/stream?' + params.toString()
+  })
+
+  // Opens only while on screen, and re-subscribes when the loop rotates to a
+  // new session: the stream is bound to the session current at open time.
+  let shownSessionId = ''
+  createEffect(() => {
+    const sessionId = lp().currentSessionId
+    const url = streamUrl()
+    if (!active() || !sessionId || typeof EventSource === 'undefined') return
+    // Returning to the same session keeps the rows on screen until the fresh
+    // snapshot lands; a different session starts clean.
+    if (sessionId !== shownSessionId) {
+      shownSessionId = sessionId
+      setMessages([])
+    }
+    setConnection('connecting')
+    setFailure('')
+    setMode('stream')
+    setLastActivityAt(0)
+    const source = new EventSource(url)
+    source.addEventListener('snapshot', (e: MessageEvent) => {
+      try {
+        const payload = JSON.parse(e.data) as { messages?: unknown; reason?: string }
+        const next = snapshotToLiveMessages(payload.messages)
+        setMessages(next)
+        setConnection('live')
+        // A polled snapshot only arrives when content changed without an event.
+        if (payload.reason === 'poll') {
+          setMode('poll')
+          setLastActivityAt(Date.now())
+        }
+      } catch {
+        setConnection('failed')
+        setFailure('Could not read the transcript snapshot.')
+      }
+    })
+    source.addEventListener('event', (e: MessageEvent) => {
+      try {
+        const event = JSON.parse(e.data)
+        setMessages(current => applyLiveEvent(current, event))
+        setMode('stream')
+        setLastActivityAt(Date.now())
+        const status = liveStatusFromEvent(event)
+        if (status) setSessionStatus(status)
+      } catch {
+        // A malformed frame is not worth tearing the view down for.
+      }
+    })
+    source.addEventListener('failed', (e: MessageEvent) => {
+      try {
+        const payload = JSON.parse(e.data) as { message?: string }
+        setFailure(payload.message ?? 'Live stream ended.')
+      } catch {
+        setFailure('Live stream ended.')
+      }
+      setConnection('failed')
+      source.close()
+    })
+    source.onerror = () => {
+      // EventSource reconnects on its own; only report a hard failure.
+      if (source.readyState === EventSource.CLOSED) setConnection('failed')
+    }
+    onCleanup(() => source.close())
+  })
+
+  const send = async () => {
+    const text = draft().trim()
+    if (!text || sending()) return
+    setSending(true)
+    setSendError('')
+    try {
+      const res = await fetch('/api/loop/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: lp().projectId, loopName: lp().loopName, text }),
+      })
+      if (!res.ok) {
+        setSendError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+        return
+      }
+      setDraft('')
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const statusLabel = createMemo(() => {
+    if (connection() === 'connecting') return 'connecting'
+    if (connection() === 'failed') return 'disconnected'
+    if (working()) return mode() === 'poll' ? 'working (refreshing)' : 'working'
+    return mode() === 'poll' ? 'refreshing' : (sessionStatus() || 'idle')
+  })
+
+  const dotClass = createMemo(() => {
+    if (connection() !== 'live') return 'live-dot live-dot-' + connection()
+    if (working()) return 'live-dot live-dot-working'
+    return 'live-dot live-dot-idle'
+  })
+
+  // Keep the newest output in view, but yield to a reader who scrolled up.
+  const transcript = html`<div class="live-transcript">
+    ${() => {
+      const rows = messages()
+      if (rows.length === 0) {
+        return html`<div class="tab-empty">${() => (connection() === 'live' ? 'No messages in this session yet.' : 'Loading session…')}</div>`
+      }
+      return rows.map(m => html`<div class=${'live-msg live-msg-' + m.role}>
+        <div class="live-msg-role">${m.role}</div>
+        <div class="live-msg-body">
+          ${() => m.parts.map(p => (p.type === 'text'
+            ? html`<div class="live-text">${p.text ?? ''}</div>`
+            : LiveToolPart({ part: p })))}
+        </div>
+      </div>`)
+    }}
+  </div>` as HTMLElement
+
+  const [pinned, setPinned] = createSignal(true)
+  const atBottom = (el: HTMLElement): boolean =>
+    el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_SLACK_PX
+  transcript.addEventListener('scroll', () => setPinned(atBottom(transcript)))
+  createEffect(() => {
+    messages()
+    if (!pinned()) return
+    // After the rows for this update have been written to the DOM.
+    queueMicrotask(() => { transcript.scrollTop = transcript.scrollHeight })
+  })
+
+  return html`<div class="live-tab">
+    <div class="live-head">
+      <span class=${() => dotClass()}></span>
+      <span class="live-status">${() => statusLabel()}</span>
+      ${() => (mode() === 'poll'
+        ? html`<span class="live-mode-note" title="This loop is running in a different opencode process, so its events never reach this server. The transcript is being re-read instead.">events unavailable — refreshing every 4s</span>`
+        : '')}
+      <span class="live-session">${() => lp().currentSessionId}</span>
+    </div>
+
+    ${() => (failure() ? html`<div class="live-failure">${() => failure()}</div>` : '')}
+
+    ${LiveModelControls({ dashLoop: props.dashLoop })}
+
+    ${transcript}
+
+    ${() => (pinned() ? '' : html`<button class="live-jump" onclick=${() => {
+      transcript.scrollTop = transcript.scrollHeight
+      setPinned(true)
+    }}>Jump to latest ↓</button>`)}
+
+    <div class="live-composer">
+      <textarea
+        class="live-input"
+        rows="2"
+        placeholder="Send a message to this session…"
+        value=${() => draft()}
+        oninput=${(e: Event) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
+        onkeydown=${(e: KeyboardEvent) => {
+          if (e.key !== 'Enter' || e.shiftKey) return
+          e.preventDefault()
+          void send()
+        }}
+      ></textarea>
+      <button
+        class="live-send"
+        onclick=${() => void send()}
+        disabled=${() => sending() || draft().trim().length === 0}
+      >${() => (sending() ? 'Sending…' : 'Send')}</button>
+    </div>
+    ${() => (sendError() ? html`<div class="live-send-error">${() => sendError()}</div>` : '')}
+  </div>`
+}
+
 function buildTabBody(props: {
   tab: LoopTab
   dashLoop: DashboardLoop
   split: () => Split
   now: () => number
   onSelectTab: (t: LoopTab) => void
-}): Node {
+}, visible: () => boolean): Node {
   switch (props.tab) {
     case 'overview': return OverviewTabBody({ dashLoop: props.dashLoop, split: props.split, now: props.now, onSelectTab: props.onSelectTab }) as Node
+    case 'live': return LiveTabBody({ dashLoop: props.dashLoop, visible }) as Node
     case 'timeline': return TimelineTabBody({ dashLoop: props.dashLoop, now: props.now }) as Node
     case 'sections': return SectionsTabBody({ dashLoop: props.dashLoop }) as Node
     case 'findings': return FindingsTabBody({ dashLoop: props.dashLoop }) as Node
@@ -1321,7 +1806,7 @@ function TabBody(props: {
   createEffect(() => {
     if (!visible() || built) return
     built = true
-    const node = runWithOwner(owner, () => buildTabBody(props))
+    const node = runWithOwner(owner, () => buildTabBody(props, visible))
     if (node) host.appendChild(node)
   })
   return host

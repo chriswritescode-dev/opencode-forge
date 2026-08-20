@@ -7,6 +7,7 @@ import {
   resolvePrimaryLanIpv4,
   buildDashboardUrls,
   describeDashboardBinding,
+  isLoopbackHost,
   DASHBOARD_EXPOSED_WARNING,
 } from '../../src/dashboard/config'
 import type { PluginConfig } from '../../src/types'
@@ -120,6 +121,30 @@ describe('resolveDashboardConfig', () => {
   test('defaults are exported', () => {
     expect(DEFAULT_DASHBOARD_HOST).toBe('localhost')
     expect(DEFAULT_DASHBOARD_PORT).toBe(4747)
+  })
+})
+
+describe('isLoopbackHost', () => {
+  test.each(['localhost', 'LOCALHOST', '  localhost  ', '::1', '127.0.0.1', '127.1.2.3', '127.255.255.254'])(
+    '%p is loopback',
+    (host) => {
+      expect(isLoopbackHost(host)).toBe(true)
+    },
+  )
+
+  test.each([
+    '0.0.0.0',
+    '::',
+    '127.0.0.256',
+    '127.0.0.999',
+    '127.0.0.01',
+    '127.0.0.0.1',
+    '128.0.0.1',
+    '192.168.1.5',
+    'example.com',
+    '',
+  ])('%p is not loopback', (host) => {
+    expect(isLoopbackHost(host)).toBe(false)
   })
 })
 

@@ -4,11 +4,11 @@ import { slugifyText } from '../../utils/format'
 import { USAGE_ROLE_ORDER } from '../../loop/token-usage'
 import type { UsageRole } from '../../loop/token-usage'
 
-export type LoopTab = 'overview' | 'timeline' | 'sections' | 'findings' | 'plan' | 'usage'
+export type LoopTab = 'overview' | 'live' | 'timeline' | 'sections' | 'findings' | 'plan' | 'usage'
 export type RepoSection = 'loops' | 'groups' | 'findings' | 'plans'
 
 /** Every loop tab, in render order. Also the set `parseDashboardHash` accepts. */
-export const ALL_TABS: readonly LoopTab[] = ['overview', 'timeline', 'sections', 'findings', 'plan', 'usage']
+export const ALL_TABS: readonly LoopTab[] = ['overview', 'live', 'timeline', 'sections', 'findings', 'plan', 'usage']
 
 export const MAX_RENDERED_LOOP_ROWS = 200
 export const MAX_RENDERED_FINDING_ROWS = 300
@@ -602,12 +602,206 @@ const markdownResultCache = new Map<string, MarkdownResult>()
 const MD_CACHE_MAX = 200
 
 export function tabsForLoop(loop: DashboardLoop): LoopTab[] {
-  const tabs: LoopTab[] = ['overview', 'timeline']
+  const tabs: LoopTab[] = ['overview']
+  // The live view talks to the loop's current session, which only exists while
+  // the loop is running.
+  if (loop.loop.status === 'running') tabs.push('live')
+  tabs.push('timeline')
   if (loop.sectionCount > 0) tabs.push('sections')
   tabs.push('findings')
   if (loop.hasPlan) tabs.push('plan')
   tabs.push('usage')
   return tabs
+}
+
+// ── Live session transcript ───────────────────────────────────────────────
+// The live view holds nothing but what the host has already told it: a
+// snapshot of the session's messages plus the host's own part updates. These
+// reducers are pure so the transcript can be exercised without a DOM or a
+// live opencode server.
+
+/** A transcript part reduced to what the live view renders. */
+export interface LivePart {
+  id: string
+  type: string
+  text?: string
+  tool?: string
+  status?: string
+  /** What the tool was asked to do — the host's title, else the key input. */
+  title?: string
+  /** Tool result: stdout/among output for a completed call, the error otherwise. */
+  output?: string
+}
+
+/** Longest tool output kept in the transcript; the tail is what matters most. */
+const MAX_TOOL_OUTPUT = 4000
+
+function toolTitle(state: Record<string, unknown> | null): string | undefined {
+  const title = str(state?.title)
+  if (title) return title
+  const input = record(state?.input)
+  if (!input) return undefined
+  // Fall back to the field that carries the intent for the common tools.
+  const candidate = str(input.command) ?? str(input.filePath) ?? str(input.pattern) ?? str(input.path)
+  if (candidate) return candidate
+  const keys = Object.keys(input)
+  return keys.length > 0 ? `${keys.length} argument${keys.length === 1 ? '' : 's'}` : undefined
+}
+
+function toolOutput(state: Record<string, unknown> | null): string | undefined {
+  const raw = str(state?.output) ?? str(state?.error)
+  if (!raw) return undefined
+  return raw.length > MAX_TOOL_OUTPUT ? `…${raw.slice(-MAX_TOOL_OUTPUT)}` : raw
+}
+
+export interface LiveMessage {
+  id: string
+  role: string
+  parts: LivePart[]
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+/** Reduce a host part to a renderable one; null for parts the view ignores. */
+export function normalizeLivePart(raw: unknown): (LivePart & { messageID: string }) | null {
+  const part = record(raw)
+  if (!part) return null
+  const id = str(part.id)
+  const messageID = str(part.messageID)
+  const type = str(part.type)
+  if (!id || !messageID || !type) return null
+  if (type === 'text') {
+    const text = str(part.text) ?? ''
+    if (part.synthetic === true) return null
+    return { id, messageID, type, text }
+  }
+  if (type === 'tool') {
+    const state = record(part.state)
+    return {
+      id,
+      messageID,
+      type,
+      tool: str(part.tool) ?? 'tool',
+      status: str(state?.status) ?? 'pending',
+      title: toolTitle(state),
+      output: toolOutput(state),
+    }
+  }
+  return null
+}
+
+/** Build the initial transcript from `session.messages` output. */
+export function snapshotToLiveMessages(raw: unknown): LiveMessage[] {
+  if (!Array.isArray(raw)) return []
+  const messages: LiveMessage[] = []
+  for (const entry of raw) {
+    const wrapper = record(entry)
+    const info = record(wrapper?.info)
+    const id = str(info?.id)
+    const role = str(info?.role)
+    if (!id || !role) continue
+    const parts: LivePart[] = []
+    const rawParts = wrapper?.parts
+    if (Array.isArray(rawParts)) {
+      for (const rawPart of rawParts) {
+        const part = normalizeLivePart(rawPart)
+        if (part) {
+          const { messageID: _messageID, ...renderable } = part
+          parts.push(renderable)
+        }
+      }
+    }
+    messages.push({ id, role, parts })
+  }
+  return messages
+}
+
+/**
+ * Apply one host event to the transcript. Returns the same array when the
+ * event changes nothing, so the caller can skip a re-render.
+ */
+export function applyLiveEvent(messages: LiveMessage[], event: unknown): LiveMessage[] {
+  const envelope = record(event)
+  const type = str(envelope?.type)
+  const props = record(envelope?.properties)
+  if (!type || !props) return messages
+
+  if (type === 'message.updated') {
+    const info = record(props.info)
+    const id = str(info?.id)
+    const role = str(info?.role)
+    if (!id || !role) return messages
+    const index = messages.findIndex(m => m.id === id)
+    if (index === -1) return [...messages, { id, role, parts: [] }]
+    if (messages[index].role === role) return messages
+    const next = [...messages]
+    next[index] = { ...next[index], role }
+    return next
+  }
+
+  if (type === 'message.removed') {
+    const messageID = str(props.messageID)
+    if (!messageID) return messages
+    const next = messages.filter(m => m.id !== messageID)
+    return next.length === messages.length ? messages : next
+  }
+
+  if (type === 'message.part.updated') {
+    const part = normalizeLivePart(props.part)
+    if (!part) return messages
+    const { messageID, ...renderable } = part
+    const index = messages.findIndex(m => m.id === messageID)
+    // A part can arrive before its message.updated; hold it in a placeholder
+    // whose role is corrected when the message event lands.
+    if (index === -1) {
+      return [...messages, { id: messageID, role: 'assistant', parts: [renderable] }]
+    }
+    const message = messages[index]
+    const partIndex = message.parts.findIndex(p => p.id === renderable.id)
+    const parts = partIndex === -1
+      ? [...message.parts, renderable]
+      : message.parts.map((p, i) => (i === partIndex ? renderable : p))
+    const next = [...messages]
+    next[index] = { ...message, parts }
+    return next
+  }
+
+  if (type === 'message.part.removed') {
+    const messageID = str(props.messageID)
+    const partID = str(props.partID)
+    if (!messageID || !partID) return messages
+    const index = messages.findIndex(m => m.id === messageID)
+    if (index === -1) return messages
+    const message = messages[index]
+    const parts = message.parts.filter(p => p.id !== partID)
+    if (parts.length === message.parts.length) return messages
+    const next = [...messages]
+    next[index] = { ...message, parts }
+    return next
+  }
+
+  return messages
+}
+
+/** Session status carried by `session.status` / `session.idle` events. */
+export function liveStatusFromEvent(event: unknown): string | null {
+  const envelope = record(event)
+  const type = str(envelope?.type)
+  const props = record(envelope?.properties)
+  if (type === 'session.idle') return 'idle'
+  if (type === 'session.status') {
+    const status = record(props?.status)
+    return str(status?.type) ?? null
+  }
+  return null
 }
 
 export interface PhaseSpan {
@@ -616,9 +810,7 @@ export interface PhaseSpan {
   endedAt: number | null
   durationMs: number
   open: boolean
-}
-
-export function computePhaseSpans(
+}export function computePhaseSpans(
   transitions: LoopTransitionRow[],
   startedAt: number,
   completedAt: number | null,
