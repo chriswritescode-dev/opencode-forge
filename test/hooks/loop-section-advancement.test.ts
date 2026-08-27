@@ -547,9 +547,10 @@ describe('Loop Section Advancement', () => {
       })
 
       const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionContinuationPrompt(state, 'audit text')
-      expect(prompt).toContain('Outstanding findings')
+      const prompt = loopService.buildSectionContinuationPrompt(state)
+      expect(prompt).toContain('Outstanding review findings (1)')
       expect(prompt).toContain('src/test.ts:10')
+      expect(prompt).toContain('Test bug')
     })
   })
 

@@ -765,7 +765,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     const continuationPrompt = loopService.buildContinuationPrompt(
       { ...state, iteration: state.iteration ?? 0 },
-      `\n[Auditor session failed: ${reason}. Continuing without new findings.]`,
+      `Auditor session failed: ${reason}. Continuing without new findings.`,
     )
 
     const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
@@ -784,15 +784,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
     if (state.phase === 'final_audit_fix') {
-      return loopService.buildFinalAuditFixPrompt(state, state.lastAuditResult || '')
+      return loopService.buildFinalAuditFixPrompt(state)
     }
     if (state.totalSections > 0) {
+      // `lastAuditResult` is only a "this section has already been audited"
+      // marker here; its text is display-only and never replayed to the coder.
       if (state.lastAuditResult) {
-        return loopService.buildSectionContinuationPrompt(state, state.lastAuditResult)
+        return loopService.buildSectionContinuationPrompt(state)
       }
       return loopService.buildSectionInitialPrompt(state)
     }
-    return loopService.buildContinuationPrompt(state, state.lastAuditResult || undefined)
+    return loopService.buildContinuationPrompt(state)
   }
 
   async function recoverCodeLaunchWithoutAssistant(loopName: string, state: LoopState, lastMessageRole: string): Promise<void> {
@@ -1826,7 +1828,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     logTransition(loopName, currentState, { type: 'audit-dirty' }, dirtyTrans, 'coding')
 
     const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, sessionId: newSessionId, iteration: nextIteration }
-    const continuationPrompt = loopService.buildContinuationPrompt(updatedState, auditText || undefined, outstandingBugs)
+    const continuationPrompt = loopService.buildContinuationPrompt(updatedState, undefined, outstandingBugs)
 
     const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
     await sendPromptWithRetryRecovery({
@@ -2051,7 +2053,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           iteration: nextIter,
         })
 
-        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, auditText || '', sectionAllBugFindings)
+        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, undefined, sectionAllBugFindings)
         await rotateAndSendContinuation(
           loopName,
           currentState,
@@ -2088,7 +2090,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
-        auditText || undefined,
+        undefined,
         outstandingBugs,
       )
 
@@ -2117,7 +2119,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (nextIteration === null) return
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
-        auditText || undefined,
       )
       // Pass the recovery transition into the shared helper so the row is
       // recorded after the rotate-to-coding phase commit but before the prompt
@@ -2237,7 +2238,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       bumpDirtyAuditRecurrence(loopName, outstandingBugs)
 
-      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, auditText || '', outstandingBugs)
+      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, outstandingBugs)
 
       let newCodeSessionId: string
       try {

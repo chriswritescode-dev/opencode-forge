@@ -54,7 +54,7 @@ export interface LoopService {
    * loop" check must go through here instead of testing loop-row existence.
    */
   resolveActiveLoopForSession(sessionId: string): LoopState | null
-  buildContinuationPrompt(state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string
+  buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
   listRecent(): LoopState[]
@@ -95,9 +95,9 @@ export interface LoopService {
 
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
-  buildSectionContinuationPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string
+  buildSectionContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
   buildFinalAuditPrompt(state: LoopState): string
-  buildFinalAuditFixPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string
+  buildFinalAuditFixPrompt(state: LoopState, outstandingBugs?: ReviewFindingRow[]): string
   buildPostActionPrompt(state: LoopState, opts: PostActionPromptOptions): string
   completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
   incrementSectionAttempts(loopName: string, index: number): void
@@ -261,10 +261,10 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, formatReviewFindings, getSectionPlan, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence }
 
-  function buildContinuationPrompt(state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
-    return _buildContinuationPrompt(_promptCtx, state, auditFindings, outstandingBugs)
+  function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
+    return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
   }
 
   function getPlanTextForState(state: LoopState): string | null {
@@ -278,22 +278,6 @@ export function createLoopService(
   function getCoderDecisions(loopName?: string): string | null {
     if (!loopName) return null
     return coderDecisionsByLoop.get(loopName) ?? null
-  }
-
-  function formatReviewFindings(loopName?: string): string {
-    const findings = getOutstandingFindings(loopName)
-    if (findings.length === 0) {
-      return 'No existing review findings.'
-    }
-
-    return findings.map((finding) => {
-      return [
-        `- ${finding.file}:${finding.line}`,
-        `  - Severity: ${finding.severity}`,
-        `  - Description: ${finding.description}`,
-        `  - Scenario: ${finding.scenario || 'N/A'}`,
-      ].join('\n')
-    }).join('\n\n')
   }
 
   function buildAuditPrompt(state: LoopState): string {
@@ -534,16 +518,16 @@ export function createLoopService(
     return _buildSectionAuditPrompt(_promptCtx, state)
   }
 
-  function buildSectionContinuationPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
-    return _buildSectionContinuationPrompt(_promptCtx, state, auditText, outstandingBugs)
+  function buildSectionContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
+    return _buildSectionContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
   }
 
   function buildFinalAuditPrompt(state: LoopState): string {
     return _buildFinalAuditPrompt(_promptCtx, state)
   }
 
-  function buildFinalAuditFixPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
-    return _buildFinalAuditFixPrompt(_promptCtx, state, auditText, outstandingBugs)
+  function buildFinalAuditFixPrompt(state: LoopState, outstandingBugs?: ReviewFindingRow[]): string {
+    return _buildFinalAuditFixPrompt(_promptCtx, state, outstandingBugs)
   }
 
   function buildPostActionPrompt(state: LoopState, opts: PostActionPromptOptions): string {

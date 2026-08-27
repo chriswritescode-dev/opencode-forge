@@ -1978,10 +1978,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         promptText = deps.loop.service.buildContinuationPrompt(stoppedState, undefined)
       } else if (stoppedState.phase === 'final_audit_fix') {
         // Resume fixing the final-audit findings rather than re-coding the last
-        // section: lastAuditResult was persisted when the fix phase was entered
-        // (runtime.runFinalAuditPhase) precisely for this recovery path.
+        // section: the persisted findings carry the remediation for this
+        // recovery path.
         const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
-        promptText = deps.loop.service.buildFinalAuditFixPrompt(stoppedState, stoppedState.lastAuditResult ?? '', outstandingBugs)
+        promptText = deps.loop.service.buildFinalAuditFixPrompt(stoppedState, outstandingBugs)
       } else if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
         if (stoppedState.phase === 'final_auditing') {

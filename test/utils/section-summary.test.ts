@@ -14,7 +14,6 @@ describe('section-summary markers', () => {
     const ctx: PromptContext = {
       getPlanTextForState: () => null,
       getOutstandingFindings: () => [],
-      formatReviewFindings: () => 'No review findings found.',
       getSectionPlan: () => ({
         projectId: 'p', loopName: 'l', sectionIndex: 0, title: 'S1', content: 'Section plan',
         status: 'in_progress', attempts: 0, summaryDone: null, summaryDeviations: null,

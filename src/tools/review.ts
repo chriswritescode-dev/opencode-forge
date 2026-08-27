@@ -1,5 +1,6 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
+import { formatFindingDetails } from '../utils/review-format'
 
 const z = tool.schema
 
@@ -158,13 +159,8 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           return 'No review findings found.'
         }
 
-        const formatted = findings.map((f) => {
-          const sectionInfo = f.sectionIndex !== null ? `\n  - Section: ${f.sectionIndex}` : ''
-          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario || 'N/A'}\n  - Loop: ${f.loopName ?? 'N/A'}${sectionInfo}`
-        })
-
         logger.log(`review-read: found ${findings.length} findings`)
-        return `${findings.length} review finding${findings.length === 1 ? '' : 's'}:\n\n${formatted.join('\n\n')}`
+        return `${findings.length} review finding${findings.length === 1 ? '' : 's'}:\n\n${formatFindingDetails(findings, { includeScope: true })}`
       },
     }),
 

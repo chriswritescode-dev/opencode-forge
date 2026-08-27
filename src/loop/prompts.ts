@@ -4,6 +4,7 @@ import type { SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
 import { CODER_DECISIONS_INSTRUCTION } from '../utils/coder-decisions'
 import { findingRecurrenceKey, RECURRENCE_ESCALATION_THRESHOLD } from './finding-recurrence'
+import { formatFindingDetails } from '../utils/review-format'
 
 export interface SectionDigestEntry {
   index: number
@@ -16,7 +17,6 @@ export interface SectionDigestEntry {
 export interface PromptContext {
   getPlanTextForState(state: LoopState): string | null
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
-  formatReviewFindings(loopName?: string): string
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): SectionDigestEntry[]
   getCoderDecisions(loopName?: string): string | null
@@ -80,6 +80,26 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
   return `##  Recurring findings — re-evaluate\nThese findings have recurred across audits. For each, re-check the coder decisions block above and reproduce the coder's verification method. If the coder's documented decision/verification resolves it, DELETE it with review-delete. Only keep it if it is genuinely, verifiably still broken (state the precise scenario).\n\n${lines.join('\n')}`
 }
 
+/**
+ * The coding agent's only channel for finding remediation detail. The auditor
+ * persists the detailed solution, acceptance criterion, and narrow verification
+ * inside each finding's `description`, so the full finding text is inlined here
+ * instead of being restated in auditor prose and injected verbatim.
+ */
+function buildOutstandingFindingsCoderBlock(findings: ReviewFindingRow[]): string {
+  if (findings.length === 0) return ''
+  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\n${formatFindingDetails(findings)}`
+}
+
+/**
+ * Short runtime status note (e.g. the auditor session could not run), not
+ * auditor output. Findings carry auditor output.
+ */
+function buildLoopNoticeBlock(notice?: string): string {
+  if (!notice) return ''
+  return `\n\n---\n## Loop notice\n${notice}`
+}
+
 function buildCoderDecisionsAuditorBlock(coderDecisions: string | null, includeSeparator = true): string {
   if (!coderDecisions) return ''
   const separator = includeSeparator ? '\n\n---\n' : ''
@@ -93,7 +113,7 @@ function buildCoderDecisionsAuditorBlock(coderDecisions: string | null, includeS
  * The exact goal text is always restated so every iteration remains anchored to
  * what was requested.
  */
-function buildGoalCodingPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
+function buildGoalCodingPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
   const goal = state.goal ?? '(goal text missing)'
 
   let systemLine = `Goal loop iteration ${String(state.iteration)}`
@@ -107,16 +127,8 @@ function buildGoalCodingPrompt(ctx: PromptContext, state: LoopState, auditFindin
 
   prompt += '\n\n---\nInstructions:\n- Implement the goal above directly in this worktree. Do not create a plan, decompose the goal into sections, or ask for approval — just do the work.\n- Write or update tests for the changes and run the project\'s verification (lint/typecheck/tests) before finishing.\n- Keep changes scoped to what the goal requires; reuse existing helpers and patterns rather than introducing speculative abstractions.'
 
-  if (auditFindings) {
-    prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address every bug and convention violation below — do not dismiss findings as unrelated to the goal. Fix them directly without creating a plan or asking for approval.\n\n${auditFindings}`
-  }
-
-  const outstandingFindings = ctx.getOutstandingFindings(state.loopName)
-  if (outstandingFindings.length > 0) {
-    const findingKeys = outstandingFindings.map((f) => `- \`${f.file}:${f.line}\``).join('\n')
-    prompt += `\n\n---\nOutstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
-  }
-
+  prompt += buildLoopNoticeBlock(notice)
+  prompt += buildOutstandingFindingsCoderBlock(ctx.getOutstandingFindings(state.loopName))
   prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
   return prompt + CODER_DECISIONS_INSTRUCTION
@@ -134,7 +146,6 @@ function buildGoalCodingPrompt(ctx: PromptContext, state: LoopState, auditFindin
 function buildGoalAuditPrompt(ctx: PromptContext, state: LoopState): string {
   const goal = state.goal ?? '(goal text missing)'
   const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
-  const reviewFindings = ctx.formatReviewFindings(state.loopName)
   const coderDecisions = ctx.getCoderDecisions(state.loopName)
 
   const parts: string[] = [
@@ -143,8 +154,7 @@ function buildGoalAuditPrompt(ctx: PromptContext, state: LoopState): string {
     'Goal:',
     goal,
     '',
-    'Existing review findings:',
-    reviewFindings,
+    'Use review-read to load the existing findings for this loop.',
   ]
 
   if (coderDecisions) {
@@ -163,7 +173,7 @@ function buildGoalAuditPrompt(ctx: PromptContext, state: LoopState): string {
     '- If any part is unimplemented, partially implemented, or not working, you MUST write a `severity: "bug"` finding describing exactly which part of the goal is missing and what is required. Use `file` = the relevant source file when possible, otherwise use the stable pseudo-path `GOAL` with `line` = 1.',
     '- When a previously reported goal-incomplete finding is now resolved, delete it with review-delete.',
     '',
-    'For each existing finding above, verify whether it has been resolved. Delete resolved findings with review-delete and report any unresolved findings that still apply.',
+    'For each existing finding, verify whether it has been resolved. Delete resolved findings with review-delete and keep any unresolved finding that still applies.',
     'Outstanding findings block loop termination — the loop cannot complete while any finding (bug or warning) remains. Zero remaining findings authorizes termination.',
     '',
     'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
@@ -177,12 +187,12 @@ function buildGoalAuditPrompt(ctx: PromptContext, state: LoopState): string {
   return parts.join('\n')
 }
 
-export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
+export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
   if (state.kind === 'goal') {
-    return buildGoalCodingPrompt(ctx, state, auditFindings, outstandingBugs)
+    return buildGoalCodingPrompt(ctx, state, notice, outstandingBugs)
   }
   if (state.totalSections > 0) {
-    return buildSectionContinuationPrompt(ctx, state, auditFindings || '', outstandingBugs)
+    return buildSectionContinuationPrompt(ctx, state, notice, outstandingBugs)
   }
 
   let systemLine = `Loop iteration ${String(state.iteration)}`
@@ -194,16 +204,8 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, au
 
   let prompt = `[${systemLine}]`
 
-  if (auditFindings) {
-    prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address all bugs and convention violations below — do not dismiss findings as unrelated to the task. Fix them directly without creating a plan or asking for approval.\n\n${auditFindings}`
-  }
-
-  const outstandingFindings = ctx.getOutstandingFindings(state.loopName)
-  if (outstandingFindings.length > 0) {
-    const findingKeys = outstandingFindings.map((f) => `- \`${f.file}:${f.line}\``).join('\n')
-    prompt += `\n\n---\n Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
-  }
-
+  prompt += buildLoopNoticeBlock(notice)
+  prompt += buildOutstandingFindingsCoderBlock(ctx.getOutstandingFindings(state.loopName))
   prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
   return prompt + CODER_DECISIONS_INSTRUCTION
@@ -222,7 +224,6 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
 
   const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
-  const reviewFindings = ctx.formatReviewFindings(state.loopName)
   const coderDecisions = ctx.getCoderDecisions(state.loopName)
 
   const parts: string[] = [
@@ -231,8 +232,7 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     'Implementation plan:',
     planText,
     '',
-    'Existing review findings:',
-    reviewFindings,
+    'Use review-read to load the existing findings for this loop.',
   ]
 
   if (coderDecisions) {
@@ -244,8 +244,7 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     'Review the code changes against the plan phases and verify per-phase acceptance criteria are met.',
     'Review the code changes in this worktree. Focus on bugs, logic errors, missing error handling, and convention violations.',
     'If you find bugs in related code that affect the correctness of this task, report them — even if the buggy code was not directly modified.',
-    'For each existing finding above, verify whether it has been resolved. Delete resolved findings with review-delete and report any unresolved findings that still apply.',
-    'If everything looks good, state "No issues found." clearly.',
+    'For each existing finding, verify whether it has been resolved. Delete resolved findings with review-delete and keep any unresolved finding that still applies.',
     '',
     'Plan completeness check:',
     '- For every plan phase, verify it is fully implemented and its acceptance criteria are met.',
@@ -328,7 +327,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
   return header
 }
 
-export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
+export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
   const idx = state.currentSectionIndex
   const total = state.totalSections
   const iter = state.iteration
@@ -344,21 +343,17 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   }
 
   header += `\n\n## Section plan\n${section.content}`
-  header += `\n\n---\n## Auditor feedback from previous attempt\n${auditText}`
 
-  const outstandingFindings = (outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug'))
-    .filter(f => f.sectionIndex === idx)
-  if (outstandingFindings.length > 0) {
-    const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
-    header += `\n\n---\n## Outstanding findings\n${findingKeys}`
-  }
-
+  header += buildLoopNoticeBlock(notice)
+  header += buildOutstandingFindingsCoderBlock(
+    (outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug')).filter(f => f.sectionIndex === idx),
+  )
   header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
   return header + CODER_DECISIONS_INSTRUCTION
 }
 
-export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
+export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)
 
@@ -369,13 +364,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
     header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
   }
 
-  header += `\n\n---\n## Final auditor feedback\n${auditText}`
-
-  const outstandingFindings = outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug')
-  if (outstandingFindings.length > 0) {
-    const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
-    header += `\n\n---\n## Outstanding findings (${outstandingFindings.length})\n${findingKeys}`
-  }
+  header += buildOutstandingFindingsCoderBlock(outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug'))
 
   header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final audit will be re-run automatically against the entire codebase.`
 

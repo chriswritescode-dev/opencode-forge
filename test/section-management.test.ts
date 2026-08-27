@@ -346,10 +346,11 @@ describe('LoopService section management', () => {
       })
 
       const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionContinuationPrompt(state, 'audit text')
+      const prompt = loopService.buildSectionContinuationPrompt(state)
 
-      expect(prompt).toContain('Outstanding findings')
+      expect(prompt).toContain('Outstanding review findings (1)')
       expect(prompt).toContain('src/test.ts:10')
+      expect(prompt).toContain('Test bug')
     })
 
     test('excludes cross-section findings from continuation prompt', () => {
@@ -367,9 +368,9 @@ describe('LoopService section management', () => {
       })
 
       const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionContinuationPrompt(state, 'audit text')
+      const prompt = loopService.buildSectionContinuationPrompt(state)
 
-      expect(prompt).not.toContain('Outstanding findings')
+      expect(prompt).not.toContain('Outstanding review findings')
     })
   })
 })

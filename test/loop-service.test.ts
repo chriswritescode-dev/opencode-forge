@@ -211,8 +211,10 @@ describe('Loop', () => {
 
       const prompt = loop.service.buildContinuationPrompt(state as any)
 
-      expect(prompt).toContain('Outstanding Review Findings')
-      expect(prompt).toContain('test.ts:1')
+      expect(prompt).toContain('## Outstanding review findings (1)')
+      expect(prompt).toContain('`test.ts:1` (bug)')
+      expect(prompt).toContain('Description: Test bug')
+      expect(prompt).toContain('Scenario: test')
     })
 
     test('does not echo the original plan/prompt back into continuation', () => {
@@ -231,10 +233,12 @@ describe('Loop', () => {
         auditCount: 1,
       }
 
-      const prompt = loop.service.buildContinuationPrompt(state as any, 'audit findings text')
+      const notice = 'Auditor session could not run this iteration.'
+      const prompt = loop.service.buildContinuationPrompt(state as any, notice)
 
       expect(prompt).not.toContain('ORIGINAL_PLAN_BODY_SHOULD_NOT_APPEAR')
-      expect(prompt).toContain('audit findings text')
+      expect(prompt).toContain('## Loop notice')
+      expect(prompt).toContain(notice)
       expect(prompt).toContain('Loop iteration 2')
     })
   })
@@ -353,17 +357,17 @@ describe('Loop', () => {
 
       // Bump once — below threshold, no escalation
       loop.service.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt1 = loop.service.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
+      const fixPrompt1 = loop.service.buildFinalAuditFixPrompt(finalAuditState)
       expect(fixPrompt1).not.toContain('Recurring blocking findings')
 
       // Bump twice — still below threshold
       loop.service.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt2 = loop.service.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
+      const fixPrompt2 = loop.service.buildFinalAuditFixPrompt(finalAuditState)
       expect(fixPrompt2).not.toContain('Recurring blocking findings')
 
       // Bump third time — threshold reached, escalation appears
       loop.service.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt3 = loop.service.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
+      const fixPrompt3 = loop.service.buildFinalAuditFixPrompt(finalAuditState)
       expect(fixPrompt3).toContain('Recurring blocking findings')
       expect(fixPrompt3).toContain('src/final-bug.ts:42')
       expect(fixPrompt3).toContain('recurred 3×')
@@ -407,11 +411,11 @@ describe('Loop', () => {
         currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
       } as any)
       expect(prompt).toContain('Recurring findings — re-evaluate')
-      expect(prompt).toContain('src/section1.ts:2')
-      // s0 count=1 should not be escalated (it still appears in "Existing findings" listing
-      // but NOT in the "recurred N×" format used by the escalation block)
-      expect(prompt).toContain('src/section0.ts:1') // appears in existing findings
-      expect(prompt).not.toContain('src/section0.ts:1 (') // NOT in recurrence format
+      expect(prompt).toContain('`src/section1.ts:2` (3×)')
+      // Auditor prompts no longer inline unelevated findings — the persisted
+      // findings are the only channel, so the count=1 s0 finding must not
+      // surface in the audit prompt at all, escalated or listed.
+      expect(prompt).not.toContain('src/section0.ts:1')
 
       // Verify the continuation prompt also shows only section1 escalated
       const contPrompt = loop.service.buildContinuationPrompt({
@@ -421,7 +425,11 @@ describe('Loop', () => {
         currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
       } as any)
       expect(contPrompt).toContain('Recurring blocking findings')
-      expect(contPrompt).toContain('src/section1.ts:2')
+      expect(contPrompt).toContain('`src/section1.ts:2` (recurred 3×)')
+      // s0 stays below threshold: it appears only as an inlined finding,
+      // never in the recurrence escalation format.
+      expect(contPrompt).toContain('`src/section0.ts:1` (bug)')
+      expect(contPrompt).not.toContain('- `src/section0.ts:1` (recurred')
     })
 
     test('finding re-emerges with fresh count after section reset', () => {

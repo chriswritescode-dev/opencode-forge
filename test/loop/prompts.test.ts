@@ -46,7 +46,6 @@ function makeCtx(overrides?: Partial<PromptContext>): PromptContext {
   return {
     getPlanTextForState: () => 'Mock plan content',
     getOutstandingFindings: () => [],
-    formatReviewFindings: () => 'No existing review findings.',
     getSectionPlan: (_state, index) => ({
       projectId: 'p', loopName: _state.loopName, sectionIndex: index,
       title: `Section ${index + 1}`, content: `Section plan for ${index + 1}`,
@@ -80,29 +79,37 @@ describe('prompt builders (src/loop/prompts)', () => {
     test('continuation with findings', () => {
       const ctx = makeCtx({
         getOutstandingFindings: () => [
-          { file: 'src/foo.ts', line: 10, severity: 'bug', description: 'Bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
-          { file: 'src/bar.ts', line: 20, severity: 'warning', description: 'Warning', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+          { file: 'src/foo.ts', line: 10, severity: 'bug', description: 'Missing null check on user input', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+          { file: 'src/bar.ts', line: 20, severity: 'warning', description: 'Unhandled promise rejection', scenario: 'called without await', loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
         ],
       })
       const result = buildContinuationPrompt(ctx, { ...defaultState })
-      expect(result).toContain('Outstanding Review Findings (2)')
-      expect(result).toContain('`src/foo.ts:10`')
-      expect(result).toContain('`src/bar.ts:20`')
+      expect(result).toContain('## Outstanding review findings (2)')
+      expect(result).toContain('These block loop completion')
+      expect(result).toContain('`src/foo.ts:10` (bug)')
+      expect(result).toContain('  - Description: Missing null check on user input')
+      expect(result).toContain('`src/bar.ts:20` (warning)')
+      expect(result).toContain('  - Description: Unhandled promise rejection')
+      expect(result).toContain('  - Scenario: called without await')
+      expect(result).not.toContain('Auditor feedback from previous attempt')
     })
 
-    test('continuation with audit findings text', () => {
+    test('continuation with runtime notice renders under ## Loop notice', () => {
       const ctx = makeCtx()
-      const result = buildContinuationPrompt(ctx, { ...defaultState }, 'Fix the bug!')
-      expect(result).toContain('code auditor reviewed your changes')
-      expect(result).toContain('Fix the bug!')
+      const result = buildContinuationPrompt(ctx, { ...defaultState }, 'Fix the bug!'.replace('Fix the bug!', 'Auditor session could not run; retrying.'))
+      expect(result).toContain('## Loop notice')
+      expect(result).toContain('Auditor session could not run; retrying.')
+      expect(result).not.toContain('code auditor reviewed your changes')
+      expect(result).not.toContain('Auditor feedback from previous attempt')
     })
 
     test('sectioned continuation delegates to buildSectionContinuationPrompt', () => {
       const ctx = makeCtx()
-      const result = buildContinuationPrompt(ctx, { ...sectionState }, 'Audit feedback')
+      const result = buildContinuationPrompt(ctx, { ...sectionState }, 'Auditor session could not run; retrying.')
       expect(result).toContain('[Loop section 1/2 -- iteration 1/5 (continuation)]')
-      expect(result).toContain('Auditor feedback from previous attempt')
-      expect(result).toContain('Audit feedback')
+      expect(result).toContain('## Loop notice')
+      expect(result).toContain('Auditor session could not run; retrying.')
+      expect(result).not.toContain('Auditor feedback from previous attempt')
     })
 
     test('includes recurring-findings escalation when count >= threshold (coder)', () => {
@@ -149,7 +156,9 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('Post-iteration 2 code review')
       expect(result).toContain('Implementation plan:')
       expect(result).toContain('Mock plan content')
-      expect(result).toContain('Existing review findings:')
+      expect(result).toContain('Use review-read to load the existing findings for this loop.')
+      expect(result).toContain('For each existing finding, verify whether it has been resolved')
+      expect(result).not.toContain('Existing review findings:')
       expect(result).toContain('Plan completeness check:')
     })
 
@@ -286,13 +295,14 @@ describe('prompt builders (src/loop/prompts)', () => {
   })
 
   describe('buildSectionContinuationPrompt', () => {
-    test('section continuation with audit feedback', () => {
+    test('section continuation with runtime notice renders under ## Loop notice', () => {
       const ctx = makeCtx()
       const result = buildSectionContinuationPrompt(ctx, { ...sectionState }, 'Please fix the bug.')
       expect(result).toContain('[Loop section 1/2 -- iteration 1/5 (continuation)]')
       expect(result).toContain('## Section plan')
-      expect(result).toContain('Auditor feedback from previous attempt')
+      expect(result).toContain('## Loop notice')
       expect(result).toContain('Please fix the bug.')
+      expect(result).not.toContain('Auditor feedback from previous attempt')
     })
 
     test('section continuation with outstanding findings', () => {
@@ -303,8 +313,10 @@ describe('prompt builders (src/loop/prompts)', () => {
         getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
       })
       const result = buildSectionContinuationPrompt(ctx, { ...sectionState }, '')
-      expect(result).toContain('## Outstanding findings')
-      expect(result).toContain('`src/index.ts:5`')
+      expect(result).toContain('## Outstanding review findings (1)')
+      expect(result).toContain('`src/index.ts:5` (bug)')
+      expect(result).toContain('  - Description: Bug in code')
+      expect(result).not.toContain('## Outstanding findings')
     })
 
     test('section continuation filters by sectionIndex', () => {
@@ -391,16 +403,16 @@ describe('prompt builders (src/loop/prompts)', () => {
   })
 
   describe('buildFinalAuditFixPrompt', () => {
-    test('includes plan, audit feedback, and fix instructions', () => {
+    test('includes plan and fix instructions without findings block when none outstanding', () => {
       const ctx = makeCtx()
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, 'Bug: missing null check at foo.ts:10')
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
       expect(result).toContain('[Final-audit fix -- iteration 1/5]')
       expect(result).toContain('## Master Plan')
       expect(result).toContain('Mock plan content')
-      expect(result).toContain('## Final auditor feedback')
-      expect(result).toContain('Bug: missing null check at foo.ts:10')
       expect(result).toContain('Fix the reported bugs')
       expect(result).toContain('Scope your changes to what the findings require')
+      expect(result).not.toContain('## Final auditor feedback')
+      expect(result).not.toContain('## Outstanding review findings')
     })
 
     test('lists outstanding bug findings', () => {
@@ -411,18 +423,19 @@ describe('prompt builders (src/loop/prompts)', () => {
       const ctx = makeCtx({
         getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
       })
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, 'audit text')
-      expect(result).toContain('## Outstanding findings (2)')
-      expect(result).toContain('`src/a.ts:12`')
-      expect(result).toContain('`src/b.ts:34`')
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
+      expect(result).toContain('## Outstanding review findings (2)')
+      expect(result).toContain('`src/a.ts:12` (bug)')
+      expect(result).toContain('`src/b.ts:34` (bug)')
+      expect(result).not.toContain('## Final auditor feedback')
     })
 
     test('omits outstanding-findings section when there are none', () => {
       const ctx = makeCtx({
         getOutstandingFindings: () => [],
       })
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, 'audit text')
-      expect(result).not.toContain('## Outstanding findings')
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
+      expect(result).not.toContain('## Outstanding review findings')
     })
   })
 
@@ -444,14 +457,16 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).not.toContain('Plan completeness check:')
     })
 
-    test('continuation includes auditor feedback and requires direct remediation', () => {
+    test('continuation renders runtime notice under ## Loop notice', () => {
       const ctx = makeCtx()
-      const result = buildContinuationPrompt(ctx, { ...goalState }, 'Bug: /health returns 500. Fix null check.')
+      const result = buildContinuationPrompt(ctx, { ...goalState }, 'Auditor session could not run; retrying.')
       expect(result).toContain('## Goal')
       expect(result).toContain(goalState.goal)
-      expect(result).toContain('code auditor reviewed your changes')
-      expect(result).toContain('Bug: /health returns 500. Fix null check.')
-      expect(result).toContain('Fix them directly without creating a plan or asking for approval')
+      expect(result).toContain('## Loop notice')
+      expect(result).toContain('Auditor session could not run; retrying.')
+      expect(result).not.toContain('code auditor reviewed your changes')
+      expect(result).not.toContain('## Auditor feedback from previous attempt')
+      expect(result).not.toContain('Fix them directly without creating a plan or asking for approval')
     })
 
     test('continuation lists outstanding review findings blocking completion', () => {
@@ -461,8 +476,11 @@ describe('prompt builders (src/loop/prompts)', () => {
         ],
       })
       const result = buildContinuationPrompt(ctx, { ...goalState })
-      expect(result).toContain('Outstanding Review Findings (1)')
-      expect(result).toContain('`src/health.ts:12`')
+      expect(result).toContain('## Outstanding review findings (1)')
+      expect(result).toContain('These block loop completion')
+      expect(result).toContain('`src/health.ts:12` (bug)')
+      expect(result).toContain('  - Description: Missing null check')
+      expect(result).not.toContain('Outstanding Review Findings')
     })
 
     test('continuation preserves recurring-findings escalation block', () => {
@@ -487,7 +505,9 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain(goalState.goal)
       expect(result).toContain('Goal completion:')
       expect(result).toContain('Code correctness:')
-      expect(result).toContain('Existing review findings:')
+      expect(result).toContain('Use review-read to load the existing findings for this loop.')
+      expect(result).toContain('For each existing finding, verify whether it has been resolved. Delete resolved findings with review-delete and keep any unresolved finding that still applies.')
+      expect(result).not.toContain('Existing review findings:')
     })
 
     test('audit prompt requires goal-incomplete bug findings on GOAL pseudo-path with line 1', () => {

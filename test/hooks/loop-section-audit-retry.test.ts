@@ -513,7 +513,7 @@ describe('Loop Section Audit Retry', () => {
   })
 
   describe('buildSectionContinuationPrompt', () => {
-    test('continuation prompt includes audit text', () => {
+    test('continuation prompt includes the runtime notice text', () => {
       const state = makeState({ currentSectionIndex: 0, totalSections: 2 })
       loopService.setState(state.loopName, state)
 
@@ -528,6 +528,7 @@ describe('Loop Section Audit Retry', () => {
 
       const prompt = loopService.buildSectionContinuationPrompt(state, 'Fix the bugs mentioned in audit')
       expect(prompt).toContain('continuation')
+      expect(prompt).toContain('## Loop notice')
       expect(prompt).toContain('Fix the bugs mentioned in audit')
     })
 
@@ -544,8 +545,20 @@ describe('Loop Section Audit Retry', () => {
         ],
       })
 
-      const prompt = loopService.buildSectionContinuationPrompt(state, 'Some audit text')
-      expect(prompt).toContain('Some audit text')
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Found an issue',
+        loopName: state.loopName,
+        sectionIndex: 0,
+      })
+
+      const prompt = loopService.buildSectionContinuationPrompt(state)
+      expect(prompt).toContain('Outstanding review findings (1)')
+      expect(prompt).toContain('src/broken.ts:5')
+      expect(prompt).toContain('Found an issue')
     })
   })
 
