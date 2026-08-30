@@ -253,7 +253,66 @@ describe('plan-adjust tool', () => {
         { currentSection: { title: 'S1-new', content: 'c1-new' }, rationale: 'edit completed section' },
         'test-loop-session',
       ))
+      expect(result.error).toContain('in_progress')
       expect(result.error).toContain('completed')
+    })
+
+    test('rejects editing a pending current section (status must be exactly in_progress)', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1' },
+        { title: 'S2', content: 'c2' },
+      ])
+      const result = parseJson(await executePlanAdjust(
+        { currentSection: { title: 'S1-new', content: 'c1-new' }, rationale: 'edit pending section' },
+        'test-loop-session',
+      ))
+      expect(result.error).toContain('in_progress')
+      expect(result.error).toContain('pending')
+    })
+
+    test('rejects blank or whitespace-only currentSection and sections fields via the service boundary', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1' },
+        { title: 'S2', content: 'c2' },
+      ])
+      loopService.startSection('test-loop', 1)
+
+      const blankTitle = parseJson(await executePlanAdjust(
+        { currentSection: { title: '   ', content: 'c1-new' }, rationale: 'blank title' },
+        'test-loop-session',
+      ))
+      expect(blankTitle.error).toContain('currentSection title must not be empty')
+
+      const blankContent = parseJson(await executePlanAdjust(
+        { sections: [{ title: 'S2-new', content: '  \n\t ' }], rationale: 'blank content' },
+        'test-loop-session',
+      ))
+      expect(blankContent.error).toContain('sections[0] content must not be empty')
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 1)!.content).toBe('c1')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 2)!.title).toBe('S2')
+    })
+
+    test('schema rejects blank title and content in currentSection', () => {
+      const toolDef = createPlanAdjustTool({ loop: { service: loopService } } as any)
+      const schema = (toolDef.args as any).currentSection
+      expect(schema.safeParse({ title: 'S1', content: 'c1' }).success).toBe(true)
+      expect(schema.safeParse({ title: '   ', content: 'c1' }).success).toBe(false)
+      expect(schema.safeParse({ title: 'S1', content: '' }).success).toBe(false)
+      expect(schema.safeParse({ title: 'S1', content: '  \n\t ' }).success).toBe(false)
+    })
+
+    test('schema rejects blank title and content in sections entries', () => {
+      const toolDef = createPlanAdjustTool({ loop: { service: loopService } } as any)
+      const schema = (toolDef.args as any).sections
+      expect(schema.safeParse([{ title: 'A', content: 'x' }]).success).toBe(true)
+      expect(schema.safeParse([{ title: '   ', content: 'x' }]).success).toBe(false)
+      expect(schema.safeParse([{ title: 'A', content: ' ' }]).success).toBe(false)
+      expect(schema.safeParse([]).success).toBe(true)
     })
   })
 
@@ -270,7 +329,7 @@ describe('plan-adjust tool', () => {
             { title: 'Section A', content: 'Content A' },
             { title: 'Section B', content: 'Content B' },
           ],
-          rationale: 'Plan objective shifted; removed redundant sections.',
+          rationale: 'Removed redundant sections while preserving the master objective.',
         },
         'test-loop-session',
       )

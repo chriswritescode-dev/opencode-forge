@@ -42,7 +42,6 @@ stateDiagram-v2
     Auditing --> [*]: audit clear
     FinalAuditing --> FinalAuditFix: final audit dirty
     FinalAuditFix --> FinalAuditing: fix pass idle complete
-    FinalAuditing --> Auditing: plan amendment appended sections
     FinalAuditing --> PostAction: final audit clean
     note right of PostAction: Only when loop.postAction.enabled
     PostAction --> [*]: post-action complete
@@ -216,13 +215,15 @@ In user-facing language, a plan is decomposed into **milestones** — ordered un
 - `section_plans` SQL table — one row per milestone, ordered by `sectionIndex`
 - `currentSectionIndex` / `totalSections` columns on the loop row
 - `<!-- forge-section -->` markers in the architect plan output
-- `section-read` tool reads the current or specified milestone
+- `section-read` tool reads the current or specified milestone, or with `pending_suffix: true` the ordered pending sections after the current one
 
-Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. A plan is capped at `MAX_TOTAL_SECTIONS` (24) executed milestones; markers past the cap are dropped rather than merged, so the tail of an over-long plan is not executed. The same constant caps `plan-adjust` amendments, so a plan can never grow past it mid-loop. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in the persisted `final_audit_fix` phase — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification. A loop stopped mid-fix restarts as a coding pass that re-sends the final-audit fix prompt (rebuilt from the persisted `lastAuditResult`).
+Titles are display labels, not executable requirements — the content under each section is. After a `plan-adjust` amendment the live section rows form the **effective plan** that supersedes the master plan's original per-section instructions, while the master objective and top-level Verification remain authoritative.
+
+Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. A plan is capped at `MAX_TOTAL_SECTIONS` (24) executed milestones; markers past the cap are dropped rather than merged, so the tail of an over-long plan is not executed. The same constant caps `plan-adjust` amendments, so a plan can never grow past it mid-loop. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in the persisted `final_audit_fix` phase — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification. A loop stopped mid-fix restarts as a coding pass that re-sends the final-audit fix prompt (rebuilt from the persisted outstanding findings).
 
 ### Plan Amendments
 
-After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`) when completed work makes the plan unable to achieve its objective as written. The objective and verification criteria are immutable, already-completed sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. If an amendment appends sections while the loop is already in `final_auditing`, the loop reverts to `auditing` to execute them.
+After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`, which is destructive — an omitted milestone is deleted). The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. `plan-adjust` performs no semantic validation of the amended instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. Amendments are only accepted while the loop is in the `auditing` phase; `plan-adjust` remains rejected outside section auditing — including the final audit — so no final-audit amendment can append sections.
 
 ### Transition Log
 

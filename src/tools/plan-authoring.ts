@@ -6,18 +6,12 @@ import { findSectionsForLineRange, formatPlanStructureSummary, summarizePlanStru
 
 const z = tool.schema
 
-/**
- * Returns an error message when the session is currently driving a running
- * loop, else null. The stored plan for a running loop is amended only via
- * `plan-adjust` during a section audit, so direct authoring from inside such a
- * session is blocked. Sessions whose loop has already terminated stay writable.
- */
 function assertWritableSession(ctx: ToolContext, sessionID: string): string | null {
   const state = ctx.loop.service.resolveActiveLoopForSession(sessionID)
   if (state) {
     return (
       `Cannot modify the plan from an active loop session (loop: ${state.loopName}). ` +
-      `The stored plan for a running loop is amended with plan-adjust during a section audit.`
+      `The stored master plan row of a running loop is unchanged; plan-adjust amends only the executable current/pending section instructions during a section audit.`
     )
   }
   return null

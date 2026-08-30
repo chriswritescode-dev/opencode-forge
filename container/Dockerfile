@@ -61,16 +61,19 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
 # HOME and every tool cache/store are pinned to fixed, world-writable paths so
 # the layout is stable regardless of the executing UID.
 #
-# PNPM_CONFIG_STORE_DIR pins pnpm's content-addressable store to a
-# container-internal path. Without it, pnpm places the store on the project
-# filesystem (the msb-mounted project directory), which floods the host file
-# watcher and is slow over the macOS bind mount.
+# Both store-dir variables pin pnpm's content-addressable store to a
+# container-internal path: pnpm 11 reads PNPM_CONFIG_STORE_DIR while pnpm 10
+# ignores it and reads npm_config_store_dir instead. Projects pinned to pnpm 10
+# would otherwise place the store on the project filesystem (the msb-mounted
+# project directory, as a worktree-local .pnpm-store), which floods the host
+# file watcher and is slow over the macOS bind mount.
 ENV HOME=/opt/forge \
     XDG_CACHE_HOME=/opt/forge/.cache \
     XDG_DATA_HOME=/opt/forge/.local/share \
     PNPM_HOME=/opt/forge/.local/share/pnpm \
     PATH=/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
     npm_config_cache=/opt/forge/.npm \
+    npm_config_store_dir=/opt/forge/.local/share/pnpm/store \
     PNPM_CONFIG_STORE_DIR=/opt/forge/.local/share/pnpm/store
 RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.npm \
     && chmod -R 0777 /opt/forge

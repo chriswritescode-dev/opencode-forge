@@ -30,6 +30,10 @@ const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5
 const BUSY_STALL_TIMEOUT_MS = 900_000
 
+function isBlank(value: string): boolean {
+  return value.trim().length === 0
+}
+
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
   | 'rotate' | 'phase' | 'iteration'
@@ -89,6 +93,7 @@ export interface LoopService {
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
+  getSectionPlans(state: LoopState): SectionPlanRow[]
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
   parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
@@ -128,7 +133,7 @@ export interface LoopService {
     sections?: { title: string; content: string }[]
     currentSection?: { title: string; content: string }
     rationale: string
-    auditorSessionId?: string
+    auditorSessionId: string
   }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }>
 }
 
@@ -261,7 +266,7 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
@@ -489,6 +494,11 @@ export function createLoopService(
     return sectionPlansRepo.get(projectId, state.loopName, index)
   }
 
+  function getSectionPlans(state: LoopState): SectionPlanRow[] {
+    if (!sectionPlansRepo) return []
+    return sectionPlansRepo.list(projectId, state.loopName)
+  }
+
   function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {
     if (!sectionPlansRepo) return null
     return sectionPlansRepo.getNextIncomplete(projectId, state.loopName)
@@ -658,7 +668,7 @@ export function createLoopService(
     sections?: { title: string; content: string }[]
     currentSection?: { title: string; content: string }
     rationale: string
-    auditorSessionId?: string
+    auditorSessionId: string
   }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }> {
     if (!sectionPlansRepo) {
       return { ok: false, error: 'section plans repository is not configured' }
@@ -666,8 +676,29 @@ export function createLoopService(
     if (!planAmendmentsRepo) {
       return { ok: false, error: 'plan amendments repository is not configured' }
     }
-    if (!args.rationale || args.rationale.trim().length === 0) {
+    if (!args.rationale || isBlank(args.rationale)) {
       return { ok: false, error: 'rationale must not be empty' }
+    }
+    if (isBlank(args.auditorSessionId ?? '')) {
+      return { ok: false, error: 'auditorSessionId must not be empty' }
+    }
+    if (args.currentSection) {
+      if (isBlank(args.currentSection.title)) {
+        return { ok: false, error: 'currentSection title must not be empty' }
+      }
+      if (isBlank(args.currentSection.content)) {
+        return { ok: false, error: 'currentSection content must not be empty' }
+      }
+    }
+    if (args.sections) {
+      for (const [i, section] of args.sections.entries()) {
+        if (isBlank(section.title)) {
+          return { ok: false, error: `sections[${i}] title must not be empty` }
+        }
+        if (isBlank(section.content)) {
+          return { ok: false, error: `sections[${i}] content must not be empty` }
+        }
+      }
     }
     if (args.sections === undefined && args.currentSection === undefined) {
       return { ok: false, error: 'no changes specified: provide sections and/or currentSection' }
@@ -715,23 +746,20 @@ export function createLoopService(
           // Defensive session authorization: ensures the caller holds the
           // loop's current session, preventing a stale auditor session from
           // modifying the plan after session rotation.
-          if (args.auditorSessionId && row.currentSessionId !== args.auditorSessionId) {
+          if (row.currentSessionId !== args.auditorSessionId) {
             return { ok: false as const, error: `session mismatch: only the current auditor session may adjust the plan for loop ${name}` }
           }
 
           const currentIndex = row.currentSectionIndex
           const fromIndex = currentIndex + 1
 
-          // Validate the in-place current-section edit target before mutating.
-          // During auditing the current section is 'in_progress'; a 'completed'
-          // status here would be an out-of-band state we refuse to overwrite.
           if (args.currentSection) {
             const currentRow = sectionPlansRepo!.get(projectId, name, currentIndex)
             if (!currentRow) {
               return { ok: false as const, error: `current section ${currentIndex} does not exist` }
             }
-            if (currentRow.status === 'completed') {
-              return { ok: false as const, error: `cannot edit already-completed section ${currentIndex}` }
+            if (currentRow.status !== 'in_progress') {
+              return { ok: false as const, error: `cannot edit section ${currentIndex}: current section may only be edited while in_progress (status: ${currentRow.status})` }
             }
           }
 
@@ -754,14 +782,6 @@ export function createLoopService(
             .map((r) => ({ index: r.sectionIndex, title: r.title, content: r.content }))
           const sectionsBefore = JSON.stringify(beforeRows)
 
-          if (args.currentSection) {
-            sectionPlansRepo!.updateContent(projectId, name, [{
-              index: currentIndex,
-              title: args.currentSection.title,
-              content: args.currentSection.content,
-            }])
-          }
-
           if (replacementSections !== undefined) {
             const replaceResult = sectionPlansRepo!.replacePendingSections({
               projectId,
@@ -773,6 +793,14 @@ export function createLoopService(
               return replaceResult
             }
             loopsRepo.setTotalSections(projectId, name, newTotal)
+          }
+
+          if (args.currentSection) {
+            sectionPlansRepo!.updateContent(projectId, name, [{
+              index: currentIndex,
+              title: args.currentSection.title,
+              content: args.currentSection.content,
+            }])
           }
 
           const afterRows = sectionPlansRepo!.list(projectId, name)
@@ -870,6 +898,7 @@ export function createLoopService(
     setWorkspaceId,
     replaceSession,
     getSectionPlan,
+    getSectionPlans,
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
     parseSectionSummary,

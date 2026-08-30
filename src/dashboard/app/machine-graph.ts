@@ -73,15 +73,6 @@ const EDGES: MgEdge[] = [
     labelX: 370,
     labelY: 16,
   },
-  // Amendment revert: a plan amendment appended sections while the loop was in
-  // final_auditing, so it steps back to auditing to execute them (recorded via
-  // the setPhase wrapper as eventType 'set-phase' in runtime.runFinalAuditPhase).
-  {
-    key: 'final_auditing→auditing',
-    d: 'M 315 42 Q 295 24 275 42',
-    labelX: 295,
-    labelY: 30,
-  },
   // Recovery back-edge across the whole top row: persisted by
   // `rotateToCodingAfterAuditFailure` (runtime.ts:617-635) when a
   // `final_auditing` session aborts (eventType 'final-audit-session-aborted'

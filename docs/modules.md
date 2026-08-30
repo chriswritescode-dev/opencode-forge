@@ -379,8 +379,8 @@ Implements tools callable by AI agents during conversations.
 | `plan-write` | `plan-authoring.ts` | Architect agents create or overwrite the stored session plan; returns a structure report. Denied while the session owns a running loop. |
 | `plan-edit` | `plan-authoring.ts` | Architect agents edit the stored session plan by exact string replacement (`oldString`/`newString`/`replaceAll`); returns a structure report. |
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
-| `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
-| `plan-adjust` | `plan-adjust.ts` | Auditor-only: revise the section under audit and/or replace the remaining sections of the active loop plan (logged as a plan amendment) |
+| `section-read` | `section-read.ts` | Retrieve the current, specified, or (with `pending_suffix`) ordered pending sections of an active loop's plan; titles are display labels, section content is the executable requirement |
+| `plan-adjust` | `plan-adjust.ts` | Auditor-only, section-audit-only: revise the section under audit (`currentSection`) and/or destructively replace the pending suffix (`sections`) of the active loop plan's executable section instructions; the stored master plan row is unchanged. Logged as a plan amendment |
 | `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
 | `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |

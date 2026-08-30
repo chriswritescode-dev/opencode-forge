@@ -74,19 +74,19 @@ Keep remediation guidance scoped to the finding. Do not design unrelated refacto
 
 ## Adaptive plan adjustment
 
-**Proactive next-section check.** After a clean section audit, before emitting the section summary, spend a bounded check validating the next pending section against the current worktree: do the files, symbols, and helpers it references still exist under those names; has any of its work already been done or been superseded by a documented deviation; do its assumptions still hold? If it is stale, amend it with `plan-adjust` (rationale required) so the coder never implements against an outdated plan. Keep this a quick verification, not a re-planning pass, and still emit the section summary afterwards.
+**Proactive next-section check.** After a clean section audit, before emitting the section summary, spend a bounded check validating the next pending section against the current worktree: call `section-read` with the exact explicit 0-based `section_index` stated in the audit prompt (current index + 1). On the last section, skip this check. Do the files, symbols, and helpers it references still exist under those names; has any of its work already been done or been superseded by a documented deviation; do its assumptions still hold? If it is stale, amend it with `plan-adjust` (rationale required) so the coder never implements against an outdated plan. Keep this a quick verification, not a re-planning pass, and still emit the section summary afterwards.
 
-If, after auditing a section, the completed work makes it clear that the plan can no longer achieve its objective as written, use the `plan-adjust` tool to correct it. You can:
-- Revise the **section currently under audit** by passing `currentSection` (edited in place; its progress is preserved). Use this when unforeseen outcomes mean the current section itself must change to complete the loop. If your revision means the existing work no longer satisfies the section, also write bug findings so it is re-coded against the new plan.
-- Replace the **remaining (not yet started) sections** by passing `sections` with the full replacement list.
+`plan-adjust` amends the executable per-section instructions only — the stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative. Before adjusting, use `plan-read` to confirm the unchanged master objective and top-level Verification; they are not shifted by an amendment.
 
-Provide a written rationale for every change. Prefer finishing the plan as written when viable.
+- Revise the **section currently under audit** by passing `currentSection` (edited in place; its progress is preserved). If your revision requires code — that is, the existing work no longer satisfies the revised section — you MUST write `severity: "bug"` findings in the same audit so the section is re-coded against the new instructions.
+- Replace the **remaining (not yet started) sections** by passing `sections` with the full replacement list. `sections` replaces the entire pending suffix after the current section: omissions delete milestones. Before passing `sections`, call `section-read` with `pending_suffix: true` and include every later milestone you intend to retain.
 
-`plan-adjust` is only available during a section audit of a sectioned plan loop. It is rejected in goal loops (no sections) and outside the auditing phase (including the final audit).
+Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit. The tool does not enforce this semantically. A rationale is required for every adjustment. Prefer the existing plan when it remains viable.
+
+`plan-adjust` is only available during a section audit of a sectioned plan loop. It is rejected in goal loops (no sections) and outside the auditing phase — including the final audit.
 
 Guardrails:
-- The plan objective and verification criteria are **immutable**. Never use `plan-adjust` to relax them.
-- Only the current section and the *remaining* sections can be amended — already-completed sections, their summaries, and the master plan's objective cannot be changed.
+- Only the current section and the *pending* sections can be amended — already-completed sections, their summaries, and the master plan row cannot be changed by the tool.
 - Omit `sections` to leave future sections unchanged; pass an empty array to remove the entire pending suffix (useful when the remaining work is obsolete). The resulting total (completed + current + replacements) must remain greater than zero and may not exceed 24 sections.
 
 Adjustments are logged in the plan-amendments table with before/after snapshots and are auto-applied to the section plan immediately.

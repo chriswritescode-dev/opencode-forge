@@ -20,6 +20,7 @@ describe('section-summary markers', () => {
         summaryFollowUps: null, startedAt: null, completedAt: null, createdAt: 0,
       }),
       getCompletedSectionDigest: () => [],
+      getSectionPlans: () => [],
       getCoderDecisions: () => null,
       getFindingRecurrence: () => new Map(),
     }

@@ -613,6 +613,7 @@ describe('Loop', () => {
           { title: 'New Phase 3', content: 'new c3' },
         ],
         rationale: 'auditor revised remaining work after dirty audit',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result).toEqual({ ok: true, totalSections: 4 })
@@ -659,6 +660,7 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: [{ title: 'X', content: 'x' }],
         rationale: 'should be rejected',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
@@ -676,6 +678,7 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: [{ title: 'X', content: 'x' }],
         rationale: 'should be rejected',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
@@ -696,6 +699,7 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: [{ title: 'X', content: 'x' }],
         rationale: 'should be rejected',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
@@ -717,6 +721,7 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: newSections,
         rationale: 'should be rejected',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
@@ -737,12 +742,137 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: [{ title: 'X', content: 'x' }],
         rationale: '',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
         expect(result.error).toMatch(/rationale/i)
       }
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
+    })
+
+    test('rejects when auditorSessionId is missing or blank', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+
+      const { service, sectionPlansRepo, planAmendmentsRepo, loopsRepo } = buildService()
+
+      for (const auditorSessionId of [undefined, '', '   ']) {
+        const result = await service.adjustRemainingSections('adj-loop', {
+          sections: [{ title: 'X', content: 'x' }],
+          rationale: 'should be rejected',
+          auditorSessionId,
+        } as any)
+        expect(result.ok).toBe(false)
+        if (!result.ok) {
+          expect(result.error).toMatch(/auditorSessionId/i)
+        }
+      }
+
+      expect(sectionPlansRepo.list('test-project', 'adj-loop')[2]).toMatchObject({ sectionIndex: 2, title: 'Phase 2', status: 'pending' })
+      expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(4)
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
+    })
+
+    test('rejects when auditorSessionId does not match the loop session', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+
+      const { service, planAmendmentsRepo } = buildService()
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        sections: [{ title: 'X', content: 'x' }],
+        rationale: 'should be rejected',
+        auditorSessionId: 'stale-auditor-session',
+      })
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/session mismatch/)
+      }
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
+    })
+
+    test('rejects blank title or content in currentSection and sections entries', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+
+      const { service, sectionPlansRepo, planAmendmentsRepo } = buildService()
+
+      const blankCases: Parameters<typeof service.adjustRemainingSections>[1][] = [
+        { sections: [{ title: '   ', content: 'x' }], rationale: 'blank section title', auditorSessionId: 'sess-adj' },
+        { sections: [{ title: 'X', content: '' }], rationale: 'blank section content', auditorSessionId: 'sess-adj' },
+        { sections: [{ title: 'X', content: 'x' }, { title: 'Y', content: '   ' }], rationale: 'blank second entry content', auditorSessionId: 'sess-adj' },
+        { currentSection: { title: '', content: 'x' }, rationale: 'blank current title', auditorSessionId: 'sess-adj' },
+        { currentSection: { title: 'T', content: '   ' }, rationale: 'blank current content', auditorSessionId: 'sess-adj' },
+      ]
+      for (const args of blankCases) {
+        const result = await service.adjustRemainingSections('adj-loop', args)
+        expect(result.ok).toBe(false)
+        if (!result.ok) {
+          expect(result.error).toMatch(/must not be empty/)
+        }
+      }
+
+      expect(sectionPlansRepo.list('test-project', 'adj-loop')[1]).toMatchObject({ sectionIndex: 1, title: 'Phase 1', content: 'c1', status: 'in_progress' })
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
+    })
+
+    test('rejects currentSection edit when the row status is not exactly in_progress', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'pending')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+
+      const { service, sectionPlansRepo, planAmendmentsRepo } = buildService()
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        currentSection: { title: 'Phase 1 v2', content: 'c1 v2' },
+        rationale: 'should be rejected',
+        auditorSessionId: 'sess-adj',
+      })
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/in_progress/)
+      }
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 1)).toMatchObject({ title: 'Phase 1', content: 'c1', status: 'pending' })
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
+    })
+
+    test('mixed currentSection+sections rejection is atomic: current edit, total, and amendment are all skipped', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+      insertSectionPlan(3, 'Phase 3', 'c3', 'pending')
+      db.run(
+        `UPDATE section_plans SET status = 'completed' WHERE project_id = 'test-project' AND loop_name = 'adj-loop' AND section_index = 2`
+      )
+
+      const { service, sectionPlansRepo, planAmendmentsRepo, loopsRepo } = buildService()
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        currentSection: { title: 'Phase 1 v2', content: 'c1 v2' },
+        sections: [{ title: 'New Phase 3', content: 'new c3' }],
+        rationale: 'mixed rejection should leave no partial writes',
+        auditorSessionId: 'sess-adj',
+      })
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/not pending/)
+      }
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 1)).toMatchObject({ title: 'Phase 1', content: 'c1', status: 'in_progress' })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 2)).toMatchObject({ title: 'Phase 2', content: 'c2', status: 'completed' })
+      expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(4)
       expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
     })
 
@@ -761,6 +891,7 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: [{ title: 'New 2', content: 'new c2' }],
         rationale: 'amend',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(true)
@@ -786,6 +917,7 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: [{ title: 'New 2', content: 'new c2' }],
         rationale: 'amend',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
@@ -820,6 +952,7 @@ describe('Loop', () => {
           { title: 'New Phase 3', content: 'new c3' },
         ],
         rationale: 'amend with injected failure',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
@@ -855,6 +988,7 @@ describe('Loop', () => {
           { title: 'New Phase 3', content: 'new c3' },
         ],
         rationale: 'amend with injected amendment failure',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
@@ -885,6 +1019,7 @@ describe('Loop', () => {
           { title: 'R1 P3', content: 'r1 c3' },
         ],
         rationale: 'first amendment',
+        auditorSessionId: 'sess-adj',
       })
       expect(r1).toEqual({ ok: true, totalSections: 4 })
       expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(1)
@@ -894,6 +1029,7 @@ describe('Loop', () => {
       const r2 = await service.adjustRemainingSections('adj-loop', {
         sections: [{ title: 'R2 Only', content: 'r2 c2' }],
         rationale: 'second amendment',
+        auditorSessionId: 'sess-adj',
       })
       expect(r2).toEqual({ ok: true, totalSections: 3 })
       expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(3)
@@ -926,6 +1062,7 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         sections: [],
         rationale: 'auditor cancelled remaining work',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result).toEqual({ ok: true, totalSections: 2 })
@@ -967,6 +1104,7 @@ describe('Loop', () => {
           { title: 'Appended B', content: 'b content' },
         ],
         rationale: 'auditor discovered additional work after the final section',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result).toEqual({ ok: true, totalSections: 6 })
@@ -1009,6 +1147,7 @@ describe('Loop', () => {
           { title: 'New Phase 3', content: 'new c3' },
         ],
         rationale: 'concurrent-safe snapshot',
+        auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(true)
@@ -1135,10 +1274,12 @@ describe('Loop', () => {
       const p1 = service.adjustRemainingSections('adj', {
         sections: [{ title: 'A', content: 'a' }],
         rationale: 'caller A',
+        auditorSessionId: 's1',
       })
       const p2 = service.adjustRemainingSections('adj', {
         sections: [{ title: 'B', content: 'b' }],
         rationale: 'caller B',
+        auditorSessionId: 's1',
       })
       const [r1, r2] = await Promise.all([p1, p2])
 
@@ -1200,6 +1341,7 @@ describe('Loop', () => {
       let result = await service.adjustRemainingSections('adj2', {
         sections: [{ title: 'N1', content: 'n1' }],
         rationale: 'replace',
+        auditorSessionId: 's1',
       })
       expect(result.ok).toBe(true)
 
@@ -1209,6 +1351,7 @@ describe('Loop', () => {
       result = await service.adjustRemainingSections('adj2', {
         sections: [{ title: 'N1', content: 'n1' }],
         rationale: 'should fail',
+        auditorSessionId: 's1',
       })
       expect(result.ok).toBe(false)
       if (!result.ok) {

@@ -18,6 +18,7 @@ export interface PromptContext {
   getPlanTextForState(state: LoopState): string | null
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
+  getSectionPlans(state: LoopState): SectionPlanRow[]
   getCompletedSectionDigest(state: LoopState): SectionDigestEntry[]
   getCoderDecisions(loopName?: string): string | null
   getFindingRecurrence(loopName?: string): Map<string, number>
@@ -49,6 +50,13 @@ function formatSectionsSummary(digest: SectionDigestEntry[]): string {
     if (s.summaryFollowUps) parts += `\n### Follow-ups\n${s.summaryFollowUps}`
     return parts
   }).join('\n\n')
+}
+
+function buildEffectiveSectionPlanBlock(ctx: PromptContext, state: LoopState): string {
+  const rows = ctx.getSectionPlans(state)
+  if (rows.length === 0) return ''
+  const body = rows.map(r => `### Section ${r.sectionIndex + 1} (index ${r.sectionIndex}): ${r.title}\n${r.content}`).join('\n\n')
+  return `\n\n## Effective section plan\nThese live section rows supersede the master plan's original per-section instructions; the master objective and top-level Verification remain authoritative. Titles are display labels — the content under each heading is the executable requirement.\n\n${body}`
 }
 
 function getEscalatedFindings(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): { file: string; line: number; count: number }[] {
@@ -317,7 +325,12 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
 
   header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
 
-  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules, then end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}\n- If the plan can no longer achieve its objective as written, call \`plan-adjust\` per your Adaptive plan adjustment rules. Never use it to relax acceptance criteria or verification; the objective is immutable. Prefer finishing the plan as written when viable.`
+  const hasNextSection = idx + 1 < total
+  const proactiveCheck = hasNextSection
+    ? `call \`section-read\` with \`section_index: ${idx + 1}\` and verify its plan against the current worktree`
+    : 'this is the last section, so skip the proactive next-section check'
+
+  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck} — then end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}\n- \`plan-adjust\` (section audits only; unavailable in the final audit) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {
@@ -359,6 +372,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, o
 
   let header = `[Final-audit fix -- iteration ${state.iteration}/${state.maxIterations}]`
   header += `\n\n## Master Plan\n${planText}`
+  header += buildEffectiveSectionPlanBlock(ctx, state)
 
   if (digest.length > 0) {
     header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
@@ -415,9 +429,11 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)
+  const effectiveSectionPlan = buildEffectiveSectionPlanBlock(ctx, state)
 
   let header = `[Final integration audit]`
   header += `\n\n## Master Plan\n${planText}`
+  header += effectiveSectionPlan
 
   if (digest.length > 0) {
     header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
@@ -425,7 +441,10 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
 
   header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
 
-  header += `\n\n---\nFinal audit instructions:\n- Review scope: the loop's full accumulated changes — every \`section <N>:\` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes.\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
+  const verificationScope = effectiveSectionPlan
+    ? 'Verify the master plan\'s objective and top-level Verification commands, then verify the requirements in the Effective section plan.'
+    : 'Verify the master plan\'s objective and top-level Verification commands.'
+  header += `\n\n---\nFinal audit instructions:\n- Review scope: the loop's full accumulated changes — every \`section <N>:\` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes.\n- ${verificationScope}\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {

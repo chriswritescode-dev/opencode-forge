@@ -11,8 +11,8 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `plan-read` | Read the current session or loop plan, or list/search recent project plans. | [`src/tools/plan-kv.ts`](../src/tools/plan-kv.ts) |
 | `plan-write` | Create or overwrite the stored session plan. | [`src/tools/plan-authoring.ts`](../src/tools/plan-authoring.ts) |
 | `plan-edit` | Edit the stored session plan by exact string replacement. | [`src/tools/plan-authoring.ts`](../src/tools/plan-authoring.ts) |
-| `section-read` | Read a section plan and status for the active loop session. | [`src/tools/section-read.ts`](../src/tools/section-read.ts) |
-| `plan-adjust` | Revise the section under audit and/or replace the remaining (not yet started) sections of the active loop plan; auditor-only, logged as a plan amendment. | [`src/tools/plan-adjust.ts`](../src/tools/plan-adjust.ts) |
+| `section-read` | Read a section plan and status for the active loop session, or the ordered pending section suffix. | [`src/tools/section-read.ts`](../src/tools/section-read.ts) |
+| `plan-adjust` | Revise the section under audit and/or replace the pending section suffix of the active loop plan's executable section instructions; auditor-only, section-audit-only, logged as a plan amendment. | [`src/tools/plan-adjust.ts`](../src/tools/plan-adjust.ts) |
 | `review-write` | Store a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
@@ -66,29 +66,34 @@ Arguments:
 | `newString` | Replacement text. Must differ from `oldString`. |
 | `replaceAll` | Replace every occurrence instead of requiring a unique match. |
 
-`plan-write` and `plan-edit` author the plan before execution; `plan-adjust` amends an already-running sectioned loop's plan during a section audit and is auditor-only.
+`plan-write` and `plan-edit` author the plan before execution; `plan-adjust` amends the executable section instructions of an already-running sectioned loop during a section audit — the stored master plan row is unchanged — and is auditor-only.
 
 ## Section Tools
 
 ### `section-read`
+
+Reads a section plan and its status for the active loop session. Without arguments it returns the lowest-index incomplete section. Titles are display labels; the content under each section is the executable requirement.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
 | `section_index` | Optional 0-based section index. If omitted, returns the lowest-index incomplete section. |
+| `pending_suffix` | When `true`, returns one JSON object with `from_index` (current section index + 1) and every pending section after the current one, ordered, each with `index`, `title`, `content`, and `status`. Cannot be combined with `section_index`. |
+
+`section-read` never mutates loop state: section statuses and summaries are unchanged by reads.
 
 ### `plan-adjust`
 
-Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in goal loops and during the final audit). Can revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix from the current section + 1 onward (`sections`). Already-completed sections, the plan objective, and verification are immutable. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots.
+Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in goal loops and during the final audit). Revises the executable section instructions only: the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or the pending section suffix from the current section + 1 onward (`sections`). `sections` is destructive — it replaces the entire pending suffix, so any omitted milestone is deleted; confirm the retained list with `section-read` `pending_suffix: true` before calling. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. The tool performs no semantic validation of the adjusted instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots and a required rationale.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
-| `sections` | Optional replacement list of `{ title, content }` for the not-yet-started sections after the current one. Omit to leave future sections unchanged; an empty list removes the entire pending suffix. |
-| `currentSection` | Optional `{ title, content }` revision of the section currently under audit, edited in place. If the revision means the existing work no longer satisfies the section, also write bug findings so it is re-coded. |
-| `rationale` | Why the plan needs adjustment. |
+| `sections` | Optional replacement list of `{ title, content }` for the not-yet-started sections after the current one. Replaces the entire pending suffix — omissions delete milestones, so include every later milestone to retain. Omit to leave future sections unchanged; an empty list removes the entire pending suffix. |
+| `currentSection` | Optional `{ title, content }` revision of the section currently under audit, edited in place. If the revision requires code, write severity: bug findings in the same audit so the section is re-coded. Revisions must not weaken acceptance criteria or verification merely to obtain a clean audit. |
+| `rationale` | Why the plan needs adjustment. Required for every adjustment. |
 
 ## Review Tools
 

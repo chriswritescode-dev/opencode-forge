@@ -12,7 +12,7 @@ test('sandbox image keeps the pnpm store outside mounted projects', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
 
   expect(dockerfile).toContain('PNPM_CONFIG_STORE_DIR=/opt/forge/.local/share/pnpm/store')
-  expect(dockerfile).not.toContain('npm_config_store_dir=')
+  expect(dockerfile).toContain('npm_config_store_dir=/opt/forge/.local/share/pnpm/store')
 })
 
 function leftoverTars(dir: string): string[] {

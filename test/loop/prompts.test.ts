@@ -46,17 +46,21 @@ function makeCtx(overrides?: Partial<PromptContext>): PromptContext {
   return {
     getPlanTextForState: () => 'Mock plan content',
     getOutstandingFindings: () => [],
-    getSectionPlan: (_state, index) => ({
-      projectId: 'p', loopName: _state.loopName, sectionIndex: index,
-      title: `Section ${index + 1}`, content: `Section plan for ${index + 1}`,
-      status: 'pending' as const, attempts: 0,
-      summaryDone: null, summaryDeviations: null, summaryFollowUps: null,
-      startedAt: null, completedAt: null, createdAt: Date.now(),
-    }),
+    getSectionPlan: (_state, index) => makeSectionPlanRow(index, `Section ${index + 1}`, `Section plan for ${index + 1}`),
+    getSectionPlans: () => [],
     getCompletedSectionDigest: () => [],
     getCoderDecisions: () => null,
     getFindingRecurrence: () => new Map(),
     ...overrides,
+  }
+}
+
+function makeSectionPlanRow(index: number, title: string, content: string) {
+  return {
+    projectId: 'p', loopName: 'test-loop', sectionIndex: index, title, content,
+    status: 'pending' as const, attempts: 0,
+    summaryDone: null, summaryDeviations: null, summaryFollowUps: null,
+    startedAt: null, completedAt: null, createdAt: Date.now(),
   }
 }
 
@@ -292,9 +296,50 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildSectionAuditPrompt(ctx, { ...sectionState })
       expect(result).not.toContain('Coder decisions & verification notes')
     })
+
+    test('section audit instructs exact 0-based next-section read when a next section exists', () => {
+      const ctx = makeCtx()
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState, totalSections: 3, currentSectionIndex: 1 })
+      expect(result).toContain('run the proactive next-section check')
+      expect(result).toContain('call `section-read` with `section_index: 2`')
+      expect(result).not.toContain('skip the proactive next-section check')
+    })
+
+    test('section audit on the last section explicitly skips the proactive next-section check', () => {
+      const ctx = makeCtx()
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState, totalSections: 2, currentSectionIndex: 1 })
+      expect(result).toContain('this is the last section, so skip the proactive next-section check')
+      expect(result).not.toContain('`section-read` with `section_index:')
+    })
+
+    test('section audit rewrites plan-adjust guidance without implying the objective shifts', () => {
+      const ctx = makeCtx()
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState })
+      expect(result).toContain('unavailable in the final audit')
+      expect(result).toContain('stored master plan row is unchanged')
+      expect(result).toContain('confirm both with `plan-read`')
+      expect(result).toContain('does not enforce this semantically')
+      expect(result).toContain('pending_suffix: true')
+      expect(result).toContain('omissions delete milestones')
+      expect(result).not.toContain('can no longer achieve its objective')
+      expect(result).not.toContain('the objective is immutable')
+    })
   })
 
   describe('buildSectionContinuationPrompt', () => {
+    test('section prompts keep section content inline and never render the effective-plan block or titles', () => {
+      const ctx = makeCtx({
+        getSectionPlans: () => [
+          makeSectionPlanRow(0, 'Base', 'original instructions'),
+          makeSectionPlanRow(1, 'Amended', 'amended live instructions'),
+        ],
+      })
+      expect(buildSectionInitialPrompt(ctx, { ...sectionState })).not.toContain('Effective section plan')
+      expect(buildSectionAuditPrompt(ctx, { ...sectionState })).not.toContain('Effective section plan')
+      expect(buildSectionContinuationPrompt(ctx, { ...sectionState })).not.toContain('Effective section plan')
+      expect(buildSectionInitialPrompt(ctx, { ...sectionState })).not.toContain('Section 1: Base')
+    })
+
     test('section continuation with runtime notice renders under ## Loop notice', () => {
       const ctx = makeCtx()
       const result = buildSectionContinuationPrompt(ctx, { ...sectionState }, 'Please fix the bug.')
@@ -341,6 +386,31 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('Master Plan')
       expect(result).toContain('Mock plan content')
       expect(result).toContain('Final audit instructions')
+    })
+
+    test('final audit includes the effective ordered section plan after the Master Plan', () => {
+      const ctx = makeCtx({
+        getSectionPlans: () => [
+          makeSectionPlanRow(0, 'Base', 'original instructions'),
+          makeSectionPlanRow(1, 'Amended', 'amended live instructions'),
+        ],
+      })
+      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      const masterPos = result.indexOf('## Master Plan')
+      const effectivePos = result.indexOf('## Effective section plan')
+      expect(effectivePos).toBeGreaterThan(masterPos)
+      expect(result).toContain('supersede the master plan\'s original per-section instructions')
+      expect(result).toContain('master objective and top-level Verification remain authoritative')
+      expect(result).toContain('Titles are display labels')
+      expect(result).toContain('### Section 2 (index 1): Amended')
+      expect(result).toContain('amended live instructions')
+      expect(result).toContain('verify the requirements in the Effective section plan')
+    })
+
+    test('final audit omits the effective section plan when no section rows exist', () => {
+      const ctx = makeCtx()
+      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      expect(result).not.toContain('Effective section plan')
     })
 
     test('final audit with completed sections digest', () => {
@@ -413,6 +483,29 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('Scope your changes to what the findings require')
       expect(result).not.toContain('## Final auditor feedback')
       expect(result).not.toContain('## Outstanding review findings')
+    })
+
+    test('includes the effective ordered section plan after the Master Plan', () => {
+      const ctx = makeCtx({
+        getSectionPlans: () => [
+          makeSectionPlanRow(0, 'Base', 'original instructions'),
+          makeSectionPlanRow(1, 'Amended', 'amended live instructions'),
+        ],
+      })
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
+      const masterPos = result.indexOf('## Master Plan')
+      const effectivePos = result.indexOf('## Effective section plan')
+      expect(effectivePos).toBeGreaterThan(masterPos)
+      expect(result).toContain('supersede the master plan\'s original per-section instructions')
+      expect(result).toContain('master objective and top-level Verification remain authoritative')
+      expect(result).toContain('### Section 2 (index 1): Amended')
+      expect(result).toContain('amended live instructions')
+    })
+
+    test('omits the effective section plan when no section rows exist', () => {
+      const ctx = makeCtx()
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
+      expect(result).not.toContain('Effective section plan')
     })
 
     test('lists outstanding bug findings', () => {

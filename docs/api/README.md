@@ -433,7 +433,7 @@ Sectioned (plan) loops execute the plan milestone by milestone. A plan is decomp
 
 When all sections are clean, the loop enters `final_auditing`, which audits the entire accumulated diff. Outstanding final-audit findings rotate the loop to a `final_audit_fix` coding pass without rewinding a section; it then returns to `final_auditing` for verification. A clean final audit triggers completion or the configured `post_action` phase.
 
-During a section audit, the auditor may amend the plan via `plan-adjust`: revise the section under audit in place and/or replace the pending section suffix. The plan objective and verification criteria are immutable, already-completed sections cannot be changed, and the resulting total is capped at 24 sections. If an amendment appends sections while in `final_auditing`, the loop reverts to `auditing` to execute them.
+During a section audit, the auditor may amend the plan via `plan-adjust`: revise the section under audit in place and/or replace the pending section suffix (destructively — an omitted milestone is deleted). `plan-adjust` is unavailable outside section auditing, including the final audit. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions, with titles as display labels and section content as the executable requirements. Already-completed sections cannot be changed, and the resulting total is capped at 24 sections.
 
 ### Stall Detection
 

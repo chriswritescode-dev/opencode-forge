@@ -97,7 +97,7 @@ describe('section-read tool', () => {
     return { sessionID } as any
   }
 
-  async function executeSectionRead(args?: { section_index?: number }, sessionID?: string): Promise<string> {
+  async function executeSectionRead(args?: { section_index?: number; pending_suffix?: boolean }, sessionID?: string): Promise<string> {
     const tool = createSectionReadTool({ loop: { service: loopService } } as any)
     const result = await tool.execute(args ?? {}, makeToolContext(sessionID ?? ''))
     return typeof result === 'string' ? result : result.output
@@ -242,6 +242,60 @@ describe('section-read tool', () => {
       insertSections('test-loop', 2)
       const result = parseJson(await executeSectionRead({}, ''))
       expect(result.error).toContain('Not in a loop session')
+    })
+  })
+
+  describe('pending_suffix', () => {
+    test('returns ordered pending sections after the current one', async () => {
+      insertLoop('test-loop', { totalSections: 4, currentSectionIndex: 1 })
+      insertSections('test-loop', 4)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'in_progress')
+      const result = parseJson(await executeSectionRead({ pending_suffix: true }, 'test-loop-session'))
+      expect(result.from_index).toBe(2)
+      expect(result.sections).toEqual([
+        { index: 2, title: 'Section 3', content: 'Content for section 3', status: 'pending' },
+        { index: 3, title: 'Section 4', content: 'Content for section 4', status: 'pending' },
+      ])
+    })
+
+    test('returns an empty suffix when the current section is the last', async () => {
+      insertLoop('test-loop', { totalSections: 2, currentSectionIndex: 1 })
+      insertSections('test-loop', 2)
+      const result = parseJson(await executeSectionRead({ pending_suffix: true }, 'test-loop-session'))
+      expect(result.from_index).toBe(2)
+      expect(result.sections).toEqual([])
+    })
+
+    test('rejects combining pending_suffix with section_index', async () => {
+      insertLoop('test-loop', { totalSections: 3 })
+      insertSections('test-loop', 3)
+      const result = parseJson(await executeSectionRead({ pending_suffix: true, section_index: 1 }, 'test-loop-session'))
+      expect(result.error).toContain('pending_suffix cannot be combined with section_index')
+    })
+
+    test('does not mutate section statuses or summaries', async () => {
+      insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 1 })
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'in_progress')
+      sectionPlansRepo.setSummary(projectId, 'test-loop', 0, { done: 'did 0' })
+
+      await executeSectionRead({ pending_suffix: true }, 'test-loop-session')
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.status).toBe('pending')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 1)?.status).toBe('in_progress')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 2)?.status).toBe('pending')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.summaryDone).toBe('did 0')
+    })
+
+    test('splits the pending suffix and defaults are unaffected', async () => {
+      insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 0 })
+      insertSections('test-loop', 3)
+      const pending = parseJson(await executeSectionRead({ pending_suffix: true }, 'test-loop-session'))
+      expect(pending.from_index).toBe(1)
+      expect(pending.sections.map((s: { index: number }) => s.index)).toEqual([1, 2])
+      const byIndex = parseJson(await executeSectionRead({ section_index: 2 }, 'test-loop-session'))
+      expect(byIndex.index).toBe(2)
+      expect(byIndex.title).toBe('Section 3')
     })
   })
 

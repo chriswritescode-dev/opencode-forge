@@ -2158,20 +2158,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    // Guard: when an amendment appended sections while we're in final_auditing
-    // (e.g., the transition to this phase happened from a stale snapshot),
-    // revert back to auditing so the appended sections get executed.
-    const freshAuditRow = loopsRepo.get(projectId, loopName)
-    if (freshAuditRow && freshAuditRow.totalSections > (currentState.totalSections ?? 0)) {
-      logger.log(`Loop: amendment appended sections while in final_auditing; reverting to auditing at section ${currentState.currentSectionIndex}`)
-      // Route through the recording setPhase wrapper (not loopService.setPhase)
-      // so the revert satisfies the "every phase change produces exactly one
-      // loop_transitions row" invariant.
-      setPhase(loopName, 'auditing')
-      loopService.incrementSectionAttempts(loopName, currentState.currentSectionIndex ?? 0)
-      return
-    }
-
     if (!currentState.worktreeDir) {
       logger.error(`Loop: loop ${loopName} missing worktreeDir in final audit phase, terminating`)
       await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
