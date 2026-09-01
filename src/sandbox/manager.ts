@@ -495,17 +495,13 @@ export function createSandboxManager(
     const workspaces = buildSandboxWorkspaces(mounts, logger)
     const resources: SandboxResources = {
       memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
-      maxMemory: config.resources?.maxMemory,
       cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
-      maxCpus: config.resources?.maxCpus,
       dockerDisk: config.resources?.dockerDisk,
     }
     // Secret destinations are unioned into the egress allow-list: msb's proxy is deny-by-default
     // at the sandbox level, so a secrets-only configuration would otherwise never reach its hosts.
     const secrets = resolveSandboxSecrets()
-    const memoryLabel = resources.maxMemory ? `${resources.memory}/max ${resources.maxMemory}` : resources.memory
-    const cpusLabel = resources.maxCpus ? `${resources.cpus}/max ${resources.maxCpus}` : resources.cpus
-    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${memoryLabel} cpus=${cpusLabel} workspaces=${workspaces.length})`)
+    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} workspaces=${workspaces.length})`)
     await runtime.createSandbox(containerName, workspaces, {
       image: config.image,
       resources,

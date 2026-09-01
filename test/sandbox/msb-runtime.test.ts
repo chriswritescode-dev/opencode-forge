@@ -917,54 +917,15 @@ describe('runtime', () => {
     expect(calls[0].opts?.timeout).toBe(120000)
   })
 
-  test('createSandbox forwards coerced boot ceilings as --max-cpus and --max-memory', async () => {
+  test('createSandbox drops unparsable memory and cpus instead of passing them to msb', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
     await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
       image: 'oc-forge-sandbox:latest',
-      resources: { memory: '2g', maxMemory: '16GB', cpus: '2', maxCpus: '8.5' },
+      resources: { memory: 'lots', cpus: 'many' },
     })
-    expect(calls[0].args).toEqual([
-      'create',
-      'oc-forge-sandbox:latest',
-      '--name',
-      'forge-c',
-      '--quiet',
-      '-c',
-      '2',
-      '--max-cpus',
-      '8',
-      '-m',
-      '2g',
-      '--max-memory',
-      '16g',
-      '-v',
-      '/work:/work',
-      '--mount-named',
-      'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
-    ])
-  })
-
-  test('createSandbox omits the boot ceilings when only one of them is configured', async () => {
-    const { calls, runner } = recordingRunner()
-    const rt = createMsbRuntime(logger, { run: runner })
-    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
-      image: 'oc-forge-sandbox:latest',
-      resources: { memory: '2g', maxMemory: '16g', cpus: '2' },
-    })
-    expect(calls[0].args).toContain('--max-memory')
-    expect(calls[0].args).not.toContain('--max-cpus')
-  })
-
-  test('createSandbox drops unparsable boot ceilings instead of passing them to msb', async () => {
-    const { calls, runner } = recordingRunner()
-    const rt = createMsbRuntime(logger, { run: runner })
-    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
-      image: 'oc-forge-sandbox:latest',
-      resources: { memory: '2g', maxMemory: 'lots', cpus: '2', maxCpus: 'many' },
-    })
-    expect(calls[0].args).not.toContain('--max-memory')
-    expect(calls[0].args).not.toContain('--max-cpus')
+    expect(calls[0].args).not.toContain('-m')
+    expect(calls[0].args).not.toContain('-c')
   })
 
   test('createSandbox forwards networkAllow into the create args', async () => {

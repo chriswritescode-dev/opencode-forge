@@ -254,9 +254,11 @@ The mount is read-only because the setting exists to grant read access. To make 
 | Option | Default | msb flag |
 |---|---:|---|
 | `sandbox.resources.memory` | `"8g"` | `msb create -m` |
-| `sandbox.resources.maxMemory` | unset | `msb create --max-memory` |
 | `sandbox.resources.cpus` | `"4"` | `msb create -c` (integer-only) |
-| `sandbox.resources.maxCpus` | unset | `msb create --max-cpus` (integer-only) |
 | `sandbox.resources.dockerDisk` | `"16g"` | `msb create --mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>` |
 
-`memory` and `cpus` are what the microVM boots with. `maxMemory` and `maxCpus` are boot-time ceilings the guest can grow into; leaving them unset pins the sandbox at its boot allocation, which is why `msb inspect` reports identical `Memory` and `Max Memory` by default. Set a small boot allocation with a large ceiling (for example `memory: "2g"` with `maxMemory: "16g"`) to keep idle sandboxes cheap while still allowing a heavy build to expand. msb rejects a ceiling below the boot allocation and the sandbox fails to create, so keep `maxMemory` >= `memory` and `maxCpus` >= `cpus`.
+`memory` and `cpus` are exactly what the guest gets, for its whole life. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
+
+msb's `--max-memory`/`--max-cpus` ceilings are deliberately not exposed. They only reserve hotplug capacity that must be claimed explicitly with `msb modify --memory <size>` from the **host**; agents run inside the sandbox and cannot call `msb`, so a ceiling never rescues a failing in-sandbox build.
+
+Resources are fixed when the sandbox is created, and forge reuses existing running or stopped sandboxes rather than recreating them. Changing these values does not resize a sandbox that already exists — remove it (`msb rm <sandbox>`) so the next run creates it with the new values, or resize it in place with `msb modify`.

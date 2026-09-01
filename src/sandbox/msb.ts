@@ -193,9 +193,7 @@ export function buildMsbCreateArgs(
   opts: {
     image: string
     memory?: string
-    maxMemory?: string
     cpus?: number
-    maxCpus?: number
     networkAllow?: string[]
     restrictEgress?: boolean
     dockerDisk?: string
@@ -208,9 +206,7 @@ export function buildMsbCreateArgs(
   }
   const args = ['create', opts.image, '--name', name, '--quiet']
   if (opts.cpus !== undefined) args.push('-c', String(opts.cpus))
-  if (opts.maxCpus !== undefined) args.push('--max-cpus', String(opts.maxCpus))
   if (opts.memory) args.push('-m', opts.memory)
-  if (opts.maxMemory) args.push('--max-memory', opts.maxMemory)
   for (const ws of workspaces) {
     args.push('-v', ws.readOnly ? `${ws.hostDir}:${ws.containerDir}:ro` : `${ws.hostDir}:${ws.containerDir}`)
   }
@@ -516,9 +512,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     const args = buildMsbCreateArgs(name, workspaces, {
       image: opts.image,
       memory: normalizeMsbSize(opts.resources?.memory, logger),
-      maxMemory: normalizeMsbSize(opts.resources?.maxMemory, logger),
       cpus: parseMsbCpus(opts.resources?.cpus, logger),
-      maxCpus: parseMsbCpus(opts.resources?.maxCpus, logger),
       networkAllow: opts.networkAllow,
       restrictEgress: opts.restrictEgress,
       dockerDisk: normalizeMsbSize(opts.resources?.dockerDisk, logger),

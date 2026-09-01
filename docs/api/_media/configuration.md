@@ -248,10 +248,8 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.mode` | `"msb"` | Sandbox mode. `msb` is currently the only supported mode. A stale `"mode": "sbx"` from an older install is reported as a migration warning in the log and, when running in the TUI, as a toast. |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | msb image reference used for sandboxed execution. |
 | `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the image after changing it. |
-| `sandbox.resources.memory` | `"8g"` | Memory the sandbox boots with (`msb create -m`). |
-| `sandbox.resources.maxMemory` | unset | Boot-time ceiling for hotpluggable memory (`msb create --max-memory`). Unset pins the sandbox at `memory`; msb rejects a value below `memory`. |
-| `sandbox.resources.cpus` | `"4"` | CPU count the sandbox boots with (`msb create -c`; integer-only). |
-| `sandbox.resources.maxCpus` | unset | Boot-time ceiling for virtual CPUs (`msb create --max-cpus`; integer-only). Unset pins the sandbox at `cpus`; msb rejects a value below `cpus`. |
+| `sandbox.resources.memory` | `"8g"` | Memory the sandbox gets (`msb create -m`). Fixed for the sandbox's life; there is no autoscaling, so size it for the heaviest command it will run or that command is OOM-killed. |
+| `sandbox.resources.cpus` | `"4"` | CPU count the sandbox gets (`msb create -c`; integer-only). Fixed for the sandbox's life. |
 | `sandbox.resources.dockerDisk` | `"16g"` | Size of the dedicated block device backing the sandbox's in-VM Docker Engine data dir (`/var/lib/docker`, `--mount-named ...:kind=disk,size=<size>`). The disk is sparse, so the generous default costs no real disk up front. |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
