@@ -15,13 +15,13 @@ import { createMockLogger } from '../helpers/sandbox-mocks'
 import type { SandboxMount } from '../../src/sandbox/path'
 
 describe('SANDBOX_CONTEXT_NOTE', () => {
-  it('keeps the container-routing caveat and gives accurate lifetime/scratch guidance', () => {
+  it('keeps the container-routing caveat and asserts no unconfigured sandbox lifetime behavior', () => {
     expect(SANDBOX_CONTEXT_NOTE).toContain('bash tool commands execute in that container, not on the host')
-    expect(SANDBOX_CONTEXT_NOTE).toContain('foreground')
-    expect(SANDBOX_CONTEXT_NOTE).toMatch(/timeout/i)
-    expect(SANDBOX_CONTEXT_NOTE).toMatch(/reboots/i)
-    expect(SANDBOX_CONTEXT_NOTE).toContain('files on disk')
     expect(SANDBOX_CONTEXT_NOTE).not.toContain('stops shortly after each command')
+    // Forge never passes msb's opt-in `--idle-timeout`, so sandboxes do not stop themselves
+    // while idle; only explicit forge lifecycle stops and host restarts end a sandbox.
+    expect(SANDBOX_CONTEXT_NOTE).not.toMatch(/while idle/i)
+    expect(SANDBOX_CONTEXT_NOTE).not.toMatch(/reboots/i)
   })
 
   it('does not name any specific scratch directory (agents use opencode\'s advertised default)', () => {

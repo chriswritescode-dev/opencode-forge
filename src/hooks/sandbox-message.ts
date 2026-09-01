@@ -1,6 +1,7 @@
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { SANDBOX_CONTEXT_NOTE, SANDBOX_OFF_NOTE } from '../sandbox/context'
+import { buildSandboxContextNote, buildSandboxOffNote } from '../sandbox/context'
+import type { EnvironmentProbe } from '../sandbox/env-probe'
 import type { ResolveSandboxForSessionOpts } from '../services/unified-sandbox-resolver'
 import { LRUCache } from '../utils/lru-cache'
 
@@ -14,6 +15,11 @@ export interface CreateSandboxMessageHookDeps {
    * worktree-only loop forces host and gets no note even when a host sandbox is toggled on).
    */
   resolveSandboxForSession(sessionID: string, opts?: ResolveSandboxForSessionOpts): Promise<SandboxContext | null>
+  /**
+   * Probes the real host and container environments so the note can name what actually changed.
+   * Omitted, the notes keep their environment-agnostic text.
+   */
+  probe?: EnvironmentProbe
   logger: Logger
 }
 
@@ -25,6 +31,11 @@ type SystemTransformOutput = { system: string[] }
  * when it returns to the host. This covers sandbox loops, their Task-tool subagents, and sessions
  * with the host sandbox toggled on.
  *
+ * Both notes lead with the concrete environment change, probed from the two environments
+ * themselves rather than described in the abstract: host -> container while sandboxed (repeated on
+ * every request, so it stands for as long as the toggle is on) and container -> host on the single
+ * request that observes the toggle going off.
+ *
  * This uses `experimental.chat.system.transform` rather than `chat.message` because a loop is
  * driven entirely by programmatic `promptAsync` calls (and subagents via the Task tool) — there is
  * no human user turn, so `chat.message` never fires. The system transform runs before every LLM
@@ -35,9 +46,10 @@ type SystemTransformOutput = { system: string[] }
  * host. The note remains informational, so resolution errors do not block the request.
  */
 export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
-  const { resolveSandboxForSession, logger } = deps
+  const { resolveSandboxForSession, probe, logger } = deps
 
-  const sandboxedSessions = new LRUCache<true>(SANDBOX_TRACKED_SESSION_LIMIT)
+  /** Session -> descriptor of the container it is in, retained so the off note can name it. */
+  const sandboxedSessions = new LRUCache<string | null>(SANDBOX_TRACKED_SESSION_LIMIT)
 
   return async (input: SystemTransformInput, output: SystemTransformOutput): Promise<void> => {
     const sessionID = input?.sessionID
@@ -52,13 +64,18 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
     }
 
     if (sandbox) {
-      sandboxedSessions.set(sessionID, true)
-      output.system.push(SANDBOX_CONTEXT_NOTE)
+      const [hostEnv, containerEnv] = await Promise.all([
+        probe ? probe.describeHost() : null,
+        probe ? probe.describeSandbox(sandbox) : null,
+      ])
+      sandboxedSessions.set(sessionID, containerEnv)
+      output.system.push(buildSandboxContextNote({ from: hostEnv, to: containerEnv }))
       return
     }
 
-    if (sandboxedSessions.delete(sessionID)) {
-      output.system.push(SANDBOX_OFF_NOTE)
-    }
+    if (!sandboxedSessions.has(sessionID)) return
+    const containerEnv = sandboxedSessions.get(sessionID) ?? null
+    sandboxedSessions.delete(sessionID)
+    output.system.push(buildSandboxOffNote({ from: containerEnv, to: probe ? await probe.describeHost() : null }))
   }
 }

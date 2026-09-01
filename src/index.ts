@@ -14,6 +14,7 @@ import { createMsbRuntime, describeMsbUnavailable } from './sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from './sandbox/config-warnings'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs } from './sandbox/context'
+import { createEnvironmentProbe } from './sandbox/env-probe'
 import { resolveOpencodeTmpDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from './constants/loop'
@@ -670,6 +671,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // the note appears for sandbox loops, their subagents, and host-sandbox sessions alike.
     const sandboxMessageHook = createSandboxMessageHook({
       resolveSandboxForSession: (sessionID, opts) => resolveSandboxForSession(sessionID, opts),
+      probe: createEnvironmentProbe(logger),
       logger,
     })
 

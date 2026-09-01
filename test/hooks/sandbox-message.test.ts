@@ -151,6 +151,83 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(afterError.system).toContain(SANDBOX_OFF_NOTE)
   })
 
+  test('leads the container note with the probed host -> container change, on every request', async () => {
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => context,
+      probe: {
+        describeHost: async () => 'Darwin 24.6.0 arm64 | macOS 15.6',
+        describeSandbox: async () => 'Linux 6.1.0 aarch64 | Debian GNU/Linux 12',
+      },
+      logger,
+    })
+
+    for (const _ of [0, 1]) {
+      const output = { system: ['base'] }
+      await hook({ sessionID: 'ses_1' }, output)
+      expect(output.system[1]).toContain(
+        '[Sandbox] Environment changed: host (Darwin 24.6.0 arm64 | macOS 15.6) -> container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12).'
+      )
+      expect(output.system[1]).toContain(SANDBOX_CONTEXT_NOTE)
+    }
+  })
+
+  test('leads the off note with the container it left -> the probed host', async () => {
+    let state: SandboxContext | null = context
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => state,
+      probe: {
+        describeHost: async () => 'Darwin 24.6.0 arm64 | macOS 15.6',
+        describeSandbox: async () => 'Linux 6.1.0 aarch64 | Debian GNU/Linux 12',
+      },
+      logger,
+    })
+
+    await hook({ sessionID: 'ses_1' }, { system: ['base'] })
+
+    state = null
+    const output = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, output)
+
+    expect(output.system[1]).toContain(
+      '[Sandbox] Environment changed: container (Linux 6.1.0 aarch64 | Debian GNU/Linux 12) -> host (Darwin 24.6.0 arm64 | macOS 15.6).'
+    )
+    expect(output.system[1]).toContain(SANDBOX_OFF_NOTE)
+  })
+
+  test('falls back to the plain notes when neither environment can be probed', async () => {
+    let state: SandboxContext | null = context
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => state,
+      probe: { describeHost: async () => null, describeSandbox: async () => null },
+      logger,
+    })
+
+    const on = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, on)
+    expect(on.system).toContain(SANDBOX_CONTEXT_NOTE)
+
+    state = null
+    const off = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, off)
+    expect(off.system).toContain(SANDBOX_OFF_NOTE)
+  })
+
+  test('reports a partially probed transition rather than dropping the change', async () => {
+    const hook = createSandboxMessageHook({
+      resolveSandboxForSession: async () => context,
+      probe: {
+        describeHost: async () => null,
+        describeSandbox: async () => 'Linux 6.1.0 aarch64',
+      },
+      logger,
+    })
+
+    const output = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, output)
+
+    expect(output.system[1]).toContain('host (unknown) -> container (Linux 6.1.0 aarch64).')
+  })
+
   test('bounds tracked sessions: the oldest is evicted past the limit, the newest still gets its off note', async () => {
     const states = new Map<string, SandboxContext | null>()
     const hook = createSandboxMessageHook({

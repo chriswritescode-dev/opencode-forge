@@ -20,7 +20,6 @@ export interface SandboxContext {
 export const SANDBOX_CONTEXT_NOTE = [
   '[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.',
   'Environment-specific tooling that is missing or incompatible is not acceptable: install or reinstall the required tooling and dependencies in the container, rerun the intended checks, and do not misreport environment-induced failures as code defects.',
-  'Run long commands in the foreground with a raised bash timeout: if the sandbox stops while idle it reboots the VM, so backgrounded work (&, nohup, setsid) and in-memory state are not guaranteed to survive, though files on disk do.',
   'Passwordless sudo is available for installing missing tools system-wide.',
   'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
 ].join('\n')
@@ -29,6 +28,42 @@ export const SANDBOX_OFF_NOTE = [
   '[Sandbox] Execution has returned to the host environment. Container tools, packages, processes, and in-memory state must not be assumed to be available here.',
   'Install or reinstall the required host tooling and dependencies before rerunning any checks.',
 ].join('\n')
+
+/**
+ * Observed environment descriptors either side of a sandbox toggle, produced by probing both
+ * environments with the same command (see `env-probe.ts`). Either side may be unknown.
+ */
+export interface SandboxEnvironmentTransition {
+  from?: string | null
+  to?: string | null
+}
+
+function formatTransitionLine(
+  transition: SandboxEnvironmentTransition | undefined,
+  fromLabel: string,
+  toLabel: string,
+): string | null {
+  const from = transition?.from?.trim()
+  const to = transition?.to?.trim()
+  if (!from && !to) return null
+  return `[Sandbox] Environment changed: ${from ? `${fromLabel} (${from})` : `${fromLabel} (unknown)`} -> ${to ? `${toLabel} (${to})` : `${toLabel} (unknown)`}.`
+}
+
+/**
+ * The container note, led by the concrete host -> container environment change when both sides
+ * could be probed. Falls back to `SANDBOX_CONTEXT_NOTE` verbatim when neither is known, so an
+ * unprobeable environment never degrades the guidance itself.
+ */
+export function buildSandboxContextNote(transition?: SandboxEnvironmentTransition): string {
+  const line = formatTransitionLine(transition, 'host', 'container')
+  return line ? `${line}\n${SANDBOX_CONTEXT_NOTE}` : SANDBOX_CONTEXT_NOTE
+}
+
+/** The host note, led by the concrete container -> host environment change. */
+export function buildSandboxOffNote(transition?: SandboxEnvironmentTransition): string {
+  const line = formatTransitionLine(transition, 'container', 'host')
+  return line ? `${line}\n${SANDBOX_OFF_NOTE}` : SANDBOX_OFF_NOTE
+}
 
 export interface SandboxLoopContextState {
   loopName: string
