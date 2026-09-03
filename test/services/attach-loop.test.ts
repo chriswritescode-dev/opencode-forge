@@ -626,4 +626,152 @@ describe('attachLoopToSession', () => {
     expect(row!.executionVariant).toBe('thinking-max')
     expect(row!.auditorVariant).toBe('audit-high')
   })
+
+  function makeResumeSnapshot(): import('../../src/loop/resume-snapshot').LoopResumeSnapshot {
+    return {
+      version: 1,
+      kind: 'plan',
+      phase: 'coding',
+      currentSectionIndex: 1,
+      totalSections: 3,
+      finalAuditDone: false,
+      sections: [
+        { sectionIndex: 0, title: 'Setup', content: 'Do setup', status: 'completed', attempts: 1, summaryDone: 'setup done', summaryDeviations: null, summaryFollowUps: null, startedAt: 100, completedAt: 200 },
+        { sectionIndex: 1, title: 'Build', content: 'Do build', status: 'in_progress', attempts: 2, summaryDone: null, summaryDeviations: null, summaryFollowUps: null, startedAt: 300, completedAt: null },
+        { sectionIndex: 2, title: 'Ship', content: 'Do ship', status: 'pending', attempts: 0, summaryDone: null, summaryDeviations: null, summaryFollowUps: null, startedAt: null, completedAt: null },
+      ],
+      findings: [
+        { file: 'a.ts', line: 10, severity: 'bug', description: 'broken thing', scenario: 'when X', sectionIndex: 1 },
+      ],
+    }
+  }
+
+  test('attaches a migrated loop from a resume snapshot', async () => {
+    const { deps, loopsRepo, sectionPlansRepo, promptAsyncMock } = buildDeps()
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const snapshot = makeResumeSnapshot()
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_resume',
+        workspaceId: 'ws_resume',
+        worktreeDir: '/tmp/wt/resume',
+        loopName: 'moved',
+        displayName: 'Moved Loop',
+        executionName: 'moved',
+        hostSessionId: 'host-sess',
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        maxIterations: 40,
+        sandboxEnabled: false,
+        planText: '# Stale plan text',
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+        sendInitialPrompt: false,
+        resume: snapshot,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    // Loop row persists the snapshot's phase pointers.
+    const row = loopsRepo.get(PROJECT_ID, 'moved')
+    expect(row).not.toBeNull()
+    expect(row!.phase).toBe('coding')
+    expect(row!.currentSectionIndex).toBe(1)
+    expect(row!.totalSections).toBe(3)
+    expect(row!.finalAuditDone).toBe(0)
+    expect(row!.status).toBe('running')
+
+    // Section rows match the snapshot exactly; section 1 stays in_progress
+    // (no applyPlanDecomposition reset to index 0).
+    const sections = sectionPlansRepo.list(PROJECT_ID, 'moved')
+    expect(sections).toHaveLength(3)
+    const byIndex = new Map(sections.map((s) => [s.sectionIndex, s]))
+    expect(byIndex.get(0)!.status).toBe('completed')
+    expect(byIndex.get(1)!.status).toBe('in_progress')
+    expect(byIndex.get(1)!.attempts).toBe(2)
+    expect(byIndex.get(2)!.status).toBe('pending')
+    expect(byIndex.get(1)!.content).toBe('Do build')
+
+    // Findings were restored for the loop.
+    const findings = reviewFindingsRepo.listByLoopName(PROJECT_ID, 'moved')
+    expect(findings).toHaveLength(1)
+    expect(findings[0].file).toBe('a.ts')
+    expect(findings[0].sectionIndex).toBe(1)
+
+    // No initial prompt is sent.
+    expect(promptAsyncMock).not.toHaveBeenCalled()
+
+    // In-memory state reflects the snapshot too.
+    const state = (deps.loop.service as any).getActiveState('moved')
+    expect(state).not.toBeNull()
+    expect(state!.phase).toBe('coding')
+    expect(state!.currentSectionIndex).toBe(1)
+    expect(state!.totalSections).toBe(3)
+    expect(state!.prompt).toBe('# Stale plan text')
+  })
+
+  test('resume attach with sendInitialPrompt sends the resume prompt for the snapshot phase', async () => {
+    const { deps, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const snapshot: import('../../src/loop/resume-snapshot').LoopResumeSnapshot = {
+      version: 1,
+      kind: 'plan',
+      phase: 'final_auditing',
+      currentSectionIndex: 2,
+      totalSections: 3,
+      finalAuditDone: false,
+      sections: [
+        { sectionIndex: 0, title: 'Setup', content: 'Do setup', status: 'completed', attempts: 1, summaryDone: 'setup done', summaryDeviations: null, summaryFollowUps: null, startedAt: 100, completedAt: 200 },
+        { sectionIndex: 1, title: 'Build', content: 'Do build', status: 'completed', attempts: 1, summaryDone: 'build done', summaryDeviations: null, summaryFollowUps: null, startedAt: 300, completedAt: 400 },
+        { sectionIndex: 2, title: 'Ship', content: 'Do ship', status: 'completed', attempts: 1, summaryDone: 'ship done', summaryDeviations: null, summaryFollowUps: null, startedAt: 500, completedAt: 600 },
+      ],
+      findings: [],
+    }
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_resume_audit',
+        workspaceId: 'ws_resume_audit',
+        worktreeDir: '/tmp/wt/resume-audit',
+        loopName: 'moved-audit',
+        displayName: 'Moved Audit Loop',
+        executionName: 'moved-audit',
+        hostSessionId: 'host-sess',
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        maxIterations: 40,
+        sandboxEnabled: false,
+        planText: '# Plan text',
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+        sendInitialPrompt: true,
+        resume: snapshot,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const state = (deps.loop.service as any).getActiveState('moved-audit')
+    expect(state).not.toBeNull()
+    expect(state!.phase).toBe('final_auditing')
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    expect(promptCallArgs.agent).toBe('auditor-loop')
+    const expectedPrompt = deps.loop.service.buildFinalAuditPrompt(state)
+    expect(promptCallArgs.parts[0].text).toBe(expectedPrompt)
+  })
 })

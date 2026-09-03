@@ -1311,6 +1311,189 @@ describe('createForgeSessionAttachHook', () => {
     expect(mockAttachLoop).not.toHaveBeenCalled()
   })
 
+  test('chat.message fallback forwards resume snapshot without stored-plan lookup', async () => {
+    const resume = {
+      version: 1 as const,
+      kind: 'goal' as const,
+      goal: 'ship it',
+      phase: 'coding' as const,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      sections: [],
+      findings: [],
+    }
+    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'SHOULD_NOT_BE_USED' })
+    const deps = buildHookDeps({
+      sessionGet: vi.fn().mockResolvedValue({
+        id: 'new_sess',
+        workspaceID: 'ws_resume',
+        directory: '/tmp/wt/resume',
+        projectID: 'proj_1',
+      }),
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_resume',
+          type: 'forge',
+          directory: '/tmp/wt/resume',
+          extra: {
+            loopName: 'resume-loop',
+            projectDirectory: '/tmp/wt/resume',
+            forgeLoop: {
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
+              planSource: 'inline',
+              planText: '',
+              maxIterations: 12,
+              resume,
+            },
+          },
+        },
+      ]),
+      plansRepoGetForSession,
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.resume).toEqual(resume)
+    expect(input.maxIterations).toBe(12)
+    expect(input.planText).toBe('')
+    expect(input.sendInitialPrompt).toBe(false)
+    expect(plansRepoGetForSession).not.toHaveBeenCalled()
+  })
+
+  test('chat.message fallback removes workspace and publishes toast when resume snapshot is invalid', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const loggerErrorSpy = vi.fn()
+    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'SHOULD_NOT_BE_USED' })
+    const deps = buildHookDeps({
+      sessionGet: vi.fn().mockResolvedValue({
+        id: 'new_sess',
+        workspaceID: 'ws_bad_resume',
+        directory: '/tmp/wt/bad-resume',
+        projectID: 'proj_1',
+      }),
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_bad_resume',
+          type: 'forge',
+          directory: '/tmp/wt/bad-resume',
+          extra: {
+            loopName: 'bad-resume-loop',
+            projectDirectory: '/tmp/wt/bad-resume',
+            forgeLoop: {
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
+              planSource: 'inline',
+              planText: '',
+              maxIterations: 12,
+              resume: { version: 2 },
+            },
+          },
+        },
+      ]),
+      plansRepoGetForSession,
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+      workspaceRemove,
+      tuiPublish,
+      loggerErrorSpy,
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(plansRepoGetForSession).not.toHaveBeenCalled()
+    expect(loggerErrorSpy).toHaveBeenCalledWith(expect.stringContaining('invalid resume snapshot'))
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_bad_resume' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'bad-resume-loop',
+      expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/tmp/wt/bad-resume',
+      body: expect.objectContaining({
+        type: 'tui.toast.show',
+        properties: expect.objectContaining({
+          title: 'Forge loop "bad-resume-loop"',
+          message: expect.stringContaining('Migrated loop snapshot is invalid'),
+          variant: 'error',
+        }),
+      }),
+    }))
+  })
+
+  test('terminal restartable toast mentions remote server when terminationReason kind is migrated', async () => {
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const loopsRepoGetMock = vi.fn().mockReturnValue({
+      projectId: 'proj_1',
+      loopName: 'migrated-row-loop',
+      status: 'cancelled',
+      terminationReason: 'migrated: https://remote.example.com',
+    })
+    const deps = buildHookDeps({
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_migrated_row',
+          type: 'forge',
+          directory: '/tmp/wt/migrated-row',
+          extra: {
+            loopName: 'migrated-row-loop',
+            projectDirectory: '/tmp/wt/migrated-row',
+            forgeLoop: {
+              title: 'Migrated Row',
+              planSource: 'inline',
+              planText: '# Plan',
+            },
+          },
+        },
+      ]),
+      loopsRepoGet: loopsRepoGetMock,
+      workspaceRemove,
+      tuiPublish,
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'sess_migrated_row', workspaceID: 'ws_migrated_row' },
+        },
+      },
+    })
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_migrated_row' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'migrated-row-loop',
+      expect.objectContaining({ doRemoveWorktree: false, doCommit: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({
+          message: expect.stringContaining('was migrated to remote "https://remote.example.com"'),
+        }),
+      }),
+    }))
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({
+          message: expect.stringContaining('loop-status restart=true force=true'),
+        }),
+      }),
+    }))
+  })
+
   test('attach hook prefers inline planText over stored plan when both are available', async () => {
     const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'STALE_PRIOR_PLAN_TEXT' })
     const deps = buildHookDeps({

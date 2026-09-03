@@ -606,6 +606,7 @@ describe('Loop Section Advancement', () => {
           return { ...ok }
         },
         isPathTracked: () => false,
+        pushAsync: async () => ({ ...ok }),
       } as unknown as import('../../src/utils/git-service').GitService
       return { git, commits }
     }

@@ -11,6 +11,7 @@ export type RestartBlockedReason =
   | 'completed'
   | 'missing_worktree'
   | 'active_requires_force'
+  | 'migrated'
 
 export interface RestartabilityResult {
   restartable: boolean
@@ -59,6 +60,14 @@ export function getRestartability(
         restartRequiresForce: false,
         restartBlockedReason: 'completed',
         restartBlockedMessage: `Loop "${state.loopName}" completed successfully and cannot be restarted.`,
+      }
+    }
+    if (parsed.kind === 'migrated') {
+      return {
+        restartable: true,
+        restartRequiresForce: true,
+        restartBlockedReason: 'migrated',
+        restartBlockedMessage: `Loop "${state.loopName}" was migrated to remote "${parsed.message}". A copy may be running there; use force=true to restart it locally anyway.`,
       }
     }
   }

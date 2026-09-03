@@ -19,6 +19,9 @@ export function createFakeGitService(overrides?: Partial<GitService>): GitServic
     revParseRef: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
     commitExists: vi.fn<[string, string], boolean>(() => false),
     push: vi.fn<[string, string, string, boolean], GitResult>(() => ({ ...defaultOk })),
+    pushAsync: vi.fn<[string, string, string, boolean], Promise<GitResult>>(async function (this: { push: (cwd: string, remote: string, refspec: string, force: boolean) => GitResult }, cwd, remote, refspec, force) {
+      return this.push(cwd, remote, refspec, force)
+    }),
     fetchRef: vi.fn<[string, string, string], GitResult>(() => ({ ...defaultOk })),
     worktreeAdd: vi.fn<[string, string, string, boolean, string?], GitResult>(() => ({ ...defaultOk })),
     worktreeList: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),

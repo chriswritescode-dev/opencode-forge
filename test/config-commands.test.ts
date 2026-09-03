@@ -62,6 +62,12 @@ describe('createConfigHandler commands', () => {
     expect(loopCancel).toBeDefined()
     expect(loopCancel.template).toContain('Identify the Loop')
     expect(loopCancel.agent).toBe('code')
+
+    const loopMigrate = commands['loop-migrate']
+    expect(loopMigrate).toBeDefined()
+    expect(loopMigrate.template).toContain('Identify the Loop')
+    expect(loopMigrate.agent).toBe('code')
+    expect(loopMigrate.subtask).toBe(false)
   })
 
   test('user command template overrides via promptsDir', async () => {

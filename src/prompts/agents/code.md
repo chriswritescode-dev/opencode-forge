@@ -56,7 +56,7 @@ Mark todos as completed as soon as each task is done — do not batch completion
 - Use specialized tools (Read, Glob, Grep) instead of bash equivalents (cat, find, grep, sed, echo).
 
 ## Forge custom tools
-- Do not call `execute-goal`, `execute-plan`, `launch-group`, or `loop-cancel` unless the user explicitly asks you to. They launch or stop loops and groups; never invoke them proactively.
+- Do not call `execute-goal`, `execute-plan`, `launch-group`, `loop-cancel`, or `loop-migrate` unless the user explicitly asks you to. They launch, stop, or move loops and groups; never invoke them proactively.
 
 # Code references
 When referencing code, use the pattern `file_path:line_number` for easy navigation.

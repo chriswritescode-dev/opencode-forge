@@ -1,4 +1,6 @@
 import { spawnSync } from 'child_process'
+import { runCommand } from '../sandbox/process'
+import type { Logger } from '../types'
 
 export interface GitResult {
   ok: boolean
@@ -24,6 +26,12 @@ export interface GitService {
   revParseRef(cwd: string, ref: string): GitResult
   commitExists(cwd: string, sha: string): boolean
   push(cwd: string, remote: string, refspec: string, force: boolean): GitResult
+  /**
+   * Async, non-blocking counterpart of {@link push} for network pushes. Runs
+   * through the shared child-process spawner so the opencode server event loop
+   * is never blocked by a slow remote.
+   */
+  pushAsync(cwd: string, remote: string, refspec: string, force: boolean): Promise<GitResult>
   fetchRef(cwd: string, remote: string, ref: string): GitResult
   worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult
   worktreeList(cwd: string): GitResult
@@ -47,6 +55,24 @@ function runGit(args: string[], cwd: string): GitResult {
   const res = spawnSync('git', [...HOOKS_DISABLED_ARGS, ...args], { cwd, encoding: 'utf-8' })
   if (res.error) return { ok: false, status: -1, stdout: '', stderr: res.error.message }
   return { ok: res.status === 0, status: res.status ?? -1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+}
+
+const quietLogger: Logger = {
+  log: () => {},
+  error: () => {},
+  debug: () => {},
+}
+
+const GIT_PUSH_ASYNC_TIMEOUT_MS = 120000
+
+async function runGitAsync(args: string[], cwd: string): Promise<GitResult> {
+  const res = await runCommand('git', [...HOOKS_DISABLED_ARGS, ...args], {
+    cwd,
+    logger: quietLogger,
+    logLabel: 'git',
+    timeout: GIT_PUSH_ASYNC_TIMEOUT_MS,
+  })
+  return { ok: res.exitCode === 0, status: res.exitCode, stdout: res.stdout, stderr: res.stderr }
 }
 
 export function createGitService(): GitService {
@@ -110,6 +136,11 @@ export function createGitService(): GitService {
     push(cwd: string, remote: string, refspec: string, force: boolean): GitResult {
       const args = force ? ['push', '--force', remote, refspec] : ['push', remote, refspec]
       return runGit(args, cwd)
+    },
+
+    async pushAsync(cwd: string, remote: string, refspec: string, force: boolean): Promise<GitResult> {
+      const args = force ? ['push', '--force', remote, refspec] : ['push', remote, refspec]
+      return runGitAsync(args, cwd)
     },
 
     fetchRef(cwd: string, remote: string, ref: string): GitResult {

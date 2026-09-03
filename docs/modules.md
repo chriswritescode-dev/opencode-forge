@@ -145,6 +145,8 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
+| `resume-prompt.ts` | `buildResumePromptPlan()` — single owner of restart/migration prompt selection (post_action → goal → final_audit_fix → sectioned/legacy chain) |
+| `resume-snapshot.ts` | `captureLoopResumeSnapshot()` / `restoreLoopResumeRows()` — portable snapshot of loop progress carried across restarts and remote migration |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
 | `name-uniqueness.ts` | Reserve a unique loop identity before any side effects |
 | `session-output.ts` | Fetch session output for loop display |
@@ -174,6 +176,8 @@ type TerminationReason =
   | { kind: 'coding_no_assistant' }
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
+  | { kind: 'provider_limit'; message: string }
+  | { kind: 'migrated'; message: string }
 ```
 
 ### Public API
@@ -240,6 +244,8 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | File | Purpose |
 |------|---------|
 | `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`) |
+| `execution-response.ts` | Shared `ok`/`fail` response builders and error/warning shapes for the command bus |
+| `loop-migration.ts` | `migrateLoopToRemote()` — `loop.migrate` command handler: freeze as migrated, snapshot, push loop branch tip to the sync ref, launch on the remote |
 | `session-loop-resolver.ts` | Resolve which loop owns a given session |
 | `deterministic-decomposer.ts` | Slice a plan into milestones (`section_plans` rows) deterministically — called once at loop start by `execution.ts`, not a runtime loop phase |
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
@@ -385,6 +391,7 @@ Implements tools callable by AI agents during conversations.
 | `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
 | `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
+| `loop-migrate` | `loop.ts` | Move a worktree-backed, non-group loop to a configured remote server, carrying phase, section rows, and findings as a resume snapshot; the local loop is marked `migrated` (force-restartable) |
 
 ### ToolContext
 
@@ -450,7 +457,7 @@ Cross-cutting helpers (~25 files) organized by concern:
 | Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts` | Loop model/format/session helpers |
 | Sessions | `audit-session.ts`, `session-titles.ts` | Session naming |
 | TUI | `tui-client.ts`, `tui-plan-store.ts`, `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI RPC, storage, preferences, models |
-| Remote | `remote-config.ts`, `tui-remote-launch.ts` | Remote server config resolution and remote loop launch (see also `createRemoteForgeClient` in `client/sdk-adapter.ts`) |
+| Remote | `remote-config.ts`, `tui-remote-launch.ts` | Remote server config resolution and remote loop launch: `connectRemoteProject`, `prepareRemoteLoopLaunch`, `pushAndLaunchRemoteLoop`, and the async `pushForgeSyncRef`/`deleteForgeSyncRef` sync-ref owners shared by TUI launch, `loop-migrate`, and the forge adapter's teardown (see also `createRemoteForgeClient` in `client/sdk-adapter.ts`) |
 | Workspace | `worktree-cleanup.ts`, `workspace-listing.ts`, `workspace-status-registry.ts` | Worktree/workspace lifecycle |
 | Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `sandbox-ready.ts`, `format.ts` | Various helpers |
 

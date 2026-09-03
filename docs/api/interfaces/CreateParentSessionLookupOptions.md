@@ -6,7 +6,7 @@
 
 # Interface: CreateParentSessionLookupOptions
 
-Defined in: [index.ts:53](https://github.com/chriswritescode-dev/opencode-forge/blob/dc0dfab121ce8e8b3901dbd0f2cb4632f5f3e52c/src/index.ts#L53)
+Defined in: [index.ts:53](https://github.com/chriswritescode-dev/opencode-forge/blob/de5f48e9cdfb630dd2d5275361e34f2dbbea5aa1/src/index.ts#L53)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [index.ts:53](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **client**: `ForgeClient`
 
-Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/blob/dc0dfab121ce8e8b3901dbd0f2cb4632f5f3e52c/src/index.ts#L54)
+Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/blob/de5f48e9cdfb630dd2d5275361e34f2dbbea5aa1/src/index.ts#L54)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **directory**: `string`
 
-Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/blob/dc0dfab121ce8e8b3901dbd0f2cb4632f5f3e52c/src/index.ts#L55)
+Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/blob/de5f48e9cdfb630dd2d5275361e34f2dbbea5aa1/src/index.ts#L55)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **logger**: `object`
 
-Defined in: [index.ts:57](https://github.com/chriswritescode-dev/opencode-forge/blob/dc0dfab121ce8e8b3901dbd0f2cb4632f5f3e52c/src/index.ts#L57)
+Defined in: [index.ts:57](https://github.com/chriswritescode-dev/opencode-forge/blob/de5f48e9cdfb630dd2d5275361e34f2dbbea5aa1/src/index.ts#L57)
 
 #### debug
 
@@ -92,4 +92,4 @@ Defined in: [index.ts:57](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **loop**: `Loop`
 
-Defined in: [index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/blob/dc0dfab121ce8e8b3901dbd0f2cb4632f5f3e52c/src/index.ts#L56)
+Defined in: [index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/blob/de5f48e9cdfb630dd2d5275361e34f2dbbea5aa1/src/index.ts#L56)

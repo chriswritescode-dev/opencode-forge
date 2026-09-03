@@ -41,6 +41,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'question',           pattern: '*', action: 'deny' },
       { permission: 'loop-cancel',        pattern: '*', action: 'deny' },
       { permission: 'loop-status',        pattern: '*', action: 'deny' },
+      { permission: 'loop-migrate',       pattern: '*', action: 'deny' },
       { permission: 'launch-group',       pattern: '*', action: 'deny' },
       { permission: 'group-status',       pattern: '*', action: 'deny' },
       { permission: 'group-cancel',       pattern: '*', action: 'deny' },
@@ -131,6 +132,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'question' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'loop-migrate' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     // Plan-authoring tools: auditor's sanctioned path is plan-adjust, never plan-write/plan-edit.
     expect(rules.some(r => r.permission === 'plan-write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan-edit' && r.pattern === '*' && r.action === 'deny')).toBe(true)

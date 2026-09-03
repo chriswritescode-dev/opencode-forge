@@ -27,6 +27,7 @@ export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
   'question',
   'loop-cancel',
   'loop-status',
+  'loop-migrate',
   'launch-group',
   'group-status',
   'group-cancel',
@@ -266,6 +267,20 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
   rules.push(...denyRulesFor([...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS]))
 
   return rules
+}
+
+/**
+ * Selects the permission ruleset for a session from the agent that will run it:
+ * the audit ruleset for `auditor-loop`, the loop ruleset for every other agent.
+ * Single derivation so restart, TUI launch, and audit sessions cannot diverge.
+ */
+export function buildSessionPermissionRulesetForAgent(
+  agent: 'code' | 'auditor-loop',
+  options: LoopPermissionRulesetOptions = {},
+): PermissionRule[] {
+  return agent === 'auditor-loop'
+    ? buildAuditSessionPermissionRuleset(options)
+    : buildLoopPermissionRuleset(options)
 }
 
 /**

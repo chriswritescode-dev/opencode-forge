@@ -6,6 +6,7 @@ import { formatSessionOutput, formatAuditResult, formatCompletionSummary, format
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES, type LoopState } from '../loop'
 import { formatDuration, computeElapsedSeconds, resolveUsageFallbackModelLabel, buildAuditorModelChain, auditorModelChoiceAt, usageRoleForPhase } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
+import type { ForgeExecutionError } from '../services/execution-response'
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { getRestartability } from '../loop/restartability'
@@ -51,6 +52,13 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     return null
   }
 
+  function formatExecutionError(error: ForgeExecutionError): string {
+    if (error.candidates?.length) {
+      return `${error.message}\n${error.candidates.map((c) => `- ${c}`).join('\n')}`
+    }
+    return error.message
+  }
+
   function makeService(sourceSessionId?: string) {
     const execCtx: ForgeExecutionRequestContext = {
       surface: 'tool',
@@ -71,6 +79,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
       sectionPlansRepo: ctx.sectionPlansRepo,
+      reviewFindingsRepo: ctx.reviewFindingsRepo,
+      featureGroupsRepo: ctx.featureGroupsRepo,
       loopSessionUsageRepo: ctx.loopSessionUsageRepo,
       workspaceStatusRegistry: ctx.workspaceStatusRegistry,
       pendingTeardowns: ctx.pendingTeardowns,
@@ -267,9 +277,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           selector: args.name ? { kind: 'partial', name: args.name } : { kind: 'only-active' },
         })
         if (!result.ok) {
-          const candidates = result.error.candidates
-          if (candidates?.length) return `${result.error.message}\n${candidates.map(c => `- ${c}`).join('\n')}`
-          return result.error.message
+          return formatExecutionError(result.error)
         }
         const d = result.data
         const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
@@ -298,10 +306,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             force: args.force,
           })
           if (!result.ok) {
-            const label = result.error.code === 'not_found' ? 'Available loops' : 'Matches'
-            const candidates = result.error.candidates
-            if (candidates?.length) return `${result.error.message}\n\n${label}:\n${candidates.map(c => `- ${c}`).join('\n')}`
-            return result.error.message
+            return formatExecutionError(result.error)
           }
           const d = result.data
           const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
@@ -622,6 +627,41 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         )
 
         return statusLines.join('\n')
+      },
+    }),
+
+    'loop-migrate': tool({
+      description: 'Move a worktree-backed, non-group loop to a configured remote opencode server, preserving its phase, section progress, section summaries and review findings. Stops the local loop as migrated (restartable locally only with force=true) and starts it on the remote from the pushed loop branch.',
+      args: {
+        name: z.string().describe('Loop name (or branch) to migrate'),
+        remote: z.string().describe('Configured remotes[].name to migrate to'),
+      },
+      execute: async (args) => {
+        const { service, execCtx } = makeService()
+        const result = await service.dispatch(execCtx, {
+          type: 'loop.migrate',
+          selector: { kind: 'partial', name: args.name },
+          remoteName: args.remote,
+        })
+        if (!result.ok) {
+          return formatExecutionError(result.error)
+        }
+        const d = result.data
+        const lines: string[] = [
+          `Migrated loop "${d.loopName}" to ${d.remoteName}`,
+          '',
+          `Remote loop: ${d.remoteLoopName}`,
+          `Remote session: ${d.remoteSessionId}`,
+          d.totalSections > 0
+            ? `Resumed at: phase ${d.phase}, section ${d.currentSectionIndex + 1}/${d.totalSections}`
+            : `Resumed at: phase ${d.phase}`,
+          `Pinned commit: ${d.startRef.slice(0, 7)} (${d.syncRef})`,
+        ]
+        for (const warning of result.warnings ?? []) {
+          lines.push(`Warning: ${warning.message}`)
+        }
+        lines.push('', 'The local loop is stopped as migrated; manage it with loop-status on the remote server. Restart it locally only with loop-status restart=true force=true.')
+        return lines.join('\n')
       },
     }),
 

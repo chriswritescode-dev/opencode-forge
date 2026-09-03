@@ -62,6 +62,8 @@ export interface LoopService {
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
   listRecent(): LoopState[]
+  /** All loop names for the project (any status) without hydrating plans. */
+  listLoopNames(): string[]
   findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
@@ -303,6 +305,10 @@ export function createLoopService(
       const large = loopsRepo.getLarge(projectId, row.loopName)
       return hydratePlanFromPlans(loopRowToState(row, large))
     })
+  }
+
+  function listLoopNames(): string[] {
+    return loopsRepo.listLoopNames(projectId)
   }
 
   function findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] } {
@@ -870,6 +876,7 @@ export function createLoopService(
     buildAuditPrompt,
     listActive,
     listRecent,
+    listLoopNames,
     findMatchByName,
     getStallTimeoutMs,
     getMaxConsecutiveStalls,

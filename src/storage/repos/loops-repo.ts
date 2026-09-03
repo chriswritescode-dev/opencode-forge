@@ -55,6 +55,7 @@ export interface LoopsRepo {
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
   listAll(projectId: string): LoopRow[]
+  listLoopNames(projectId: string): string[]
   updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
@@ -264,6 +265,13 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     FROM loops
     WHERE project_id = ? AND status IN
   `
+
+  const listLoopNamesStmt = db.prepare(`
+    SELECT loop_name
+    FROM loops
+    WHERE project_id = ?
+    ORDER BY started_at DESC
+  `)
 
   const updatePhaseStmt = db.prepare(`
     UPDATE loops SET phase = ? WHERE project_id = ? AND loop_name = ?
@@ -543,6 +551,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     listAll(projectId: string): LoopRow[] {
       const allStatuses: LoopRow['status'][] = ['running', 'completed', 'cancelled', 'errored', 'stalled']
       return this.listByStatus(projectId, allStatuses)
+    },
+
+    listLoopNames(projectId: string): string[] {
+      const rows = listLoopNamesStmt.all(projectId) as { loop_name: string }[]
+      return rows.map((row) => row.loop_name)
     },
 
     updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void {

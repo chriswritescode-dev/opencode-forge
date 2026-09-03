@@ -16,6 +16,7 @@ export type TerminationReason =
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
   | { kind: 'provider_limit'; message: string }
+  | { kind: 'migrated'; message: string }
 
 export function terminationStatusFor(reason: TerminationReason): TerminationStatus {
   switch (reason.kind) {
@@ -24,6 +25,7 @@ export function terminationStatusFor(reason: TerminationReason): TerminationStat
     case 'cancelled':
     case 'user_aborted':
     case 'shutdown':
+    case 'migrated':
       return 'cancelled'
     case 'stall_timeout':
       return 'stalled'
@@ -40,6 +42,8 @@ export function terminationReasonToString(reason: TerminationReason): string {
       return `error_max_retries: ${reason.message}`
     case 'provider_limit':
       return `provider_limit: ${reason.message}`
+    case 'migrated':
+      return `migrated: ${reason.message}`
     default:
       return reason.kind
   }
@@ -53,6 +57,7 @@ export function parseTerminationReasonString(str: string): TerminationReason {
     if (prefix === 'worktree_failed') return { kind: 'worktree_failed', message }
     if (prefix === 'error_max_retries') return { kind: 'error_max_retries', message }
     if (prefix === 'provider_limit') return { kind: 'provider_limit', message }
+    if (prefix === 'migrated') return { kind: 'migrated', message }
   }
 
   // For simple kinds without messages

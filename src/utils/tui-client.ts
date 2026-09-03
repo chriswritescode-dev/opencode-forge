@@ -13,7 +13,7 @@ import { deriveExecutionPreferencesFromWorkspaces } from './tui-execution-prefer
 import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
-import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
+import { buildSessionPermissionRulesetForAgent, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
 import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
@@ -248,6 +248,13 @@ function buildTuiLoopInitialPrompt(planText: string): string {
   })
 }
 
+export interface LaunchInitialPrompt {
+  text: string
+  agent: 'code' | 'auditor-loop'
+  model?: { providerID: string; modelID: string }
+  variant?: string
+}
+
 export interface LaunchTuiLoopOptions {
   client: ForgeClient
   directory: string | undefined
@@ -262,6 +269,13 @@ export interface LaunchTuiLoopOptions {
   loopNameReserved?: boolean
   title: string
   plan: string
+  /**
+   * Phase-appropriate override for the first prompt of the launched loop.
+   * When present, `session.create` receives the matching agent's ruleset and
+   * `promptAsync` sends exactly this text/agent/model/variant. When absent,
+   * the deterministic section-0 prompt with the `code` agent is sent.
+   */
+  initialPrompt?: LaunchInitialPrompt
   executionModel?: string
   auditorModel?: string
   executionVariant?: string
@@ -345,22 +359,27 @@ export async function launchTuiLoop(
     }
 
     const parsedModel = parseModelString(opts.executionModel)
-    const permission = buildLoopPermissionRuleset(opts.permissionOptions)
+    const initial: LaunchInitialPrompt = opts.initialPrompt ?? {
+      text: buildTuiLoopInitialPrompt(opts.plan),
+      agent: 'code',
+      model: parsedModel,
+      variant: opts.executionVariant,
+    }
+    const permission = buildSessionPermissionRulesetForAgent(initial.agent, opts.permissionOptions)
     const session = await opts.client.session.create({
       workspaceID: workspace.id,
       title: loopName,
       directory: workspace.directory ?? undefined,
       permission,
     })
-    const promptText = buildTuiLoopInitialPrompt(opts.plan)
 
     const promptInput = {
       sessionID: session.id,
       directory: workspace.directory ?? undefined,
       workspace: workspace.id,
-      agent: 'code' as const,
-      parts: [{ type: 'text' as const, text: promptText }],
-      ...buildPromptModelSelection(parsedModel, opts.executionVariant),
+      agent: initial.agent,
+      parts: [{ type: 'text' as const, text: initial.text }],
+      ...buildPromptModelSelection(initial.model, initial.variant),
     }
     try {
       await opts.client.session.promptAsync(promptInput)
@@ -383,6 +402,7 @@ export async function launchTuiLoop(
     }
   } catch (err) {
     debug(`launchTuiLoop: post-create flow failed error=${err instanceof Error ? err.message : String(err)}`)
+    await opts.client.workspace.remove({ id: workspace.id }).catch(() => undefined)
     return { error: `Loop launch failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
