@@ -27,6 +27,7 @@ export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
   'question',
   'loop-cancel',
   'loop-status',
+  'loop-migrate',
   'launch-group',
   'group-status',
   'group-cancel',

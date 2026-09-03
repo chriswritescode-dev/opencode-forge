@@ -71,6 +71,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
       sectionPlansRepo: ctx.sectionPlansRepo,
+      reviewFindingsRepo: ctx.reviewFindingsRepo,
       loopSessionUsageRepo: ctx.loopSessionUsageRepo,
       workspaceStatusRegistry: ctx.workspaceStatusRegistry,
       pendingTeardowns: ctx.pendingTeardowns,
@@ -622,6 +623,43 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         )
 
         return statusLines.join('\n')
+      },
+    }),
+
+    'loop-migrate': tool({
+      description: 'Move a loop to a configured remote opencode server, preserving its phase, section progress, section summaries and review findings. Stops the local loop as migrated (not restartable locally) and starts it on the remote from the pushed loop branch.',
+      args: {
+        name: z.string().describe('Loop name (or branch) to migrate'),
+        remote: z.string().describe('Configured remotes[].name to migrate to'),
+      },
+      execute: async (args) => {
+        const { service, execCtx } = makeService()
+        const result = await service.dispatch(execCtx, {
+          type: 'loop.migrate',
+          selector: { kind: 'partial', name: args.name },
+          remoteName: args.remote,
+        })
+        if (!result.ok) {
+          const candidates = result.error.candidates
+          if (candidates?.length) return `${result.error.message}\n${candidates.map(c => `- ${c}`).join('\n')}`
+          return result.error.message
+        }
+        const d = result.data
+        const lines: string[] = [
+          `Migrated loop "${d.loopName}" to ${d.remoteName}`,
+          '',
+          `Remote loop: ${d.remoteLoopName}`,
+          `Remote session: ${d.remoteSessionId}`,
+          d.totalSections > 0
+            ? `Resumed at: phase ${d.phase}, section ${d.currentSectionIndex + 1}/${d.totalSections}`
+            : `Resumed at: phase ${d.phase}`,
+          `Pinned commit: ${d.startRef.slice(0, 7)} (${d.syncRef})`,
+        ]
+        for (const warning of result.warnings ?? []) {
+          lines.push(`Warning: ${warning.message}`)
+        }
+        lines.push('', 'The local loop is stopped as migrated and cannot be restarted here; use loop-status on the remote server.')
+        return lines.join('\n')
       },
     }),
 

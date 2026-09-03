@@ -20,6 +20,7 @@ export function buildArchitectAutoAgent(promptsDir?: string): AgentDefinition {
         'group-cancel',
         'loop-status',
         'loop-cancel',
+        'loop-migrate',
       ],
     },
     systemPrompt: loadPrompt(['agents', 'architect-auto.md'], promptsDir),

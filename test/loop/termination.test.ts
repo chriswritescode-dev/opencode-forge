@@ -62,6 +62,10 @@ describe('terminationStatusFor', () => {
   it('maps provider_limit with message to errored', () => {
     expect(terminationStatusFor({ kind: 'provider_limit', message: 'usage limit hit' })).toBe('errored')
   })
+
+  it('maps migrated to cancelled', () => {
+    expect(terminationStatusFor({ kind: 'migrated', message: 'server1' })).toBe('cancelled')
+  })
 })
 
 describe('terminationReasonToString', () => {
@@ -123,11 +127,22 @@ describe('terminationReasonToString', () => {
     const reason: TerminationReason = { kind: 'provider_limit', message: 'usage limit hit' }
     expect(terminationReasonToString(reason)).toBe('provider_limit: usage limit hit')
   })
+
+  it('stringifies migrated with message', () => {
+    const reason: TerminationReason = { kind: 'migrated', message: 'server1' }
+    expect(terminationReasonToString(reason)).toBe('migrated: server1')
+  })
 })
 
 describe('parseTerminationReasonString', () => {
   it('round-trips provider_limit', () => {
     const reason: TerminationReason = { kind: 'provider_limit', message: 'usage limit hit' }
+    const str = terminationReasonToString(reason)
+    expect(parseTerminationReasonString(str)).toEqual(reason)
+  })
+
+  it('round-trips migrated', () => {
+    const reason: TerminationReason = { kind: 'migrated', message: 'server1' }
     const str = terminationReasonToString(reason)
     expect(parseTerminationReasonString(str)).toEqual(reason)
   })

@@ -132,7 +132,7 @@ describe('createConfigHandler', () => {
       expect(architectAutoPermission.question).toBe('deny')
       expect(architectAutoTools.question).toBe(false)
 
-      for (const tool of ['execute-plan', 'execute-goal', 'launch-group', 'group-status', 'group-cancel', 'loop-status', 'loop-cancel']) {
+      for (const tool of ['execute-plan', 'execute-goal', 'launch-group', 'group-status', 'group-cancel', 'loop-status', 'loop-cancel', 'loop-migrate']) {
         expect(architectTools[tool]).toBeUndefined()
         expect(architectPermission[tool]).toBeUndefined()
         expect(architectAutoTools[tool]).toBe(false)

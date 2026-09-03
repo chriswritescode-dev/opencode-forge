@@ -2,6 +2,7 @@ import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
 import type { ForgeExecutionServiceDeps, ForgeLoopExtra, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
+import { isLoopResumeSnapshot } from '../loop/resume-snapshot'
 import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
@@ -114,9 +115,7 @@ async function attachForgeSession(
       return
     }
 
-    const cfg = (ws.extra ?? {}).forgeLoop as
-      | (Partial<ForgeLoopExtra> & { maxIterations?: number })
-      | undefined
+    const cfg = (ws.extra ?? {}).forgeLoop as Partial<ForgeLoopExtra> | undefined
 
     if (cfg?.initialPromptOwner === 'tui' && sendInitialPrompt) {
       deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=tui-owned-initial-prompt`)
@@ -241,26 +240,31 @@ async function attachForgeSession(
       ? cfg.hostSessionId
       : sessionId
 
-    const planSource: PlanSource =
-      cfg.planSource === 'inline' && cfg.planText
-        ? { kind: 'inline', planText: cfg.planText }
-        : { kind: 'stored', sessionId: resolvedHostSessionId }
+    const resume = isLoopResumeSnapshot(cfg.resume) ? cfg.resume : undefined
 
     let planText: string
-    if (planSource.kind === 'inline') {
-      planText = planSource.planText
+    if (resume !== undefined) {
+      planText = cfg.planText ?? ''
     } else {
-      const row = deps.execDeps.plansRepo.getForSession(sessionProjectId, planSource.sessionId)
-      if (!row) {
-        deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${loopName} workspace=${workspaceId}`)
-        publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
-        await removeForgeWorkspaceWithContext(
-          { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
-        )
-        return
+      const planSource: PlanSource =
+        cfg.planSource === 'inline' && cfg.planText
+          ? { kind: 'inline', planText: cfg.planText }
+          : { kind: 'stored', sessionId: resolvedHostSessionId }
+      if (planSource.kind === 'inline') {
+        planText = planSource.planText
+      } else {
+        const row = deps.execDeps.plansRepo.getForSession(sessionProjectId, planSource.sessionId)
+        if (!row) {
+          deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${loopName} workspace=${workspaceId}`)
+          publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
+          await removeForgeWorkspaceWithContext(
+            { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
+          )
+          return
+        }
+        planText = row.content
       }
-      planText = row.content
     }
 
     try {
@@ -285,6 +289,7 @@ async function attachForgeSession(
           sandboxEnabled: sandbox.enabled,
           sandboxContainer: sandbox.containerName,
           planText,
+          resume,
           selectSession,
           selectSessionTiming: 'after-prompt',
           startWatchdog: true,

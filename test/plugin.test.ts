@@ -161,6 +161,7 @@ describe('createForgePlugin', () => {
     expect(hooks.tool?.['execute-goal']).toBeDefined()
     expect(hooks.tool?.['loop-cancel']).toBeDefined()
     expect(hooks.tool?.['loop-status']).toBeDefined()
+    expect(hooks.tool?.['loop-migrate']).toBeDefined()
   })
 
   test('Plugin does NOT register shadow glob or grep tools', async () => {

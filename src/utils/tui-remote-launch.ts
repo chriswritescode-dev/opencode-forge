@@ -1,5 +1,5 @@
-import { resolveRemoteServer, listRemoteNames, forgeSyncRef } from './remote-config'
-import { defaultGitService, type GitService } from './git-service'
+import { resolveRemoteServer, listRemoteNames, forgeSyncRef, type ResolvedRemoteServer } from './remote-config'
+import { defaultGitService, type GitService, type GitResult } from './git-service'
 import { createRemoteForgeClient, type RemoteClientOptions } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
@@ -38,15 +38,29 @@ export type RemoteLaunchResult =
   | { loopName: string; sessionId: string; remoteName: string }
   | { error: string }
 
-export async function executeRemoteLoop(
-  req: RemoteLoopRequest,
-  deps: RemoteLaunchDeps,
-): Promise<RemoteLaunchResult> {
-  const debug = deps.debug ?? (() => {})
-  const git = deps.git ?? defaultGitService
-  const createClient = deps.createClient ?? createRemoteForgeClient
+export type ConnectRemoteProjectResult =
+  | { remote: ResolvedRemoteServer; project: { id: string; worktree: string }; client: ForgeClient }
+  | { error: string }
 
-  debug(`remote-launch: start remote="${req.remoteName}" dir="${req.localDirectory}" projectId="${req.localProjectId}" loop="${req.loopName}"`)
+export interface ConnectRemoteProjectDeps
+  extends Pick<RemoteLaunchDeps, 'config' | 'createClient' | 'debug'> {
+  /**
+   * Local preflight gate (e.g. git checks) run after the remote is resolved
+   * but before any network call, so a caller can keep its error precedence.
+   */
+  beforeDiscovery?: () => { error: string } | void
+}
+
+/**
+ * Shared remote-connection steps: resolve the configured remote server,
+ * discover the remote project matching the local OpenCode project id, and
+ * create the scoped client for the matched worktree.
+ */
+export async function connectRemoteProject(
+  req: { remoteName: string; localProjectId: string; localDirectory?: string },
+  deps: ConnectRemoteProjectDeps,
+): Promise<ConnectRemoteProjectResult> {
+  const debug = deps.debug ?? (() => {})
 
   // 1. Resolve remote server
   const remote = resolveRemoteServer(deps.config, req.remoteName)
@@ -56,23 +70,8 @@ export async function executeRemoteLoop(
   }
   debug(`remote-launch: resolved remote name="${remote.name}" url="${remote.url}" gitRemote="${remote.gitRemote}" sandbox=${remote.sandbox}`)
 
-  // 2. Preflight git checks
-  if (!git.isInsideWorkTree(req.localDirectory)) {
-    return { error: `Not a git repository: ${req.localDirectory}` }
-  }
-
-  const headResult = git.revParseHead(req.localDirectory)
-  if (!headResult.ok) {
-    return { error: `Failed to resolve HEAD in ${req.localDirectory}: ${headResult.stderr}` }
-  }
-  const sha = headResult.stdout.trim()
-  debug(`remote-launch: preflight ok HEAD=${sha}`)
-
-  // Warn about dirty working tree but proceed
-  const statusResult = git.statusPorcelain(req.localDirectory)
-  if (statusResult.ok && statusResult.stdout.trim().length > 0) {
-    deps.onWarning?.(`Uncommitted changes are not included; remote loop starts from HEAD ${sha.substring(0, 7)}`)
-  }
+  const preflight = deps.beforeDiscovery?.()
+  if (preflight && 'error' in preflight) return preflight
 
   // 3. Discovery: find the remote project sharing this repo's OpenCode project
   // identity. OpenCode derives the same id for a given repo on every server
@@ -80,10 +79,10 @@ export async function executeRemoteLoop(
   // id is location-independent — unlike worktree paths, which differ per
   // machine (e.g. a local checkout vs. a container workspace).
   if (!req.localProjectId) {
-    return { error: `Could not resolve the local OpenCode project id for ${req.localDirectory}; cannot match a remote project.` }
+    return { error: `Could not resolve the local OpenCode project id for ${req.localDirectory ?? req.remoteName}; cannot match a remote project.` }
   }
 
-  const discoveryClient = createClient({
+  const discoveryClient = (deps.createClient ?? createRemoteForgeClient)({
     url: remote.url,
     username: remote.username,
     password: remote.password,
@@ -109,12 +108,80 @@ export async function executeRemoteLoop(
   debug(`remote-launch: matched project id=${matched.id} worktree="${matched.worktree}"`)
 
   // 4. Create scoped client for the matched directory
-  const remoteClient = createClient({
+  const client = (deps.createClient ?? createRemoteForgeClient)({
     url: remote.url,
     username: remote.username,
     password: remote.password,
     directory: matched.worktree,
   })
+
+  return { remote, project: { id: matched.id, worktree: matched.worktree }, client }
+}
+
+/**
+ * Push a local source ref to the shared git remote's forge sync ref. The sync
+ * ref is never fetched locally, so the push is forced.
+ */
+export function pushForgeSyncRef(
+  git: GitService,
+  args: { cwd: string; gitRemote: string; sourceRef: string; syncRef: string },
+): { ok: true } | { ok: false; error: string } {
+  const pushResult = git.push(args.cwd, args.gitRemote, `${args.sourceRef}:${args.syncRef}`, true)
+  if (!pushResult.ok) {
+    return { ok: false, error: pushResult.stderr || '(no stderr)' }
+  }
+  return { ok: true }
+}
+
+/** Delete the forge sync ref on the shared git remote (launch-failure cleanup). */
+export function deleteForgeSyncRef(
+  git: GitService,
+  args: { cwd: string; gitRemote: string; syncRef: string },
+): GitResult {
+  return git.push(args.cwd, args.gitRemote, `:${args.syncRef}`, false)
+}
+
+export async function executeRemoteLoop(
+  req: RemoteLoopRequest,
+  deps: RemoteLaunchDeps,
+): Promise<RemoteLaunchResult> {
+  const debug = deps.debug ?? (() => {})
+  const git = deps.git ?? defaultGitService
+
+  debug(`remote-launch: start remote="${req.remoteName}" dir="${req.localDirectory}" projectId="${req.localProjectId}" loop="${req.loopName}"`)
+
+  // 1+3+4. Resolve the remote server, discover the matching remote project, and
+  // create the scoped client. The git preflight is threaded through as a gate
+  // so the error precedence (unknown remote → git checks → discovery) is kept.
+  const connected = await connectRemoteProject(
+    { remoteName: req.remoteName, localProjectId: req.localProjectId, localDirectory: req.localDirectory },
+    {
+      config: deps.config,
+      createClient: deps.createClient,
+      debug,
+      beforeDiscovery: () => {
+        if (!git.isInsideWorkTree(req.localDirectory)) {
+          return { error: `Not a git repository: ${req.localDirectory}` }
+        }
+        const headResult = git.revParseHead(req.localDirectory)
+        if (!headResult.ok) {
+          return { error: `Failed to resolve HEAD in ${req.localDirectory}: ${headResult.stderr}` }
+        }
+        debug(`remote-launch: preflight ok HEAD=${headResult.stdout.trim()}`)
+        return undefined
+      },
+    },
+  )
+  if ('error' in connected) return connected
+
+  const { remote, project: matched, client: remoteClient } = connected
+  const sha = git.revParseHead(req.localDirectory).stdout.trim()
+
+  // Warn about dirty working tree but proceed
+  const statusResult = git.statusPorcelain(req.localDirectory)
+  if (statusResult.ok && statusResult.stdout.trim().length > 0) {
+    deps.onWarning?.(`Uncommitted changes are not included; remote loop starts from HEAD ${sha.substring(0, 7)}`)
+  }
 
   // 5. Reserve a unique loop name (once; launchTuiLoop uses it verbatim below)
   const finalLoopName = await reserveTuiLoopName(remoteClient, null, req.loopName)
@@ -133,10 +200,15 @@ export async function executeRemoteLoop(
 
   // 6. Push HEAD to remote ref
   debug(`remote-launch: pushing HEAD:${syncRef} to gitRemote="${remote.gitRemote}" from "${req.localDirectory}"`)
-  const pushResult = git.push(req.localDirectory, remote.gitRemote, `HEAD:${syncRef}`, true)
+  const pushResult = pushForgeSyncRef(git, {
+    cwd: req.localDirectory,
+    gitRemote: remote.gitRemote,
+    sourceRef: 'HEAD',
+    syncRef,
+  })
   if (!pushResult.ok) {
-    debug(`remote-launch: push FAILED: ${pushResult.stderr || '(no stderr)'}`)
-    return { error: `Failed to push to remote "${remote.name}": ${pushResult.stderr || '(no stderr)'}` }
+    debug(`remote-launch: push FAILED: ${pushResult.error}`)
+    return { error: `Failed to push to remote "${remote.name}": ${pushResult.error}` }
   }
   debug(`remote-launch: push ok (ref ${syncRef} now on ${remote.gitRemote})`)
 
@@ -173,7 +245,7 @@ export async function executeRemoteLoop(
 
   if ('error' in launchResult) {
     debug(`remote-launch: launchTuiLoop FAILED: ${launchResult.error}`)
-    const cleanup = git.push(req.localDirectory, remote.gitRemote, `:${syncRef}`, false)
+    const cleanup = deleteForgeSyncRef(git, { cwd: req.localDirectory, gitRemote: remote.gitRemote, syncRef })
     debug(`remote-launch: sync ref cleanup ${cleanup.ok ? 'ok' : `failed: ${cleanup.stderr.trim() || 'unknown error'}`}`)
     return { error: launchResult.error }
   }

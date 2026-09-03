@@ -145,6 +145,8 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
+| `resume-prompt.ts` | `buildResumePromptPlan()` — single owner of restart/migration prompt selection (post_action → goal → final_audit_fix → sectioned/legacy chain) |
+| `resume-snapshot.ts` | `captureLoopResumeSnapshot()` / `restoreLoopResumeRows()` — portable snapshot of loop progress carried across restarts and remote migration |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
 | `name-uniqueness.ts` | Reserve a unique loop identity before any side effects |
 | `session-output.ts` | Fetch session output for loop display |
@@ -240,6 +242,8 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | File | Purpose |
 |------|---------|
 | `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`) |
+| `execution-response.ts` | Shared `ok`/`fail` response builders and error/warning shapes for the command bus |
+| `loop-migration.ts` | `migrateLoopToRemote()` — `loop.migrate` command handler: freeze as migrated, snapshot, push loop branch tip to the sync ref, launch on the remote |
 | `session-loop-resolver.ts` | Resolve which loop owns a given session |
 | `deterministic-decomposer.ts` | Slice a plan into milestones (`section_plans` rows) deterministically — called once at loop start by `execution.ts`, not a runtime loop phase |
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |

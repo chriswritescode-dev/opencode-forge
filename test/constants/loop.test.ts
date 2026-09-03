@@ -53,10 +53,18 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'question', pattern: '*', action: 'deny' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
+      { permission: 'loop-migrate', pattern: '*', action: 'deny' },
       { permission: 'launch-group', pattern: '*', action: 'deny' },
       { permission: 'group-status', pattern: '*', action: 'deny' },
       { permission: 'group-cancel', pattern: '*', action: 'deny' },
     ])
+  })
+
+  it('denies loop-migrate in both loop and audit rulesets so active sessions cannot migrate themselves', () => {
+    const loopRules = buildLoopPermissionRuleset()
+    const auditRules = buildAuditSessionPermissionRuleset()
+    expect(loopRules).toContainEqual({ permission: 'loop-migrate', pattern: '*', action: 'deny' })
+    expect(auditRules).toContainEqual({ permission: 'loop-migrate', pattern: '*', action: 'deny' })
   })
 
   it('denies execute-goal in both loop and audit rulesets so active sessions cannot recurse', () => {

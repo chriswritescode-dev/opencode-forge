@@ -20,6 +20,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `execute-goal` | Start a managed goal loop in a dedicated code session inside an isolated Forge worktree. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `loop-migrate` | Move a loop to a configured remote opencode server, preserving its progress. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
 | `group-status` | List groups, inspect one group's per-feature stages, or restart a non-completed group. | [`src/tools/group.ts`](../src/tools/group.ts) |
 | `group-cancel` | Cancel a group, optionally cancelling its running loops. | [`src/tools/group.ts`](../src/tools/group.ts) |
@@ -186,6 +187,26 @@ Arguments:
 | `force` | Force restart an active or stuck loop. Required for running loops. |
 
 Completed loops are history-only and cannot be restarted. See [Loop System](loop-system.md#restartability).
+
+### `loop-migrate`
+
+Moves a loop to a configured remote opencode server (see [Configuration → Remotes](configuration.md#remotes)). The local loop is terminated with the terminal reason `migrated: <remote>`, which makes it permanently non-restartable locally; the loop then continues on the remote from the pushed loop branch tip.
+
+What is carried over:
+
+- The loop's phase, section pointers (`currentSectionIndex`/`totalSections`/`finalAuditDone`), section plan rows, section summaries, and review findings travel as a resume snapshot in the remote workspace's `forgeLoop` extra.
+- The loop's original plan text is forwarded, so restartability display and legacy non-sectioned resume keep working on the remote.
+- The execution/auditor models and variants are forwarded unchanged.
+- The remote loop name is reserved (the local name is kept when available), and the remote session's permission rules come from the configured `loop.permissions` without host-specific external directories.
+
+Failure semantics: every pre-freeze failure (unknown remote, no matching project, unreachable server) leaves the local loop untouched. A failure after the freeze — snapshot, branch-tip resolve, push, or remote launch — relabels the local loop as plain `cancelled` and rolls back the sync-ref push (best effort), so the loop stays restartable locally with `loop-status restart=true`. Only the success path leaves the loop non-restartable as `migrated`.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `name` | Required loop name (or branch) to migrate. |
+| `remote` | Required configured `remotes[].name` to migrate to. |
 
 > Group, loop, and plan tools are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work.
 

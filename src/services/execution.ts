@@ -15,7 +15,6 @@ import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata, createPlanExecutionSession } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
-import { auditorModelChoiceAt, buildAuditorModelChain } from '../utils/loop-helpers'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -37,7 +36,16 @@ import { getRestartability, type RestartBlockedReason } from '../loop/restartabi
 import { loopBranchExists } from '../workspace/forge-naming'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
-import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
+import { resolvePostActionConfig } from '../loop/post-action-config'
+import { buildResumePromptPlan, resolveResumePhase } from '../loop/resume-prompt'
+import { restoreLoopResumeRows, type LoopResumeSnapshot } from '../loop/resume-snapshot'
+import { migrateLoopToRemote } from './loop-migration'
+import {
+  ok,
+  fail,
+  type ForgeExecutionError,
+  type ForgeExecutionResponse,
+} from './execution-response'
 
 /**
  * A freshly created + warped loop session can transiently report "Session not
@@ -100,6 +108,10 @@ export interface ForgeLoopExtra {
   sandboxEnabled?: boolean
   /** msb container name when the loop runs sandboxed. */
   sandboxContainer?: string
+  /** Persisted progress snapshot for a loop migrated from another host; applied on attach instead of plan decomposition. */
+  resume?: LoopResumeSnapshot
+  /** Iteration budget carried on the workspace extra; read by the attach hook and remote/migrated launches. */
+  maxIterations?: number
 }
 
 export interface AttachLoopInput {
@@ -125,6 +137,8 @@ export interface AttachLoopInput {
   goal?: string
   /** Executor session binding for goal loops (the dedicated code session). */
   executorSessionId?: string
+  /** Migrated-loop progress snapshot; restores phase/section pointers and rows instead of decomposing planText. */
+  resume?: LoopResumeSnapshot
   selectSession?: boolean
   selectSessionTiming?: 'after-create' | 'after-prompt'
   startWatchdog?: boolean
@@ -260,6 +274,13 @@ export interface GetLoopStatusCommand {
   limit?: number
 }
 
+export interface MigrateLoopCommand {
+  type: 'loop.migrate'
+  /** Migration always targets a named loop; only-active has no single owner. */
+  selector: Exclude<LoopSelector, { kind: 'only-active' }>
+  remoteName: string
+}
+
 export type ForgeExecutionCommand =
   | ExecutePlanNewSessionCommand
   | ExecutePlanHereCommand
@@ -268,27 +289,14 @@ export type ForgeExecutionCommand =
   | RestartLoopCommand
   | CancelLoopCommand
   | GetLoopStatusCommand
+  | MigrateLoopCommand
 
 // ============================================================================
-// Response/Error Types
+// Response/Error Types (single definition in ./execution-response)
 // ============================================================================
 
-export interface ForgeExecutionError {
-  code: 'bad_request' | 'not_found' | 'conflict' | 'disabled' | 'prompt_failed' | 'lifecycle_failed' | 'internal_error' | 'provider_limit'
-  status: number
-  message: string
-  candidates?: string[]
-  details?: Record<string, unknown>
-}
-
-export interface ForgeExecutionWarning {
-  code: string
-  message: string
-}
-
-export type ForgeExecutionResponse<T> =
-  | { ok: true; data: T; warnings?: ForgeExecutionWarning[] }
-  | { ok: false; error: ForgeExecutionError }
+export type { ForgeExecutionError, ForgeExecutionWarning, ForgeExecutionResponse } from './execution-response'
+export { ok, fail } from './execution-response'
 
 // ============================================================================
 // Result Types per Command
@@ -403,6 +411,19 @@ export interface LoopStatusResult {
   recent: LoopStatusView[]
 }
 
+export interface LoopMigratedResult {
+  operation: 'loop.migrate'
+  loopName: string
+  remoteName: string
+  remoteLoopName: string
+  remoteSessionId: string
+  startRef: string
+  syncRef: string
+  phase: import('../loop/resume-prompt').ResumePhase
+  currentSectionIndex: number
+  totalSections: number
+}
+
 // Type mapping from command to result
 export type ForgeExecutionResult<C extends ForgeExecutionCommand> =
   C extends ExecutePlanNewSessionCommand ? PlanExecutionStartedResult :
@@ -412,6 +433,7 @@ export type ForgeExecutionResult<C extends ForgeExecutionCommand> =
   C extends RestartLoopCommand ? LoopRestartedResult :
   C extends CancelLoopCommand ? LoopCancelledResult :
   C extends GetLoopStatusCommand ? LoopStatusResult :
+  C extends MigrateLoopCommand ? LoopMigratedResult :
   never
 
 // ============================================================================
@@ -446,33 +468,17 @@ export interface ForgeExecutionServiceDeps {
   loopSessionUsageRepo?: import('../storage/repos/loop-session-usage-repo').LoopSessionUsageRepo
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
+  /** Git service for loop.migrate branch-tip/sync-ref pushes; defaults to defaultGitService. */
+  git?: import('../utils/git-service').GitService
+  /** Remote client factory for loop.migrate discovery; defaults to createRemoteForgeClient. */
+  createRemoteClient?: (opts: import('../client/sdk-adapter').RemoteClientOptions) => ForgeClient
 }
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
-function normalizeModelString(value: string | undefined): string | undefined {
-  const trimmed = value?.trim()
-  return trimmed ? trimmed : undefined
-}
-
-function ok<T>(data: T, warnings?: ForgeExecutionWarning[]): ForgeExecutionResponse<T> {
-  return { ok: true, data, warnings }
-}
-
-function fail(
-  code: ForgeExecutionError['code'],
-  status: number,
-  message: string,
-  details?: Record<string, unknown>,
-  candidates?: string[]
-): ForgeExecutionResponse<never> {
-  return {
-    ok: false,
-    error: { code, status, message, details, candidates }
-  }
-}
+// `ok`/`fail` are imported from ./execution-response.
 
 // ============================================================================
 // Plan Source Resolution
@@ -621,8 +627,9 @@ export async function attachLoopToSession(
     kind,
     goal,
     executorSessionId,
+    resume,
   } = input
-  const isGoal = kind === 'goal'
+  const isGoal = (resume?.kind ?? kind) === 'goal'
 
   const loopModel = parseModelString(executionModel)
 
@@ -658,6 +665,10 @@ export async function attachLoopToSession(
     (await resolveHostSessionDirectory(deps.client, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
 
   try {
+    if (resume && (!deps.sectionPlansRepo || !deps.reviewFindingsRepo)) {
+      return { ok: false, code: 'internal_error', message: 'Resume requires section and finding repositories' }
+    }
+
     // Persist loop state
     const state: import('../loop/state').LoopState = {
       active: true,
@@ -670,7 +681,7 @@ export async function attachLoopToSession(
       maxIterations,
       startedAt: new Date().toISOString(),
       prompt: isGoal ? undefined : planText,
-      phase: 'coding',
+      phase: resume ? resume.phase : 'coding',
       errorCount: 0,
       auditCount: 0,
       status: 'running',
@@ -683,15 +694,31 @@ export async function attachLoopToSession(
       auditorVariant,
       workspaceId,
       hostSessionId: input.hostSessionId,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      finalAuditDone: false,
-      ...(isGoal ? { kind: 'goal' as const, goal, executorSessionId } : {}),
+      currentSectionIndex: resume ? resume.currentSectionIndex : 0,
+      totalSections: resume ? resume.totalSections : 0,
+      finalAuditDone: resume ? resume.finalAuditDone : false,
+      ...(isGoal
+        ? {
+            kind: 'goal' as const,
+            goal: resume ? resume.goal ?? goal : goal,
+            executorSessionId: resume ? sessionId : executorSessionId,
+          }
+        : {}),
     }
 
     deps.loop.service.setState(loopName, state)
     deps.loop.service.registerLoopSession(sessionId, loopName)
     deps.loop.registerSessionReverseIndex(sessionId, loopName)
+
+    if (resume) {
+      restoreLoopResumeRows({
+        projectId: ctx.projectId,
+        loopName,
+        snapshot: resume,
+        sectionPlansRepo: deps.sectionPlansRepo!,
+        reviewFindingsRepo: deps.reviewFindingsRepo!,
+      })
+    }
 
     deps.logger.log(`attachLoopToSession: state stored for loop=${loopName}`)
 
@@ -705,7 +732,14 @@ export async function attachLoopToSession(
 
     // === Initial prompt ===
     let promptText: string
-    if (isGoal) {
+    let resumePlan: ReturnType<typeof buildResumePromptPlan> | undefined
+    if (resume) {
+      // A migrated loop must not be re-decomposed: its persisted section rows
+      // (including in-progress state and attempts) were restored above, and
+      // decomposition would reset section 0 / rewrite the rows.
+      resumePlan = buildResumePromptPlan({ service: deps.loop.service, config: deps.config, state })
+      promptText = resumePlan.promptText
+    } else if (isGoal) {
       // Goal loops have no sections; the initial prompt is the same goal
       // continuation prompt used on every later iteration.
       promptText = deps.loop.service.buildContinuationPrompt(state)
@@ -768,13 +802,16 @@ export async function attachLoopToSession(
     const sessionDir = worktreeDir
     const promptParts = [{ type: 'text' as const, text: promptText }]
     const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
+    const promptAgent = resumePlan ? resumePlan.agent : 'code' as const
+    const promptVariant = resumePlan ? resumePlan.variant : undefined
 
     const promptResult = await sendLoopPrompt({
       loopName,
       sessionId,
-      agent: 'code',
+      agent: promptAgent,
       logger: deps.logger,
-      primaryModel: loopModel,
+      primaryModel: resumePlan ? resumePlan.model : loopModel,
+      fallbackModel: resumePlan?.fallbackModel,
       useInFlightGuard: false,
       performPrompt: async (model) => {
         markPromptSent(loopName, sessionId, deps.logger)
@@ -783,7 +820,8 @@ export async function attachLoopToSession(
             sessionID: sessionId,
             directory: sessionDir,
             parts: promptParts,
-            agent: 'code',
+            agent: promptAgent,
+            ...(promptVariant ? { variant: promptVariant } : {}),
             ...workspaceParam,
             ...(model ? { model } : {}),
           })
@@ -1832,6 +1870,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
       const permissionRuleset = buildLoopPermissionRuleset(permissionOptions)
 
+      // The recreated session's permission ruleset is selected before the session
+      // swap, so the resume phase is resolved from the persisted (under-lock)
+      // state here. The full prompt plan is built after the optional plan
+      // decomposition below, mirroring the original prompt-selection ordering.
+      const resumePhase = resolveResumePhase(stoppedState.phase)
+
       stoppedState.iteration = 1
 
       // Create new session for restart
@@ -1877,7 +1921,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset(permissionOptions) : permissionRuleset,
+        permission: resumePhase === 'final_auditing' ? buildAuditSessionPermissionRuleset(permissionOptions) : permissionRuleset,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',
@@ -1924,14 +1968,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // else: existing totalSections preserved as-is
 
       const effectiveSessionId = newSessionId!
-      // A stopped final_audit_fix loop is a coding pass (the fix session), not an
-      // auditor phase — restart it as coding with the code prompt agent. The other
-      // auditor phases (final_auditing, post_action) preserve their persisted phase.
-      const restartPhase = stoppedState.phase === 'final_auditing'
-        ? 'final_auditing' as const
-        : stoppedState.phase === 'post_action'
-          ? 'post_action' as const
-          : 'coding' as const
+      // Full resume plan after the optional in-restart plan decomposition, so a
+      // legacy non-sectioned loop resumes with the freshly decomposed section
+      // prompt and the prompt builders run exactly once, as before the refactor.
+      // Decomposition cannot change the resume phase; the assertion guards that
+      // invariant so the pre-swap permission selection can never drift from the
+      // phase the plan dispatches under.
+      const resume = buildResumePromptPlan({ service: deps.loop.service, config: deps.config, state: stoppedState })
+      const restartPhase = resume.phase
+      if (resume.phase !== resumePhase) {
+        throw new Error(`resume phase changed after decomposition: ${resumePhase} -> ${resume.phase}`)
+      }
 
       const newState: import('../loop/state').LoopState = {
         active: true,
@@ -1965,57 +2012,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         kind: stoppedState.kind,
         goal: stoppedState.goal,
       }
-      // Build appropriate prompt based on persisted state
-      let promptText: string
-      let postActionCfg: ResolvedPostActionConfig | undefined
 
-      if (stoppedState.phase === 'post_action') {
-        postActionCfg = resolvePostActionConfig(deps.config)
-        promptText = deps.loop.service.buildPostActionPrompt(stoppedState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
-      } else if (stoppedState.kind === 'goal') {
-        // Goal loops have no plan, sections, or approval flow — restate the goal
-        // directly as a fresh coding pass. No initial audit findings on restart.
-        promptText = deps.loop.service.buildContinuationPrompt(stoppedState, undefined)
-      } else if (stoppedState.phase === 'final_audit_fix') {
-        // Resume fixing the final-audit findings rather than re-coding the last
-        // section: the persisted findings carry the remediation for this
-        // recovery path.
-        const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
-        promptText = deps.loop.service.buildFinalAuditFixPrompt(stoppedState, outstandingBugs)
-      } else if (stoppedState.totalSections > 0) {
-        // Use persisted section state to build the correct section prompt
-        if (stoppedState.phase === 'final_auditing') {
-          promptText = deps.loop.service.buildFinalAuditPrompt(stoppedState)
-        } else {
-          promptText = deps.loop.service.buildSectionInitialPrompt(stoppedState)
-        }
-      } else {
-        // Legacy non-sectioned prompt
-        promptText = stoppedState.prompt ?? ''
-      }
-
-      const restartAuditorState = {
-        ...stoppedState,
-        auditorModel: normalizeModelString(stoppedState.auditorModel ?? deps.config.auditorModel),
-        modelFailed: false,
-        auditorFallbackIndex: 0,
-      }
-      const restartAuditorChoice = auditorModelChoiceAt(buildAuditorModelChain(deps.config, restartAuditorState), 0)
-      const restartAuditorModel = restartAuditorChoice.model
-      const loopModel = stoppedState.phase === 'post_action' && postActionCfg?.model
-        ? parseModelString(postActionCfg.model)
-        : stoppedState.phase === 'final_auditing' || stoppedState.phase === 'post_action'
-          ? restartAuditorModel
-          : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
-      // When a configured post-action model is used, fall back to the loop's auditor model if it fails.
-      const loopFallbackModel = stoppedState.phase === 'post_action' && postActionCfg?.model
-        ? restartAuditorModel
-        : undefined
+      const loopModel = resume.model
+      const loopFallbackModel = resume.fallbackModel
       const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
-
-      // final_audit_fix is a coding-style phase: restart sends the final-audit fix
-      // prompt as the code agent (never the auditor-loop agent).
-      const promptAgent = stoppedState.phase === 'final_auditing' ? 'auditor-loop' as const : 'code' as const
 
       deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
         sessionId: newState.sessionId,
@@ -2025,7 +2025,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandbox: newState.sandbox ?? false,
         sandboxContainer: newState.sandboxContainer ?? null,
         workspaceId: newState.workspaceId ?? null,
-        auditorModel: restartAuditorState.auditorModel ?? null,
+        auditorModel: resume.auditorModel ?? null,
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
         finalAuditDone: newState.finalAuditDone,
@@ -2054,19 +2054,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         })
       }
 
-      const restartVariant = promptAgent === 'auditor-loop'
-        ? restartAuditorChoice.variant
-        : stoppedState.executionVariant
-
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
         markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
         try {
           await deps.client.session.promptAsync({
             sessionID: effectiveSessionId,
             directory: stoppedState.worktreeDir,
-            parts: [{ type: 'text' as const, text: promptText }],
-            agent: promptAgent,
-            ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
+            parts: [{ type: 'text' as const, text: resume.promptText }],
+            agent: resume.agent,
+            ...(model ? { model, ...(resume.variant ? { variant: resume.variant } : {}) } : {}),
             ...workspaceParam,
           })
           return {}
@@ -2085,7 +2081,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const { result } = await sendLoopPrompt({
           loopName: stoppedState.loopName,
           sessionId: effectiveSessionId,
-          agent: promptAgent,
+          agent: resume.agent,
           logger: deps.logger,
           primaryModel: loopModel,
           fallbackModel: loopFallbackModel,
@@ -2113,7 +2109,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           // For a final-audit restart the session is reused by the auditor
           // fallback re-dispatch, so keep its reverse index intact. For a
           // coding-style restart the loop terminates and the session is orphaned.
-          const isAuditorRestart = promptAgent === 'auditor-loop'
+          const isAuditorRestart = resume.agent === 'auditor-loop'
           if (!isAuditorRestart) {
             deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
           }
@@ -2348,6 +2344,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return handleLoopCancel(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
       case 'loop.restart':
         return handleLoopRestart(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+      case 'loop.migrate':
+        return migrateLoopToRemote(deps, ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
       default:
         return fail('bad_request', 400, 'Unknown command type') as ForgeExecutionResponse<ForgeExecutionResult<C>>
     }

@@ -1311,6 +1311,62 @@ describe('createForgeSessionAttachHook', () => {
     expect(mockAttachLoop).not.toHaveBeenCalled()
   })
 
+  test('chat.message fallback forwards resume snapshot without stored-plan lookup', async () => {
+    const resume = {
+      version: 1 as const,
+      kind: 'goal' as const,
+      goal: 'ship it',
+      phase: 'coding' as const,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      sections: [],
+      findings: [],
+    }
+    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'SHOULD_NOT_BE_USED' })
+    const deps = buildHookDeps({
+      sessionGet: vi.fn().mockResolvedValue({
+        id: 'new_sess',
+        workspaceID: 'ws_resume',
+        directory: '/tmp/wt/resume',
+        projectID: 'proj_1',
+      }),
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_resume',
+          type: 'forge',
+          directory: '/tmp/wt/resume',
+          extra: {
+            loopName: 'resume-loop',
+            projectDirectory: '/tmp/wt/resume',
+            forgeLoop: {
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
+              planSource: 'inline',
+              planText: '',
+              maxIterations: 12,
+              resume,
+            },
+          },
+        },
+      ]),
+      plansRepoGetForSession,
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.resume).toEqual(resume)
+    expect(input.maxIterations).toBe(12)
+    expect(input.planText).toBe('')
+    expect(input.sendInitialPrompt).toBe(false)
+    expect(plansRepoGetForSession).not.toHaveBeenCalled()
+  })
+
   test('attach hook prefers inline planText over stored plan when both are available', async () => {
     const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'STALE_PRIOR_PLAN_TEXT' })
     const deps = buildHookDeps({

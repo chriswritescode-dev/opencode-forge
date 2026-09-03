@@ -21,6 +21,8 @@ function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand>
       template: loadPrompt(['commands','loop-status.md'], promptsDir) },
     'loop-cancel': { description: 'Cancel the active loop', agent: 'code', subtask: false,
       template: loadPrompt(['commands','loop-cancel.md'], promptsDir) },
+    'loop-migrate': { description: 'Migrate a loop to a remote opencode server', agent: 'code', subtask: false,
+      template: loadPrompt(['commands','loop-migrate.md'], promptsDir) },
   }
 }
 

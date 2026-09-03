@@ -133,6 +133,7 @@ function getToastVariant(reason: TerminationReason): { variant: 'info' | 'succes
       return { variant: 'success', duration: 5000 }
     case 'cancelled':
     case 'user_aborted':
+    case 'migrated':
       return { variant: 'info', duration: 3000 }
     case 'max_iterations':
       return { variant: 'warning', duration: 3000 }
@@ -156,6 +157,8 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
       return `Stalled after ${iterLabel}`
     case 'user_aborted':
       return 'Loop aborted by user'
+    case 'migrated':
+      return `Migrated to ${reason.message}`
     default:
       return `Loop ended: ${terminationReasonToString(reason)}`
   }
@@ -298,5 +301,7 @@ function resolveReasonLabel(reason: TerminationReason): string {
       return 'aborted'
     case 'max_iterations':
       return 'max_iterations'
+    case 'migrated':
+      return 'migrated'
   }
 }

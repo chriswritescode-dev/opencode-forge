@@ -81,7 +81,7 @@ Configured rules are layered into the ruleset in this order:
 
 Because configured rules sit between the external-directory allows and Forge's structural denies, they can deny user tools but can never override a structural deny.
 
-**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan`, `plan_enter`, `plan_exit`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`, `review-write`, `review-delete`, `edit`, `write`, `multiedit`, and `apply_patch`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`group-*` would let a loop recurse into itself or manage other loops.
+**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan`, `plan_enter`, `plan_exit`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `loop-migrate`, `launch-group`, `group-status`, `group-cancel`, `review-write`, `review-delete`, `edit`, `write`, `multiedit`, and `apply_patch`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`group-*` would let a loop recurse into itself or manage other loops.
 
 **Blanket denies of Forge-required permissions are rejected too**: `review-read`, `plan-read`, `section-read`, `plan-adjust`, `bash`, and `read` may not be denied outright. A loop that cannot read its findings, section plan, or plan-of-record — or cannot run `bash` or `read` at all — cannot do its job and would silently burn iterations to `maxIterations` with nothing pointing at the config. Only the blanket form (a bare tool name, or pattern `*`) is rejected; a scoped deny such as `{ "permission": "bash", "pattern": "git push *" }` is honoured.
 
@@ -231,6 +231,15 @@ Example:
 2. Local `HEAD` is force-pushed to `refs/forge/<loopName>` on the shared `gitRemote` (uncommitted changes are not included; a warning is shown).
 3. The remote server creates the loop worktree pinned to that exact SHA, fetching the sync ref when the commit is not yet in its clone.
 4. On final loop teardown, the remote deletes the sync ref from the shared git remote (restart-preserving teardowns keep it). If a loop is deleted outside normal teardown, remove leftovers manually with `git push <gitRemote> --delete refs/forge/<loopName>`.
+
+### Migrating a running loop
+
+The `loop-migrate` tool (and `/loop-migrate`) moves an existing local loop to a remote server. It reuses the same remote discovery and sync-ref mechanics as the TUI launch above, with two differences:
+
+- The pushed sync ref `refs/forge/<remoteLoopName>` points at the **loop branch tip** (`refs/heads/<loopBranch>`), not local `HEAD` — the work done inside the loop travels with the migration even though it was never merged.
+- The remote worktree is pinned to that loop-branch SHA via `startRef`, and the loop resumes from a snapshot of its phase, section progress, and review findings.
+
+The local worktree and branch stay in place; the local loop is terminated as `migrated: <remote>`, which blocks a local restart, and all further management (including `loop-status` and `loop-cancel`) happens on the remote server. The observability caveat below applies — the migrated loop disappears from the local sidebar, `loop-status`, and dashboard.
 
 ### Caveats
 
