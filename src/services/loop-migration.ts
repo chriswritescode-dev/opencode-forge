@@ -17,56 +17,59 @@ import { existsSync } from 'fs'
 import type { ForgeExecutionServiceDeps, ForgeExecutionRequestContext, MigrateLoopCommand, LoopMigratedResult } from './execution'
 import type { ForgeExecutionResponse, ForgeExecutionWarning } from './execution-response'
 import { ok, fail } from './execution-response'
-import { connectRemoteProject, pushForgeSyncRef, deleteForgeSyncRef } from '../utils/tui-remote-launch'
-import { resolveRemoteLoopPermissionOptions } from '../constants/loop'
-import { emitLoopPermissionConfigWarnings } from '../utils/loop-permission-warnings'
+import { connectRemoteProject, prepareRemoteLoopLaunch, pushAndLaunchRemoteLoop, deleteForgeSyncRef } from '../utils/tui-remote-launch'
+import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { resolveDataDir } from '../utils/opencode-paths'
-import { findPartialMatch } from '../utils/partial-match'
+import { resolveNamedLoop } from './execution'
 import { getRestartability } from '../loop/restartability'
 import { loopBranchExists, forgeBranchName } from '../workspace/forge-naming'
 import { resolvePostActionConfig } from '../loop/post-action-config'
-import { terminationReasonToString } from '../loop'
-import { captureLoopResumeSnapshot } from '../loop/resume-snapshot'
+import { terminationStatusFor, terminationReasonToString, parseTerminationReasonString, type TerminationReason } from '../loop'
+import { captureLoopResumeSnapshot, type LoopResumeSnapshot } from '../loop/resume-snapshot'
 import { buildResumePromptPlan } from '../loop/resume-prompt'
-import { reserveTuiLoopName, launchTuiLoop } from '../utils/tui-client'
-import { forgeSyncRef } from '../utils/remote-config'
 import { defaultGitService } from '../utils/git-service'
+import { getForgeWorkspaceEntry } from '../workspace/forge-worktree'
+
+interface PreFreezeTerminalSnapshot {
+  status: import('../loop/state').LoopState['status']
+  terminationReason?: string
+  completedAt?: string
+  completionSummary?: string
+}
 
 export async function migrateLoopToRemote(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
   command: MigrateLoopCommand,
 ): Promise<ForgeExecutionResponse<LoopMigratedResult>> {
-  // 1. Guards
   if (!deps.loopHandler || !deps.sectionPlansRepo || !deps.reviewFindingsRepo) {
     return fail('internal_error', 500, 'Loop migration requires the loop handler and section/finding repositories')
   }
   const debug = (message: string) => deps.logger.debug(message)
 
-  // 2. Resolve the loop (active + recent, same matching as restart)
-  const allStates = [...deps.loop.listActive(), ...deps.loop.listRecent()]
-  const { match: state, candidates } = findPartialMatch(command.selector.name, allStates, (s) => [s.loopName, s.worktreeBranch])
-  if (!state && candidates.length > 0) {
-    return fail('conflict', 409, `Multiple loops match "${command.selector.name}". Be more specific.`, undefined, candidates.map((s) => s.loopName))
+  const resolved = resolveNamedLoop(deps, command.selector.name)
+  if ('response' in resolved) return resolved.response
+  const state = resolved.state
+
+  if (!state.worktree) {
+    return fail('conflict', 409, `Loop "${state.loopName}" runs in the project directory (worktree: false) and cannot be migrated.`)
   }
-  if (!state) {
-    return fail('not_found', 404, `No loop found for "${command.selector.name}".`, undefined, allStates.map((s) => s.loopName))
+  if (deps.featureGroupsRepo?.getFeatureByLoopName(ctx.projectId, state.loopName)) {
+    return fail('conflict', 409, `Loop "${state.loopName}" belongs to a feature group and cannot be migrated; groups are orchestrated locally.`)
   }
 
-  // 3. Restartability + post-action guard (failures leave the loop untouched)
   const git = deps.git ?? defaultGitService
   const restartability = getRestartability(state, {
     worktreeExists: existsSync,
     branchExists: () => loopBranchExists(state, ctx.directory, git),
   })
-  if (!restartability.restartable) {
+  if (!restartability.restartable || restartability.restartBlockedReason === 'migrated') {
     return fail('conflict', 409, restartability.restartBlockedMessage ?? `Loop "${state.loopName}" cannot be migrated.`)
   }
   if (state.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
     return fail('conflict', 409, 'Loop implementation already completed; post-action is disabled — nothing to migrate.')
   }
 
-  // 4. Remote connection + project discovery (failures leave the loop untouched)
   const connected = await connectRemoteProject(
     { remoteName: command.remoteName, localProjectId: ctx.projectId, localDirectory: ctx.directory },
     { config: deps.config, createClient: deps.createRemoteClient, debug },
@@ -76,103 +79,145 @@ export async function migrateLoopToRemote(
   }
   const { remote, project: remoteProject, client: remoteClient } = connected
 
-  // 5. Remote loop name + portable permission rules
-  const remoteLoopName = await reserveTuiLoopName(remoteClient, null, state.loopName)
-  const syncRef = forgeSyncRef(remoteLoopName)
-  const remotePermissionOptions = resolveRemoteLoopPermissionOptions(deps.config)
+  const original: PreFreezeTerminalSnapshot = {
+    status: state.status,
+    terminationReason: state.terminationReason,
+    completedAt: state.completedAt,
+    completionSummary: state.completionSummary,
+  }
+  const wsOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, state.workspaceId)
+  const remotePermissionOptions = { extraRules: wsOptions.extraRules }
+  const previousEntry = state.workspaceId
+    ? await getForgeWorkspaceEntry(deps.client, state.workspaceId).catch(() => undefined)
+    : undefined
+  const ownSyncRef = typeof previousEntry?.extra?.syncRef === 'string' ? previousEntry.extra.syncRef : undefined
+  const ownGitRemote = typeof previousEntry?.extra?.gitRemote === 'string' ? previousEntry.extra.gitRemote : undefined
+
   const warnings: ForgeExecutionWarning[] = []
-  emitLoopPermissionConfigWarnings(deps.config, deps.config.dataDir || resolveDataDir(), ctx.directory, {
-    logger: { log: debug, error: debug, debug },
+  const remoteLoopName = await prepareRemoteLoopLaunch({
+    client: remoteClient,
+    requestedLoopName: state.loopName,
+    permissionOptions: remotePermissionOptions,
+    config: deps.config,
+    dataDir: deps.config.dataDir || resolveDataDir(),
+    localDirectory: ctx.directory,
+    debug,
     onWarnings: (messages) => warnings.push(...messages.map((message) => ({ code: 'loop_permissions', message }))),
   })
+  const syncRef = remoteLoopName.syncRef
 
-  // 6. Freeze: terminate the local loop as migrated (worktree kept — the
-  // reason is not 'completed', so the teardown commits but preserves the branch).
-  const migratedReason = { kind: 'migrated' as const, message: remote.name }
-  if (state.active) {
-    await deps.loopHandler.terminateLoopByName(state.loopName, migratedReason)
-  } else {
-    deps.loop.service.terminate(state.loopName, {
-      status: 'cancelled',
-      reason: terminationReasonToString(migratedReason),
-      completedAt: Date.now(),
-    })
+  const migratedReason: TerminationReason = { kind: 'migrated', message: remote.name }
+  const fresh = await deps.loop.runExclusive(state.loopName, async () => deps.loop.inspect(state.loopName))
+  if (!fresh) {
+    return fail('not_found', 404, `Loop "${state.loopName}" vanished during migration freeze.`)
   }
-  const frozen = deps.loop.inspect(state.loopName)
+  let frozen: import('../loop/state').LoopState | null
+  if (fresh.active) {
+    const terminated = await deps.loopHandler.terminateLoopByName(fresh.loopName, migratedReason)
+    if (terminated === false) {
+      return fail('conflict', 409, `Loop "${state.loopName}" changed state during migration; retry.`)
+    }
+    frozen = deps.loop.inspect(fresh.loopName)
+  } else {
+    await deps.loop.runExclusive(state.loopName, async () => {
+      const latest = deps.loop.inspect(state.loopName)
+      if (latest && !latest.active) {
+        relabelInactiveLoop(deps, state.loopName, migratedReason)
+      }
+    })
+    frozen = deps.loop.inspect(state.loopName)
+  }
   if (!frozen) {
     return fail('internal_error', 500, `Loop "${state.loopName}" vanished during migration freeze.`)
   }
+  if (frozen.active || parseTerminationReasonString(frozen.terminationReason ?? '').kind !== 'migrated') {
+    return fail('conflict', 409, `Loop "${state.loopName}" changed state during migration; retry.`)
+  }
 
-  // 7. Snapshot + branch-tip push. Any failure here rolls the freeze back.
-  const snapshot = captureLoopResumeSnapshot({
-    projectId: ctx.projectId,
-    state: frozen,
-    sectionPlansRepo: deps.sectionPlansRepo,
-    reviewFindingsRepo: deps.reviewFindingsRepo,
-  })
-  const branch = frozen.worktreeBranch || forgeBranchName(frozen.loopName)
   const projectDir = frozen.projectDir || ctx.directory
-  const tipResult = git.revParseRef(projectDir, `refs/heads/${branch}`)
-  if (!tipResult.ok) {
-    return rollbackAfterFreeze(deps, frozen, `Failed to resolve loop branch ${branch}: ${tipResult.stderr || '(no stderr)'}`)
-  }
-  const tip = tipResult.stdout.trim()
 
-  const pushResult = pushForgeSyncRef(git, {
-    cwd: projectDir,
-    gitRemote: remote.gitRemote,
-    sourceRef: `refs/heads/${branch}`,
-    syncRef,
-  })
-  if (!pushResult.ok) {
-    return rollbackAfterFreeze(deps, frozen, `Failed to push loop branch to remote "${remote.name}": ${pushResult.error}`)
+  if (frozen.worktreeDir && existsSync(frozen.worktreeDir)) {
+    const statusResult = git.statusPorcelain(frozen.worktreeDir)
+    if (!statusResult.ok) {
+      return rollbackAfterFreeze(
+        deps,
+        frozen,
+        original,
+        `Worktree ${frozen.worktreeDir} status check failed after teardown: ${statusResult.stderr || '(no stderr)'}; migration aborted so no work is lost.`,
+      )
+    }
+    if (statusResult.stdout.trim().length > 0) {
+      return rollbackAfterFreeze(
+        deps,
+        frozen,
+        original,
+        `Worktree ${frozen.worktreeDir} has uncommitted changes after teardown; migration aborted so no work is lost.`,
+      )
+    }
   }
 
-  // 8+9. Build the phase-appropriate resume prompt and launch the remote loop.
-  const resume = buildResumePromptPlan({ service: deps.loop.service, config: deps.config, state: frozen })
-  const planText = frozen.prompt ?? ''
-  const launch = await launchTuiLoop({
-    client: remoteClient,
-    directory: remoteProject.worktree,
-    projectId: remoteProject.id,
-    requestedLoopName: remoteLoopName,
-    loopNameReserved: true,
-    connectPollIntervalMs: 500,
-    title: frozen.loopName,
-    plan: planText,
-    executionModel: frozen.executionModel,
-    auditorModel: frozen.auditorModel,
-    executionVariant: frozen.executionVariant,
-    auditorVariant: frozen.auditorVariant,
-    extraWorkspaceFields: {
-      startRef: tip,
+  let snapshot: LoopResumeSnapshot
+  let tip: string
+  let launch: { loopName: string; sessionId: string }
+  try {
+    snapshot = captureLoopResumeSnapshot({
+      projectId: ctx.projectId,
+      state: frozen,
+      sectionPlansRepo: deps.sectionPlansRepo,
+      reviewFindingsRepo: deps.reviewFindingsRepo,
+    })
+    const branch = frozen.worktreeBranch || forgeBranchName(frozen.loopName)
+    const tipResult = git.revParseRef(projectDir, `refs/heads/${branch}`)
+    if (!tipResult.ok) {
+      return rollbackAfterFreeze(deps, frozen, original, `Failed to resolve loop branch ${branch}: ${tipResult.stderr || '(no stderr)'}`)
+    }
+    tip = tipResult.stdout.trim()
+
+    const resume = buildResumePromptPlan({ service: deps.loop.service, config: deps.config, state: frozen })
+    const result = await pushAndLaunchRemoteLoop({
+      git,
+      cwd: projectDir,
+      remote,
+      project: remoteProject,
+      client: remoteClient,
+      loopName: remoteLoopName.loopName,
       syncRef,
-      gitRemote: remote.gitRemote,
-      permissionRules: remotePermissionOptions.extraRules,
-    },
-    forgeLoopOverrides: {
-      sandboxEnabled: remote.sandbox,
-      maxIterations: frozen.maxIterations,
-      resume: snapshot,
-    },
-    permissionOptions: remotePermissionOptions,
-    initialPrompt: {
-      text: resume.promptText,
-      agent: resume.agent,
-      model: resume.model,
-      variant: resume.variant,
-    },
-    debug,
-  })
+      sourceRef: `refs/heads/${branch}`,
+      startRef: tip,
+      title: frozen.loopName,
+      plan: frozen.prompt ?? '',
+      executionModel: frozen.executionModel,
+      auditorModel: frozen.auditorModel,
+      executionVariant: frozen.executionVariant,
+      auditorVariant: frozen.auditorVariant,
+      permissionOptions: remotePermissionOptions,
+      forgeLoopOverrides: {
+        maxIterations: frozen.maxIterations,
+        resume: snapshot,
+      },
+      initialPrompt: {
+        text: resume.promptText,
+        agent: resume.agent,
+        model: resume.model,
+        variant: resume.variant,
+      },
+      pushErrorPrefix: `Failed to push loop branch to remote "${remote.name}": `,
+      debug,
+    })
 
-  // 10. Rollback on launch failure: drop the sync ref (best effort, after a
-  // successful push), relabel the local loop plain-cancelled (restartable again).
-  if ('error' in launch) {
-    deleteForgeSyncRef(git, { cwd: projectDir, gitRemote: remote.gitRemote, syncRef })
-    return rollbackAfterFreeze(deps, frozen, launch.error)
+    if ('error' in result) {
+      return rollbackAfterFreeze(deps, frozen, original, result.error)
+    }
+    launch = result
+  } catch (err) {
+    return rollbackAfterFreeze(deps, frozen, original, err instanceof Error ? err.message : String(err))
   }
 
-  // 11. Success
+  if (ownSyncRef && ownGitRemote) {
+    const cleanup = await deleteForgeSyncRef(git, { cwd: projectDir, gitRemote: ownGitRemote, syncRef: ownSyncRef })
+    debug(`loop-migrate: previous sync-ref cleanup ${cleanup.ok ? 'ok' : `failed: ${cleanup.stderr.trim() || 'unknown error'}`}`)
+  }
+
   return ok({
     operation: 'loop.migrate',
     loopName: frozen.loopName,
@@ -187,24 +232,38 @@ export async function migrateLoopToRemote(
   }, warnings.length > 0 ? warnings : undefined)
 }
 
-/**
- * Post-freeze failure path: relabel the local loop plain-cancelled so it is
- * restartable again and report the failure with the recovery instructions.
- */
+function relabelInactiveLoop(
+  deps: ForgeExecutionServiceDeps,
+  loopName: string,
+  reason: TerminationReason,
+): void {
+  deps.loop.service.terminate(loopName, {
+    status: terminationStatusFor(reason),
+    reason: terminationReasonToString(reason),
+    completedAt: Date.now(),
+  })
+}
+
 function rollbackAfterFreeze(
   deps: ForgeExecutionServiceDeps,
   frozen: import('../loop/state').LoopState,
+  original: PreFreezeTerminalSnapshot,
   message: string,
 ): ForgeExecutionResponse<never> {
-  deps.loop.service.terminate(frozen.loopName, {
-    status: 'cancelled',
-    reason: 'cancelled',
-    completedAt: Date.now(),
-  })
+  if (original.status === 'cancelled' || original.status === 'errored' || original.status === 'stalled') {
+    deps.loop.service.terminate(frozen.loopName, {
+      status: original.status,
+      reason: original.terminationReason ?? 'cancelled',
+      completedAt: original.completedAt ? Date.parse(original.completedAt) : Date.now(),
+      summary: original.completionSummary,
+    })
+  } else {
+    relabelInactiveLoop(deps, frozen.loopName, { kind: 'cancelled' })
+  }
   deps.logger.error(`loop-migrate: migration of "${frozen.loopName}" failed after freeze: ${message}`)
   return fail(
     'internal_error',
     502,
-    `${message}. Local loop "${frozen.loopName}" is cancelled and restartable with loop-status restart=true.`,
+    `${message}. Local loop "${frozen.loopName}" is restartable with loop-status restart=true.`,
   )
 }

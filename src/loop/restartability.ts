@@ -64,10 +64,10 @@ export function getRestartability(
     }
     if (parsed.kind === 'migrated') {
       return {
-        restartable: false,
-        restartRequiresForce: false,
+        restartable: true,
+        restartRequiresForce: true,
         restartBlockedReason: 'migrated',
-        restartBlockedMessage: `Loop "${state.loopName}" was migrated to remote "${parsed.message}"; manage it on that server.`,
+        restartBlockedMessage: `Loop "${state.loopName}" was migrated to remote "${parsed.message}". A copy may be running there; use force=true to restart it locally anyway.`,
       }
     }
   }

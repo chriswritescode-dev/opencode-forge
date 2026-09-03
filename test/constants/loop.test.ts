@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildSessionPermissionRulesetForAgent, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
 import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
@@ -256,4 +256,21 @@ describe('config -> resolveLoopPermissionOptions -> ruleset composition', () => 
       expect(rules.some((r) => r.permission === 'review-read')).toBe(false)
     })
   }
+})
+
+describe('buildSessionPermissionRulesetForAgent', () => {
+  const options = { allowDirectories: ['/vault'], extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' as const }] }
+
+  it('auditor-loop agent gets exactly the audit ruleset', () => {
+    expect(buildSessionPermissionRulesetForAgent('auditor-loop', options)).toEqual(buildAuditSessionPermissionRuleset(options))
+  })
+
+  it('code agent gets exactly the loop ruleset', () => {
+    expect(buildSessionPermissionRulesetForAgent('code', options)).toEqual(buildLoopPermissionRuleset(options))
+  })
+
+  it('defaults options like the underlying builders when omitted', () => {
+    expect(buildSessionPermissionRulesetForAgent('code')).toEqual(buildLoopPermissionRuleset())
+    expect(buildSessionPermissionRulesetForAgent('auditor-loop')).toEqual(buildAuditSessionPermissionRuleset())
+  })
 })

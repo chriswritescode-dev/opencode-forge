@@ -10,6 +10,6 @@ Run `loop-migrate` with:
 
 ## Step 3: Report the Migration
 
-Confirm the loop was migrated: report the remote loop name and remote session id, and note that the local loop is stopped as migrated and cannot be restarted here.
+Confirm the loop was migrated: report the remote loop name and remote session id, and note that the local loop is stopped as migrated; it restarts locally only with `loop-status restart=true force=true`. If the tool refused (project-directory loop, feature-group loop, or a loop that changed state), report the reason and do not retry automatically.
 
 $ARGUMENTS

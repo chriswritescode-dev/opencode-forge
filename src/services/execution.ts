@@ -19,7 +19,7 @@ import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limi
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { slugify } from '../utils/logger'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildSessionPermissionRulesetForAgent, resolveLoopPermissionOptions } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -37,7 +37,7 @@ import { loopBranchExists } from '../workspace/forge-naming'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig } from '../loop/post-action-config'
-import { buildResumePromptPlan, resolveResumePhase } from '../loop/resume-prompt'
+import { buildResumePromptPlan, resolveResumeAgent, resolveResumePhase } from '../loop/resume-prompt'
 import { restoreLoopResumeRows, type LoopResumeSnapshot } from '../loop/resume-snapshot'
 import { migrateLoopToRemote } from './loop-migration'
 import {
@@ -292,13 +292,6 @@ export type ForgeExecutionCommand =
   | MigrateLoopCommand
 
 // ============================================================================
-// Response/Error Types (single definition in ./execution-response)
-// ============================================================================
-
-export type { ForgeExecutionError, ForgeExecutionWarning, ForgeExecutionResponse } from './execution-response'
-export { ok, fail } from './execution-response'
-
-// ============================================================================
 // Result Types per Command
 // ============================================================================
 
@@ -465,6 +458,7 @@ export interface ForgeExecutionServiceDeps {
   sandboxManager?: SandboxManager | null
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
   reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
+  featureGroupsRepo?: import('../storage/repos/feature-groups-repo').FeatureGroupsRepo
   loopSessionUsageRepo?: import('../storage/repos/loop-session-usage-repo').LoopSessionUsageRepo
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
@@ -473,12 +467,6 @@ export interface ForgeExecutionServiceDeps {
   /** Remote client factory for loop.migrate discovery; defaults to createRemoteForgeClient. */
   createRemoteClient?: (opts: import('../client/sdk-adapter').RemoteClientOptions) => ForgeClient
 }
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-// `ok`/`fail` are imported from ./execution-response.
 
 // ============================================================================
 // Plan Source Resolution
@@ -525,6 +513,24 @@ async function resolvePlanSource(
       }
     }
   }
+}
+
+// ============================================================================
+// Named-loop resolution
+// ============================================================================
+
+export function resolveNamedLoop(
+  deps: Pick<ForgeExecutionServiceDeps, 'loop'>,
+  name: string,
+): { state: import('../loop/state').LoopState } | { response: ForgeExecutionResponse<never> } {
+  const { match, candidates } = deps.loop.findMatchByName(name)
+  if (!match && candidates.length > 0) {
+    return { response: fail('conflict', 409, `Multiple loops match "${name}". Be more specific.`, undefined, candidates.map((s) => s.loopName)) }
+  }
+  if (!match) {
+    return { response: fail('not_found', 404, `No loop found for "${name}".`, undefined, deps.loop.listLoopNames()) }
+  }
+  return { state: match }
 }
 
 // ============================================================================
@@ -736,9 +742,11 @@ export async function attachLoopToSession(
     if (resume) {
       // A migrated loop must not be re-decomposed: its persisted section rows
       // (including in-progress state and attempts) were restored above, and
-      // decomposition would reset section 0 / rewrite the rows.
-      resumePlan = buildResumePromptPlan({ service: deps.loop.service, config: deps.config, state })
-      promptText = resumePlan.promptText
+      // decomposition would reset section 0 / rewrite the rows. The resume
+      // prompt plan is built lazily after the sendInitialPrompt gate below —
+      // migrated loops always attach with sendInitialPrompt: false, so eager
+      // construction would compute the plan and discard it.
+      promptText = ''
     } else if (isGoal) {
       // Goal loops have no sections; the initial prompt is the same goal
       // continuation prompt used on every later iteration.
@@ -796,6 +804,11 @@ export async function attachLoopToSession(
       }
       deps.logger.log(`attachLoopToSession: attached loop=${loopName} without sending initial prompt`)
       return { ok: true, loopName }
+    }
+
+    if (resume) {
+      resumePlan = buildResumePromptPlan({ service: deps.loop.service, config: deps.config, state })
+      promptText = resumePlan.promptText
     }
 
     // Send initial prompt with fallback
@@ -1744,16 +1757,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const name = command.selector.name
-    const active = deps.loop.listActive()
-    const recent = deps.loop.listRecent()
-    const allStates = [...active, ...recent]
-    const { match: stoppedState, candidates } = findPartialMatch(name, allStates, s => [s.loopName, s.worktreeBranch])
-    if (!stoppedState && candidates.length > 0) {
-      return fail('conflict', 409, `Multiple loops match "${name}". Be more specific.`, undefined, candidates.map(s => s.loopName))
-    }
-    if (!stoppedState) {
-      return fail('not_found', 404, `No loop found for "${name}".`, undefined, allStates.map(s => s.loopName))
-    }
+    const resolved = resolveNamedLoop(deps, name)
+    if ('response' in resolved) return resolved.response
+    const stoppedState = resolved.state
     
     const restartability = getRestartability(stoppedState, {
       force: command.force,
@@ -1868,13 +1874,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
-      const permissionRuleset = buildLoopPermissionRuleset(permissionOptions)
 
       // The recreated session's permission ruleset is selected before the session
       // swap, so the resume phase is resolved from the persisted (under-lock)
       // state here. The full prompt plan is built after the optional plan
       // decomposition below, mirroring the original prompt-selection ordering.
       const resumePhase = resolveResumePhase(stoppedState.phase)
+      const permission = buildSessionPermissionRulesetForAgent(resolveResumeAgent(resumePhase), permissionOptions)
 
       stoppedState.iteration = 1
 
@@ -1890,6 +1896,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const preservedExtra = Object.fromEntries(
           Object.entries(previousEntry?.extra ?? {}).filter(([key]) => !['startRef', 'syncRef', 'gitRemote'].includes(key)),
         )
+        if (preservedExtra.forgeLoop && typeof preservedExtra.forgeLoop === 'object') {
+          const { resume: _consumedResume, ...restForgeLoop } = preservedExtra.forgeLoop as Record<string, unknown>
+          preservedExtra.forgeLoop = restForgeLoop
+        }
         const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
@@ -1921,7 +1931,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: resumePhase === 'final_auditing' ? buildAuditSessionPermissionRuleset(permissionOptions) : permissionRuleset,
+        permission,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',
@@ -1971,14 +1981,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // Full resume plan after the optional in-restart plan decomposition, so a
       // legacy non-sectioned loop resumes with the freshly decomposed section
       // prompt and the prompt builders run exactly once, as before the refactor.
-      // Decomposition cannot change the resume phase; the assertion guards that
-      // invariant so the pre-swap permission selection can never drift from the
-      // phase the plan dispatches under.
+      // Decomposition cannot change the resume phase; `resolveResumePhase` is
+      // pure on `state.phase`, so the pre-swap permission selection above and
+      // the plan below always agree.
       const resume = buildResumePromptPlan({ service: deps.loop.service, config: deps.config, state: stoppedState })
-      const restartPhase = resume.phase
-      if (resume.phase !== resumePhase) {
-        throw new Error(`resume phase changed after decomposition: ${resumePhase} -> ${resume.phase}`)
-      }
 
       const newState: import('../loop/state').LoopState = {
         active: true,
@@ -1991,7 +1997,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         maxIterations: stoppedState.maxIterations,
         startedAt: new Date().toISOString(),
         prompt: stoppedState.prompt,
-        phase: restartPhase,
+        phase: resumePhase,
         errorCount: 0,
         auditCount: 0,
         status: 'running',
@@ -2042,13 +2048,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // already be in place so the transition log shows the real sequence
       // (phase change → terminal). We skip when persisted phase matches the
       // restart phase (final_auditing / post_action stay in place).
-      const restartPhaseChanged = restartPhase !== stoppedState.phase
+      const restartPhaseChanged = resumePhase !== stoppedState.phase
       if (restartPhaseChanged) {
         deps.loop.service.recordTransition(stoppedState.loopName, {
           eventType: 'restart',
           transitionKind: 'phase',
           fromPhase: stoppedState.phase,
-          toPhase: restartPhase,
+          toPhase: resumePhase,
           iteration: 1,
           sectionIndex: transitionSectionIndex(stoppedState),
         })
@@ -2169,14 +2175,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             restoreRow = previousState
           }
           deps.loop.service.restoreState(restoreRow.loopName, restoreRow)
-          const restartFromPhase = restartPhase
+          const restartFromPhase = resumePhase
           const restartToPhase = previousState.phase ?? 'coding'
           const iteration = previousState.iteration ?? 0
           const sectionIndex = transitionSectionIndex(previousState)
           // Log the rollback restoration whenever the restart actually changed
           // the persisted phase, so the transition history stays continuous:
-          //   previousPhase -> restartPhase (pre-prompt 'restart' phase row)
-          //   restartPhase -> previousPhase (this 'rollback' row)
+          //   previousPhase -> resumePhase (pre-prompt 'restart' phase row)
+          //   resumePhase -> previousPhase (this 'rollback' row)
           // When the restart preserved the phase (final_auditing / post_action
           // stay in place), there is nothing to roll back phase-wise and no
           // rollback row is emitted.

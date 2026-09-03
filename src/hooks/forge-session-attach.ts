@@ -3,6 +3,7 @@ import type { ForgeClient } from '../client/port'
 import type { ForgeExecutionServiceDeps, ForgeLoopExtra, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
 import { isLoopResumeSnapshot } from '../loop/resume-snapshot'
+import { parseTerminationReasonString } from '../loop'
 import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
@@ -221,11 +222,16 @@ async function attachForgeSession(
         { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
         { workspaceId, loopName, action: 'remove-registration-only', reasonLabel: 'attach-safety-net-restartable' },
       )
+      const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
+      const parsedReason = row?.terminationReason ? parseTerminationReasonString(row.terminationReason) : null
+      const toastMessage = parsedReason?.kind === 'migrated'
+        ? `Loop "${loopName}" was migrated to remote "${parsedReason.message}". Restart locally only with loop-status restart=true force=true.`
+        : `Loop "${loopName}" is in terminal status. Use Loop-status restart to resume.`
       publishAttachFailureToast(
         deps,
         ws.directory ?? deps.directory,
         `Forge loop "${loopName}"`,
-        `Loop "${loopName}" is in terminal status. Use Loop-status restart to resume.`,
+        toastMessage,
       )
       return
     } else {
@@ -240,7 +246,22 @@ async function attachForgeSession(
       ? cfg.hostSessionId
       : sessionId
 
-    const resume = isLoopResumeSnapshot(cfg.resume) ? cfg.resume : undefined
+    if (cfg.resume !== undefined && !isLoopResumeSnapshot(cfg.resume)) {
+      deps.logger.error(`[forge-session-attach] invalid resume snapshot for loop=${loopName} workspace=${workspaceId}`)
+      publishAttachFailureToast(
+        deps,
+        ws.directory ?? deps.directory,
+        `Forge loop "${loopName}"`,
+        'Migrated loop snapshot is invalid or from an incompatible forge version. Removed the workspace; re-run loop-migrate from a matching version.',
+      )
+      await removeForgeWorkspaceWithContext(
+        { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+        { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-bad-resume' },
+      )
+      return
+    }
+
+    const resume = cfg.resume
 
     let planText: string
     if (resume !== undefined) {

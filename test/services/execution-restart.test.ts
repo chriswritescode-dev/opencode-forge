@@ -202,6 +202,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -256,6 +258,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -323,6 +329,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -377,6 +385,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -422,6 +434,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -478,6 +492,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -525,6 +543,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -597,6 +617,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -624,6 +648,152 @@ describe('handleLoopRestart from stall_timeout', () => {
         extra: {
           permissionRules: [portableRule],
           loopName: 'portable-loop',
+          projectDirectory: '/tmp',
+          workspaceCreatedAt: expect.any(Number),
+        },
+      }),
+    )
+  })
+
+  test('restart drops the resume snapshot from the preserved forgeLoop extra but keeps the other forgeLoop fields', async () => {
+    insertLoop({
+      loopName: 'snapshot-loop',
+      status: 'errored',
+      terminationReason: 'max_iterations',
+      iteration: 10,
+      worktree: true,
+      workspaceId: 'ws_old',
+    })
+
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'snapshot-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-snapshot' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: {
+        create: async () => ({ id: 'ws_new', directory: '/tmp', branch: 'forge/snapshot-loop' }),
+        list: async () => [
+          {
+            id: 'ws_old',
+            type: 'forge',
+            name: 'snapshot-loop',
+            branch: null,
+            directory: '/tmp',
+            projectID: PROJECT_ID,
+            extra: {
+              startRef: 'abc123',
+              syncRef: 'refs/forge/snapshot-loop',
+              gitRemote: 'origin',
+              forgeLoop: {
+                hostSessionId: 'host-sess',
+                title: 'Snapshot Loop',
+                executionModel: 'prov/exec',
+                planSource: 'stored',
+                planText: '# Snapshot plan',
+                maxIterations: 40,
+                resume: {
+                  version: 1,
+                  kind: 'plan',
+                  phase: 'coding',
+                  currentSectionIndex: 1,
+                  totalSections: 3,
+                  finalAuditDone: false,
+                  sections: [],
+                  findings: [],
+                },
+              },
+            },
+          },
+        ],
+        remove: async () => {},
+        warp: async () => {},
+        syncList: async () => {},
+      },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+      sync: { start: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: 'snapshot-loop' } },
+    )
+
+    expect(result.ok).toBe(true)
+
+    expect(client.workspace.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extra: {
+          forgeLoop: {
+            hostSessionId: 'host-sess',
+            title: 'Snapshot Loop',
+            executionModel: 'prov/exec',
+            planSource: 'stored',
+            planText: '# Snapshot plan',
+            maxIterations: 40,
+          },
+          loopName: 'snapshot-loop',
           projectDirectory: '/tmp',
           workspaceCreatedAt: expect.any(Number),
         },
@@ -664,6 +834,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -718,6 +890,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -781,6 +957,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -835,6 +1013,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -892,6 +1074,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -947,6 +1131,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -1009,6 +1197,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: (sid: string, name: string) => loopService.registerLoopSession(sid, name),
@@ -1061,6 +1251,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -1136,6 +1330,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: (sid: string, name: string) => loopService.registerLoopSession(sid, name),
@@ -1170,6 +1366,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -1244,6 +1444,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => {
         if (!transitioned) {
           transitioned = true
@@ -1316,6 +1518,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -1402,6 +1608,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => {
         if (!transitioned) {
           transitioned = true
@@ -1476,6 +1684,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -1550,6 +1762,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -1607,6 +1821,10 @@ describe('handleLoopRestart from stall_timeout', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -1767,6 +1985,8 @@ describe('handleLoopRestart restartability rules', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -1879,6 +2099,10 @@ describe('handleLoopRestart restartability rules', () => {
           service: mockLoopService,
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
+          findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+          listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
@@ -2992,6 +3216,8 @@ describe('handleLoopRestart restartability rules', () => {
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
+      findMatchByName: (name: string) => loopService.findMatchByName(name),
+      listLoopNames: () => loopService.listLoopNames(),
       getActiveState: (name) => loopService.getActiveState(name),
       getAnyState: (name) => loopService.getAnyState(name),
       registerLoopSession: noopFn,
@@ -3066,6 +3292,8 @@ describe('handleLoopRestart restartability rules', () => {
         service: mockLoopService,
         listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
         listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        findMatchByName: (...args: any[]) => (mockLoopService.findMatchByName as any)(...args),
+        listLoopNames: (...args: any[]) => (mockLoopService.listLoopNames as any)(...args),
         setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
         generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
         registerSessionReverseIndex: () => {},

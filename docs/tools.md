@@ -190,16 +190,18 @@ Completed loops are history-only and cannot be restarted. See [Loop System](loop
 
 ### `loop-migrate`
 
-Moves a loop to a configured remote opencode server (see [Configuration → Remotes](configuration.md#remotes)). The local loop is terminated with the terminal reason `migrated: <remote>`, which makes it permanently non-restartable locally; the loop then continues on the remote from the pushed loop branch tip.
+Moves a loop to a configured remote opencode server (see [Configuration → Remotes](configuration.md#remotes)). The local loop is terminated with the terminal reason `migrated: <remote>` and the loop continues on the remote from the pushed loop branch tip. The local worktree and branch stay in place; a migrated loop can still be restarted locally, but only with `loop-status restart=true force=true`, because a copy may be running on the remote.
+
+Eligibility: only worktree-backed loops that are not part of a feature group can be migrated. Project-directory loops (`execute-plan mode: new-session`) and feature-group loops are refused before any side effect, as are completed loops and loops already marked `migrated`.
 
 What is carried over:
 
-- The loop's phase, section pointers (`currentSectionIndex`/`totalSections`/`finalAuditDone`), section plan rows, section summaries, and review findings travel as a resume snapshot in the remote workspace's `forgeLoop` extra.
+- The loop's phase, section pointers (`currentSectionIndex`/`totalSections`/`finalAuditDone`), section plan rows, section summaries, and review findings travel as a resume snapshot in the remote workspace's `forgeLoop` extra. The snapshot is validated on the remote; an invalid or incompatible snapshot removes the remote workspace instead of starting a fresh loop, and the local loop can then be force-restarted.
 - The loop's original plan text is forwarded, so restartability display and legacy non-sectioned resume keep working on the remote.
 - The execution/auditor models and variants are forwarded unchanged.
-- The remote loop name is reserved (the local name is kept when available), and the remote session's permission rules come from the configured `loop.permissions` without host-specific external directories.
+- The remote loop name is reserved (the local name is kept when available). The remote session's portable permission rules are resolved from the local loop's workspace — configured `loop.permissions` merged with any portable rules the loop itself arrived with — without host-specific external directories.
 
-Failure semantics: every pre-freeze failure (unknown remote, no matching project, unreachable server) leaves the local loop untouched. A failure after the freeze — snapshot, branch-tip resolve, push, or remote launch — relabels the local loop as plain `cancelled` and rolls back the sync-ref push (best effort), so the loop stays restartable locally with `loop-status restart=true`. Only the success path leaves the loop non-restartable as `migrated`.
+Failure semantics: every pre-freeze failure (unknown remote, no matching project, unreachable server, ineligible loop) leaves the local loop untouched. The freeze re-checks the loop under its state lock and refuses if the loop changed state meanwhile. After the freeze, the loop's worktree must be clean (the teardown commit must have landed); a dirty worktree, a failed snapshot, branch-tip resolve, push, or remote launch rolls back: the sync-ref push is deleted (best effort) and the local loop is restored to its previous terminal status (`cancelled`, `errored`, or `stalled`) or relabelled `cancelled` when it was running, so it stays restartable with `loop-status restart=true`. Only the success path leaves the loop marked `migrated`.
 
 Arguments:
 

@@ -108,6 +108,8 @@ export interface Loop {
   inspect(name: string): LoopState | null
   listActive(): LoopState[]
   listRecent(): LoopState[]
+  /** All loop names for the project (any status) without hydrating plans. */
+  listLoopNames(): string[]
   findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
   terminateAll(): Promise<void>
@@ -2971,6 +2973,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return loopService.listRecent()
   }
 
+  function listLoopNames(): string[] {
+    return loopService.listLoopNames()
+  }
+
   function findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] } {
     return loopService.findMatchByName(name)
   }
@@ -3103,6 +3109,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     inspect,
     listActive,
     listRecent,
+    listLoopNames,
     findMatchByName,
     hasOutstandingFindings,
     terminateAll,

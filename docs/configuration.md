@@ -239,11 +239,11 @@ The `loop-migrate` tool (and `/loop-migrate`) moves an existing local loop to a 
 - The pushed sync ref `refs/forge/<remoteLoopName>` points at the **loop branch tip** (`refs/heads/<loopBranch>`), not local `HEAD` — the work done inside the loop travels with the migration even though it was never merged.
 - The remote worktree is pinned to that loop-branch SHA via `startRef`, and the loop resumes from a snapshot of its phase, section progress, and review findings.
 
-The local worktree and branch stay in place; the local loop is terminated as `migrated: <remote>`, which blocks a local restart, and all further management (including `loop-status` and `loop-cancel`) happens on the remote server. The observability caveat below applies — the migrated loop disappears from the local sidebar, `loop-status`, and dashboard.
+The local loop is terminated as `migrated: <remote>` and further management (including `loop-status` and `loop-cancel`) happens on the remote server; see [Tools → `loop-migrate`](tools.md#loop-migrate) for eligibility, rollback, and local force-restart. The observability caveat below applies — the migrated loop disappears from the local sidebar, `loop-status`, and dashboard.
 
 ### Caveats
 
-- **Version skew**: the remote server must run a forge version with SHA-pin support (`startRef`/`syncRef` handling — the same release that introduced `remotes`, or newer). An older remote silently ignores the pin and runs the loop from its clone's current `HEAD` with no error on either side.
+- **Version skew**: the remote server must run a forge version with SHA-pin support (`startRef`/`syncRef` handling — the same release that introduced `remotes`, or newer). An older remote silently ignores the pin and runs the loop from its clone's current `HEAD` with no error on either side. `loop-migrate` additionally requires the remote to understand the `forgeLoop.resume` snapshot (the release that introduced `loop-migrate`, or newer); an older remote ignores it and starts the loop from section 0 while the first prompt already targets the migrated phase.
 - **Sandbox mirroring**: `remotes[].sandbox` is a local assertion about the remote's capability. The launch bakes the session's shell permission ruleset from it; if it does not match the remote's real sandbox state, loop shell commands can be denied.
 - **Observability**: remote loops run entirely on the remote server. They do not appear in the local sidebar, `loop-status`, or dashboard. Results land on the `forge/<loopName>` branch in the remote machine's clone; fetch or push that branch from the remote to retrieve them.
 

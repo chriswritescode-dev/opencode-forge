@@ -13,7 +13,7 @@ import { deriveExecutionPreferencesFromWorkspaces } from './tui-execution-prefer
 import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
+import { buildSessionPermissionRulesetForAgent, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
 import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
@@ -365,10 +365,7 @@ export async function launchTuiLoop(
       model: parsedModel,
       variant: opts.executionVariant,
     }
-    const permission =
-      initial.agent === 'auditor-loop'
-        ? buildAuditSessionPermissionRuleset(opts.permissionOptions)
-        : buildLoopPermissionRuleset(opts.permissionOptions)
+    const permission = buildSessionPermissionRulesetForAgent(initial.agent, opts.permissionOptions)
     const session = await opts.client.session.create({
       workspaceID: workspace.id,
       title: loopName,
@@ -405,6 +402,7 @@ export async function launchTuiLoop(
     }
   } catch (err) {
     debug(`launchTuiLoop: post-create flow failed error=${err instanceof Error ? err.message : String(err)}`)
+    await opts.client.workspace.remove({ id: workspace.id }).catch(() => undefined)
     return { error: `Loop launch failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }

@@ -31,9 +31,21 @@ vi.mock('../../src/services/execution', () => ({
   ForgeLoopExtra: {},
 }))
 
+vi.mock('../../src/utils/tui-client', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../src/utils/tui-client')>()
+  return { ...original, launchTuiLoop: vi.fn(original.launchTuiLoop) }
+})
+
 // ── SUT ───────────────────────────────────────────────────────────────────
 
-import { executeRemoteLoop, connectRemoteProject, pushForgeSyncRef, deleteForgeSyncRef } from '../../src/utils/tui-remote-launch'
+import {
+  executeRemoteLoop,
+  connectRemoteProject,
+  pushForgeSyncRef,
+  deleteForgeSyncRef,
+  prepareRemoteLoopLaunch,
+  pushAndLaunchRemoteLoop,
+} from '../../src/utils/tui-remote-launch'
 import type { PluginConfig } from '../../src/types'
 import type { GitService, GitResult } from '../../src/utils/git-service'
 import type { ForgeClient } from '../../src/client/port'
@@ -161,6 +173,31 @@ describe('executeRemoteLoop', () => {
     expect(remoteClient.session.promptAsync).toHaveBeenCalledTimes(1)
   })
 
+  test('resolves HEAD exactly once in the preflight and reuses it as startRef', async () => {
+    const config = happyConfig()
+    const git = happyGit()
+    const { spy: createClient, clients } = createClientSpy()
+
+    const result = await executeRemoteLoop(
+      {
+        remoteName: 'server1',
+        localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
+        title: 'Test Plan',
+        loopName: 'test-loop',
+        plan: '# Test Plan\n\nDo work.',
+      },
+      { config, git, createClient: createClient as any },
+    )
+
+    expect('error' in result).toBe(false)
+    expect(git.revParseHead).toHaveBeenCalledTimes(1)
+    expect(git.revParseHead).toHaveBeenCalledWith(LOCAL_DIR)
+
+    const createParams = (clients[1].workspace.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(createParams.extra.startRef).toBe('abc123def456abc123def456abc123def456abc1')
+  })
+
   // ── Error: unknown remote name ──────────────────────────────────────────
 
   test('returns error for unknown remote name', async () => {
@@ -266,7 +303,7 @@ describe('executeRemoteLoop', () => {
   test('returns error when git push fails', async () => {
     const config = happyConfig()
     const git = happyGit()
-    git.push = vi.fn(() => ({
+    git.pushAsync = vi.fn(async () => ({
       ok: false,
       status: 1,
       stdout: '',
@@ -294,7 +331,7 @@ describe('executeRemoteLoop', () => {
 
     // createClient WAS called (discovery + scoped), but workspace.create was NOT called
     // because push failure stops before launchTuiLoop
-    expect(git.push).toHaveBeenCalledTimes(1)
+    expect(git.pushAsync).toHaveBeenCalledTimes(1)
     expect(clients.length).toBeGreaterThanOrEqual(1)
 
     // The scoped client (last one) should NOT have workspace.create called
@@ -738,10 +775,10 @@ describe('connectRemoteProject', () => {
 })
 
 describe('pushForgeSyncRef / deleteForgeSyncRef', () => {
-  test('pushForgeSyncRef pushes sourceRef to syncRef with force and returns ok', () => {
+  test('pushForgeSyncRef pushes sourceRef to syncRef with force and returns ok', async () => {
     const git = happyGit()
 
-    const result = pushForgeSyncRef(git, {
+    const result = await pushForgeSyncRef(git, {
       cwd: LOCAL_DIR,
       gitRemote: 'origin',
       sourceRef: 'refs/heads/forge/moved',
@@ -749,20 +786,20 @@ describe('pushForgeSyncRef / deleteForgeSyncRef', () => {
     })
 
     expect(result).toEqual({ ok: true })
-    expect(git.push).toHaveBeenCalledTimes(1)
-    expect(git.push).toHaveBeenCalledWith(LOCAL_DIR, 'origin', 'refs/heads/forge/moved:refs/forge/moved', true)
+    expect(git.pushAsync).toHaveBeenCalledTimes(1)
+    expect(git.pushAsync).toHaveBeenCalledWith(LOCAL_DIR, 'origin', 'refs/heads/forge/moved:refs/forge/moved', true)
   })
 
-  test('pushForgeSyncRef returns ok:false with stderr on push failure', () => {
+  test('pushForgeSyncRef returns ok:false with stderr on push failure', async () => {
     const git = happyGit()
-    git.push = vi.fn(() => ({
+    git.pushAsync = vi.fn(async () => ({
       ok: false,
       status: 1,
       stdout: '',
       stderr: 'error: failed to push some refs',
     })) as any
 
-    const result = pushForgeSyncRef(git, {
+    const result = await pushForgeSyncRef(git, {
       cwd: LOCAL_DIR,
       gitRemote: 'origin',
       sourceRef: 'refs/heads/forge/moved',
@@ -775,12 +812,190 @@ describe('pushForgeSyncRef / deleteForgeSyncRef', () => {
     })
   })
 
-  test('deleteForgeSyncRef issues a non-forced remote ref deletion', () => {
+  test('deleteForgeSyncRef issues a non-forced remote ref deletion', async () => {
     const git = happyGit()
 
-    deleteForgeSyncRef(git, { cwd: LOCAL_DIR, gitRemote: 'origin', syncRef: 'refs/forge/moved' })
+    await deleteForgeSyncRef(git, { cwd: LOCAL_DIR, gitRemote: 'origin', syncRef: 'refs/forge/moved' })
 
-    expect(git.push).toHaveBeenCalledTimes(1)
-    expect(git.push).toHaveBeenCalledWith(LOCAL_DIR, 'origin', ':refs/forge/moved', false)
+    expect(git.pushAsync).toHaveBeenCalledTimes(1)
+    expect(git.pushAsync).toHaveBeenCalledWith(LOCAL_DIR, 'origin', ':refs/forge/moved', false)
+  })
+})
+
+function pushAndLaunchInput(git: GitService, client: ForgeClient, overrides?: Partial<Parameters<typeof pushAndLaunchRemoteLoop>[0]>): Parameters<typeof pushAndLaunchRemoteLoop>[0] {
+  return {
+    git,
+    cwd: LOCAL_DIR,
+    remote: { name: 'server1', url: REMOTE_URL, username: 'opencode', gitRemote: 'origin', sandbox: true },
+    project: { id: LOCAL_PROJECT_ID, worktree: '/remote/my-project' },
+    client,
+    loopName: 'my-loop',
+    syncRef: 'refs/forge/my-loop',
+    sourceRef: 'HEAD',
+    startRef: 'abc123',
+    title: 'Title',
+    plan: '# Plan',
+    permissionOptions: {},
+    ...overrides,
+  }
+}
+
+describe('prepareRemoteLoopLaunch', () => {
+  test('reserves the loop name, derives the sync ref, and forwards permission warnings', async () => {
+    const config: PluginConfig = {
+      remotes: [{ name: 'server1', url: REMOTE_URL, password: 'sekret' }],
+      loop: {
+        permissions: { deny: ['*'] },
+      },
+    }
+    const client = makeFakeClient()
+    const onWarnings = vi.fn()
+    const debug = vi.fn()
+
+    const result = await prepareRemoteLoopLaunch({
+      client,
+      requestedLoopName: 'my-loop',
+      permissionOptions: { extraRules: [] },
+      config,
+      dataDir: '/tmp/forge-data',
+      localDirectory: LOCAL_DIR,
+      debug,
+      onWarnings,
+    })
+
+    expect(result).toEqual({ loopName: 'my-loop', syncRef: 'refs/forge/my-loop' })
+    expect(onWarnings).toHaveBeenCalledTimes(1)
+    expect(onWarnings.mock.calls[0][0]).toEqual([
+      expect.stringContaining('loop.permissions.deny entry "*" is ignored'),
+    ])
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('reserved loop name="my-loop"'))
+  })
+
+  test('does not call onWarnings when loop.permissions is clean', async () => {
+    const config = happyConfig()
+    const client = makeFakeClient()
+    const onWarnings = vi.fn()
+
+    const result = await prepareRemoteLoopLaunch({
+      client,
+      requestedLoopName: 'my-loop',
+      permissionOptions: {},
+      config,
+      dataDir: '/tmp/forge-data',
+      localDirectory: LOCAL_DIR,
+      onWarnings,
+    })
+
+    expect(result).toEqual({ loopName: 'my-loop', syncRef: 'refs/forge/my-loop' })
+    expect(onWarnings).not.toHaveBeenCalled()
+  })
+})
+
+describe('pushAndLaunchRemoteLoop', () => {
+  test('pushes the source ref and launches with the reserved loop name and sync ref', async () => {
+    const git = happyGit()
+    const client = makeFakeClient()
+    const debug = vi.fn()
+
+    const result = await pushAndLaunchRemoteLoop(pushAndLaunchInput(git, client, { debug }))
+
+    expect(result).toEqual({ loopName: 'my-loop', sessionId: 'sess_remote' })
+    expect(git.pushAsync).toHaveBeenCalledTimes(1)
+    expect(git.pushAsync).toHaveBeenCalledWith(LOCAL_DIR, 'origin', 'HEAD:refs/forge/my-loop', true)
+    const createParams = (client.workspace.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(createParams.extra.startRef).toBe('abc123')
+    expect(createParams.extra.syncRef).toBe('refs/forge/my-loop')
+    expect(createParams.extra.gitRemote).toBe('origin')
+    expect(createParams.extra.forgeLoop.sandboxEnabled).toBe(true)
+  })
+
+  test('returns pushed:false without deleting the sync ref when the push fails', async () => {
+    const git = happyGit()
+    git.pushAsync = vi.fn(async () => ({
+      ok: false,
+      status: 1,
+      stdout: '',
+      stderr: 'error: failed to push some refs',
+    })) as any
+    const client = makeFakeClient()
+
+    const result = await pushAndLaunchRemoteLoop(pushAndLaunchInput(git, client))
+
+    expect(result).toEqual({
+      error: 'Failed to push to remote "server1": error: failed to push some refs',
+      pushed: false,
+    })
+    expect(git.pushAsync).toHaveBeenCalledTimes(1)
+    expect(client.workspace.create).not.toHaveBeenCalled()
+  })
+
+  test('returns pushed:false with the caller pushErrorPrefix when the push fails', async () => {
+    const git = happyGit()
+    git.pushAsync = vi.fn(async () => ({
+      ok: false,
+      status: 1,
+      stdout: '',
+      stderr: 'error: failed to push some refs',
+    })) as any
+    const client = makeFakeClient()
+
+    const result = await pushAndLaunchRemoteLoop(pushAndLaunchInput(git, client, {
+      pushErrorPrefix: 'Failed to push loop branch to remote "server1": ',
+    }))
+
+    expect(result).toEqual({
+      error: 'Failed to push loop branch to remote "server1": error: failed to push some refs',
+      pushed: false,
+    })
+    expect(git.pushAsync).toHaveBeenCalledTimes(1)
+  })
+
+  test('deletes the sync ref exactly once when launchTuiLoop fails', async () => {
+    const git = happyGit()
+    const client = makeFakeClient({
+      workspace: {
+        create: async () => { throw new Error('remote exploded') },
+      },
+    })
+    const debug = vi.fn()
+
+    const result = await pushAndLaunchRemoteLoop(pushAndLaunchInput(git, client, { debug }))
+
+    expect('error' in result && result.pushed === false).toBe(true)
+    expect('error' in result && result.error).toContain('remote exploded')
+    expect(git.pushAsync).toHaveBeenCalledTimes(2)
+    expect(git.pushAsync).toHaveBeenCalledWith(LOCAL_DIR, 'origin', 'HEAD:refs/forge/my-loop', true)
+    expect(git.pushAsync).toHaveBeenCalledWith(LOCAL_DIR, 'origin', ':refs/forge/my-loop', false)
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('launchTuiLoop FAILED'))
+  })
+
+  test('deletes the sync ref exactly once and rethrows when launchTuiLoop throws', async () => {
+    const git = happyGit()
+    const client = makeFakeClient()
+    const { launchTuiLoop } = await import('../../src/utils/tui-client')
+    ;(launchTuiLoop as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      throw new Error('launch boom')
+    })
+
+    await expect(pushAndLaunchRemoteLoop(pushAndLaunchInput(git, client))).rejects.toThrow('launch boom')
+
+    expect(git.pushAsync).toHaveBeenCalledTimes(2)
+    expect(git.pushAsync).toHaveBeenCalledWith(LOCAL_DIR, 'origin', 'HEAD:refs/forge/my-loop', true)
+    expect(git.pushAsync).toHaveBeenCalledWith(LOCAL_DIR, 'origin', ':refs/forge/my-loop', false)
+  })
+
+  test('sets sandboxEnabled from remote.sandbox over any forgeLoopOverrides', async () => {
+    const git = happyGit()
+    const client = makeFakeClient()
+
+    const result = await pushAndLaunchRemoteLoop(pushAndLaunchInput(git, client, {
+      remote: { name: 'server1', url: REMOTE_URL, username: 'opencode', gitRemote: 'origin', sandbox: false },
+      forgeLoopOverrides: { maxIterations: 40 },
+    }))
+
+    expect(result).toEqual({ loopName: 'my-loop', sessionId: 'sess_remote' })
+    const createParams = (client.workspace.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(createParams.extra.forgeLoop.sandboxEnabled).toBe(false)
+    expect(createParams.extra.forgeLoop.maxIterations).toBe(40)
   })
 })

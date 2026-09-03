@@ -15,7 +15,7 @@ The loop system provides autonomous iterative development with automatic code au
 - **Any non-completed loop is restartable** via explicit restart when the worktree is available.
 - Restartable statuses: `running`, `cancelled`, `errored`, `stalled`.
 - **Completed loops are history-only** and cannot be restarted.
-- **`migrated` loops are not restartable locally** — a loop migrated to a remote server with `loop-migrate` is terminated with the terminal reason `migrated: <remote>` and must be managed on that server.
+- **`migrated` loops require force** — a loop migrated to a remote server with `loop-migrate` is terminated with the terminal reason `migrated: <remote>`; it restarts locally only with `force=true`, since a copy may be running on the remote. See [Tools → `loop-migrate`](tools.md#loop-migrate).
 - **Missing worktree blocks restart** — the worktree directory must exist for restart to proceed.
 
 ### Restart Semantics

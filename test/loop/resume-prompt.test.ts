@@ -12,7 +12,7 @@ import type { Logger } from '../../src/types'
 import type { PluginConfig } from '../../src/types'
 import type { LoopState } from '../../src/loop/state'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
-import { buildResumePromptPlan } from '../../src/loop/resume-prompt'
+import { buildResumePromptPlan, resolveResumeAgent } from '../../src/loop/resume-prompt'
 
 const PROJECT_ID = 'test-project'
 const noopLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
@@ -100,7 +100,6 @@ describe('buildResumePromptPlan', () => {
 
     expect(plan.phase).toBe('coding')
     expect(plan.agent).toBe('code')
-    expect(plan.permission).toBe('loop')
     expect(plan.promptText).toBe(service.buildSectionInitialPrompt(state))
     expect(plan.promptText).toContain('Section 0 content')
   })
@@ -112,18 +111,17 @@ describe('buildResumePromptPlan', () => {
 
     expect(plan.phase).toBe('coding')
     expect(plan.agent).toBe('code')
-    expect(plan.permission).toBe('loop')
     expect(plan.promptText).toBe('Legacy plan text')
   })
 
-  test('persisted final_auditing resumes the final audit with the auditor agent and audit permission', () => {
+  test('persisted final_auditing resumes the final audit with the auditor agent and audit ruleset', () => {
     const state = seedLoopWithSections({ loopName: 'final-audit-loop', phase: 'final_auditing' }, 3)
 
     const plan = buildResumePromptPlan({ service, config: baseConfig, state: service.getAnyState(state.loopName)! })
 
     expect(plan.phase).toBe('final_auditing')
     expect(plan.agent).toBe('auditor-loop')
-    expect(plan.permission).toBe('audit')
+    expect(resolveResumeAgent(plan.phase)).toBe('auditor-loop')
     expect(plan.promptText).toBe(service.buildFinalAuditPrompt(service.getAnyState(state.loopName)!))
     expect(plan.model).toEqual({ providerID: 'prov', modelID: 'aud' })
   })
@@ -135,7 +133,6 @@ describe('buildResumePromptPlan', () => {
 
     expect(plan.phase).toBe('coding')
     expect(plan.agent).toBe('code')
-    expect(plan.permission).toBe('loop')
     expect(plan.promptText).toBe(service.buildFinalAuditFixPrompt(state, service.getOutstandingFindings(state.loopName, 'bug')))
   })
 
@@ -146,7 +143,6 @@ describe('buildResumePromptPlan', () => {
 
     expect(plan.phase).toBe('coding')
     expect(plan.agent).toBe('code')
-    expect(plan.permission).toBe('loop')
     expect(plan.promptText).toBe(service.buildContinuationPrompt(state, undefined))
     expect(plan.promptText).toContain('Ship the endpoint.')
   })
@@ -187,5 +183,16 @@ describe('buildResumePromptPlan', () => {
     const codeState = seedLoop({ loopName: 'variant-code-loop', phase: 'coding', executionVariant: 'exec-v', auditorVariant: 'audit-v', prompt: 'Legacy plan' })
     const codePlan = buildResumePromptPlan({ service, config: baseConfig, state: service.getAnyState(codeState.loopName)! })
     expect(codePlan.variant).toBe('exec-v')
+  })
+})
+
+describe('resolveResumeAgent', () => {
+  test('final_auditing maps to the auditor-loop agent', () => {
+    expect(resolveResumeAgent('final_auditing')).toBe('auditor-loop')
+  })
+
+  test('coding and post_action map to the code agent', () => {
+    expect(resolveResumeAgent('coding')).toBe('code')
+    expect(resolveResumeAgent('post_action')).toBe('code')
   })
 })

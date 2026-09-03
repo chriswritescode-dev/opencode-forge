@@ -8,6 +8,7 @@ import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug } from './forge-na
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
+import { deleteForgeSyncRef } from '../utils/tui-remote-launch'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
 import { commitWorktreeChanges } from './worktree-commit'
 import { sandboxContainerName } from '../sandbox/msb'
@@ -194,13 +195,13 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
    * commit locally, so the shared ref is no longer needed. Restart-preserving
    * teardowns keep the ref in place.
    */
-  function stepDeleteSyncRef(info: WorkspaceInfo, loopName: string, ctx: TeardownContext): void {
+  async function stepDeleteSyncRef(info: WorkspaceInfo, loopName: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doRemoveWorktree) return
     const pin = deriveSyncPin(info, loopName)
     if (!pin) return
     try {
       const projectDir = deriveProjectDirectory(info)
-      const res = git.push(projectDir, pin.gitRemote, `:${pin.syncRef}`, false)
+      const res = await deleteForgeSyncRef(git, { cwd: projectDir, gitRemote: pin.gitRemote, syncRef: pin.syncRef })
       if (res.ok) {
         logger.log(`forge-adapter: deleted sync ref ${pin.syncRef} on ${pin.gitRemote}`)
       } else {
@@ -369,7 +370,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       await stepRemoveWorktree(info.directory, ctx)
 
       // Remote-launched loops: drop the sync ref from the shared git remote.
-      stepDeleteSyncRef(info, loopName, ctx)
+      await stepDeleteSyncRef(info, loopName, ctx)
 
       // Branches are never deleted — `forge/*` scratch branches stay in place for potential restart.
     },

@@ -94,15 +94,16 @@ describe('getRestartability', () => {
     expect(result.restartBlockedReason).toBe('active_requires_force')
   })
 
-  it('blocks restart of a loop migrated to a remote server', () => {
+  it('allows force-restart of a loop migrated to a remote server', () => {
     const state = makeState({ terminationReason: 'migrated: server1' })
     const result = getRestartability(state, {
       worktreeExists: () => true,
       branchExists: () => true,
     })
-    expect(result.restartable).toBe(false)
-    expect(result.restartRequiresForce).toBe(false)
+    expect(result.restartable).toBe(true)
+    expect(result.restartRequiresForce).toBe(true)
     expect(result.restartBlockedReason).toBe('migrated')
     expect(result.restartBlockedMessage).toContain('server1')
+    expect(result.restartBlockedMessage).toContain('force=true')
   })
 })

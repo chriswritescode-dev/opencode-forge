@@ -176,6 +176,8 @@ type TerminationReason =
   | { kind: 'coding_no_assistant' }
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
+  | { kind: 'provider_limit'; message: string }
+  | { kind: 'migrated'; message: string }
 ```
 
 ### Public API
@@ -389,6 +391,7 @@ Implements tools callable by AI agents during conversations.
 | `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
 | `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
+| `loop-migrate` | `loop.ts` | Move a worktree-backed, non-group loop to a configured remote server, carrying phase, section rows, and findings as a resume snapshot; the local loop is marked `migrated` (force-restartable) |
 
 ### ToolContext
 
@@ -454,7 +457,7 @@ Cross-cutting helpers (~25 files) organized by concern:
 | Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts` | Loop model/format/session helpers |
 | Sessions | `audit-session.ts`, `session-titles.ts` | Session naming |
 | TUI | `tui-client.ts`, `tui-plan-store.ts`, `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI RPC, storage, preferences, models |
-| Remote | `remote-config.ts`, `tui-remote-launch.ts` | Remote server config resolution and remote loop launch (see also `createRemoteForgeClient` in `client/sdk-adapter.ts`) |
+| Remote | `remote-config.ts`, `tui-remote-launch.ts` | Remote server config resolution and remote loop launch: `connectRemoteProject`, `prepareRemoteLoopLaunch`, `pushAndLaunchRemoteLoop`, and the async `pushForgeSyncRef`/`deleteForgeSyncRef` sync-ref owners shared by TUI launch, `loop-migrate`, and the forge adapter's teardown (see also `createRemoteForgeClient` in `client/sdk-adapter.ts`) |
 | Workspace | `worktree-cleanup.ts`, `workspace-listing.ts`, `workspace-status-registry.ts` | Worktree/workspace lifecycle |
 | Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `sandbox-ready.ts`, `format.ts` | Various helpers |
 

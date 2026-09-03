@@ -11,6 +11,7 @@ export interface RunCommandOpts {
   timeout?: number
   abort?: AbortSignal
   stdin?: string
+  cwd?: string
   logger: Logger
   logLabel?: string
   /**
@@ -38,6 +39,7 @@ export function runCommand(command: string, args: string[], opts: RunCommandOpts
   const inner = new Promise<CommandResult>((resolve) => {
     const stdioConfig: 'pipe' | 'ignore' = opts.stdin ? 'pipe' : 'ignore'
     const child: ChildProcess = spawn(command, args, {
+      cwd: opts.cwd,
       stdio: [stdioConfig, 'pipe', 'pipe'],
     })
 

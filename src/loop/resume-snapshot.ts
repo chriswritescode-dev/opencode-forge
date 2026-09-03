@@ -94,6 +94,37 @@ export function restoreLoopResumeRows(input: {
   })
 }
 
+const SECTION_STATUSES: readonly SectionPlanRow['status'][] = ['pending', 'in_progress', 'completed', 'failed']
+
+function isValidResumeSection(value: unknown): value is ResumeSectionRow {
+  if (!isRecord(value)) return false
+  if (typeof value.sectionIndex !== 'number') return false
+  if (typeof value.title !== 'string') return false
+  if (typeof value.content !== 'string') return false
+  if (!SECTION_STATUSES.includes(value.status as SectionPlanRow['status'])) return false
+  if (typeof value.attempts !== 'number') return false
+  for (const key of ['summaryDone', 'summaryDeviations', 'summaryFollowUps'] as const) {
+    const item = value[key]
+    if (item !== null && item !== undefined && typeof item !== 'string') return false
+  }
+  for (const key of ['startedAt', 'completedAt'] as const) {
+    const item = value[key]
+    if (item !== null && item !== undefined && typeof item !== 'number') return false
+  }
+  return true
+}
+
+function isValidResumeFinding(value: unknown): value is ResumeFindingRow {
+  if (!isRecord(value)) return false
+  if (typeof value.file !== 'string') return false
+  if (typeof value.line !== 'number') return false
+  if (value.severity !== 'bug' && value.severity !== 'warning') return false
+  if (typeof value.description !== 'string') return false
+  if (value.scenario !== null && value.scenario !== undefined && typeof value.scenario !== 'string') return false
+  if (value.sectionIndex !== null && value.sectionIndex !== undefined && typeof value.sectionIndex !== 'number') return false
+  return true
+}
+
 export function isLoopResumeSnapshot(value: unknown): value is LoopResumeSnapshot {
   if (!isRecord(value)) return false
   if (value.version !== 1) return false
@@ -105,5 +136,7 @@ export function isLoopResumeSnapshot(value: unknown): value is LoopResumeSnapsho
   if (value.goal !== undefined && typeof value.goal !== 'string') return false
   if (!Array.isArray(value.sections)) return false
   if (!Array.isArray(value.findings)) return false
+  if (!value.sections.every(isValidResumeSection)) return false
+  if (!value.findings.every(isValidResumeFinding)) return false
   return true
 }

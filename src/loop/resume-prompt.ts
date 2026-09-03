@@ -1,7 +1,6 @@
 import type { PluginConfig } from '../types'
 import type { LoopService } from './service'
 import type { LoopState } from './state'
-import type { ResolvedPostActionConfig } from './post-action-config'
 import { resolvePostActionConfig } from './post-action-config'
 import { auditorModelChoiceAt, buildAuditorModelChain } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
@@ -12,15 +11,13 @@ export interface ResumePromptPlan {
   phase: ResumePhase
   promptText: string
   agent: 'code' | 'auditor-loop'
-  permission: 'loop' | 'audit'
   model?: { providerID: string; modelID: string }
   fallbackModel?: { providerID: string; modelID: string }
   variant?: string
   auditorModel?: string
-  postAction?: ResolvedPostActionConfig
 }
 
-export function normalizeModelString(value: string | undefined): string | undefined {
+function normalizeModelString(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed ? trimmed : undefined
 }
@@ -39,10 +36,20 @@ export function resolveResumePhase(phase: LoopState['phase']): ResumePhase {
 }
 
 /**
+ * Single owner of the restart agent selection: a stopped final_audit_fix loop
+ * is a coding pass (the fix session), not an auditor phase — it re-dispatches
+ * as the code agent. Only the final_auditing phase re-dispatches the
+ * auditor-loop agent.
+ */
+export function resolveResumeAgent(phase: ResumePhase): 'code' | 'auditor-loop' {
+  return phase === 'final_auditing' ? 'auditor-loop' as const : 'code' as const
+}
+
+/**
  * Single owner of the restart prompt selection: maps a stopped loop's persisted
- * state to the resume phase, prompt text, agent, permission, and model used to
- * re-dispatch it. handleLoopRestart consumes the plan instead of inlining this
- * chain so restart behavior has exactly one definition.
+ * state to the resume phase, prompt text, agent, and model used to re-dispatch
+ * it. handleLoopRestart consumes the plan instead of inlining this chain so
+ * restart behavior has exactly one definition.
  */
 export function buildResumePromptPlan(input: {
   service: LoopService
@@ -98,19 +105,15 @@ export function buildResumePromptPlan(input: {
     ? restartAuditorModel
     : undefined
 
-  // final_audit_fix is a coding-style phase: restart sends the final-audit fix
-  // prompt as the code agent (never the auditor-loop agent).
-  const agent = phase === 'final_auditing' ? 'auditor-loop' as const : 'code' as const
+  const agent = resolveResumeAgent(phase)
 
   return {
     phase,
     promptText,
     agent,
-    permission: phase === 'final_auditing' ? 'audit' : 'loop',
     model,
     fallbackModel,
     variant: agent === 'auditor-loop' ? restartAuditorChoice.variant : state.executionVariant,
     auditorModel: restartAuditorState.auditorModel,
-    postAction: postActionCfg,
   }
 }

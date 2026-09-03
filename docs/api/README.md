@@ -161,7 +161,7 @@ Forge provides these tool groups:
 
 - **Plan tools** — `plan-write`, `plan-edit`, `plan-read`, `section-read`, `plan-adjust`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
-- **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
+- **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`, `loop-migrate`
 - **Sandbox routing** — native `bash`, `glob`, and `grep` tools route into msb for sandboxed sessions
 
 Loops always run in an isolated git worktree; msb is used when enabled, configured, and available.
@@ -172,6 +172,7 @@ Loops always run in an isolated git worktree; msb is used when enabled, configur
 | `execute-goal` | Execute a free-text goal in rotating dedicated code and auditor sessions inside an isolated git worktree. Args: `goal` required; `title`, `loopName`, `maxIterations` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
+| `loop-migrate` | Move a loop to a configured remote opencode server, preserving phase, section progress, section summaries, and review findings. |
 
 `execute-plan` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `execute-plan` tool arguments.
 
@@ -185,6 +186,7 @@ Loops always run in an isolated git worktree; msb is used when enabled, configur
 | `/execute-goal` | Execute a free-text goal in dedicated worktree sessions until an audit leaves no findings | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
+| `/loop-migrate` | Migrate a loop to a remote opencode server | code |
 | `/launch-group` | Decompose a PRD or feature list into features and launch them as parallel planning + development loops | code |
 
 ## Configuration
@@ -475,8 +477,8 @@ On model errors during execution, automatic fallback to the default model kicks 
 
 ### Management
 
-- **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel
-- **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
+- **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel, `/loop-migrate` to move a loop to a remote server
+- **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel, `loop-migrate` to move a loop to a configured remote
 
 ### Loop termination
 

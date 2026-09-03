@@ -7,6 +7,7 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import { createFeatureGroupsRepo } from '../../src/storage/repos/feature-groups-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopService } from '../../src/loop/service'
@@ -78,6 +79,7 @@ describe('loop-migrate tool', () => {
   let reviewFindingsRepo: ReviewFindingsRepo
   let sectionPlansRepo: SectionPlansRepo
   let loopTransitionsRepo: LoopTransitionsRepo
+  let featureGroupsRepo: ReturnType<typeof createFeatureGroupsRepo>
   let loopService: LoopService
 
   const mockWorkspaceStatusRegistry = {
@@ -101,6 +103,7 @@ describe('loop-migrate tool', () => {
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
     loopTransitionsRepo = createLoopTransitionsRepo(db)
+    featureGroupsRepo = createFeatureGroupsRepo(db)
     loopService = createLoopService(
       loopsRepo,
       plansRepo,
@@ -221,8 +224,11 @@ describe('loop-migrate tool', () => {
         inspect: (name: string) => loopService.getAnyState(name),
         listActive: (...args: unknown[]) => (loopService.listActive as (...a: unknown[]) => LoopState[])(...args),
         listRecent: (...args: unknown[]) => (loopService.listRecent as (...a: unknown[]) => LoopState[])(...args),
+        listLoopNames: (...args: unknown[]) => (loopService.listLoopNames as (...a: unknown[]) => string[])(...args),
+        findMatchByName: (...args: unknown[]) => (loopService.findMatchByName as (...a: unknown[]) => { match: LoopState | null; candidates: LoopState[] })(...args),
         setPhase: (...args: unknown[]) => (loopService.setPhase as (...a: unknown[]) => void)(...args),
         generateUniqueLoopName: (...args: unknown[]) => (loopService.generateUniqueLoopName as (...a: unknown[]) => string)(...args),
+        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
         registerSessionReverseIndex: noopFn,
         unregisterSessionReverseIndex: noopFn,
       } as unknown as Parameters<typeof createForgeExecutionService>[0]['loop'],
@@ -254,10 +260,13 @@ describe('loop-migrate tool', () => {
         inspect: (name: string) => loopService.getAnyState(name),
         listActive: () => loopService.listActive(),
         listRecent: () => loopService.listRecent(),
+        findMatchByName: (name: string) => loopService.findMatchByName(name),
+        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
         resolveLoopName: () => null,
       } as never,
       sectionPlansRepo,
       reviewFindingsRepo,
+      featureGroupsRepo,
     } as never)
 
     return tools
@@ -277,7 +286,7 @@ describe('loop-migrate tool', () => {
     expect(result).toContain(`Remote session: ${REMOTE_SESSION_ID}`)
     expect(result).toContain('Resumed at: phase coding, section 2/3')
     expect(result).toContain('Pinned commit: deadbee (refs/forge/my-loop)')
-    expect(result).toContain('cannot be restarted here')
+    expect(result).toContain('Restart it locally only with loop-status restart=true force=true')
   })
 
   test('renders candidate loops when the name is ambiguous', async () => {

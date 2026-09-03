@@ -363,6 +363,24 @@ describe('restoreLoopResumeRows', () => {
       findings: 42,
     })).toBe(false)
     expect(isLoopResumeSnapshot({
+      ...makeSnapshot(),
+      findings: [
+        { file: 'a.ts', line: 1, severity: 'critical', description: 'bad severity', scenario: null, sectionIndex: 1 },
+      ],
+    })).toBe(false)
+    expect(isLoopResumeSnapshot({
+      ...makeSnapshot(),
+      findings: [
+        { file: 'a.ts', line: 1, severity: 'bug', description: 'bad sectionIndex', scenario: null, sectionIndex: 'one' },
+      ],
+    })).toBe(false)
+    expect(isLoopResumeSnapshot({
+      ...makeSnapshot(),
+      sections: [
+        { sectionIndex: 0, title: 'S0', content: 'Section 0 content', status: 'archived', attempts: 0, summaryDone: null, summaryDeviations: null, summaryFollowUps: null, startedAt: null, completedAt: null },
+      ],
+    })).toBe(false)
+    expect(isLoopResumeSnapshot({
       version: 1,
       kind: 'goal',
       phase: 'coding',

@@ -163,4 +163,34 @@ describe('launchTuiLoop initialPrompt', () => {
     expect(promptArgs.agent).toBe('code')
     expect(promptArgs.parts[0].text).toBe('# Plain Plan')
   })
+
+  test('removes the created workspace when session.create throws', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => {
+          throw new Error('session create exploded')
+        },
+      },
+      workspace: {
+        create: async () => ({ id: 'ws_orphan', directory: '/remote/wt', branch: null }),
+        status: async () => [{ workspaceID: 'ws_orphan', status: 'connected' }],
+      },
+    })
+
+    const result = await launchTuiLoop({
+      client,
+      directory: '/p',
+      projectId: null,
+      requestedLoopName: 'moved',
+      loopNameReserved: true,
+      title: 'Moved',
+      plan: '# Plan',
+      permissionOptions: {},
+    })
+
+    expect(result).toEqual({ error: 'Loop launch failed: session create exploded' })
+    expect(client.workspace.remove).toHaveBeenCalledTimes(1)
+    expect(client.workspace.remove).toHaveBeenCalledWith({ id: 'ws_orphan' })
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
+  })
 })

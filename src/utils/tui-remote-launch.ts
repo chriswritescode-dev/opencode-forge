@@ -3,10 +3,11 @@ import { defaultGitService, type GitService, type GitResult } from './git-servic
 import { createRemoteForgeClient, type RemoteClientOptions } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
-import { resolveRemoteLoopPermissionOptions } from '../constants/loop'
+import { resolveRemoteLoopPermissionOptions, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { emitLoopPermissionConfigWarnings } from './loop-permission-warnings'
 import { resolveDataDir } from './opencode-paths'
-import { reserveTuiLoopName, launchTuiLoop } from './tui-client'
+import { reserveTuiLoopName, launchTuiLoop, type LaunchInitialPrompt } from './tui-client'
+import type { ForgeLoopExtra } from '../services/execution'
 
 export interface RemoteLoopRequest {
   remoteName: string
@@ -122,11 +123,11 @@ export async function connectRemoteProject(
  * Push a local source ref to the shared git remote's forge sync ref. The sync
  * ref is never fetched locally, so the push is forced.
  */
-export function pushForgeSyncRef(
+export async function pushForgeSyncRef(
   git: GitService,
   args: { cwd: string; gitRemote: string; sourceRef: string; syncRef: string },
-): { ok: true } | { ok: false; error: string } {
-  const pushResult = git.push(args.cwd, args.gitRemote, `${args.sourceRef}:${args.syncRef}`, true)
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const pushResult = await git.pushAsync(args.cwd, args.gitRemote, `${args.sourceRef}:${args.syncRef}`, true)
   if (!pushResult.ok) {
     return { ok: false, error: pushResult.stderr || '(no stderr)' }
   }
@@ -134,11 +135,134 @@ export function pushForgeSyncRef(
 }
 
 /** Delete the forge sync ref on the shared git remote (launch-failure cleanup). */
-export function deleteForgeSyncRef(
+export async function deleteForgeSyncRef(
   git: GitService,
   args: { cwd: string; gitRemote: string; syncRef: string },
-): GitResult {
-  return git.push(args.cwd, args.gitRemote, `:${args.syncRef}`, false)
+): Promise<GitResult> {
+  return git.pushAsync(args.cwd, args.gitRemote, `:${args.syncRef}`, false)
+}
+
+export interface PrepareRemoteLoopLaunchInput {
+  client: ForgeClient
+  requestedLoopName: string
+  permissionOptions: LoopPermissionRulesetOptions
+  config: PluginConfig
+  dataDir: string
+  localDirectory: string
+  debug?: (message: string) => void
+  onWarnings?: (messages: string[]) => void
+}
+
+export type PrepareRemoteLoopLaunchResult = { loopName: string; syncRef: string }
+
+export interface PushAndLaunchRemoteLoopInput {
+  git: GitService
+  cwd: string
+  remote: ResolvedRemoteServer
+  project: { id: string; worktree: string }
+  client: ForgeClient
+  loopName: string
+  syncRef: string
+  sourceRef: string
+  startRef: string
+  title: string
+  plan: string
+  executionModel?: string
+  auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
+  permissionOptions: LoopPermissionRulesetOptions
+  forgeLoopOverrides?: Omit<Partial<ForgeLoopExtra>, 'sandboxEnabled'>
+  initialPrompt?: LaunchInitialPrompt
+  pushErrorPrefix?: string
+  debug?: (message: string) => void
+}
+
+export type PushAndLaunchRemoteLoopResult =
+  | { loopName: string; sessionId: string }
+  | { error: string; pushed: boolean }
+
+export async function prepareRemoteLoopLaunch(
+  input: PrepareRemoteLoopLaunchInput,
+): Promise<PrepareRemoteLoopLaunchResult> {
+  const debug = input.debug ?? (() => {})
+  const loopName = await reserveTuiLoopName(input.client, null, input.requestedLoopName)
+  const syncRef = forgeSyncRef(loopName)
+  debug(`remote-launch: reserved loop name="${loopName}" syncRef="${syncRef}"`)
+  emitLoopPermissionConfigWarnings(input.config, input.config.dataDir || input.dataDir, input.localDirectory, {
+    logger: { log: debug, error: debug, debug },
+    onWarnings: (warnings) => input.onWarnings?.(warnings),
+  })
+  return { loopName, syncRef }
+}
+
+export async function pushAndLaunchRemoteLoop(
+  input: PushAndLaunchRemoteLoopInput,
+): Promise<PushAndLaunchRemoteLoopResult> {
+  const debug = input.debug ?? (() => {})
+  const { remote } = input
+
+  debug(`remote-launch: pushing ${input.sourceRef}:${input.syncRef} to gitRemote="${remote.gitRemote}" from "${input.cwd}"`)
+  const pushResult = await pushForgeSyncRef(input.git, {
+    cwd: input.cwd,
+    gitRemote: remote.gitRemote,
+    sourceRef: input.sourceRef,
+    syncRef: input.syncRef,
+  })
+  if (!pushResult.ok) {
+    debug(`remote-launch: push FAILED: ${pushResult.error}`)
+    const message = input.pushErrorPrefix
+      ? `${input.pushErrorPrefix}${pushResult.error}`
+      : `Failed to push to remote "${remote.name}": ${pushResult.error}`
+    return { error: message, pushed: false }
+  }
+  debug(`remote-launch: push ok (ref ${input.syncRef} now on ${remote.gitRemote})`)
+
+  let launchResult: Awaited<ReturnType<typeof launchTuiLoop>>
+  try {
+    launchResult = await launchTuiLoop({
+      client: input.client,
+      directory: input.project.worktree,
+      projectId: input.project.id,
+      requestedLoopName: input.loopName,
+      loopNameReserved: true,
+      connectPollIntervalMs: 500,
+      title: input.title,
+      plan: input.plan,
+      executionModel: input.executionModel,
+      auditorModel: input.auditorModel,
+      executionVariant: input.executionVariant,
+      auditorVariant: input.auditorVariant,
+      extraWorkspaceFields: {
+        startRef: input.startRef,
+        syncRef: input.syncRef,
+        gitRemote: remote.gitRemote,
+        permissionRules: input.permissionOptions.extraRules,
+      },
+      forgeLoopOverrides: {
+        sandboxEnabled: remote.sandbox,
+        ...input.forgeLoopOverrides,
+      },
+      permissionOptions: input.permissionOptions,
+      initialPrompt: input.initialPrompt,
+      debug,
+    })
+  } catch (err) {
+    debug(`remote-launch: launchTuiLoop THREW: ${err instanceof Error ? err.message : String(err)}`)
+    const cleanup = await deleteForgeSyncRef(input.git, { cwd: input.cwd, gitRemote: remote.gitRemote, syncRef: input.syncRef })
+    debug(`remote-launch: sync ref cleanup ${cleanup.ok ? 'ok' : `failed: ${cleanup.stderr.trim() || 'unknown error'}`}`)
+    throw err
+  }
+
+  if ('error' in launchResult) {
+    debug(`remote-launch: launchTuiLoop FAILED: ${launchResult.error}`)
+    const cleanup = await deleteForgeSyncRef(input.git, { cwd: input.cwd, gitRemote: remote.gitRemote, syncRef: input.syncRef })
+    debug(`remote-launch: sync ref cleanup ${cleanup.ok ? 'ok' : `failed: ${cleanup.stderr.trim() || 'unknown error'}`}`)
+    return { error: launchResult.error, pushed: false }
+  }
+
+  debug(`remote-launch: launched loop="${launchResult.loopName}" session=${launchResult.sessionId} on "${remote.name}"`)
+  return { loopName: launchResult.loopName, sessionId: launchResult.sessionId }
 }
 
 export async function executeRemoteLoop(
@@ -149,6 +273,8 @@ export async function executeRemoteLoop(
   const git = deps.git ?? defaultGitService
 
   debug(`remote-launch: start remote="${req.remoteName}" dir="${req.localDirectory}" projectId="${req.localProjectId}" loop="${req.loopName}"`)
+
+  let sha = ''
 
   // 1+3+4. Resolve the remote server, discover the matching remote project, and
   // create the scoped client. The git preflight is threaded through as a gate
@@ -167,7 +293,8 @@ export async function executeRemoteLoop(
         if (!headResult.ok) {
           return { error: `Failed to resolve HEAD in ${req.localDirectory}: ${headResult.stderr}` }
         }
-        debug(`remote-launch: preflight ok HEAD=${headResult.stdout.trim()}`)
+        sha = headResult.stdout.trim()
+        debug(`remote-launch: preflight ok HEAD=${sha}`)
         return undefined
       },
     },
@@ -175,7 +302,6 @@ export async function executeRemoteLoop(
   if ('error' in connected) return connected
 
   const { remote, project: matched, client: remoteClient } = connected
-  const sha = git.revParseHead(req.localDirectory).stdout.trim()
 
   // Warn about dirty working tree but proceed
   const statusResult = git.statusPorcelain(req.localDirectory)
@@ -183,77 +309,46 @@ export async function executeRemoteLoop(
     deps.onWarning?.(`Uncommitted changes are not included; remote loop starts from HEAD ${sha.substring(0, 7)}`)
   }
 
-  // 5. Reserve a unique loop name (once; launchTuiLoop uses it verbatim below)
-  const finalLoopName = await reserveTuiLoopName(remoteClient, null, req.loopName)
-  const syncRef = forgeSyncRef(finalLoopName)
-  debug(`remote-launch: reserved loop name="${finalLoopName}" syncRef="${syncRef}"`)
-
   // Resolve the portable configured rules once for both the persisted workspace
   // field and the launch options. Host-specific directory grants stay omitted
   // because they do not exist on the remote machine.
   const remotePermissionOptions = resolveRemoteLoopPermissionOptions(deps.config)
 
-  emitLoopPermissionConfigWarnings(deps.config, deps.config.dataDir || resolveDataDir(), req.localDirectory, {
-    logger: { log: debug, error: debug, debug },
+  const prepared = await prepareRemoteLoopLaunch({
+    client: remoteClient,
+    requestedLoopName: req.loopName,
+    permissionOptions: remotePermissionOptions,
+    config: deps.config,
+    dataDir: deps.config.dataDir || resolveDataDir(),
+    localDirectory: req.localDirectory,
+    debug,
     onWarnings: (warnings) => deps.onWarning?.(warnings.join(' ')),
   })
 
-  // 6. Push HEAD to remote ref
-  debug(`remote-launch: pushing HEAD:${syncRef} to gitRemote="${remote.gitRemote}" from "${req.localDirectory}"`)
-  const pushResult = pushForgeSyncRef(git, {
+  const launched = await pushAndLaunchRemoteLoop({
+    git,
     cwd: req.localDirectory,
-    gitRemote: remote.gitRemote,
-    sourceRef: 'HEAD',
-    syncRef,
-  })
-  if (!pushResult.ok) {
-    debug(`remote-launch: push FAILED: ${pushResult.error}`)
-    return { error: `Failed to push to remote "${remote.name}": ${pushResult.error}` }
-  }
-  debug(`remote-launch: push ok (ref ${syncRef} now on ${remote.gitRemote})`)
-
-  // 7. Launch the remote loop
-  const launchResult = await launchTuiLoop({
+    remote,
+    project: matched,
     client: remoteClient,
-    directory: matched.worktree,
-    projectId: matched.id,
-    requestedLoopName: finalLoopName,
-    loopNameReserved: true,
-    connectPollIntervalMs: 500,
+    loopName: prepared.loopName,
+    syncRef: prepared.syncRef,
+    sourceRef: 'HEAD',
+    startRef: sha,
     title: req.title,
     plan: req.plan,
     executionModel: req.executionModel,
     auditorModel: req.auditorModel,
     executionVariant: req.executionVariant,
     auditorVariant: req.auditorVariant,
-    extraWorkspaceFields: {
-      startRef: sha,
-      syncRef,
-      gitRemote: remote.gitRemote,
-      // Persist the portable configured rules so every subsequent session of the
-      // remote loop (rotations, audits, post-actions) keeps them: those sessions
-      // rebuild rulesets from the remote server's own config, which lacks the
-      // launching machine's loop.permissions.
-      permissionRules: remotePermissionOptions.extraRules,
-    },
-    forgeLoopOverrides: {
-      sandboxEnabled: remote.sandbox,
-    },
     permissionOptions: remotePermissionOptions,
     debug,
   })
+  if ('error' in launched) return { error: launched.error }
 
-  if ('error' in launchResult) {
-    debug(`remote-launch: launchTuiLoop FAILED: ${launchResult.error}`)
-    const cleanup = deleteForgeSyncRef(git, { cwd: req.localDirectory, gitRemote: remote.gitRemote, syncRef })
-    debug(`remote-launch: sync ref cleanup ${cleanup.ok ? 'ok' : `failed: ${cleanup.stderr.trim() || 'unknown error'}`}`)
-    return { error: launchResult.error }
-  }
-
-  debug(`remote-launch: launched loop="${launchResult.loopName}" session=${launchResult.sessionId} on "${remote.name}"`)
   return {
-    loopName: launchResult.loopName,
-    sessionId: launchResult.sessionId,
+    loopName: launched.loopName,
+    sessionId: launched.sessionId,
     remoteName: remote.name,
   }
 }

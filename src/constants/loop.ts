@@ -270,6 +270,20 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
 }
 
 /**
+ * Selects the permission ruleset for a session from the agent that will run it:
+ * the audit ruleset for `auditor-loop`, the loop ruleset for every other agent.
+ * Single derivation so restart, TUI launch, and audit sessions cannot diverge.
+ */
+export function buildSessionPermissionRulesetForAgent(
+  agent: 'code' | 'auditor-loop',
+  options: LoopPermissionRulesetOptions = {},
+): PermissionRule[] {
+  return agent === 'auditor-loop'
+    ? buildAuditSessionPermissionRuleset(options)
+    : buildLoopPermissionRuleset(options)
+}
+
+/**
  * Builds the permission ruleset for audit sessions.
  *
  * Audit sessions run the auditor agent in an isolated session. The ruleset

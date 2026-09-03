@@ -475,8 +475,8 @@ On model errors during execution, automatic fallback to the default model kicks 
 
 ### Management
 
-- **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel
-- **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
+- **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel, `/loop-migrate` to move a loop to a remote server
+- **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel, `loop-migrate` to move a loop to a configured remote
 
 ### Loop termination
 
