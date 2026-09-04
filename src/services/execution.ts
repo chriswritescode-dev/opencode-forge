@@ -244,6 +244,8 @@ export interface RestartLoopCommand {
   type: 'loop.restart'
   selector: LoopSelector
   force?: boolean
+  auditorModel?: string
+  auditorVariant?: string
 }
 
 export interface CancelLoopCommand {
@@ -1792,7 +1794,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (stoppedState.active && latestState) {
         // The pre-lock snapshot was active — the original code already ran this
         // block to abort and refresh from latestState.
-        try { await deps.client.session.abort({ sessionID: latestState.sessionId }) } catch {}
+        try {
+          await deps.client.session.abort({ sessionID: latestState.sessionId })
+        } catch (err) {
+          return { ok: false, error: `Could not abort active loop session ${latestState.sessionId}: ${err instanceof Error ? err.message : String(err)}` }
+        }
         await deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
         Object.assign(stoppedState, latestState)
         Object.assign(previousState, latestState)
@@ -1805,6 +1811,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           Object.assign(previousState, latestState)
           previousSessionId = latestState.sessionId
         }
+      }
+
+      const overrideAuditorModel = normalizeModelString(command.auditorModel)
+      const overrideAuditorVariant = normalizeModelString(command.auditorVariant)
+      if (overrideAuditorModel) {
+        stoppedState.auditorModel = overrideAuditorModel
+      }
+      if (command.auditorVariant !== undefined) {
+        stoppedState.auditorVariant = overrideAuditorVariant
       }
 
       if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
@@ -2026,6 +2041,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandboxContainer: newState.sandboxContainer ?? null,
         workspaceId: newState.workspaceId ?? null,
         auditorModel: restartAuditorState.auditorModel ?? null,
+        auditorVariant: command.auditorVariant === undefined ? undefined : overrideAuditorVariant ?? null,
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
         finalAuditDone: newState.finalAuditDone,

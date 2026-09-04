@@ -5,7 +5,7 @@ import { ForgeClientError } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createSessionSandboxPreferencesRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createSessionSandboxPreferencesRepo, createTuiLoopRestartRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -49,6 +49,7 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from './utils/
 import { resolveSessionPlanOfRecord } from './services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from './utils/marked-plan-parser'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
+import { createTuiLoopRestartController, type TuiLoopRestartController } from './services/tui-loop-restart-controller'
 
 export interface CreateParentSessionLookupOptions {
   client: ForgeClient
@@ -508,6 +509,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     let sessionSandboxProjectId: string | null = null
     let sessionSandboxProvider: SessionSandboxProvider | null = null
+    let tuiLoopRestartController: TuiLoopRestartController | null = null
 
     const cleanup = (): Promise<void> => {
       if (cleanupPromise) {
@@ -524,6 +526,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         logger.log('Loop: active loops preserved during plugin cleanup')
         
         loopHandler.clearAllRetryTimeouts()
+        await tuiLoopRestartController?.dispose()
 
         // Disposal and DB close must both be exception-safe: a rejected controller disposal (e.g.
         // a failed container removal or acknowledgement persistence) must never prevent the SQLite
@@ -730,6 +733,32 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       workspaceStatusRegistry,
       pendingTeardowns,
     })
+
+    if (!isForgeWorktreeDir(dataDir, directory)) {
+      tuiLoopRestartController = createTuiLoopRestartController({
+        projectId,
+        repo: createTuiLoopRestartRepo(db),
+        logger,
+        async restart(request) {
+          const response = await groupExecService.dispatch(
+            { surface: 'api', projectId, directory: projectRoot },
+            {
+              type: 'loop.restart',
+              selector: { kind: 'exact', name: request.loopName },
+              force: true,
+              auditorModel: request.auditorModel,
+              auditorVariant: request.auditorVariant,
+            },
+          )
+          return response.ok
+            ? { sessionId: response.data.sessionId }
+            : { error: response.error.message }
+        },
+      })
+      void tuiLoopRestartController.start().catch((err) => {
+        logger.error('TUI loop restart controller failed to start', err)
+      })
+    }
 
     // ── Real GroupEffects ─────────────────────────────────────────────────────
     const effects: GroupEffects = {

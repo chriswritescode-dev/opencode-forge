@@ -123,6 +123,7 @@ export interface LoopsRepo {
       startedAt: number
       /** Primary auditor model used for the restarted prompt; persisted so later chain resolution agrees. */
       auditorModel: string | null
+      auditorVariant?: string | null
       /** Goal-loop executor binding to persist on restart; null for plan loops. */
       executorSessionId: string | null
     }
@@ -389,6 +390,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       sandbox_container = ?,
       workspace_id = ?,
       auditor_model = ?,
+      auditor_variant = CASE WHEN ? = 1 THEN ? ELSE auditor_variant END,
       started_at = ?,
       completed_at = NULL,
       termination_reason = NULL,
@@ -655,6 +657,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         // Clear the stale post-action report alongside completion_summary: a restarted
         // loop will produce a fresh post-action run (or none at all).
         clearPostActionReportStmt.run(projectId, loopName)
+        const setsAuditorVariant = opts.auditorVariant !== undefined ? 1 : 0
         restartStmt.run(
           opts.sessionId,
           opts.phase,
@@ -664,6 +667,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.sandboxContainer,
           opts.workspaceId,
           opts.auditorModel,
+          setsAuditorVariant,
+          setsAuditorVariant ? (opts.auditorVariant ?? null) : null,
           opts.startedAt,
           opts.currentSectionIndex,
           opts.totalSections,

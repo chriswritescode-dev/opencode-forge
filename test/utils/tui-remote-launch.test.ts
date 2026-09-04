@@ -21,6 +21,7 @@ vi.mock('../../src/utils/workspace-listing', () => ({
 
 vi.mock('../../src/utils/tui-loop-store', () => ({
   fetchLoopsList: vi.fn().mockReturnValue([]),
+  requestTuiLoopRestart: vi.fn(),
 }))
 
 vi.mock('../../src/storage', () => ({

@@ -29,6 +29,7 @@ import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/sessi
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { describeDashboardBinding } from './dashboard/config'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
+import { fetchLoopsList } from './utils/tui-loop-store'
 
 type TuiKeybinds = {
   executePlan: string
@@ -182,7 +183,7 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
     <box flexDirection="column" paddingX={2}>
       <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
         <text fg={theme().text}>
-          <b>Execute plan</b>
+          <b>{props.restart ? 'Restart loop' : 'Execute plan'}</b>
         </text>
       </box>
 
@@ -200,9 +201,10 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
         initialLoopName={props.initialLoopName}
         initialTarget={props.initialTarget}
         projectDirectory={props.projectDirectory}
+        restart={props.restart}
         onBack={() => props.api.ui.dialog.clear()}
         onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName, target }) => {
-          props.cache?.setSelectionOverride({ executionModel, auditorModel, executionVariant, auditorVariant })
+          if (!props.restart) props.cache?.setSelectionOverride({ executionModel, auditorModel, executionVariant, auditorVariant })
           props.api.ui.dialog.setSize('xlarge')
           props.api.ui.dialog.replace(() => (
             <ExecutionDialog
@@ -219,6 +221,7 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
               initialLoopName={loopName}
               initialTarget={target}
               projectDirectory={props.projectDirectory}
+              restart={props.restart}
             />
           ))
         }}
@@ -718,6 +721,45 @@ const tui: TuiPlugin = async (api) => {
     openExecutionDialog(currentClient, sessionID, planText)
   }
 
+  const runRestartLoop = async () => {
+    const currentClient = await ensureClient()
+    if (!currentClient?.projectId) return
+    const loops = fetchLoopsList(currentClient.projectId, forgeDbPath)
+    if (loops.every(loop => !loop.restartable)) {
+      const reason = loops.find(loop => loop.restartBlockedMessage)?.restartBlockedMessage
+      api.ui.toast({ message: reason ?? 'No restartable loops', variant: 'info', duration: 5000 })
+      return
+    }
+
+    const currentSessionId = getCurrentRouteSessionId(api)
+    const currentLoop = loops.find(loop => loop.sessionId === currentSessionId && loop.restartable)
+      ?? loops.find(loop => loop.restartable)!
+    const restart = async (request: { loopName: string; auditorModel: string; auditorVariant: string }) => {
+      const auditorModel = request.auditorModel
+        || api.state.config?.model
+        || ''
+      if (!auditorModel) throw new Error('Select an auditor model before restarting')
+      const result = await currentClient.restartLoop({ ...request, auditorModel })
+      await currentClient.selectSession(result.sessionId)
+    }
+    api.ui.dialog.setSize('xlarge')
+    api.ui.dialog.replace(() => (
+      <ExecutionDialog
+        api={api}
+        client={currentClient}
+        cache={executionContextCache()}
+        pluginConfig={pluginConfig}
+        planContent=""
+        sessionId={currentSessionId ?? ''}
+        projectDirectory={directory}
+        initialLoopName={currentLoop?.name}
+        initialAuditorModel={currentLoop?.auditorModel}
+        initialAuditorVariant={currentLoop?.auditorVariant}
+        restart={{ loops, onRestart: restart }}
+      />
+    ))
+  }
+
   api.keymap.registerLayer({
     commands: [
       {
@@ -744,6 +786,14 @@ const tui: TuiPlugin = async (api) => {
             if (currentClient) openPastePlanDialog(currentClient, sessionID)
           })
         },
+      },
+      {
+        name: 'forge.loop.restart',
+        title: 'Restart loop',
+        desc: 'Change the auditor model and restart a running or stopped loop from persisted progress',
+        category: 'Forge',
+        namespace: 'palette',
+        run: () => { void runRestartLoop() },
       },
     ],
     bindings: opts.keybinds.executePlan

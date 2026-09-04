@@ -59,11 +59,15 @@ export interface ModelSortOptions {
   configuredProviderIds?: string[]
 }export type LoopInfo = {
   name: string
+  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
   phase: string
   iteration: number
   maxIterations: number
   sessionId: string
   active: boolean
+  restartable: boolean
+  restartRequiresForce: boolean
+  restartBlockedMessage?: string
   startedAt?: string
   completedAt?: string
   terminationReason?: string
@@ -72,6 +76,7 @@ export interface ModelSortOptions {
   worktreeDir?: string
   executionModel?: string
   auditorModel?: string
+  auditorVariant?: string
   workspaceId?: string
   hostSessionId?: string
   currentSectionIndex?: number

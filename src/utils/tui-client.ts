@@ -16,7 +16,7 @@ import { type ForgeLoopExtra } from '../services/execution'
 import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
-import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
+import { fetchLoopsList, fetchStoredSessionPlan, requestTuiLoopRestart } from './tui-loop-store'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
 import { extractPlanExecutionMetadata, sanitizeLoopName, createPlanExecutionSession } from './plan-execution'
@@ -159,6 +159,8 @@ export interface ForgeProjectClient {
 
   /** Single round-trip pair: read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
+
+  restartLoop(request: { loopName: string; auditorModel: string; auditorVariant: string }): Promise<{ sessionId: string }>
 }
 
 function tuiDebug(message: string): void {
@@ -584,6 +586,15 @@ export async function connectForgeProject(
       const stored = projectId ? fetchStoredSessionPlan(projectId, sessionId, dbPath) : null
       if (stored) return Promise.resolve(stored)
       return fetchLatestPlanForSession(client, sessionId, directory)
+    },
+    async restartLoop(request) {
+      if (!projectId) throw new Error('Forge project is unavailable')
+      const applied = await requestTuiLoopRestart(projectId, request, {
+        dbPath,
+        signal: api.lifecycle.signal,
+      })
+      if (!applied.sessionId) throw new Error('Loop restart completed without a session')
+      return { sessionId: applied.sessionId }
     },
     async loadExecutionContext() {
       const [sessionsResult, workspacesResult, modelsResult] = await Promise.all([

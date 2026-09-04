@@ -19,6 +19,7 @@ vi.mock('../../src/utils/workspace-listing', () => ({
 
 vi.mock('../../src/utils/tui-loop-store', () => ({
   fetchLoopsList: vi.fn().mockReturnValue([]),
+  requestTuiLoopRestart: vi.fn(),
 }))
 
 vi.mock('../../src/storage', () => ({
@@ -31,7 +32,7 @@ vi.mock('../../src/services/execution', () => ({
 
 import { connectForgeProject } from '../../src/utils/tui-client'
 import { buildLoopPermissionRuleset } from '../../src/constants/loop'
-import { fetchLoopsList } from '../../src/utils/tui-loop-store'
+import { fetchLoopsList, requestTuiLoopRestart } from '../../src/utils/tui-loop-store'
 
 describe('TUI warp flow for plan.execute mode=loop', () => {
   const PROJECT_ID = 'proj_test'
@@ -101,7 +102,35 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
           callOrder.push('route.navigate')
         }),
       },
+      lifecycle: { signal: new AbortController().signal },
     }
+  })
+
+  test('restartLoop forwards the request and lifecycle signal', async () => {
+    vi.mocked(requestTuiLoopRestart).mockResolvedValue({
+      version: 1,
+      revision: 'rev-1',
+      status: 'completed',
+      ownerId: null,
+      sessionId: 'sess-restarted',
+      error: null,
+      appliedAt: Date.now(),
+    })
+    const client = await connectForgeProject(mockApi, DIRECTORY)
+
+    await expect(client!.restartLoop({
+      loopName: 'loop-1',
+      auditorModel: 'provider/auditor',
+      auditorVariant: '',
+    })).resolves.toEqual({ sessionId: 'sess-restarted' })
+    expect(requestTuiLoopRestart).toHaveBeenCalledWith(PROJECT_ID, {
+      loopName: 'loop-1',
+      auditorModel: 'provider/auditor',
+      auditorVariant: '',
+    }, {
+      dbPath: undefined,
+      signal: mockApi.lifecycle.signal,
+    })
   })
 
   test('happy path: correct call order and workspace.create params', async () => {

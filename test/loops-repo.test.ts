@@ -597,6 +597,59 @@ describe('LoopsRepo', () => {
     })
   })
 
+  describe('restart auditor overrides', () => {
+    const restartOpts = (overrides: Partial<Parameters<typeof repo.restart>[2]> = {}) => ({
+      sessionId: 'restart-session',
+      phase: 'coding' as const,
+      iteration: 1,
+      auditCount: 0,
+      sandbox: false,
+      sandboxContainer: null,
+      workspaceId: null,
+      auditorModel: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      startedAt: Date.now(),
+      executorSessionId: null,
+      ...overrides,
+    })
+
+    test('an omitted auditorVariant preserves the persisted variant', () => {
+      repo.insert({ ...testRow, auditorModel: 'a/one', auditorVariant: 'high' }, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts({ auditorModel: 'b/two' }))
+
+      const retrieved = repo.get(testRow.projectId, testRow.loopName)!
+      expect(retrieved.auditorModel).toBe('b/two')
+      expect(retrieved.auditorVariant).toBe('high')
+    })
+
+    test('a supplied auditorVariant replaces the prior variant and null clears it', () => {
+      repo.insert({ ...testRow, auditorModel: 'a/one', auditorVariant: 'high' }, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts({ auditorModel: 'b/two', auditorVariant: 'low' }))
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorVariant).toBe('low')
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts({ auditorModel: 'b/two', auditorVariant: null }))
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorVariant).toBeNull()
+    })
+
+    test('a changed auditor model persists it and resets the fallback index in the same transaction', () => {
+      repo.insert({ ...testRow, auditorModel: 'a/one', auditorVariant: 'high' }, testLarge)
+      repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 0, 1)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts({ auditorModel: 'b/two' }))
+
+      const retrieved = repo.get(testRow.projectId, testRow.loopName)!
+      expect(retrieved.auditorModel).toBe('b/two')
+      expect(retrieved.auditorVariant).toBe('high')
+      expect(retrieved.auditorFallbackIndex).toBe(0)
+      expect(retrieved.status).toBe('running')
+    })
+  })
+
   describe('setLastAuditResult', () => {
     test('should set last audit result', () => {
       repo.insert(testRow, testLarge)

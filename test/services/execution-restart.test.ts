@@ -1647,6 +1647,310 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(rows[0].reason).toBe('completed')
     expect(rows[0].iteration).toBe(2)
   })
+
+  async function createRestartOverrideService(promptImpl?: () => Promise<void>, abortImpl?: () => Promise<void>) {
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: (name) => name,
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'override-restart-session' }),
+        get: async () => ({}),
+        promptAsync: async () => { await promptImpl?.() },
+        abort: async () => { await abortImpl?.() },
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    return { service, client }
+  }
+
+  test('restart applies auditor model/variant overrides to the restarted prompt and persisted loop', async () => {
+    insertLoop({
+      loopName: 'override-audit-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+      totalSections: 0,
+      auditorModel: 'prov/oldaud',
+      auditorVariant: 'low',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'override-audit-loop' },
+        auditorModel: 'prov/newaud',
+        auditorVariant: 'max',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('auditor-loop')
+    expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'newaud' })
+    expect(promptCall.variant).toBe('max')
+
+    const row = loopsRepo.get(PROJECT_ID, 'override-audit-loop')!
+    expect(row.auditorModel).toBe('prov/newaud')
+    expect(row.auditorVariant).toBe('max')
+    expect(row.auditorFallbackIndex).toBe(0)
+    expect(row.status).toBe('running')
+
+    const activeState = loopService.getActiveState('override-audit-loop')!
+    expect(activeState.auditorModel).toBe('prov/newaud')
+    expect(activeState.auditorVariant).toBe('max')
+  })
+
+  test('restart without auditor overrides preserves the persisted auditor model and variant', async () => {
+    insertLoop({
+      loopName: 'preserve-audit-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      totalSections: 0,
+      auditorModel: 'prov/oldaud',
+      auditorVariant: 'high',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'preserve-audit-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('code')
+    expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'exec' })
+    expect(promptCall.variant).toBeUndefined()
+
+    const row = loopsRepo.get(PROJECT_ID, 'preserve-audit-loop')!
+    expect(row.auditorModel).toBe('prov/oldaud')
+    expect(row.auditorVariant).toBe('high')
+    expect(row.auditorFallbackIndex).toBe(0)
+  })
+
+  test('restart with an empty auditor variant clears the persisted variant', async () => {
+    insertLoop({
+      loopName: 'clear-audit-variant-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+      totalSections: 0,
+      auditorModel: 'prov/oldaud',
+      auditorVariant: 'high',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'clear-audit-variant-loop' },
+        auditorModel: 'prov/newaud',
+        auditorVariant: '',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect((client.session.promptAsync as any).mock.calls[0][0].variant).toBeUndefined()
+    expect(loopsRepo.get(PROJECT_ID, 'clear-audit-variant-loop')!.auditorVariant).toBeNull()
+  })
+
+  test('failed restart with auditor overrides rolls back all prior model fields', async () => {
+    loopsRepo.insert({
+      projectId: PROJECT_ID,
+      loopName: 'rollback-override-loop',
+      status: 'stalled',
+      currentSessionId: 'session-old',
+      worktree: false,
+      worktreeDir: '/tmp',
+      worktreeBranch: null,
+      projectDir: '/tmp',
+      maxIterations: 10,
+      iteration: 3,
+      auditCount: 1,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: 'prov/oldexec',
+      auditorModel: 'prov/oldaud',
+      executionVariant: 'med',
+      auditorVariant: 'high',
+      kind: 'plan',
+      modelFailed: true,
+      sandbox: false,
+      sandboxContainer: null,
+      startedAt: Date.now(),
+      completedAt: null,
+      terminationReason: 'stall_timeout',
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: 0,
+      auditorFallbackIndex: 1,
+    }, { lastAuditResult: null })
+
+    const { service } = await createRestartOverrideService(() => Promise.reject(new Error('prompt delivery failed')))
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'rollback-override-loop' },
+        auditorModel: 'prov/newaud',
+        auditorVariant: 'max',
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('could not send prompt to new session')
+
+    const row = loopsRepo.get(PROJECT_ID, 'rollback-override-loop')!
+    expect(row.status).toBe('stalled')
+    expect(row.terminationReason).toBe('stall_timeout')
+    expect(row.executionModel).toBe('prov/oldexec')
+    expect(row.executionVariant).toBe('med')
+    expect(row.auditorModel).toBe('prov/oldaud')
+    expect(row.auditorVariant).toBe('high')
+    expect(row.auditorFallbackIndex).toBe(1)
+    expect(row.modelFailed).toBe(true)
+  })
+
+  test('force restart of an active loop applies auditor overrides', async () => {
+    insertLoop({
+      loopName: 'force-override-loop',
+      status: 'running',
+      terminationReason: null,
+      phase: 'coding',
+      totalSections: 0,
+      iteration: 4,
+      active: true,
+      auditorModel: 'prov/oldaud',
+      auditorVariant: 'high',
+    })
+
+    const { service } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'force-override-loop' },
+        force: true,
+        auditorModel: 'prov/newaud',
+        auditorVariant: 'max',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.sessionId).toBe('override-restart-session')
+    expect(result.data.previousSessionId).toBe('session-old')
+
+    const row = loopsRepo.get(PROJECT_ID, 'force-override-loop')!
+    expect(row.status).toBe('running')
+    expect(row.auditorModel).toBe('prov/newaud')
+    expect(row.auditorVariant).toBe('max')
+    expect(row.auditorFallbackIndex).toBe(0)
+  })
+
+  test('force restart stops when the active session cannot be aborted', async () => {
+    insertLoop({
+      loopName: 'abort-failure-loop',
+      status: 'running',
+      terminationReason: null,
+      phase: 'coding',
+      totalSections: 0,
+      active: true,
+    })
+
+    const { service, client } = await createRestartOverrideService(undefined, () => Promise.reject(new Error('abort failed')))
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'abort-failure-loop' },
+        force: true,
+        auditorModel: 'prov/newaud',
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('Could not abort active loop session session-old: abort failed')
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(loopsRepo.get(PROJECT_ID, 'abort-failure-loop')!.currentSessionId).toBe('session-old')
+  })
 })
 
 describe('handleLoopRestart restartability rules', () => {

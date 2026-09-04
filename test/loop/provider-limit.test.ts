@@ -113,17 +113,31 @@ describe('extractErrorSignal', () => {
     expect(signal.message).toBe('Forbidden')
   })
 
-  it('falls back to direct properties when cause is absent', () => {
+  it('prefers provider data message over a generic wrapper message', () => {
     const error = Object.assign(new Error('usage limit'), {
       name: 'SomeError',
       data: { message: 'usage limit reached', statusCode: 429 },
     })
     const signal = extractErrorSignal(error)
     expect(signal.name).toBe('SomeError')
-    // Error.message is used when both obj.message and data.message exist;
-    // the former wins because it's checked first.
-    expect(signal.message).toBe('usage limit')
+    expect(signal.message).toBe('usage limit reached')
     expect(signal.statusCode).toBe(429)
+  })
+
+  it('exposes usage limits hidden by a generic SDK wrapper message', () => {
+    const error = Object.assign(new Error('Request failed'), {
+      name: 'APIError',
+      data: { message: 'You have reached your usage limit', statusCode: 429 },
+    })
+    expect(classifyProviderLimit(extractErrorSignal(error))).toContain('usage limit')
+  })
+
+  it('preserves a top-level usage limit when provider data is generic', () => {
+    const error = Object.assign(new Error('You have reached your usage limit'), {
+      name: 'APIError',
+      data: { message: 'Request failed', statusCode: 429 },
+    })
+    expect(classifyProviderLimit(extractErrorSignal(error))).toContain('usage limit')
   })
 
   it('handles null/undefined gracefully', () => {

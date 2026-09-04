@@ -6,3 +6,4 @@ node_modules/
 graph/
 .forge-tmp/
 .tmp/
+.zvec-grep/

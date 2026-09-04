@@ -3340,8 +3340,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
           messages: async () => makeCodingIdleMessages(),
           promptAsync: async (params: any) => {
             if (params?.agent === 'auditor-loop' && params?.model?.modelID === 'auditor') {
-              const err = new Error('You have reached your usage limit')
-              ;(err as any).statusCode = 403
+              const err = new Error('Request failed')
+              ;(err as any).data = { message: 'You have reached your usage limit', statusCode: 429 }
               throw err
             }
           },

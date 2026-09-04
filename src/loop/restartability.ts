@@ -4,8 +4,16 @@
  */
 
 import { existsSync } from 'fs'
-import type { LoopState } from '../loop/state'
 import { parseTerminationReasonString } from '../loop'
+
+export interface RestartableLoopState {
+  loopName: string
+  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  terminationReason?: string | null
+  worktree?: boolean
+  worktreeDir?: string
+  active: boolean
+}
 
 export type RestartBlockedReason =
   | 'completed'
@@ -35,7 +43,7 @@ export interface RestartabilityResult {
  *   missing worktree directory blocks restart (legacy behavior).
  */
 export function getRestartability(
-  state: LoopState,
+  state: RestartableLoopState,
   opts?: { force?: boolean; worktreeExists?: (path: string) => boolean; branchExists?: () => boolean }
 ): RestartabilityResult {
   const worktreeExists = opts?.worktreeExists ?? existsSync

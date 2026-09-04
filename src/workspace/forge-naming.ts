@@ -56,7 +56,7 @@ export function gitBranchExists(repoDir: string, branch: string, git: GitService
  * `forge/<loopName>` derivation used by the workspace adapter.
  */
 export function loopBranchExists(
-  state: { loopName: string; worktreeBranch?: string; projectDir?: string },
+  state: { loopName: string; worktreeBranch?: string | null; projectDir?: string | null },
   fallbackDir: string,
   git: GitService = defaultGitService,
 ): boolean {

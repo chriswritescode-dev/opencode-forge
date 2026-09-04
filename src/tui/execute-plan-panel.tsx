@@ -5,7 +5,7 @@ import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { claimFocusOnMount } from './focus'
 import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
-import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
+import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type LoopInfo, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import { type ForgeProjectClient } from '../utils/tui-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
@@ -43,6 +43,10 @@ export interface ExecutePlanPanelProps {
   onBack: () => void
   onExecuted?: () => void | Promise<void>
   onSelectionChanged: (args: ExecutionSelection) => void
+  restart?: {
+    loops: LoopInfo[]
+    onRestart(request: { loopName: string; auditorModel: string; auditorVariant: string }): Promise<void>
+  }
 }
 
 export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
@@ -91,6 +95,8 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const [target] = createSignal(props.initialTarget ?? 'local')
   const remoteNames = listRemoteNames(pluginConfig)
   const hasRemotes = remoteNames.length > 0
+  const isRestart = () => props.restart !== undefined
+  const selectedLoop = () => props.restart?.loops.find(loop => loop.name === loopName())
 
   const targetLabel = () => target() === 'local' ? 'Local' : `Remote (${target()})`
 
@@ -253,6 +259,31 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   }
 
   const openLoopNameDialog = () => {
+    if (props.restart) {
+      props.api.ui.dialog.setSize('large')
+      props.api.ui.dialog.replace(() => (
+        <props.api.ui.DialogSelect
+          title="Loop"
+          options={props.restart!.loops.filter(loop => loop.restartable).map(loop => ({
+            title: loop.name,
+            value: loop.name,
+            description: `${loop.status} · ${loop.phase} · iteration ${loop.iteration}/${loop.maxIterations}`,
+          }))}
+          current={loopName()}
+          onSelect={(option) => {
+            const selected = props.restart!.loops.find(loop => loop.name === option.value)
+            if (!selected) return
+            props.api.ui.dialog.setSize('xlarge')
+            props.onSelectionChanged(currentSelection({
+              loopName: selected.name,
+              auditorModel: selected.auditorModel ?? auditorModel(),
+              auditorVariant: selected.auditorModel ? selected.auditorVariant ?? '' : auditorVariant(),
+            }))
+          }}
+        />
+      ))
+      return
+    }
     props.api.ui.dialog.setSize('large')
     props.api.ui.dialog.replace(() => (
       <props.api.ui.DialogPrompt
@@ -424,52 +455,95 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     onBusy: () => props.api.ui.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
   })
 
+  const runRestart = async () => {
+    if (!props.restart || !loopName()) return
+    try {
+      await props.restart.onRestart({
+        loopName: loopName(),
+        auditorModel: auditorModel(),
+        auditorVariant: auditorVariant(),
+      })
+      cache?.recordRecent(auditorModel())
+      props.api.ui.toast({ message: `Loop restarted: ${loopName()}`, variant: 'success', duration: 5000 })
+      props.api.ui.dialog.clear()
+    } catch (err) {
+      props.api.ui.toast({ message: err instanceof Error ? err.message : 'Failed to restart loop', variant: 'error', duration: 5000 })
+    }
+  }
+
+  const options = () => isRestart()
+    ? [
+        {
+          name: `Loop: ${loopName()}`,
+          description: 'Press enter to choose a restartable loop',
+          value: 'loop-name',
+        },
+        {
+          name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,
+          description: 'Press enter to change',
+          value: 'model:auditor',
+        },
+        {
+          name: `Auditor variant: ${getVariantDisplayLabel(auditorVariant(), selectedModelInfo('auditor'))}`,
+          description: 'Press enter to change',
+          value: 'variant:auditor',
+        },
+        {
+          name: selectedLoop()?.restartRequiresForce ? 'Force restart loop' : 'Restart loop',
+          description: selectedLoop()?.restartRequiresForce
+            ? 'Stops the running session first and resumes persisted progress'
+            : 'Resumes from persisted progress',
+          value: 'action:restart',
+        },
+      ]
+    : [
+        {
+          name: `Execution model: ${getModelDisplayLabel(executionModel(), models(), openCodeDefaultModel())}`,
+          description: 'Press enter to change',
+          value: 'model:execution',
+        },
+        {
+          name: `Execution variant: ${getVariantDisplayLabel(executionVariant(), selectedModelInfo('execution'))}`,
+          description: 'Press enter to change',
+          value: 'variant:execution',
+        },
+        {
+          name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,
+          description: 'Press enter to change',
+          value: 'model:auditor',
+        },
+        {
+          name: `Auditor variant: ${getVariantDisplayLabel(auditorVariant(), selectedModelInfo('auditor'))}`,
+          description: 'Press enter to change',
+          value: 'variant:auditor',
+        },
+        {
+          name: `Loop name: ${loopName()}`,
+          description: 'Press enter to edit the loop name used when launching',
+          value: 'loop-name',
+        },
+        ...(hasRemotes ? [{
+          name: `Target: ${targetLabel()}`,
+          description: 'Press enter to choose where the loop runs',
+          value: 'target',
+        }] : []),
+        ...PLAN_EXECUTION_LABELS.map(label => ({
+          name: label,
+          description: getModeDescription(label),
+          value: `mode:${label}`,
+        })),
+      ]
+
   return (
     <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">
       <box paddingBottom={1}>
-        <text fg={theme().text}><b>Configure and Run Plan</b></text>
+        <text fg={theme().text}><b>{isRestart() ? 'Configure and Restart Loop' : 'Configure and Run Plan'}</b></text>
       </box>
       <select
         ref={(el) => { selectRef = el }}
         focused={true}
         selectedIndex={0}
-        options={[
-          {
-            name: `Execution model: ${getModelDisplayLabel(executionModel(), models(), openCodeDefaultModel())}`,
-            description: 'Press enter to change',
-            value: 'model:execution',
-          },
-          {
-            name: `Execution variant: ${getVariantDisplayLabel(executionVariant(), selectedModelInfo('execution'))}`,
-            description: 'Press enter to change',
-            value: 'variant:execution',
-          },
-          {
-            name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,
-            description: 'Press enter to change',
-            value: 'model:auditor',
-          },
-          {
-            name: `Auditor variant: ${getVariantDisplayLabel(auditorVariant(), selectedModelInfo('auditor'))}`,
-            description: 'Press enter to change',
-            value: 'variant:auditor',
-          },
-          {
-            name: `Loop name: ${loopName()}`,
-            description: 'Press enter to edit the loop name used when launching',
-            value: 'loop-name',
-          },
-          ...(hasRemotes ? [{
-            name: `Target: ${targetLabel()}`,
-            description: 'Press enter to choose where the loop runs',
-            value: 'target',
-          }] : []),
-          ...PLAN_EXECUTION_LABELS.map(label => ({
-            name: label,
-            description: getModeDescription(label),
-            value: `mode:${label}`,
-          })),
-        ]}
+        options={options()}
         onSelect={(_, option) => {
           if (option?.value) {
             if (option.value === 'model:execution') {
@@ -498,6 +572,14 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
             }
             if (typeof option.value === 'string' && option.value.startsWith('mode:')) {
               handleExecuteMode(option.value.slice(5), executionModel(), auditorModel(), executionVariant(), auditorVariant())
+              return
+            }
+            if (option.value === 'action:restart') {
+              void withBusyGuard(runRestart, {
+                isBusy: busy,
+                setBusy,
+                onBusy: () => props.api.ui.toast({ message: 'Loop restart already in progress...', variant: 'info', duration: 2000 }),
+              })()
             }
           }
         }}
