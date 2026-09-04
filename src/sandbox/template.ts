@@ -36,10 +36,6 @@ export interface BuildTemplateDeps {
   onProgress?: (progress: SandboxBuildProgress) => void
 }
 
-export interface SandboxTemplateOptions {
-  browserControl?: boolean
-}
-
 /**
  * `#12 [builder 4/22] RUN ...` and `#5 [ 1/8] FROM ...` both carry the step
  * counter that makes the build determinate. Lines without one (`[internal] load
@@ -76,14 +72,8 @@ function reportLines(stage: SandboxBuildStage, onProgress: (progress: SandboxBui
   }
 }
 
-export function buildTemplateDockerArgs(options?: SandboxTemplateOptions): string[] {
-  return options?.browserControl === true
-    ? ['--build-arg', 'INSTALL_BROWSER_CONTROL=true']
-    : []
-}
-
-export function formatTemplateBuildCommands(contextDir: string, tag: string, options?: SandboxTemplateOptions): string {
-  const build = ['docker', 'build', ...buildTemplateDockerArgs(options), '-t', tag, `"${contextDir}"`].join(' ')
+export function formatTemplateBuildCommands(contextDir: string, tag: string): string {
+  const build = ['docker', 'build', '-t', tag, `"${contextDir}"`].join(' ')
   return `${build} && docker save ${tag} -o <tar> && msb load --input <tar> --tag ${tag}`
 }
 
@@ -120,10 +110,9 @@ export function buildAndLoadSandboxTemplate(
   contextDir: string,
   tag: string,
   deps: BuildTemplateDeps,
-  options?: SandboxTemplateOptions,
 ): Promise<void> {
   if (activeBuild) return Promise.reject(new Error(CONCURRENT_BUILD_MESSAGE))
-  const run = runBuildAndLoad(contextDir, tag, deps, options)
+  const run = runBuildAndLoad(contextDir, tag, deps)
   activeBuild = run
   return run.finally(() => {
     activeBuild = null
@@ -134,7 +123,6 @@ async function runBuildAndLoad(
   contextDir: string,
   tag: string,
   deps: BuildTemplateDeps,
-  options?: SandboxTemplateOptions,
 ): Promise<void> {
   const tarPath = join(deps.tmpDir, `forge-sandbox-template-${process.pid}.tar`)
   const onProgress = deps.onProgress
@@ -142,7 +130,7 @@ async function runBuildAndLoad(
     // `--progress=plain` is only added to the real invocation, not to
     // `formatTemplateBuildCommands`: it makes output line-oriented and parseable
     // here, but is noise in the copy-paste hint shown to a human.
-    const build = await deps.runCommand('docker', ['build', '--progress=plain', ...buildTemplateDockerArgs(options), '-t', tag, contextDir], {
+    const build = await deps.runCommand('docker', ['build', '--progress=plain', '-t', tag, contextDir], {
       logger: deps.logger,
       logLabel: 'docker',
       timeout: BUILD_TIMEOUT,

@@ -2,7 +2,7 @@ import { describe, test, expect, vi } from 'vitest'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { buildAndLoadSandboxTemplate, buildTemplateDockerArgs, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep } from '../../src/sandbox/template'
+import { buildAndLoadSandboxTemplate, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep } from '../../src/sandbox/template'
 import type { BuildTemplateDeps, SandboxBuildProgress } from '../../src/sandbox/template'
 import type { Logger } from '../../src/types'
 
@@ -59,34 +59,6 @@ describe('buildAndLoadSandboxTemplate', () => {
       expect(loadTemplate.mock.calls[0][0]).toMatch(/forge-sandbox-template-\d+\.tar$/)
       expect(loadTemplate.mock.calls[0][1]).toBe('oc-forge-sandbox:latest')
       expect(leftoverTars(tmp)).toHaveLength(0)
-    } finally {
-      rmSync(tmp, { recursive: true, force: true })
-    }
-  })
-
-  test('opt-in browserControl adds the build arg to docker build', async () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
-    try {
-      const record: Array<{ command: string; args: string[] }> = []
-      const loadTemplate = vi.fn(async () => {})
-      const deps: BuildTemplateDeps = {
-        runCommand: makeFakeRun(record),
-        loadTemplate,
-        logger,
-        tmpDir: tmp,
-      }
-
-      await buildAndLoadSandboxTemplate('/ctx', 'oc-forge-sandbox:latest', deps, { browserControl: true })
-
-      expect(record[0].args).toEqual([
-        'build',
-        '--progress=plain',
-        '--build-arg',
-        'INSTALL_BROWSER_CONTROL=true',
-        '-t',
-        'oc-forge-sandbox:latest',
-        '/ctx',
-      ])
     } finally {
       rmSync(tmp, { recursive: true, force: true })
     }
@@ -307,26 +279,10 @@ describe('parseDockerBuildStep', () => {
   })
 })
 
-describe('template build args and command formatter', () => {
-  test('buildTemplateDockerArgs defaults to no build args', () => {
-    expect(buildTemplateDockerArgs()).toEqual([])
-    expect(buildTemplateDockerArgs({})).toEqual([])
-    expect(buildTemplateDockerArgs({ browserControl: false })).toEqual([])
-  })
-
-  test('buildTemplateDockerArgs adds the build arg only for exact true', () => {
-    expect(buildTemplateDockerArgs({ browserControl: true })).toEqual(['--build-arg', 'INSTALL_BROWSER_CONTROL=true'])
-  })
-
-  test('formatTemplateBuildCommands reflects default args', () => {
+describe('template build command formatter', () => {
+  test('formatTemplateBuildCommands formats build, save, and load', () => {
     expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest')).toBe(
       'docker build -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
-    )
-  })
-
-  test('formatTemplateBuildCommands reflects the browser-control build arg', () => {
-    expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', { browserControl: true })).toBe(
-      'docker build --build-arg INSTALL_BROWSER_CONTROL=true -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
     )
   })
 })

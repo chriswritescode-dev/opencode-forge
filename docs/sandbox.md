@@ -26,50 +26,17 @@ msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 
 `msb load` registers the archive under the tag Forge looks up (`sandbox.image`, default `oc-forge-sandbox:latest`); list loaded images with `msb images --format json`.
 
-The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and Docker Engine (see [Nested Docker](#nested-docker)).
+The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Chromium, and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
-### Browser Control (opt-in)
+### Chromium
 
-Chromium and Browser Control add a substantial browser payload, so they are excluded by default. Enable them for future image builds:
-
-```jsonc
-{
-  "sandbox": {
-    "imageFeatures": {
-      "browserControl": true
-    }
-  }
-}
-```
-
-Then run `Build sandbox template` from the command palette. Changing the option does not modify an already-loaded image; rebuild it explicitly. The equivalent manual Docker build is:
+The image ships the current Playwright Chromium build as `chromium`. Google publishes no linux/arm64 Chrome build, so Chromium is the arm64 equivalent of a current Chrome. Launch it headless with the usual sandbox flags:
 
 ```bash
-docker build \
-  --build-arg INSTALL_BROWSER_CONTROL=true \
-  -t oc-forge-sandbox:latest \
-  container/
-docker save oc-forge-sandbox:latest -o forge-sandbox.tar
-msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
+chromium --no-sandbox --disable-dev-shm-usage --headless
 ```
-
-The resulting image provides `browser-control`, `browser-control-mcp`, Chromium as `chromium`, and the unpacked extension at `/opt/browser-control-extension`.
-
-Browser Control connects to a browser in the same sandbox. Launch Chromium with the packaged extension path resolved to its installation directory:
-
-```bash
-extension="$(readlink -f /opt/browser-control-extension)"
-xvfb-run -a chromium \
-  --no-sandbox \
-  --disable-dev-shm-usage \
-  --disable-extensions-except="$extension" \
-  --load-extension="$extension" \
-  --user-data-dir=/opt/forge/.browser-control-profile
-```
-
-It cannot control a browser running on the host because sandbox networking cannot reach the host loopback interface.
 
 ## How It Works
 

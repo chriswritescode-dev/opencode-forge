@@ -353,7 +353,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           ...(sandboxMountConfigs.length > 0 ? { customMounts: sandboxMountConfigs } : {}),
           ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
           buildContextDir: resolveBundledContainerDir(),
-          browserControl: config.sandbox?.imageFeatures?.browserControl === true,
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
         }, logger, defaultGitService)
         logger.log('Sandbox manager initialized')
@@ -382,7 +381,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     if (sandboxManager && forgeClient) {
       const sandboxImage = config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
       const buildContextDir = resolveBundledContainerDir()
-      const browserControl = config.sandbox?.imageFeatures?.browserControl === true
       void (async () => {
         try {
           const available = await runtime.checkAvailable()
@@ -412,7 +410,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
               directory,
               logger,
               title: 'Sandbox template not found',
-              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, { browserControl })}`,
+              message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage)}`,
               variant: 'warning',
               duration: 10_000,
             })

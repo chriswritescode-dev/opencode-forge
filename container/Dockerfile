@@ -78,11 +78,17 @@ ENV HOME=/opt/forge \
 RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.npm \
     && chmod -R 0777 /opt/forge
 
-# fallow CLI — dead-code analysis tool — installed globally with the same pnpm
-# setup used by the rest of the sandbox image. Binaries are linked into
-# /usr/local/bin so they are on PATH for arbitrary container UIDs.
+# fallow CLI — dead-code analysis tool — and the current Playwright Chromium
+# browser, installed globally with the same pnpm setup used by the rest of the
+# sandbox image. Binaries are linked into /usr/local/bin so they are on PATH for
+# arbitrary container UIDs.
 #
-# The trailing chmod is load-bearing: this global install runs as root and populates the
+# Chromium comes from playwright-core because Google publishes no linux/arm64
+# Chrome build, so on arm64 hosts it is the closest current Chrome build
+# available; `install --with-deps` pulls the system libraries Chromium needs at
+# runtime.
+#
+# The trailing chmod is load-bearing: these global installs run as root and populate the
 # pnpm store (store/v10/{files,index,projects}) with root-owned 0755 dirs, AFTER the earlier
 # `chmod -R 0777 /opt/forge`. Because the container runs as root but agent commands run as the
 # image's `agent` user via `msb exec`, that UID could not write into the root-owned store and
@@ -90,6 +96,12 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.np
 # agent to relocate the store onto the msb-mounted project directory (huge, slow file transfers).
 # Re-asserting 0777 here, as the last build step that touches /opt/forge, keeps the store
 # writable by any exec UID. Any future build step that runs pnpm as root must do the same.
+RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
+    && pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin \
+    && package_root="$(readlink -f "$(find "$(pnpm root -g)" -maxdepth 4 -path '*/node_modules/playwright-core' -print -quit)")" \
+    && node "$package_root/cli.js" install --with-deps chromium \
+    && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$package_root/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium \
+    && chmod -R 0777 /opt/forge
 
 # Docker Engine from Docker's official apt repository. The microVM boots a real
 # kernel, so the daemon runs natively — no privileged-container or nested-
@@ -97,8 +109,7 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.np
 # device and public egress is the default, so `docker run` and registry pulls
 # work out of the box. The `agent` user joins the `docker` group for socket
 # access without sudo; starting the daemon itself stays root-only via the
-# passwordless sudo granted above. Installed before the INSTALL_BROWSER_CONTROL
-# toggle so rebuilding with that flag on does not re-fetch the Docker stack.
+# passwordless sudo granted above.
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -166,19 +177,9 @@ tail -n 20 "$log" 2>/dev/null >&2
 exit 1
 EOF
 
-ARG INSTALL_BROWSER_CONTROL=false
-
-RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
-    && if [ "$INSTALL_BROWSER_CONTROL" = "true" ]; then \
-      pnpm add -g @opencode-ai/browser-control@latest --global-bin-dir /usr/local/bin \
-      && package_link="$(find "$(pnpm root -g)" -maxdepth 4 -type l -path '*/node_modules/@opencode-ai/browser-control' -print -quit)" \
-      && package_root="$(readlink -f "$package_link")" \
-      && package_modules="$(dirname "$(dirname "$package_root")")" \
-      && node "$package_modules/playwright-core/cli.js" install --with-deps chromium \
-      && ln -s "$package_root/extension/dist" /opt/browser-control-extension \
-      && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$package_modules/playwright-core/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium; \
-    fi \
-    && chmod -R 0777 /opt/forge
+# fallow CLI — dead-code analysis tool — installed globally with the same pnpm
+# setup used by the rest of the sandbox image. Binaries are linked into
+# /usr/local/bin so they are on PATH for arbitrary container UIDs.
 
 # Allow git to operate on the msb-mounted project directory regardless of owner UID.
 RUN git config --system --add safe.directory '*'

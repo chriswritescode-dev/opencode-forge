@@ -247,7 +247,6 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.enabled` | `true` | Enable sandboxed execution. When enabled and the msb CLI or host virtualization is unavailable, sandbox startup fails rather than falling back to the host; set `false` to run worktree-only. |
 | `sandbox.mode` | `"msb"` | Sandbox mode. `msb` is currently the only supported mode. A stale `"mode": "sbx"` from an older install is reported as a migration warning in the log and, when running in the TUI, as a toast. |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | msb image reference used for sandboxed execution. |
-| `sandbox.imageFeatures.browserControl` | `false` | Include Chromium, the Browser Control CLI/MCP server, and its extension when building the bundled sandbox image. Rebuild the image after changing it. |
 | `sandbox.resources.memory` | `"8g"` | Memory the sandbox gets (`msb create -m`). Fixed for the sandbox's life; there is no autoscaling, so size it for the heaviest command it will run or that command is OOM-killed. |
 | `sandbox.resources.cpus` | `"4"` | CPU count the sandbox gets (`msb create -c`; integer-only). Fixed for the sandbox's life. |
 | `sandbox.resources.dockerDisk` | `"16g"` | Size of the dedicated block device backing the sandbox's in-VM Docker Engine data dir (`/var/lib/docker`, `--mount-named ...:kind=disk,size=<size>`). The disk is sparse, so the generous default costs no real disk up front. |

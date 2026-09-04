@@ -35,7 +35,6 @@ export function SandboxBuildDialog(props: {
   api: TuiPluginApi
   buildContextDir: string
   image: string
-  browserControl: boolean
 }) {
   const theme = () => props.api.theme.current
 
@@ -130,7 +129,7 @@ export function SandboxBuildDialog(props: {
           lastRepaintAt = now
           setLastLine(progress.line)
         },
-      }, { browserControl: props.browserControl })
+      })
       stopTimer()
       setPhase('success')
       props.api.ui.toast({
@@ -166,9 +165,6 @@ export function SandboxBuildDialog(props: {
       </box>
       <box paddingBottom={1}>
         <text fg={theme().textMuted}>Context: {props.buildContextDir}</text>
-      </box>
-      <box paddingBottom={1}>
-        <text fg={theme().textMuted}>Browser Control: {props.browserControl ? 'included' : 'excluded'}</text>
       </box>
 
       <box paddingBottom={1} flexDirection="column">

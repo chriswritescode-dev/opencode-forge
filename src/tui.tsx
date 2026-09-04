@@ -535,7 +535,6 @@ const tui: TuiPlugin = async (api) => {
   const runBuildSandboxImage = () => {
     const buildContextDir = resolveBundledContainerDir()
     const image = pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
-    const browserControl = pluginConfig.sandbox?.imageFeatures?.browserControl === true
 
     api.ui.dialog.setSize('medium')
     api.ui.dialog.replace(() => (
@@ -543,7 +542,6 @@ const tui: TuiPlugin = async (api) => {
         api={api}
         buildContextDir={buildContextDir}
         image={image}
-        browserControl={browserControl}
       />
     ))
   }

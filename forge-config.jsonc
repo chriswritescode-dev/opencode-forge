@@ -104,10 +104,7 @@
   "sandbox": {
     "enabled": true,
     "mode": "msb",
-    "image": "oc-forge-sandbox:latest",
-    "imageFeatures": {
-      "browserControl": false
-    }
+    "image": "oc-forge-sandbox:latest"
     // Mount the source project directory read-only at its identical host path. Defaults to true.
     // "mountProjectReadonly": true,
     // Network access configuration. msb egress is allow-by-default: with no hosts configured,

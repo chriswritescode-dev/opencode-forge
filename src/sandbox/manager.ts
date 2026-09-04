@@ -14,7 +14,6 @@ export interface SandboxManagerConfig {
   mountProjectReadonly?: boolean
   customMounts?: SandboxMountConfig[]
   buildContextDir?: string
-  browserControl?: boolean
   /**
    * Host path of opencode's tool-output (truncation) directory. When set and present, it is
    * bind-mounted read-only at the identical container path so the agent's in-container tools
@@ -240,7 +239,6 @@ export function createSandboxManager(
       const buildHint = `  ${formatTemplateBuildCommands(
         config.buildContextDir ?? '<build-context-dir>',
         config.image,
-        { browserControl: config.browserControl },
       )}`
       throw new Error(
         `Sandbox template "${config.image}" not found. Build and load it first:\n${buildHint}\n\n` +
