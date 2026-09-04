@@ -291,6 +291,8 @@ describe('Agent definitions', () => {
           'callers converge on the single point of truth',
           'targeted reference/search assertions',
           'searching for a stale symbol',
+          'current repository directory as the complete execution boundary',
+          'execution sandbox will not expose them',
         ]) {
           expect(prompt).toContain(contract)
         }
