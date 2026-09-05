@@ -195,6 +195,33 @@ describe('handleLoopRestart from stall_timeout', () => {
     sectionPlansRepo.setStatus(PROJECT_ID, 'stall-loop', 1, 'completed')
     sectionPlansRepo.setStatus(PROJECT_ID, 'stall-loop', 2, 'in_progress')
 
+    reviewFindingsRepo.write({
+      projectId: PROJECT_ID,
+      loopName: 'stall-loop',
+      file: 'src/other.ts',
+      line: 5,
+      severity: 'bug',
+      description: 'Bug on completed section 1, not the restarted section',
+      sectionIndex: 0,
+    })
+    reviewFindingsRepo.write({
+      projectId: PROJECT_ID,
+      loopName: 'stall-loop',
+      file: 'src/warn.ts',
+      line: 6,
+      severity: 'warning',
+      description: 'Warning on the current section must not trigger the continuation prompt',
+      sectionIndex: 2,
+    })
+    reviewFindingsRepo.write({
+      projectId: PROJECT_ID,
+      loopName: 'stall-loop',
+      file: 'src/cross.ts',
+      line: 7,
+      severity: 'bug',
+      description: 'Cross-section bug without a section index must not trigger the continuation prompt',
+    })
+
     const noopFn = () => {}
     const buildSectionInitialPromptSpy = vi.fn()
     const buildFinalAuditPromptSpy = vi.fn()
@@ -293,6 +320,181 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     expect(buildSectionInitialPromptSpy).toHaveBeenCalledTimes(1)
     expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
+
+    const retained = reviewFindingsRepo.listByLoopName(PROJECT_ID, 'stall-loop')
+    expect(retained).toHaveLength(3)
+  })
+
+  test('restart with persisted current-section bug findings uses continuation prompt with remediation policy and full finding detail', async () => {
+    insertLoop({
+      loopName: 'bug-restart-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      currentSectionIndex: 1,
+      iteration: 5,
+      totalSections: 3,
+      phase: 'coding',
+    })
+
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: 'bug-restart-loop',
+      sections: [
+        { index: 0, title: 'A', content: 'content A' },
+        { index: 1, title: 'B', content: 'content B' },
+        { index: 2, title: 'C', content: 'content C' },
+      ],
+    })
+    sectionPlansRepo.setStatus(PROJECT_ID, 'bug-restart-loop', 0, 'completed')
+    sectionPlansRepo.setStatus(PROJECT_ID, 'bug-restart-loop', 1, 'in_progress')
+
+    const currentSectionDescription = 'Current section bug: the restart must inline this full description verbatim'
+    const currentSectionScenario = 'Scenario: restart with persisted current-section findings uses the continuation prompt'
+    const otherSectionDescription = 'Other section bug that must not leak into the restart prompt'
+    const warningDescription = 'Current section warning that must not leak into the restart prompt'
+    const crossSectionDescription = 'Cross-section bug without a section index that must not leak into the restart prompt'
+
+    reviewFindingsRepo.write({
+      projectId: PROJECT_ID,
+      loopName: 'bug-restart-loop',
+      file: 'src/current.ts',
+      line: 10,
+      severity: 'bug',
+      description: currentSectionDescription,
+      scenario: currentSectionScenario,
+      sectionIndex: 1,
+    })
+    reviewFindingsRepo.write({
+      projectId: PROJECT_ID,
+      loopName: 'bug-restart-loop',
+      file: 'src/other.ts',
+      line: 20,
+      severity: 'bug',
+      description: otherSectionDescription,
+      sectionIndex: 0,
+    })
+    reviewFindingsRepo.write({
+      projectId: PROJECT_ID,
+      loopName: 'bug-restart-loop',
+      file: 'src/warn.ts',
+      line: 30,
+      severity: 'warning',
+      description: warningDescription,
+      sectionIndex: 1,
+    })
+    reviewFindingsRepo.write({
+      projectId: PROJECT_ID,
+      loopName: 'bug-restart-loop',
+      file: 'src/cross.ts',
+      line: 40,
+      severity: 'bug',
+      description: crossSectionDescription,
+    })
+
+    const noopFn = () => {}
+    const buildSectionInitialPromptSpy = vi.fn()
+    const buildFinalAuditPromptSpy = vi.fn()
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: buildSectionInitialPromptSpy,
+      buildSectionContinuationPrompt: (state, notice, bugs) => loopService.buildSectionContinuationPrompt(state, notice, bugs),
+      buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'bug-restart-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-bug-restart' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'bug-restart-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.iteration).toBe(1)
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('code')
+    const promptText = promptCall.parts[0].text as string
+
+    expect(promptText).toContain(currentSectionDescription)
+    expect(promptText).toContain(currentSectionScenario)
+    expect(promptText).toContain('Remediation policy')
+    expect(promptText).toContain('[Loop section 2/3 -- iteration 1/10 (continuation)]')
+
+    expect(promptText).not.toContain(otherSectionDescription)
+    expect(promptText).not.toContain(warningDescription)
+    expect(promptText).not.toContain(crossSectionDescription)
+
+    expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
+    expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
+
+    const retained = reviewFindingsRepo.listByLoopName(PROJECT_ID, 'bug-restart-loop')
+    expect(retained).toHaveLength(4)
   })
 
   test('restart from stall_timeout resets iteration budget to 1', async () => {

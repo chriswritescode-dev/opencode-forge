@@ -2002,7 +2002,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         if (stoppedState.phase === 'final_auditing') {
           promptText = deps.loop.service.buildFinalAuditPrompt(stoppedState)
         } else {
-          promptText = deps.loop.service.buildSectionInitialPrompt(stoppedState)
+          const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
+          if (outstandingBugs.some((f) => f.sectionIndex === stoppedState.currentSectionIndex)) {
+            promptText = deps.loop.service.buildSectionContinuationPrompt(stoppedState, undefined, outstandingBugs)
+          } else {
+            promptText = deps.loop.service.buildSectionInitialPrompt(stoppedState)
+          }
         }
       } else {
         // Legacy non-sectioned prompt
