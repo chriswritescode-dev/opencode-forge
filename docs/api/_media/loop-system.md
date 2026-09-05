@@ -22,6 +22,7 @@ The loop system provides autonomous iterative development with automatic code au
 - Restart preserves loop identity, plan, worktree path, section progress, and review findings.
 - Restart resets iteration count and error budget.
 - Restart creates a fresh session and resumes from the persisted phase and section index.
+- Restarts into section coding with outstanding bug findings for the current section use the continuation prompt, including full finding details and the shared remediation policy; without current-section bugs, they use the initial section prompt.
 
 ### Stale Workspace Sweep
 

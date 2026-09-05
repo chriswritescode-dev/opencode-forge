@@ -78,14 +78,14 @@ function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState, 
   const escalated = getEscalatedFindings(ctx, state, outstandingBugs)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (recurred ${e.count}×)`)
-  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution. For EACH: either fix it definitively, OR if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it.\n\n${lines.join('\n')}`
+  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution, so the previous patches did not hold. For EACH: revisit the causal hypothesis behind the earlier fix, produce a specific reproducer or counterexample that demonstrates the failure, and then either fix it definitively or, if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it. Do not repeat the previous patch without a changed hypothesis.\n\n${lines.join('\n')}`
 }
 
 function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState): string {
   const escalated = getEscalatedFindings(ctx, state)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (${e.count}×)`)
-  return `##  Recurring findings — re-evaluate\nThese findings have recurred across audits. For each, re-check the coder decisions block above and reproduce the coder's verification method. If the coder's documented decision/verification resolves it, DELETE it with review-delete. Only keep it if it is genuinely, verifiably still broken (state the precise scenario).\n\n${lines.join('\n')}`
+  return `##  Recurring findings — re-evaluate\nThese findings have recurred across audits. Re-evaluate each one under the Recurring Findings policy in your loop addendum:\n\n${lines.join('\n')}`
 }
 
 /**
@@ -96,7 +96,7 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
  */
 function buildOutstandingFindingsCoderBlock(findings: ReviewFindingRow[]): string {
   if (findings.length === 0) return ''
-  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\n${formatFindingDetails(findings)}`
+  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the coder-decisions block at the end of this prompt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
 }
 
 /**
@@ -111,7 +111,7 @@ function buildLoopNoticeBlock(notice?: string): string {
 function buildCoderDecisionsAuditorBlock(coderDecisions: string | null, includeSeparator = true): string {
   if (!coderDecisions) return ''
   const separator = includeSeparator ? '\n\n---\n' : ''
-  return `${separator}## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
+  return `${separator}## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following as context and evidence — never an automatic waiver. Judge it under your base Verification policy: clear a finding only when current code plus evidence covering its specific scenario and acceptance criterion proves it resolved. A documented decision alone, or a different test passing, is not proof.\n\n${coderDecisions}`
 }
 
 /**
@@ -380,7 +380,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, o
 
   header += buildOutstandingFindingsCoderBlock(outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug'))
 
-  header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final audit will be re-run automatically against the entire codebase.`
+  header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final integration audit re-runs over the loop's full accumulated changes — every \`section <N>:\` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes — and the affected integration paths.`
 
   header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 

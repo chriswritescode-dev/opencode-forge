@@ -65,4 +65,31 @@ describe('CODER_DECISIONS_INSTRUCTION', () => {
     expect(parsed).toContain('### Verification')
     expect(parsed).toContain('### Notes for auditor')
   })
+
+  it('template lists the compact evidence requirements for each check', () => {
+    const parsed = parseCoderDecisions(CODER_DECISIONS_INSTRUCTION)
+    expect(parsed).toContain('the exact command, the worktree-relative working directory, and the pass/fail/not-run outcome')
+    expect(parsed).toContain('relevant non-secret setup only; do not paste credentials or huge logs')
+    expect(parsed).toContain('whether any source/test/config changes occurred after those commands ran')
+    expect(parsed).toContain('which regression check covers each fixed finding, where applicable')
+  })
+
+  it('parses a filled evidence-rich block verbatim (free-text contract)', () => {
+    const evidence = `### Decisions
+- Chose approach X
+### Verification
+- FOO=bar pnpm test from repo root — pass
+- relevant setup: DATABASE_URL points at the test db
+- no source/test/config changes occurred afterward
+- src/test.ts:1 → pnpm test --project node test/foo.test.ts
+### Notes for auditor
+- none`
+    const text = `${CODER_DECISIONS_START_MARKER}\n${evidence}\n${CODER_DECISIONS_END_MARKER}`
+    expect(parseCoderDecisions(text)).toBe(evidence)
+  })
+
+  it('a block without the Verification heading still parses (no evidence, no error)', () => {
+    const text = `${CODER_DECISIONS_START_MARKER}\n### Decisions\n- partial notes only\n${CODER_DECISIONS_END_MARKER}`
+    expect(parseCoderDecisions(text)).toContain('partial notes only')
+  })
 })

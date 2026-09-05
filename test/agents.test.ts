@@ -112,11 +112,16 @@ describe('Agent definitions', () => {
       expect(auditorLoopAgent.systemPrompt).toContain('primary agent')
     })
 
-    test('auditor-loop prompt encourages short-lived subtasks after finding checks', () => {
+    test('auditor-loop prompt requires conditional, non-overlapping delegation after finding reconciliation', () => {
       const prompt = auditorLoopAgent.systemPrompt
-      expect(prompt).toContain('review-finding flow has completed')
-      expect(prompt).toContain('short-lived Task subtasks')
-      expect(prompt).toContain('Keep the existing review-finding order unchanged')
+      expect(prompt).toContain('Delegation is optional, never a task checklist')
+      expect(prompt).toContain('review-finding flow')
+      expect(prompt).toContain('keep the existing review-finding order unchanged')
+      expect(prompt).toContain('Zero subtasks is always acceptable')
+      expect(prompt).toContain('Never ask multiple subtasks to re-review the entire diff')
+      expect(prompt).toContain('independently rerun full verification')
+      expect(prompt).toContain('redundant broad rediscovery is prohibited, evidence checking is not')
+      expect(prompt).not.toContain('use short-lived Task subtasks')
     })
 
     test('auditor-loop prompt includes LOOP_ADDENDUM and FINAL_AUDIT_ADDENDUM content', () => {
@@ -143,10 +148,56 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('**Unreachable or superseded code**')
     })
 
+    test('auditor-loop final rules establish the complete change set and fail closed on unestablishable scope', () => {
+      const prompt = auditorLoopAgent.systemPrompt
+      expect(prompt).toContain('merge-base')
+      expect(prompt).toContain('all uncommitted and untracked changes')
+      expect(prompt).toContain('every untracked file read in full')
+      expect(prompt).toContain('not an additional generic review after it')
+      expect(prompt).toContain('AUDIT_SCOPE:1')
+    })
+
+    test('auditor-loop final rules defer delegation to the loop policy', () => {
+      const prompt = auditorLoopAgent.systemPrompt
+      expect(prompt).toContain('follows the delegation policy in the Loop Audit Context')
+      const delegationOwners = prompt.split('Never ask multiple subtasks').length - 1
+      expect(delegationOwners).toBe(1)
+    })
+
     test('auditor-loop combined prompt does not reference impact-reviewer or a separate impact agent', () => {
       const prompt = auditorLoopAgent.systemPrompt
       expect(prompt).not.toContain('impact-reviewer')
       expect(prompt).not.toMatch(/impact.?agent/i)
+    })
+
+    test('composed auditor-loop prompt reuses reliable current-state evidence without unconditional reruns', () => {
+      const prompt = buildAgents()['auditor-loop'].systemPrompt
+      // Base Verification policy owns evidence reuse: reliable evidence is accepted
+      // only when command, outcome, configuration/environment, and code state align.
+      expect(prompt).toContain('passing result applicable to the current reviewed state')
+      expect(prompt).toContain('exact command')
+      expect(prompt).toContain('pass/fail outcome')
+      expect(prompt).toContain('relevant configuration or environment')
+      expect(prompt).toContain('commit hash alone')
+      expect(prompt).toContain('missing, stale, ambiguous, or invalidated')
+      // The final-audit addendum must not demand an unconditional second full run.
+      expect(prompt).not.toContain("Run the master plan's top-level verification commands against the final state")
+      // Current-code proof conditions must remain for finding deletion.
+      expect(prompt).toContain('current code plus')
+      expect(prompt).toContain('reliable verification')
+    })
+
+    test('auditor-loop recurring-findings policy demands exact-scenario proof and forbids duplicate-as-update', () => {
+      const prompt = auditorLoopAgent.systemPrompt
+      expect(prompt).toContain('## Recurring Findings')
+      expect(prompt).toContain('open until proven resolved')
+      expect(prompt).toContain('exact reported scenario')
+      expect(prompt).toContain('passing unrelated command never deletes a finding')
+      expect(prompt).toContain('regression coverage')
+      expect(prompt).toContain('current code plus reproduced or reliable verification')
+      expect(prompt).toContain('Do not blindly rewrite an unchanged finding')
+      expect(prompt).toContain('duplicates are not an update mechanism')
+      expect(prompt).toContain('stay open')
     })
 
     test('architect-auto agent has stable metadata', () => {

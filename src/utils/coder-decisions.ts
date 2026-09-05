@@ -23,7 +23,10 @@ ${CODER_DECISIONS_START_MARKER}
 ### Decisions
 - key implementation decisions and why
 ### Verification
-- exact commands you ran and how to reproduce a passing result (include required env vars, e.g. \`FOO=bar pnpm test\`)
+- for each check: the exact command, the worktree-relative working directory, and the pass/fail/not-run outcome (include required env vars, e.g. \`FOO=bar pnpm test\`)
+- relevant non-secret setup only; do not paste credentials or huge logs
+- whether any source/test/config changes occurred after those commands ran
+- which regression check covers each fixed finding, where applicable
 ### Notes for auditor
 - anything needed to judge correctness, or "none"
 ${CODER_DECISIONS_END_MARKER}`

@@ -6,6 +6,7 @@ import { tmpdir } from 'os'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
+import type { ReviewFindingRow } from '../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import { createPlanAmendmentsRepo } from '../src/storage/repos/plan-amendments-repo'
 import { createLoopService } from '../src/loop/service'
@@ -263,6 +264,7 @@ describe('Loop', () => {
       } as any)
       // Count 1 is below threshold, so no escalation
       expect(prompt1).not.toContain('Recurring blocking findings')
+      expect(prompt1).not.toContain('revisit the causal hypothesis')
       expect(prompt1).not.toContain('Recurring findings — re-evaluate')
 
       // Second bump → count=2
@@ -287,6 +289,9 @@ describe('Loop', () => {
       expect(prompt3).toContain('Recurring blocking findings')
       expect(prompt3).toContain('src/bug.ts:10')
       expect(prompt3).toContain('recurred 3×')
+      expect(prompt3).toContain('revisit the causal hypothesis')
+      expect(prompt3).toContain('reproducer or counterexample')
+      expect(prompt3).toContain('Do not repeat the previous patch')
 
       // Also surfaces in audit prompt
       const auditPrompt = loop.service.buildAuditPrompt({
@@ -297,6 +302,8 @@ describe('Loop', () => {
       } as any)
       expect(auditPrompt).toContain('Recurring findings — re-evaluate')
       expect(auditPrompt).toContain('src/bug.ts:10')
+      expect(auditPrompt).toContain('`src/bug.ts:10` (3×)')
+      expect(auditPrompt).toContain('Recurring Findings policy')
     })
 
     test('resets recurrence count when finding disappears', () => {
@@ -371,11 +378,36 @@ describe('Loop', () => {
       expect(fixPrompt3).toContain('Recurring blocking findings')
       expect(fixPrompt3).toContain('src/final-bug.ts:42')
       expect(fixPrompt3).toContain('recurred 3×')
+      expect(fixPrompt3).toContain('revisit the causal hypothesis')
+      expect(fixPrompt3).toContain('reproducer or counterexample')
 
       // Also surfaces in the final-audit prompt
       const auditPrompt = loop.service.buildFinalAuditPrompt(finalAuditState)
       expect(auditPrompt).toContain('Recurring findings — re-evaluate')
       expect(auditPrompt).toContain('src/final-bug.ts:42')
+      expect(auditPrompt).toContain('Recurring Findings policy')
+    })
+
+    test('final-audit fix renders explicit outstandingBugs over the repository lookup', () => {
+      const explicit: ReviewFindingRow[] = [{
+        file: 'src/explicit.ts', line: 7, severity: 'bug', description: 'Explicit bug', scenario: null, loopName: 'explicit-bugs', sectionIndex: null, projectId, createdAt: 0,
+      }]
+      const state = {
+        active: true, sessionId: 's1', loopName: 'explicit-bugs', worktreeDir: '/tmp/test',
+        projectDir: '/tmp/test', iteration: 2, maxIterations: 5,
+        startedAt: new Date().toISOString(), phase: 'final_auditing', errorCount: 0, auditCount: 1,
+        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+      } as any
+
+      const withExplicit = loop.service.buildFinalAuditFixPrompt(state, explicit)
+      expect(withExplicit).toContain('## Outstanding review findings (1)')
+      expect(withExplicit).toContain('`src/explicit.ts:7` (bug)')
+      expect(withExplicit).toContain('Read every finding')
+      expect(withExplicit).toContain('Never delete findings')
+
+      const withoutExplicit = loop.service.buildFinalAuditFixPrompt(state)
+      expect(withoutExplicit).not.toContain('## Outstanding review findings')
+      expect(withoutExplicit).not.toContain('Read every finding')
     })
   })
 

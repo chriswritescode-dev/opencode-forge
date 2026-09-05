@@ -83,11 +83,12 @@ Be certain. If you're going to call something a bug, you need to be confident it
 
 ## Verification
 
-Run the narrowest relevant validation — not an unconditional full typecheck.
+Run the narrowest relevant validation — not an unconditional full typecheck. Every required check must have a passing result applicable to the current reviewed state.
 
 1. Determine the repository- or plan-mandated checks (package.json scripts, Makefile, pyproject.toml, or other build config). If the plan lists verification commands, prefer those.
-2. Run them. When reliable evidence proves a check already passed (e.g., documented coder verification notes), do not re-run redundant full checks.
-3. Report validation failures only when they are caused by or affect the reviewed change. Failures confined to unrelated files go under Observations, not as blocking findings.
+2. Reuse reliable evidence instead of re-running a check only when it establishes the exact command, its pass/fail outcome, any relevant configuration or environment the command requires, and that the code state it ran against is the state under review. A commit hash alone does not establish that for a worktree with uncommitted changes, and "tests passed" alone never does; documentation of intent is not evidence.
+3. When evidence is missing, stale, ambiguous, or invalidated by later changes, run the relevant check yourself. Invocation-specific rules that explicitly require an independent rerun still apply.
+4. Report validation failures honestly. A failure confined to unrelated files is an environmental observation, not an invented product defect; a failure that prevents a required acceptance check from being satisfied must be reported as it is — never labeled passing.
 
 ## Tool Usage
 

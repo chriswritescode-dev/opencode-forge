@@ -9,7 +9,7 @@ This is the integration review of the loop's full accumulated changes: every `se
 
 ### Verification
 
-Run the master plan's top-level verification commands against the final state. Skip one only when an explicit, technically valid reason prevents it; a failure caused by or affecting the loop is a bug.
+Apply the base Verification policy to every check the master plan and the Effective section plan require, including the top-level verification commands: each required check needs a passing result applicable to the final reviewed state. Reuse reliable evidence when it establishes the exact command, its pass/fail outcome, the relevant configuration or environment, and that the code state is the final reviewed state; when evidence is missing, stale, ambiguous, or invalidated, run the check against the final state. An explicit, technically valid reason may still prevent one; a failure caused by or affecting the loop is a bug.
 
 ### Deviations and Evidence
 
@@ -21,7 +21,7 @@ Attribute findings with `sectionIndex` for the section that owns the defect; use
 
 ### Whole-Change Impact Analysis
 
-After the base Findings Lifecycle manifest/reconciliation, perform exactly one direct whole-change impact analysis per final-audit invocation, when the full change set has been established. There is no separate agent; you perform it yourself.
+Perform exactly one direct whole-change impact analysis per final-audit invocation, integrated into the Findings Lifecycle's manifest → reconcile → inspect review: once the manifest is established and existing findings are reconciled, the Inspect step covers the full change set directly — this analysis is part of that inspection, not an additional generic review after it. There is no separate agent; you perform it yourself. Any subtask delegation during the final audit follows the delegation policy in the Loop Audit Context; this addendum creates no other one.
 
 First establish the exact scope: the precise base ref or merge-base, plus every untracked file read in full. Do not vaguely say "base branch" or guess a ref. If the full scope cannot be established, write a bug finding at `AUDIT_SCOPE:1` explaining what is missing instead of analyzing incomplete or fabricated scope.
 

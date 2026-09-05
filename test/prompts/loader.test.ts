@@ -63,6 +63,16 @@ describe('loadPrompt', () => {
     expect(prompt).toContain('**Verification**')
   })
 
+  test('auditor-final-audit-addendum integrates impact analysis into the lifecycle and defers delegation to the loop policy', () => {
+    const prompt = loadPrompt(['agents', 'auditor-final-audit-addendum.md'])
+    expect(prompt).toContain('### Whole-Change Impact Analysis')
+    expect(prompt).toContain('not an additional generic review after it')
+    expect(prompt).toContain('follows the delegation policy in the Loop Audit Context')
+    expect(prompt).not.toContain('Never ask multiple subtasks')
+    expect(prompt).toContain('every untracked file read in full')
+    expect(prompt).toContain('AUDIT_SCOPE:1')
+  })
+
   test('buildAgents with custom promptsDir uses the custom prompt', () => {
     const tmpDir = join(import.meta.dirname, '..', '..', '.forge', 'tmp', 'test-build-agents')
     mkdirSync(join(tmpDir, 'agents'), { recursive: true })

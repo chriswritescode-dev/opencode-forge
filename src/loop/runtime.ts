@@ -2053,7 +2053,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           iteration: nextIter,
         })
 
-        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, undefined, sectionAllBugFindings)
+        const continuationPrompt = loopService.buildSectionContinuationPrompt({ ...currentState, iteration: nextIter }, undefined, sectionAllBugFindings)
         await rotateAndSendContinuation(
           loopName,
           currentState,
@@ -2224,7 +2224,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       bumpDirtyAuditRecurrence(loopName, outstandingBugs)
 
-      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, outstandingBugs)
+      const fixPrompt = loopService.buildFinalAuditFixPrompt({ ...currentState, iteration: nextIter }, outstandingBugs)
 
       let newCodeSessionId: string
       try {
