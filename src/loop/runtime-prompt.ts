@@ -88,14 +88,14 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
     return { error: result.error, usedModel }
   }
 
-  async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string }> {
+  async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string; messageId?: string }> {
     try {
       const messages = await client.session.messages({
         sessionID: sessionId,
         directory: worktreeDir,
         limit: 4,
       }) as Array<{
-        info: { role: string; finish?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
+        info: { id?: string; role: string; finish?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
         parts: Array<{ type: string; text?: string }>
       }>
 
@@ -130,7 +130,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         .map((p) => p.text as string)
         .join('\n') || null
 
-      return { text, error, errorSignal, lastMessageRole: 'assistant' }
+      return { text, error, errorSignal, lastMessageRole: 'assistant', ...(lastAssistant.info.id ? { messageId: lastAssistant.info.id } : {}) }
     } catch (err) {
       logger.error(`Loop: could not read session messages`, err)
       return { text: null, error: null, errorSignal: null, lastMessageRole: 'error' }

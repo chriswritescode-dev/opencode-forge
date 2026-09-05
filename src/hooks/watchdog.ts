@@ -50,6 +50,19 @@ type SessionStatusSnapshot = {
   [key: string]: unknown
 }
 
+export async function activeLoopSessions(
+  statuses: Record<string, SessionStatusSnapshot>,
+  loopName: string,
+  resolveLoop: (sessionId: string) => string | null | Promise<string | null>,
+): Promise<Array<[string, SessionStatusSnapshot]>> {
+  const active: Array<[string, SessionStatusSnapshot]> = []
+  for (const [sessionId, status] of Object.entries(statuses)) {
+    if (status.type !== 'busy' && status.type !== 'retry') continue
+    if (await resolveLoop(sessionId) === loopName) active.push([sessionId, status])
+  }
+  return active
+}
+
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.message
   if (typeof err === 'string') return err
@@ -232,13 +245,8 @@ export function createLoopWatchdog(input: {
         let anyBusy = false
         let anyRetrying = false
         let latestContentAt = 0
-        for (const [sid, snap] of Object.entries(statusResult.data)) {
-          const snapshot = snap as SessionStatusSnapshot
-          if (snapshot.type !== 'busy' && snapshot.type !== 'retry') continue
-          const sidLoop = input.resolveSessionLoopName
-            ? await input.resolveSessionLoopName(sid)
-            : input.loopService.resolveLoopName(sid)
-          if (sidLoop !== resolvedLoopName) continue
+        const activeSessions = await activeLoopSessions(statusResult.data, resolvedLoopName, input.resolveSessionLoopName ?? input.loopService.resolveLoopName)
+        for (const [sid, snapshot] of activeSessions) {
 
           if (snapshot.type === 'busy') {
             anyBusy = true

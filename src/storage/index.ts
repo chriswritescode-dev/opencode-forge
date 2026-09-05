@@ -29,3 +29,6 @@ export type { SessionSandboxDesiredState, SessionSandboxAppliedState, SessionSan
 
 export { createTuiLoopRestartRepo, TUI_LOOP_RESTART_DESIRED_KEY, TUI_LOOP_RESTART_APPLIED_KEY } from './repos/tui-loop-restart-repo'
 export type { TuiLoopRestartDesiredState, TuiLoopRestartAppliedState, TuiLoopRestartRepo, TuiLoopRestartPair } from './repos/tui-loop-restart-repo'
+
+export { createLoopAttemptsRepo } from './repos/loop-attempts-repo'
+export type { LoopAttemptRow, LoopAttemptRecordInput, LoopAttemptOutcome, LoopAttemptsRepo } from './repos/loop-attempts-repo'

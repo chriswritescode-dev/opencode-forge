@@ -13,6 +13,7 @@ import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
+import type { LoopAttemptsRepo } from '../storage/repos/loop-attempts-repo'
 import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 import type { GitService } from '../utils/git-service'
 
@@ -55,6 +56,7 @@ export function createLoopEventHandler(
   planAmendmentsRepo?: PlanAmendmentsRepo,
   directory?: string,
   gitService?: GitService,
+  loopAttemptsRepo?: LoopAttemptsRepo,
 ): LoopEventHandler {
   const loop = createLoop({
     directory,
@@ -73,6 +75,7 @@ export function createLoopEventHandler(
     loopSessionUsageRepo,
     loopTransitionsRepo,
     planAmendmentsRepo,
+    loopAttemptsRepo,
     gitService,
     onTerminated: async (state, reason) => {
       await performTerminationSideEffects(state, reason, state.sessionId, {

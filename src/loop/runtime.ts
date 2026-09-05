@@ -1,4 +1,5 @@
 import type { ForgeClient } from '../client/port'
+import { createHash } from 'node:crypto'
 import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
@@ -12,7 +13,8 @@ import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
-import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
+import type { LoopAttemptsRepo } from '../storage/repos/loop-attempts-repo'
+import { activeLoopSessions, createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
 import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
@@ -76,6 +78,7 @@ export interface LoopRuntimeDeps {
   loopSessionUsageRepo?: LoopSessionUsageRepo
   loopTransitionsRepo?: LoopTransitionsRepo
   planAmendmentsRepo?: PlanAmendmentsRepo
+  loopAttemptsRepo?: LoopAttemptsRepo
   /** Optional injected LoopService (test seam). Defaults to a real one built from the repos. */
   loopService?: LoopService
   /**
@@ -160,7 +163,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   // `runExclusive` (the in-loop lock using withStateLock) is declared later
   // in this function but is hoisted, so it's always available here.
   const loopService = deps.loopService ?? createLoopService(
-    loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo, loopTransitionsRepo, planAmendmentsRepo, runExclusive,
+    loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo, loopTransitionsRepo, planAmendmentsRepo, runExclusive, deps.loopAttemptsRepo,
   )
   let getParentSessionId = deps.getParentSessionId
 
@@ -171,6 +174,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
+  const handoffWaits = new Map<string, { sessionId: string; phase: string; since: number }>()
   const stateLocks = new Map<string, Promise<unknown>>()
 
   /**
@@ -369,20 +373,75 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * The ancestor walk handles child/subagent sessions whose parent is the
    * registered loop session.
    */
-  async function resolveSessionLoopName(sessionId: string): Promise<string | null> {
+  async function resolveSessionLoopName(sessionId: string, strict = false): Promise<string | null> {
     const direct = loopService.resolveLoopName(sessionId)
     if (direct) return direct
 
     const fromReverse = sessionToLoop.get(sessionId)
     if (fromReverse) return fromReverse
 
-    if (!getParentSessionId) return null
+    if (!getParentSessionId) {
+      if (strict) throw new Error('Session ancestry lookup is unavailable')
+      return null
+    }
 
-    return tolerateUndeterminedParent(findSessionAncestor(sessionId, getParentSessionId, (parentId) => {
+    const resolution = findSessionAncestor(sessionId, getParentSessionId, (parentId) => {
       const parentLoop = loopService.resolveLoopName(parentId)
       if (parentLoop) return parentLoop
       return sessionToLoop.get(parentId) ?? null
-    }))
+    })
+    return strict ? resolution : tolerateUndeterminedParent(resolution)
+  }
+
+  function completionKey(state: LoopState, info: { messageId?: string; text: string | null }): string {
+    const message = info.messageId ?? createHash('sha256').update(`${state.iteration}:${info.text ?? ''}`).digest('hex')
+    return `${state.sessionId}:${message}`
+  }
+
+  async function deferUntilQuiescent(state: LoopState): Promise<boolean> {
+    if (!deps.loopAttemptsRepo) return false
+    const loopName = state.loopName
+    let reason: string | null = null
+    try {
+      const statuses = await client.session.status({ directory: state.worktreeDir })
+      if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses)) throw new Error('Session status is unavailable')
+      const active = await activeLoopSessions(statuses, loopName, sessionId => resolveSessionLoopName(sessionId, true))
+      if (active.length > 0) reason = 'Loop sessions are still busy or retrying'
+    } catch (err) {
+      reason = err instanceof Error ? err.message : String(err)
+    }
+    const fresh = loopService.getActiveState(loopName)
+    if (!fresh || fresh.sessionId !== state.sessionId || fresh.phase !== state.phase) return true
+    if (!reason) {
+      handoffWaits.delete(loopName)
+      return false
+    }
+    const previous = handoffWaits.get(loopName)
+    const wait = previous?.sessionId === state.sessionId && previous.phase === state.phase
+      ? previous : { sessionId: state.sessionId, phase: state.phase, since: Date.now() }
+    handoffWaits.set(loopName, wait)
+    const timeout = loopService.getBusyStallTimeoutMs() || 900_000
+    if (Date.now() - wait.since >= timeout) {
+      await terminateLoop(loopName, fresh, { kind: 'error_max_retries', message: `Cannot safely hand off work: ${reason}` })
+      return true
+    }
+    logger.debug(`Loop: deferring ${state.phase} handoff for ${loopName}: ${reason}`)
+    const pending = idleRetryTimeouts.get(loopName)
+    if (pending) clearTimeout(pending)
+    const timer = setTimeout(() => {
+      idleRetryTimeouts.delete(loopName)
+      void withStateLock(loopName, async () => {
+        const current = loopService.getActiveState(loopName)
+        if (!current || current.sessionId !== state.sessionId || current.phase !== state.phase) return
+        try {
+          await phaseRunners[current.phase](loopName, current)
+        } catch (err) {
+          await handlePromptError(loopName, current, 'handoff retry failed', err)
+        }
+      })
+    }, 1500)
+    idleRetryTimeouts.set(loopName, timer)
+    return true
   }
 
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
@@ -929,6 +988,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
+    handoffWaits.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
     summaryRepromptedSections.delete(loopName)
@@ -1438,8 +1498,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopName: string,
     currentState: LoopState,
     transition?: TransitionLogEntry,
+    coderHandoff?: { completionKey: string; decisions: string | null },
   ): Promise<boolean> {
-    const finalAuditState = loopService.getActiveState(loopName) ?? { ...currentState, phase: 'final_auditing' }
+    const finalAuditState: LoopState = { ...(loopService.getActiveState(loopName) ?? currentState), phase: 'final_auditing' }
+    if (deps.loopAttemptsRepo) {
+      const key = coderHandoff?.completionKey ?? `final-audit:${currentState.sessionId}:${currentState.iteration}`
+      if (!await loopService.captureAttempt(finalAuditState, key, coderHandoff?.decisions ?? null)) return false
+    }
     const finalAuditPrompt = loopService.buildFinalAuditPrompt(finalAuditState)
     const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
 
@@ -1577,9 +1642,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
+    if (await deferUntilQuiescent(currentState)) return
 
     // Parse coder decisions from the coding assistant's response and store for the audit prompt.
-    loopService.setCoderDecisions(loopName, parseCoderDecisions(assistantInfo.text))
+    if (!await loopService.captureAttempt(currentState, completionKey(currentState, assistantInfo), parseCoderDecisions(assistantInfo.text))) return
 
     // Phase-runner dispatch (see phaseRunners below) routes a final_audit_fix loop
     // to runFinalAuditFixPhase, so runCodingPhase only handles the regular coding phase.
@@ -1888,6 +1954,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
+    if (await deferUntilQuiescent(currentState)) return
 
     if (!assistantErrorDetected) {
       loopService.resetAuditorFallbackIndex(loopName)
@@ -1896,6 +1963,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
 
       if (currentState.kind === 'goal') {
+        loopService.finishAttempt(currentState, loopService.hasOutstandingFindings(loopName) ? 'dirty' : 'clean')
         await runGoalAuditResult(loopName, currentState, auditText || '', newAuditCount)
         return
       }
@@ -1907,6 +1975,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const sectionBugFindings = sectionAllBugFindings.filter(f => f.sectionIndex === idx)
 
         if (sectionSummary && sectionBugFindings.length === 0) {
+          loopService.finishAttempt(currentState, 'clean')
           logger.log(`Loop: section ${idx} audit clean, marking completed`)
           summaryRepromptedSections.delete(loopName)
 
@@ -2037,6 +2106,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (dirtyTrans.kind !== 'rotate') return
 
         summaryRepromptedSections.delete(loopName)
+        loopService.finishAttempt(currentState, 'dirty')
         logger.log(`Loop: section ${idx} audit dirty, retrying same section`)
 
         const nextIter = await nextIterationOrTerminate(loopName, currentState)
@@ -2077,6 +2147,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       const candidateState = { ...currentState, auditCount: newAuditCount }
+      loopService.finishAttempt(currentState, loopService.hasOutstandingFindings(loopName, 'bug') ? 'dirty' : 'clean')
       if (await checkAuditClearAndTerminate(loopName, candidateState)) return
 
       const dirtyTrans = nextTransition(candidateState, { type: 'audit-dirty' })
@@ -2188,11 +2259,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'final_auditing')
+    if (await deferUntilQuiescent(currentState)) return
 
     if (!assistantErrorDetected) {
       loopService.resetAuditorFallbackIndex(loopName)
       currentState = { ...currentState, auditorFallbackIndex: 0 }
       const hasOutstandingBugs = loopService.hasOutstandingFindings(loopName, 'bug')
+      loopService.finishAttempt(currentState, hasOutstandingBugs ? 'dirty' : 'clean')
 
       const finalAuditEvent: TransitionEvent = { type: hasOutstandingBugs ? 'final-audit-dirty' : 'final-audit-clean' }
       const trans = nextTransition(currentState, finalAuditEvent)
@@ -2314,10 +2387,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!errorResult) return
     currentState = errorResult.currentState
     currentState = resetErrorCountIfNeeded(loopName, currentState, errorResult.assistantErrorDetected, 'coding')
+    if (await deferUntilQuiescent(currentState)) return
 
     // Persist coder decisions emitted during the fix pass so the next final audit
     // prompt can surface them alongside the audit findings.
-    loopService.setCoderDecisions(loopName, parseCoderDecisions(assistantInfo.text))
+    const decisions = parseCoderDecisions(assistantInfo.text)
+    loopService.setCoderDecisions(loopName, decisions)
 
     const trans = nextTransition(currentState, { type: 'coding-idle-complete' })
     if (trans.kind === 'start-final-audit') {
@@ -2327,7 +2402,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         transitionKind: trans.kind,
         fromPhase: currentState.phase,
         toPhase: 'final_auditing',
-      })
+      }, { completionKey: completionKey(currentState, assistantInfo), decisions })
       if (!started) {
         logger.error(`Loop: failed to restart final audit after fix for ${loopName}`)
       }
@@ -2874,6 +2949,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       idleRetryTimeouts.delete(worktreeName)
     }
     idleRetryAttempts.clear()
+    handoffWaits.clear()
     codingLaunchRecoveryAttempts.clear()
     internalFallbackAborts.clear()
     coalescedLimitSessions.clear()
@@ -2933,6 +3009,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
+    handoffWaits.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
 

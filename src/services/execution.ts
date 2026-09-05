@@ -1939,14 +1939,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // else: existing totalSections preserved as-is
 
       const effectiveSessionId = newSessionId!
-      // A stopped final_audit_fix loop is a coding pass (the fix session), not an
-      // auditor phase — restart it as coding with the code prompt agent. The other
-      // auditor phases (final_auditing, post_action) preserve their persisted phase.
       const restartPhase = stoppedState.phase === 'final_auditing'
         ? 'final_auditing' as const
         : stoppedState.phase === 'post_action'
           ? 'post_action' as const
-          : 'coding' as const
+          : stoppedState.phase === 'final_audit_fix'
+            ? 'final_audit_fix' as const
+            : 'coding' as const
 
       const newState: import('../loop/state').LoopState = {
         active: true,
@@ -1986,27 +1985,27 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.phase === 'post_action') {
         postActionCfg = resolvePostActionConfig(deps.config)
-        promptText = deps.loop.service.buildPostActionPrompt(stoppedState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
+        promptText = deps.loop.service.buildPostActionPrompt(newState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
       } else if (stoppedState.kind === 'goal') {
         // Goal loops have no plan, sections, or approval flow — restate the goal
         // directly as a fresh coding pass. No initial audit findings on restart.
-        promptText = deps.loop.service.buildContinuationPrompt(stoppedState, undefined)
+        promptText = deps.loop.service.buildContinuationPrompt(newState, undefined)
       } else if (stoppedState.phase === 'final_audit_fix') {
         // Resume fixing the final-audit findings rather than re-coding the last
         // section: the persisted findings carry the remediation for this
         // recovery path.
         const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
-        promptText = deps.loop.service.buildFinalAuditFixPrompt(stoppedState, outstandingBugs)
+        promptText = deps.loop.service.buildFinalAuditFixPrompt(newState, outstandingBugs)
       } else if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
         if (stoppedState.phase === 'final_auditing') {
-          promptText = deps.loop.service.buildFinalAuditPrompt(stoppedState)
+          promptText = deps.loop.service.buildFinalAuditPrompt(newState)
         } else {
           const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
           if (outstandingBugs.some((f) => f.sectionIndex === stoppedState.currentSectionIndex)) {
-            promptText = deps.loop.service.buildSectionContinuationPrompt(stoppedState, undefined, outstandingBugs)
+            promptText = deps.loop.service.buildSectionContinuationPrompt(newState, undefined, outstandingBugs)
           } else {
-            promptText = deps.loop.service.buildSectionInitialPrompt(stoppedState)
+            promptText = deps.loop.service.buildSectionInitialPrompt(newState)
           }
         }
       } else {

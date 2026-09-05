@@ -64,6 +64,12 @@ export interface FinalAuditFixState extends LoopStateBase {
 
 export type LoopState = CodingState | AuditingState | FinalAuditingState | PostActionState | FinalAuditFixState
 
+export function auditScope(state: Pick<LoopState, 'phase' | 'kind' | 'totalSections' | 'currentSectionIndex'>): string {
+  if (state.phase === 'final_auditing' || state.phase === 'final_audit_fix') return 'final'
+  if (state.kind === 'goal') return 'goal'
+  return state.totalSections > 0 ? `section:${state.currentSectionIndex}` : 'plan'
+}
+
 export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): LoopState {
   const base = {
     active: row.status === 'running',

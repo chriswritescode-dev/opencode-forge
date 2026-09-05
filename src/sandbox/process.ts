@@ -8,6 +8,9 @@ export interface CommandResult {
 }
 
 export interface RunCommandOpts {
+  cwd?: string
+  /** Full environment for the child. When provided it replaces the parent environment entirely. */
+  env?: Record<string, string>
   timeout?: number
   abort?: AbortSignal
   stdin?: string
@@ -39,6 +42,8 @@ export function runCommand(command: string, args: string[], opts: RunCommandOpts
     const stdioConfig: 'pipe' | 'ignore' = opts.stdin ? 'pipe' : 'ignore'
     const child: ChildProcess = spawn(command, args, {
       stdio: [stdioConfig, 'pipe', 'pipe'],
+      cwd: opts.cwd,
+      env: opts.env,
     })
 
     let stdout = ''

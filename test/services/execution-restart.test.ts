@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync } from 'fs'
 import { execFileSync } from 'child_process'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -8,6 +9,7 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
+import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -15,6 +17,7 @@ import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
+import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import type { LoopService } from '../../src/loop/service'
 import { buildAuditorModelChain, nextAuditorFallbackIndex, auditorModelChoiceAt } from '../../src/utils/loop-helpers'
 const Database = require('better-sqlite3')
@@ -66,6 +69,7 @@ describe('handleLoopRestart from stall_timeout', () => {
   let reviewFindingsRepo: ReviewFindingsRepo
   let sectionPlansRepo: SectionPlansRepo
   let loopTransitionsRepo: LoopTransitionsRepo
+  let loopAttemptsRepo: LoopAttemptsRepo
   let loopService: LoopService
 
   const mockWorkspaceStatusRegistry = {
@@ -89,6 +93,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
     loopTransitionsRepo = createLoopTransitionsRepo(db)
+    loopAttemptsRepo = createLoopAttemptsRepo(db)
     loopService = createLoopService(
       loopsRepo,
       plansRepo,
@@ -99,6 +104,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       undefined,
       sectionPlansRepo,
       loopTransitionsRepo,
+      undefined,
+      undefined,
+      loopAttemptsRepo,
     )
   })
 
@@ -861,7 +869,9 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const noopFn = () => {}
     const buildSectionInitialPromptSpy = vi.fn()
-    const buildFinalAuditPromptSpy = vi.fn()
+    const buildFinalAuditPromptSpy = vi.fn(
+      (state: import('../../src/loop/state').LoopState) => loopService.buildFinalAuditPrompt(state),
+    )
 
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
@@ -947,7 +957,153 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(newState.phase).toBe('final_auditing')
 
     expect(buildFinalAuditPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildFinalAuditPromptSpy.mock.calls[0][0].sessionId).toBe('new-sess-789')
+    expect(buildFinalAuditPromptSpy.mock.calls[0][0].phase).toBe('final_auditing')
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('auditor-loop')
+    expect(promptCall.sessionID).toBe('new-sess-789')
+    expect(promptCall.parts[0].text).toContain('[Final integration audit]')
+  })
+
+  test('restart final_auditing with a pending attempt snapshot from the retired session builds the final-audit prompt on the fresh session id and demands the full scope', async () => {
+    insertLoop({
+      loopName: 'final-audit-snapshot',
+      phase: 'final_auditing',
+      currentSectionIndex: 5,
+      iteration: 6,
+      totalSections: 5,
+      status: 'running',
+      terminationReason: null,
+      active: true,
+    })
+
+    // Pending (un-audited) attempt recorded under the pre-restart session. Its
+    // plan hash and worktree match the restarted loop — only the session
+    // identity differs — so the restart prompt must not treat the retired
+    // session's snapshot delta as reusable and must demand the full scope.
+    const insertedAttempt = loopAttemptsRepo.record({
+      projectId: PROJECT_ID,
+      loopName: 'final-audit-snapshot',
+      scope: 'final',
+      sourceSessionId: 'session-old',
+      completionKey: 'final-audit-pending',
+      iteration: 6,
+      worktreeDir: '/tmp',
+      planHash: createHash('sha256').update(JSON.stringify(['final', null, []])).digest('hex'),
+      coderDecisions: null,
+      snapshotCommit: '1'.repeat(40),
+      snapshotRef: 'refs/forge/audits/snapshot',
+      previousCommit: '2'.repeat(40),
+      diffSummary: 'Retired-session delta summary',
+      fallbackReason: null,
+      findingsBefore: [],
+    })
+    expect(insertedAttempt).not.toBeNull()
+
+    const noopFn = () => {}
+    const buildSectionInitialPromptSpy = vi.fn()
+    const buildFinalAuditPromptSpy = vi.fn(
+      (state: import('../../src/loop/state').LoopState) => loopService.buildFinalAuditPrompt(state),
+    )
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: buildSectionInitialPromptSpy,
+      buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'final-audit-snapshot',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-snapshot' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'final-audit-snapshot' },
+        force: true,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.sessionId).toBe('new-sess-snapshot')
+
+    expect(buildFinalAuditPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildFinalAuditPromptSpy.mock.calls[0][0].sessionId).toBe('new-sess-snapshot')
+    expect(buildFinalAuditPromptSpy.mock.calls[0][0].phase).toBe('final_auditing')
+    expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
+
+    expect(loopsRepo.get(PROJECT_ID, 'final-audit-snapshot')!.phase).toBe('final_auditing')
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('auditor-loop')
+    expect(promptCall.sessionID).toBe('new-sess-snapshot')
+    const promptText = promptCall.parts[0].text as string
+    expect(promptText).toContain('The plan, workspace, or session has changed; perform the full audit scope.')
+    expect(promptText).not.toContain('Run exactly:')
+    expect(promptText).not.toContain('Retired-session delta summary')
   })
 
   test('restart with unset state.auditorModel uses config.auditorModel and the persisted auditor variant', async () => {
@@ -1417,8 +1573,9 @@ describe('handleLoopRestart from stall_timeout', () => {
     // The pre-lock snapshot (captured via listActive/listRecent before runExclusive
     // acquires the lock) sees phase 'final_auditing'. While we wait for the lock,
     // the loop transitions to final_audit_fix. The authoritative state fetched
-    // inside the lock must drive the restart decision so we restart as a coding
-    // pass (phase 'coding', 'code' agent), not as an auditor session.
+    // inside the lock must drive the restart decision so we restart as a
+    // final_audit_fix code-agent pass (the fix prompt on the 'code' agent), not
+    // as an auditor session, and the fresh restart session id drives the prompt.
     insertLoop({
       loopName: 'final-audit-race',
       phase: 'final_auditing',
@@ -1552,19 +1709,24 @@ describe('handleLoopRestart from stall_timeout', () => {
     if (!result.ok) return
     expect(result.data.previousSessionId).toBe('fix-session')
 
-    // Authoritative under-lock phase was 'final_audit_fix', which restarts as a
-    // coding pass (phase 'coding', code agent) that resumes fixing the
-    // final-audit findings via the fix prompt — not by re-coding the section.
+    // Authoritative under-lock phase was 'final_audit_fix', which restart
+    // preserves explicitly: the loop resumes fixing the final-audit findings
+    // via the fix prompt on the code agent — not by re-coding the section.
     const newState = loopService.getActiveState('final-audit-race')!
-    expect(newState.phase).toBe('coding')
+    expect(newState.phase).toBe('final_audit_fix')
+    const persistedRow = loopsRepo.get(PROJECT_ID, 'final-audit-race')!
+    expect(persistedRow.phase).toBe('final_audit_fix')
 
     expect(buildFinalAuditFixPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildFinalAuditFixPromptSpy.mock.calls[0][0].sessionId).toBe('new-code-session')
+    expect(buildFinalAuditFixPromptSpy.mock.calls[0][0].phase).toBe('final_audit_fix')
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
     expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
     expect(promptCall.agent).toBe('code')
     expect(promptCall.sessionID).toBe('new-code-session')
+    expect(promptCall.parts[0].text).toBe('fix prompt')
   })
 
   test('failed restart on an active loop terminates it restartable instead of resurrecting the aborted session (final_auditing -> final_audit_fix race with prompt failure)', async () => {

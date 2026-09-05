@@ -406,5 +406,14 @@ export const migrations: Migration[] = [
       db.run('ALTER TABLE loops ADD COLUMN auditor_fallback_index INTEGER NOT NULL DEFAULT 0')
     },
   },
+  {
+    id: '145',
+    description: 'Create loop_attempts table for durable loop attempt history storage',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_attempts'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('145_create_loop_attempts.sql'))
+    },
+  },
 
 ]

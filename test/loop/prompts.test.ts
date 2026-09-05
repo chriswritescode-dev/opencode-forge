@@ -1,18 +1,22 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi } from 'vitest'
 import {
   buildContinuationPrompt,
   buildAuditPrompt,
   buildSectionInitialPrompt,
+  buildSectionInitialPromptText,
   buildSectionAuditPrompt,
   buildSectionContinuationPrompt,
   buildFinalAuditPrompt,
   buildFinalAuditFixPrompt,
   buildPostActionPrompt,
+  buildAttemptHistoryBlock,
+  ATTEMPT_HISTORY_LIMIT,
 } from '../../src/loop/prompts'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import { CODER_DECISIONS_START_MARKER } from '../../src/utils/coder-decisions'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
+import type { LoopAttemptRow } from '../../src/storage/repos/loop-attempts-repo'
 
 const defaultState = {
   active: true,
@@ -869,6 +873,222 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildFinalAuditPrompt(ctx, { ...sectionState })
       expect(result).not.toContain('Coder decisions & verification notes')
       expect(result).not.toContain('never an automatic waiver')
+    })
+  })
+
+  describe('attempt history handoff (durable audit attempts)', () => {
+    const DELTA_PREV = 'b'.repeat(40)
+    const DELTA_CUR = 'a'.repeat(40)
+    const LONG_NOTE_BODY = 'y'.repeat(900)
+
+    function makeAttemptRow(overrides: Partial<LoopAttemptRow> & Pick<LoopAttemptRow, 'id' | 'attemptNumber'>): LoopAttemptRow {
+      return {
+        projectId: 'p',
+        loopName: 'test-loop',
+        scope: 'section:0',
+        sourceSessionId: 'coder-session',
+        completionKey: `key-${String(overrides.id)}`,
+        auditorSessionId: null,
+        iteration: 1,
+        worktreeDir: '/tmp/test-worktree',
+        planHash: 'plan-hash',
+        coderDecisions: null,
+        snapshotCommit: null,
+        snapshotRef: null,
+        previousCommit: null,
+        diffSummary: null,
+        fallbackReason: null,
+        findingsBefore: [],
+        findingsAfter: null,
+        outcome: null,
+        createdAt: 0,
+        auditedAt: null,
+        ...overrides,
+      }
+    }
+
+    function finding(file: string, line: number, description: string, sectionIndex: number | null = null): ReviewFindingRow {
+      return { file, line, severity: 'bug', description, scenario: null, loopName: 'test-loop', sectionIndex, projectId: 'p', createdAt: 0 }
+    }
+
+    function ctxWithAttempts(attempts: LoopAttemptRow[], extra?: Partial<PromptContext>): PromptContext {
+      return makeCtx({
+        getAttemptHistory: () => attempts,
+        ...extra,
+      })
+    }
+
+    test('coder continuation includes latest coder decisions in full plus older excerpts bounded', () => {
+      const newestBody = 'z'.repeat(900)
+      const attempts = [
+        makeAttemptRow({ id: 2, attemptNumber: 2, scope: 'plan', coderDecisions: `NEWEST ${newestBody}`, outcome: 'dirty', findingsAfter: [finding('src/a.ts', 5, 'Historical bug')] }),
+        makeAttemptRow({ id: 1, attemptNumber: 1, scope: 'plan', coderDecisions: `OLD ${LONG_NOTE_BODY}`, outcome: 'clean' }),
+      ]
+      const result = buildContinuationPrompt(ctxWithAttempts(attempts), { ...defaultState })
+      expect(result).toContain('## Audit attempt history (scope: plan)')
+      expect(result).toContain(`NEWEST ${newestBody}`)
+      expect(result).toContain('OLD ' + 'y'.repeat(316))
+      expect(result).not.toContain('y'.repeat(400))
+      expect(result).toContain('Attempt 2 (scope plan, iteration 1) — outcome: dirty; findings after: x:src/a.ts:5')
+      expect(result).toContain('Attempt 1 (scope plan, iteration 1) — outcome: clean')
+    })
+
+    test('auditor history omits the latest coder notes and renders prior fixes as excerpts', () => {
+      const attempts = [
+        makeAttemptRow({ id: 2, attemptNumber: 2, coderDecisions: 'LATEST-ONLY-MARKER decisions', outcome: 'dirty' }),
+        makeAttemptRow({ id: 1, attemptNumber: 1, coderDecisions: 'PRIOR-FIX-MARKER decisions', outcome: 'dirty' }),
+      ]
+      const result = buildSectionAuditPrompt(ctxWithAttempts(attempts, { getCoderDecisions: () => null }), { ...sectionState })
+      expect(result).not.toContain('LATEST-ONLY-MARKER')
+      expect(result).toContain('Prior attempted coder decisions (bounded excerpts)')
+      expect(result).toContain('PRIOR-FIX-MARKER')
+    })
+
+    test('historical findings render as location identifiers, not auditor prose', () => {
+      const attempts = [
+        makeAttemptRow({ id: 1, attemptNumber: 1, outcome: 'dirty', findingsAfter: [finding('src/a.ts', 5, 'SECRET-AUDITOR-PROSE'), finding('src/b.ts', 9, 'Another prose detail', 1)] }),
+      ]
+      const result = buildAttemptHistoryBlock(ctxWithAttempts(attempts), { ...defaultState }, 'coder')
+      expect(result).toContain('x:src/a.ts:5')
+      expect(result).toContain('1:src/b.ts:9')
+      expect(result).not.toContain('SECRET-AUDITOR-PROSE')
+      expect(result).not.toContain('Another prose detail')
+    })
+
+    test('history policy states records are not current tasks and carry no correctness guarantee', () => {
+      const result = buildAttemptHistoryBlock(ctxWithAttempts([makeAttemptRow({ id: 1, attemptNumber: 1 })]), { ...defaultState }, 'coder')
+      expect(result).toContain('not current tasks')
+      expect(result).toContain('current outstanding findings')
+      expect(result).toContain('does not guarantee correctness')
+    })
+
+    test('first audit renders no history block and no delta commands', () => {
+      const ctx = makeCtx()
+      for (const result of [
+        buildSectionAuditPrompt(ctx, { ...sectionState }),
+        buildAuditPrompt(ctx, { ...defaultState, iteration: 2 }),
+        buildAuditPrompt(ctx, { ...goalState, phase: 'auditing' }),
+        buildFinalAuditPrompt(ctx, { ...sectionState }),
+      ]) {
+        expect(result).not.toContain('Audit attempt history')
+        expect(result).not.toContain('git diff --no-ext-diff')
+      }
+    })
+
+    test('missing getAttemptHistory on the context renders nothing', () => {
+      const result = buildContinuationPrompt(makeCtx(), { ...defaultState })
+      expect(result).not.toContain('Audit attempt history')
+    })
+
+    test('delta-eligible pending attempt renders the exact diff command and full obligations', () => {
+      const attempts = [
+        makeAttemptRow({ id: 3, attemptNumber: 3, scope: 'section:0', iteration: 2, outcome: null, snapshotCommit: DELTA_CUR, previousCommit: DELTA_PREV, diffSummary: 'src/a.ts | 2 ++' }),
+      ]
+      const result = buildSectionAuditPrompt(ctxWithAttempts(attempts), { ...sectionState })
+      expect(result).toContain(`git diff --no-ext-diff --no-textconv ${DELTA_PREV} ${DELTA_CUR} --`)
+      expect(result).toContain('src/a.ts | 2 ++')
+      expect(result).toContain('Delta audit ordering (delta-first, not delta-only)')
+      expect(result).toContain('verify ALL outstanding findings')
+      expect(result).toContain('affected callers/contracts')
+      expect(result).toContain('acceptance criteria in scope')
+      expect(result).toContain('Rerun any verification the delta invalidated')
+      expect(result).toContain('explicit plan checks')
+      expect(result).toContain('Expand beyond the delta')
+      expect(result).toContain('fall back to the full established scope')
+      expect(result).toContain('last known previously audited span')
+    })
+
+    test('malformed snapshot SHA renders no git command and falls back to full scope', () => {
+      const attempts = [
+        makeAttemptRow({ id: 2, attemptNumber: 2, scope: 'section:0', outcome: null, snapshotCommit: 'deadbeef-short', previousCommit: DELTA_PREV }),
+      ]
+      const result = buildSectionAuditPrompt(ctxWithAttempts(attempts), { ...sectionState })
+      expect(result).not.toContain('git diff --no-ext-diff')
+      expect(result).toContain('No usable snapshot delta')
+    })
+
+    test('fallbackReason on the latest attempt renders full-scope fallback without a diff command', () => {
+      const attempts = [
+        makeAttemptRow({ id: 2, attemptNumber: 2, scope: 'section:0', outcome: null, snapshotCommit: DELTA_CUR, previousCommit: DELTA_PREV, fallbackReason: 'snapshot ref pruned' }),
+      ]
+      const result = buildSectionAuditPrompt(ctxWithAttempts(attempts), { ...sectionState })
+      expect(result).not.toContain('git diff --no-ext-diff')
+      expect(result).toContain('No usable snapshot delta')
+      expect(result).toContain('snapshot ref pruned')
+      expect(result).toContain('full established scope')
+    })
+
+    test('final audit request forces the final_auditing phase on the history query', () => {
+      const getAttemptHistory = vi.fn(() => [makeAttemptRow({ id: 1, attemptNumber: 1, scope: 'final', outcome: null })])
+      const ctx = makeCtx({ getAttemptHistory })
+      buildFinalAuditPrompt(ctx, { ...sectionState })
+      expect(getAttemptHistory).toHaveBeenCalledWith(expect.objectContaining({ phase: 'final_auditing' }), ATTEMPT_HISTORY_LIMIT)
+    })
+
+    test('final fix request forces the final_audit_fix phase on the history query', () => {
+      const getAttemptHistory = vi.fn(() => [makeAttemptRow({ id: 1, attemptNumber: 1, scope: 'final', outcome: 'dirty' })])
+      const ctx = makeCtx({ getAttemptHistory })
+      buildFinalAuditFixPrompt(ctx, { ...sectionState })
+      expect(getAttemptHistory).toHaveBeenCalledWith(expect.objectContaining({ phase: 'final_audit_fix' }), ATTEMPT_HISTORY_LIMIT)
+    })
+
+    test('section initial wrapper includes history; standalone Text builder does not', () => {
+      const attempts = [makeAttemptRow({ id: 1, attemptNumber: 1, outcome: 'dirty' })]
+      const wrapper = buildSectionInitialPrompt(ctxWithAttempts(attempts), { ...sectionState })
+      expect(wrapper).toContain('Audit attempt history')
+      const standalone = buildSectionInitialPromptText({
+        currentSectionIndex: 0,
+        totalSections: 2,
+        iteration: 1,
+        maxIterations: 5,
+        sectionContent: 'Section plan for 1',
+      })
+      expect(standalone).not.toContain('Audit attempt history')
+    })
+
+    test('history serves both roles: goal coder and goal audit', () => {
+      const attempts = [
+        makeAttemptRow({ id: 2, attemptNumber: 2, scope: 'goal', coderDecisions: 'GOAL-NOTE', outcome: 'dirty' }),
+        makeAttemptRow({ id: 1, attemptNumber: 1, scope: 'goal', outcome: 'clean' }),
+      ]
+      const coder = buildContinuationPrompt(ctxWithAttempts(attempts), { ...goalState })
+      expect(coder).toContain('## Audit attempt history (scope: goal)')
+      expect(coder).toContain('GOAL-NOTE')
+      const audit = buildAuditPrompt(ctxWithAttempts(attempts, { getCoderDecisions: () => null }), { ...goalState, phase: 'auditing' })
+      expect(audit).toContain('## Audit attempt history (scope: goal)')
+      expect(audit).not.toContain('GOAL-NOTE')
+    })
+
+    test('history requests use the shared limit of 4 attempts', () => {
+      const getAttemptHistory = vi.fn(() => [])
+      const ctx = makeCtx({ getAttemptHistory })
+      buildContinuationPrompt(ctx, { ...defaultState })
+      expect(getAttemptHistory).toHaveBeenCalledWith(expect.objectContaining({ loopName: 'test-loop' }), ATTEMPT_HISTORY_LIMIT)
+    })
+
+    test('section audit retains the full acceptance scope and clarifies repeat ordering', () => {
+      const result = buildSectionAuditPrompt(makeCtx(), { ...sectionState })
+      expect(result).toContain("this section's work is all uncommitted changes plus any commits made after the most recent")
+      expect(result).toContain('full scope is the acceptance scope on every section audit')
+      expect(result).toContain('the delta orders the review, it does not replace the full scope')
+    })
+
+    test('final audit remains the full integration gate with delta-first prioritization only', () => {
+      const result = buildFinalAuditPrompt(makeCtx(), { ...sectionState })
+      expect(result).toContain("the loop's full accumulated changes")
+      expect(result).toContain('Delta-first ordering from the attempt history may prioritize what you verify first')
+      expect(result).toContain('the delta never narrows this final gate')
+    })
+
+    test('audit prompts point to the attempts pagination usage of review-read', () => {
+      for (const result of [
+        buildSectionAuditPrompt(makeCtx(), { ...sectionState }),
+        buildAuditPrompt(makeCtx(), { ...defaultState, iteration: 2 }),
+        buildAuditPrompt(makeCtx(), { ...goalState, phase: 'auditing' }),
+        buildFinalAuditPrompt(makeCtx(), { ...sectionState }),
+      ]) {
+        expect(result).toContain('{attempts: true, beforeId: <id>, limit: <n>}')
+      }
     })
   })
 })

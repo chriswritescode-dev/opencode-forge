@@ -6,7 +6,10 @@ import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopState } from './state'
-import { loopRowToState, loopStateToRow } from './state'
+import { auditScope, loopRowToState, loopStateToRow } from './state'
+import { createHash, randomUUID } from 'node:crypto'
+import type { LoopAttemptsRepo, LoopAttemptRow } from '../storage/repos/loop-attempts-repo'
+import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../utils/audit-snapshot'
 import {
   buildContinuationPrompt as _buildContinuationPrompt,
   buildAuditPrompt as _buildAuditPrompt,
@@ -70,6 +73,9 @@ export interface LoopService {
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   setCoderDecisions(name: string, decisions: string | null): void
+  captureAttempt(state: LoopState, completionKey: string, decisions: string | null): Promise<boolean>
+  finishAttempt(state: LoopState, outcome: 'clean' | 'dirty'): void
+  getAttemptHistory(name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[]
   bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void
   resetSectionRecurrence(name: string, sectionIndex: number): void
   generateUniqueLoopName(baseName: string): string
@@ -149,6 +155,7 @@ export function createLoopService(
   loopTransitionsRepo?: LoopTransitionsRepo,
   planAmendmentsRepo?: PlanAmendmentsRepo,
   runExclusive?: <T>(loopName: string, fn: () => Promise<T>) => Promise<T>,
+  loopAttemptsRepo?: LoopAttemptsRepo,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
   const coderDecisionsByLoop = new Map<string, string>()
@@ -214,10 +221,23 @@ export function createLoopService(
 
   function deleteState(name: string): void {
     const state = getAnyState(name)
+    const snapshots: LoopAttemptRow[] = []
+    let beforeId: number | undefined
+    for (;;) {
+      const page = getAttemptHistory(name, undefined, 100, beforeId)
+      snapshots.push(...page.filter(row => row.snapshotRef !== null))
+      if (page.length < 100) break
+      beforeId = page[0].id
+    }
     loopsRepo.delete(projectId, name)
     plansRepo.deleteForLoop(projectId, name)
     coderDecisionsByLoop.delete(name)
     findingRecurrenceByLoop.delete(name)
+    void (async () => {
+      for (const snapshot of snapshots) {
+        await deleteAuditSnapshot(snapshot.worktreeDir, snapshot.snapshotRef!, logger).catch(err => logger.error('Loop: deleted-loop checkpoint cleanup failed', err))
+      }
+    })()
     notifyLoopChange('delete', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -249,7 +269,7 @@ export function createLoopService(
 
   function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void {
     const state = getAnyState(name)
-    loopsRepo.replaceSession(projectId, name, {
+    const replace = () => loopsRepo.replaceSession(projectId, name, {
       sessionId: opts.newSessionId,
       phase: opts.phase,
       iteration: opts.iteration,
@@ -258,15 +278,38 @@ export function createLoopService(
       lastAuditResult: opts.lastAuditResult,
       executorSessionId: opts.executorSessionId,
     })
+    if (state && loopAttemptsRepo && (opts.phase === 'auditing' || opts.phase === 'final_auditing')) {
+      loopAttemptsRepo.bindAudit(projectId, name, auditScope({ ...state, phase: opts.phase }), state.sessionId, opts.newSessionId, replace)
+    } else replace()
     notifyLoopChange('rotate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function getFindingRecurrence(loopName?: string): Map<string, number> {
     if (!loopName) return new Map()
+    if (loopAttemptsRepo) {
+      const state = getAnyState(loopName)
+      if (!state) return new Map()
+      const counts = new Map<string, number>()
+      let candidates: Set<string> | undefined
+      let beforeId: number | undefined
+      for (;;) {
+        const rows = loopAttemptsRepo.list(projectId, loopName, auditScope(state), 100, beforeId)
+        for (const row of rows.slice().reverse()) {
+          if (!row.outcome) continue
+          if (row.outcome === 'clean') return counts
+          const keys = new Set((row.findingsAfter ?? []).filter(f => f.severity === 'bug').map(findingRecurrenceKey))
+          candidates = candidates ? new Set([...candidates].filter(key => keys.has(key))) : keys
+          if (candidates.size === 0) return counts
+          for (const key of candidates) counts.set(key, (counts.get(key) ?? 0) + 1)
+        }
+        if (rows.length < 100) return counts
+        beforeId = rows[0].id
+      }
+    }
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
@@ -282,6 +325,7 @@ export function createLoopService(
 
   function getCoderDecisions(loopName?: string): string | null {
     if (!loopName) return null
+    if (loopAttemptsRepo) return loopAttemptsRepo.list(projectId, loopName, undefined, 1)[0]?.coderDecisions ?? null
     return coderDecisionsByLoop.get(loopName) ?? null
   }
 
@@ -375,13 +419,110 @@ export function createLoopService(
     }
   }
 
+  function getAttemptHistory(name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[] {
+    return loopAttemptsRepo?.list(projectId, name, scope, limit, beforeId) ?? []
+  }
+
+  function attemptPlanHash(state: LoopState): string {
+    const plan = state.kind === 'goal' ? state.goal : getPlanTextForState(state)
+    const sections = getSectionPlans(state).map(s => [s.sectionIndex, s.content])
+    return createHash('sha256').update(JSON.stringify([auditScope(state), plan, sections])).digest('hex')
+  }
+
+  function getPromptAttemptHistory(state: LoopState, limit = 4): LoopAttemptRow[] {
+    const rows = getAttemptHistory(state.loopName, auditScope(state), limit)
+    const latest = rows.at(-1)
+    if (latest && (latest.planHash !== attemptPlanHash(state) || latest.worktreeDir !== state.worktreeDir ||
+      (latest.sourceSessionId !== state.sessionId && latest.auditorSessionId !== state.sessionId))) {
+      rows[rows.length - 1] = { ...latest, previousCommit: null, diffSummary: null, fallbackReason: 'The plan, workspace, or session has changed; perform the full audit scope.' }
+    }
+    return rows
+  }
+
+  async function captureAttempt(state: LoopState, completionKey: string, decisions: string | null): Promise<boolean> {
+    if (!loopAttemptsRepo) {
+      setCoderDecisions(state.loopName, decisions)
+      return true
+    }
+    const source = getActiveState(state.loopName)
+    if (!source || source.sessionId !== state.sessionId) return false
+    const scope = auditScope(state)
+    const previous = loopAttemptsRepo.latest(projectId, state.loopName, scope)
+    if (previous?.completionKey === completionKey) return true
+    const planHash = attemptPlanHash(state)
+    const ref = `refs/forge/audits/${randomUUID()}`
+    let snapshotCommit: string | null = null
+    let snapshotRef: string | null = null
+    let previousCommit: string | null = null
+    let diffSummary: string | null = null
+    let fallbackReason: string | null = 'First audit in this scope; review the full scope.'
+    try {
+      const snapshot = await captureAuditSnapshot(state.worktreeDir, ref, logger)
+      snapshotCommit = snapshot.commit
+      snapshotRef = snapshot.ref
+      if (previous?.outcome && previous.snapshotCommit && previous.planHash === planHash && previous.worktreeDir === state.worktreeDir) {
+        diffSummary = await compareAuditSnapshots(state.worktreeDir, previous.snapshotCommit, snapshotCommit, logger)
+        previousCommit = previous.snapshotCommit
+        fallbackReason = null
+      } else if (previous) {
+        fallbackReason = 'The previous attempt was not audited, its checkpoint is unavailable, or the plan/workspace changed; review the full scope.'
+      }
+    } catch (err) {
+      fallbackReason = `Checkpoint unavailable: ${err instanceof Error ? err.message : String(err)}. Review the full scope.`
+      logger.log(`Loop: ${fallbackReason}`)
+    }
+    let recorded: LoopAttemptRow | null = null
+    try {
+      const fresh = getActiveState(state.loopName)
+      if (!fresh || fresh.sessionId !== source.sessionId || fresh.phase !== source.phase ||
+        fresh.worktreeDir !== source.worktreeDir || attemptPlanHash({ ...fresh, phase: state.phase }) !== planHash) return false
+      recorded = loopAttemptsRepo.record({
+        projectId, loopName: state.loopName, scope, sourceSessionId: state.sessionId, completionKey,
+        iteration: state.iteration, worktreeDir: state.worktreeDir, planHash, coderDecisions: decisions,
+        snapshotCommit, snapshotRef, previousCommit, diffSummary, fallbackReason,
+        findingsBefore: attemptFindings(state),
+      })
+      return recorded !== null
+    } finally {
+      if (snapshotRef && recorded?.snapshotRef !== snapshotRef) {
+        await deleteAuditSnapshot(state.worktreeDir, snapshotRef, logger).catch(err => logger.error('Loop: orphan checkpoint cleanup failed', err))
+      }
+    }
+  }
+
+  function attemptFindings(state: LoopState): ReviewFindingRow[] {
+    const findings = getOutstandingFindings(state.loopName)
+    return auditScope(state).startsWith('section:') ? findings.filter(f => f.sectionIndex === state.currentSectionIndex) : findings
+  }
+
+  function finishAttempt(state: LoopState, outcome: 'clean' | 'dirty'): void {
+    if (!loopAttemptsRepo || (state.phase !== 'auditing' && state.phase !== 'final_auditing')) return
+    const scope = auditScope(state)
+    const active = getActiveState(state.loopName)
+    if (!active || active.sessionId !== state.sessionId || active.phase !== state.phase || auditScope(active) !== scope) return
+    const latest = loopAttemptsRepo.latest(projectId, state.loopName, scope)
+    if (!latest || latest.auditorSessionId !== state.sessionId) {
+      loopAttemptsRepo.record({
+        projectId, loopName: state.loopName, scope, sourceSessionId: state.sessionId,
+        completionKey: `recovered-audit:${state.sessionId}`, iteration: state.iteration,
+        worktreeDir: state.worktreeDir, planHash: attemptPlanHash(state), coderDecisions: null,
+        snapshotCommit: null, snapshotRef: null, previousCommit: null, diffSummary: null,
+        fallbackReason: 'Audit resumed without a matching code handoff; the next audit must use the full scope.', findingsBefore: [],
+      })
+      loopAttemptsRepo.bindAudit(projectId, state.loopName, scope, state.sessionId, state.sessionId)
+    }
+    loopAttemptsRepo.finishAudit(projectId, state.loopName, scope, state.sessionId, outcome, attemptFindings(state))
+  }
+
   function bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void {
+    if (loopAttemptsRepo) return
     const prev = findingRecurrenceByLoop.get(name) ?? new Map()
     const keys = findings.map(f => findingRecurrenceKey(f))
     findingRecurrenceByLoop.set(name, bumpRecurrence(prev, keys))
   }
 
   function resetSectionRecurrence(name: string, sectionIndex: number): void {
+    if (loopAttemptsRepo) return
     const prev = findingRecurrenceByLoop.get(name)
     if (!prev) return
     const prefix = `${sectionIndex}:`
@@ -878,6 +1019,9 @@ export function createLoopService(
     hasOutstandingFindings,
     getOutstandingFindings,
     setCoderDecisions,
+    captureAttempt,
+    finishAttempt,
+    getAttemptHistory,
     bumpFindingRecurrence,
     resetSectionRecurrence,
     generateUniqueLoopName,

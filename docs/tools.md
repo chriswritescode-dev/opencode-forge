@@ -125,6 +125,11 @@ Arguments:
 | `pattern` | Regex search across finding descriptions and scenarios. |
 | `crossSection` | Read only cross-section findings. |
 | `allSections` | Read findings from all sections instead of the current section. |
+| `attempts` | Return durable audit-attempt history instead of live findings. Defaults to the current section/goal/final-audit scope; explicit `loopName` or `allSections` reads all scopes. |
+| `limit` | With `attempts: true`, page size from 1 to 100 (default 20). |
+| `beforeId` | With `attempts: true`, read attempts older than this positive integer ID. |
+
+Attempt history returns `{ attempts, nextBeforeId }`, including coder decisions, checkpoint references, audit outcomes, and before/after finding snapshots. Use `nextBeforeId` to page backward. Historical findings do not reopen resolved work. This mode cannot be combined with `file`, `pattern`, or `crossSection`.
 
 ### `review-delete`
 

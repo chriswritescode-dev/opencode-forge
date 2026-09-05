@@ -6,6 +6,7 @@ import { createSessionLoopResolver } from '../src/services/session-loop-resolver
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
+import { createLoopAttemptsRepo, type LoopAttemptRow } from '../src/storage/repos/loop-attempts-repo'
 import { openForgeDatabase } from '../src/storage/database'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -498,5 +499,192 @@ describe('review-delete', () => {
     expect(sharedFindings).toHaveLength(1)
     expect(sharedFindings[0].loopName).toBe('beta')
     expect(sharedFindings[0].description).toBe('Beta finding')
+  })
+})
+
+describe('review-read attempts mode', () => {
+  let db: Database
+  let loopService: ReturnType<typeof createLoopService>
+  let attemptsRepo: ReturnType<typeof createLoopAttemptsRepo>
+  let tools: ReturnType<typeof createReviewTools>
+  let realServiceTools: ReturnType<typeof createReviewTools>
+  let serviceCtx: Record<string, unknown>
+
+  beforeEach(() => {
+    db = createTestDb()
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    attemptsRepo = createLoopAttemptsRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
+    const baseCtx = createToolContext(db, reviewFindingsRepo, loopService) as Record<string, unknown>
+    serviceCtx = baseCtx
+    tools = createReviewTools({
+      ...baseCtx,
+      loop: {
+        service: {
+          ...loopService,
+          getAttemptHistory: (name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[] =>
+            attemptsRepo.list('test-project', name, scope, limit, beforeId),
+        },
+      },
+    } as any)
+    realServiceTools = createReviewTools(baseCtx as any)
+
+    loopsRepo.insert({
+      projectId: 'test-project',
+      loopName: 'scoped-loop',
+      status: 'running',
+      currentSessionId: 'scoped-session',
+      worktree: false,
+      worktreeDir: TEST_DIR,
+      worktreeBranch: 'feature-branch',
+      projectDir: TEST_DIR,
+      maxIterations: 10,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'auditing',
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      startedAt: Date.now(),
+      currentSectionIndex: 0,
+      totalSections: 2,
+      finalAuditDone: 0,
+      executionVariant: null,
+      auditorVariant: null,
+      kind: 'plan',
+    }, { lastAuditResult: null })
+
+    const baseAttempt = {
+      projectId: 'test-project',
+      loopName: 'scoped-loop',
+      sourceSessionId: 'scoped-session',
+      iteration: 1,
+      worktreeDir: TEST_DIR,
+      planHash: 'plan-hash',
+      snapshotRef: 'refs/forge/audits/test',
+      findingsBefore: [],
+    }
+    attemptsRepo.record({
+      ...baseAttempt,
+      scope: 'section:0',
+      completionKey: 'k1',
+      coderDecisions: 'First decisions with verification note',
+      snapshotCommit: 'a'.repeat(40),
+      previousCommit: null,
+      diffSummary: 'first delta',
+      fallbackReason: null,
+    })
+    attemptsRepo.record({
+      ...baseAttempt,
+      scope: 'section:0',
+      completionKey: 'k2',
+      coderDecisions: 'Second decisions',
+      snapshotCommit: 'b'.repeat(40),
+      previousCommit: 'a'.repeat(40),
+      diffSummary: 'second delta',
+      fallbackReason: null,
+    })
+    attemptsRepo.record({
+      ...baseAttempt,
+      scope: 'section:1',
+      completionKey: 'k3',
+      coderDecisions: 'Other section decisions',
+      snapshotCommit: null,
+      previousCommit: null,
+      diffSummary: null,
+      fallbackReason: 'no previous snapshot',
+    })
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  function makeToolContext(sessionID: string) {
+    return { sessionID, directory: TEST_DIR } as any
+  }
+
+  test('returns JSON attempts for the current scope by default with full records', async () => {
+    const result = await tools['review-read'].execute({ attempts: true }, makeToolContext('scoped-session'))
+    const parsed = JSON.parse(result) as { attempts: LoopAttemptRow[]; nextBeforeId: number | null }
+    expect(parsed.attempts).toHaveLength(2)
+    for (const attempt of parsed.attempts) {
+      expect(attempt.scope).toBe('section:0')
+      expect(attempt.loopName).toBe('scoped-loop')
+      expect(attempt).toHaveProperty('coderDecisions')
+      expect(attempt).toHaveProperty('findingsBefore')
+      expect(attempt).toHaveProperty('outcome')
+    }
+    expect(parsed.nextBeforeId).toBeNull()
+  })
+
+  test('allSections returns attempts from all scopes', async () => {
+    const result = await tools['review-read'].execute({ attempts: true, allSections: true }, makeToolContext('scoped-session'))
+    const parsed = JSON.parse(result) as { attempts: LoopAttemptRow[] }
+    expect(parsed.attempts).toHaveLength(3)
+    expect(new Set(parsed.attempts.map((a) => a.scope))).toEqual(new Set(['section:0', 'section:1']))
+  })
+
+  test('explicit loopName returns all scopes from outside the loop', async () => {
+    const result = await tools['review-read'].execute({ attempts: true, loopName: 'scoped-loop' }, makeToolContext('outside-session'))
+    const parsed = JSON.parse(result) as { attempts: LoopAttemptRow[] }
+    expect(parsed.attempts).toHaveLength(3)
+  })
+
+  test('paginates with limit and beforeId', async () => {
+    const first = JSON.parse(await tools['review-read'].execute({ attempts: true, limit: 1 }, makeToolContext('scoped-session'))) as { attempts: LoopAttemptRow[]; nextBeforeId: number | null }
+    expect(first.attempts).toHaveLength(1)
+    expect(first.nextBeforeId).toBe(first.attempts[0].id)
+    expect(first.attempts[0].coderDecisions).toBe('Second decisions')
+
+    const second = JSON.parse(await tools['review-read'].execute({ attempts: true, limit: 1, beforeId: first.nextBeforeId! }, makeToolContext('scoped-session'))) as { attempts: LoopAttemptRow[]; nextBeforeId: number | null }
+    expect(second.attempts).toHaveLength(1)
+    expect(second.attempts[0].id).toBeLessThan(first.nextBeforeId!)
+    expect(second.attempts[0].coderDecisions).toBe('First decisions with verification note')
+  })
+
+  test('validates limit bounds', async () => {
+    for (const limit of [0, 101, 2.5, -1]) {
+      const result = await tools['review-read'].execute({ attempts: true, limit }, makeToolContext('scoped-session'))
+      expect(result).toContain('Invalid limit')
+    }
+  })
+
+  test('validates beforeId as a positive integer', async () => {
+    for (const beforeId of [0, -1, 1.5]) {
+      const result = await tools['review-read'].execute({ attempts: true, beforeId }, makeToolContext('scoped-session'))
+      expect(result).toContain('Invalid beforeId')
+    }
+  })
+
+  test('rejects file, pattern, and crossSection filtering in attempts mode', async () => {
+    for (const args of [{ attempts: true, file: 'src/a.ts' }, { attempts: true, pattern: 'bug' }, { attempts: true, crossSection: true }]) {
+      const result = await tools['review-read'].execute(args as any, makeToolContext('scoped-session'))
+      expect(result).toContain('cannot be combined')
+    }
+  })
+
+  test('no loop state returns an empty attempts page', async () => {
+    const outside = JSON.parse(await tools['review-read'].execute({ attempts: true }, makeToolContext('nobody-session'))) as { attempts: unknown[]; nextBeforeId: unknown }
+    expect(outside.attempts).toEqual([])
+    expect(outside.nextBeforeId).toBeNull()
+    const missingLoop = JSON.parse(await tools['review-read'].execute({ attempts: true, loopName: 'missing-loop' }, makeToolContext('outside-session'))) as { attempts: unknown[] }
+    expect(missingLoop.attempts).toEqual([])
+  })
+
+  test('missing getAttemptHistory on the service returns an empty attempts page', async () => {
+    const result = await realServiceTools['review-read'].execute({ attempts: true }, makeToolContext('scoped-session'))
+    const parsed = JSON.parse(result) as { attempts: unknown[] }
+    expect(parsed.attempts).toEqual([])
   })
 })

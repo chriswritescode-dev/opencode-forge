@@ -1,4 +1,6 @@
 import { describe, test, expect, vi } from 'vitest'
+import { realpathSync } from 'fs'
+import { tmpdir } from 'os'
 import { runCommand } from '../../src/sandbox/process'
 import type { Logger } from '../../src/types'
 
@@ -21,5 +23,23 @@ describe('runCommand', () => {
     controller.abort()
     const result = await runCommand('sleep', ['5'], { logger, abort: controller.signal })
     expect(result.exitCode).not.toBe(0)
+  })
+
+  test('runs the child in the provided cwd', async () => {
+    const result = await runCommand('pwd', [], { logger, cwd: tmpdir() })
+    expect(realpathSync(result.stdout.trim())).toBe(realpathSync(tmpdir()))
+  })
+
+  test('passes the provided env to the child', async () => {
+    const result = await runCommand('printenv', ['FORGE_RUN_COMMAND_ENV_TEST'], {
+      logger,
+      env: { ...process.env, FORGE_RUN_COMMAND_ENV_TEST: 'passed' },
+    })
+    expect(result.stdout.trim()).toBe('passed')
+  })
+
+  test('a provided env replaces the parent environment entirely', async () => {
+    const result = await runCommand('printenv', ['HOME'], { logger, env: {} })
+    expect(result.exitCode).toBe(1)
   })
 })
