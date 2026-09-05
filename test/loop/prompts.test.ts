@@ -10,6 +10,7 @@ import {
   buildPostActionPrompt,
 } from '../../src/loop/prompts'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
+import { CODER_DECISIONS_START_MARKER } from '../../src/utils/coder-decisions'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
 
@@ -194,14 +195,15 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
       expect(result).toContain('Coder decisions & verification notes')
       expect(result).toContain('Chose X over Y')
-      expect(result).toContain('DELETE that finding with review-delete')
+      expect(result).toContain('never an automatic waiver')
+      expect(result).toContain('specific scenario and acceptance criterion')
     })
 
     test('omits coder decisions block when null (non-section)', () => {
       const ctx = makeCtx()
       const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
       expect(result).not.toContain('Coder decisions & verification notes')
-      expect(result).not.toContain('DELETE that finding with review-delete')
+      expect(result).not.toContain('never an automatic waiver')
     })
 
     test('includes recurring-findings escalation when count >= threshold (auditor)', () => {
@@ -530,6 +532,16 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
       expect(result).not.toContain('## Outstanding review findings')
     })
+
+    test('states the real re-audit contract instead of promising an entire-codebase re-run', () => {
+      const ctx = makeCtx()
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
+      expect(result).toContain("the loop's full accumulated changes")
+      expect(result).toContain('merge-base')
+      expect(result).toContain('all uncommitted and untracked changes')
+      expect(result).toContain('affected integration paths')
+      expect(result).not.toContain('entire codebase')
+    })
   })
 
   describe('goal-loop prompts', () => {
@@ -621,7 +633,8 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildAuditPrompt(ctx, { ...goalState, phase: 'auditing' })
       expect(result).toContain('Coder decisions & verification notes')
       expect(result).toContain('Used existing route helper')
-      expect(result).toContain('DELETE that finding with review-delete')
+      expect(result).toContain('never an automatic waiver')
+      expect(result).toContain('specific scenario and acceptance criterion')
     })
 
     test('audit prompt omits coder decisions block when null', () => {
@@ -654,6 +667,208 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('Post-iteration 1 goal review')
       expect(result).not.toContain('[Final integration audit]')
       expect(result).not.toContain('Master Plan')
+    })
+  })
+
+  describe('reproduction-first remediation policy (shared outstanding-findings block)', () => {
+    const bug = (file: string, line: number, description: string, sectionIndex: number | null = null): ReviewFindingRow => ({
+      file, line, severity: 'bug', description, scenario: null, loopName: 'test-loop', sectionIndex, projectId: 'p', createdAt: 0,
+    })
+
+    const POLICY_ASSERTIONS = [
+      'Read every finding',
+      'shared root causes',
+      'dependency order',
+      'through one owner',
+      'one implementation owner',
+      'failing test or reproducer through the affected public interface',
+      'smallest complete fix',
+      'ordering, competing operations, or repeated delivery',
+      'concrete source or contract evidence',
+      'targeted verification after each root-cause fix',
+      'full checks once after the fix batch',
+      'coder-decisions block',
+      'Never delete findings',
+    ]
+
+    function expectReproductionFirstPolicy(prompt: string) {
+      for (const fragment of POLICY_ASSERTIONS) {
+        expect(prompt).toContain(fragment)
+      }
+    }
+
+    test('final fix with section-owned and cross-section bugs renders the shared policy and every finding', () => {
+      const findings = [
+        bug('src/a.ts', 12, 'A'),
+        bug('src/b.ts', 34, 'B', 1),
+        bug('src/c.ts', 7, 'C'),
+      ]
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+      })
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState, totalSections: 2 })
+      expect(result).toContain('## Outstanding review findings (3)')
+      for (const f of findings) expect(result).toContain(`\`${f.file}:${f.line}\` (bug)`)
+      expectReproductionFirstPolicy(result)
+    })
+
+    test('final fix prefers the explicit outstandingBugs input over the repository lookup', () => {
+      const repoFindings = [bug('src/repo.ts', 1, 'repo')]
+      const explicit = [bug('src/explicit.ts', 2, 'explicit'), bug('src/explicit.ts', 3, 'explicit two')]
+      const ctx = makeCtx({ getOutstandingFindings: () => repoFindings })
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, explicit)
+      expect(result).toContain('## Outstanding review findings (2)')
+      expect(result).toContain('`src/explicit.ts:2` (bug)')
+      expect(result).toContain('`src/explicit.ts:3` (bug)')
+      expect(result).not.toContain('src/repo.ts')
+      expectReproductionFirstPolicy(result)
+    })
+
+    test('legacy continuation renders the shared policy alongside the findings', () => {
+      const ctx = makeCtx({
+        getOutstandingFindings: () => [bug('src/legacy.ts', 4, 'legacy')],
+      })
+      const result = buildContinuationPrompt(ctx, { ...defaultState })
+      expectReproductionFirstPolicy(result)
+      expect(result).toContain('`src/legacy.ts:4` (bug)')
+    })
+
+    test('section continuation renders the shared policy for section-owned findings', () => {
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? [bug('src/sec.ts', 9, 'sec', 0)] : [],
+      })
+      const result = buildSectionContinuationPrompt(ctx, { ...sectionState }, '')
+      expectReproductionFirstPolicy(result)
+      expect(result).toContain('`src/sec.ts:9` (bug)')
+    })
+
+    test('goal continuation renders the shared policy alongside the findings', () => {
+      const ctx = makeCtx({
+        getOutstandingFindings: () => [bug('src/goal.ts', 2, 'goal')],
+      })
+      const result = buildContinuationPrompt(ctx, { ...goalState })
+      expectReproductionFirstPolicy(result)
+      expect(result).toContain('`src/goal.ts:2` (bug)')
+    })
+
+    test('no findings renders neither the block nor the policy', () => {
+      const ctx = makeCtx()
+      expect(buildFinalAuditFixPrompt(ctx, { ...sectionState })).not.toContain('Remediation policy')
+      expect(buildContinuationPrompt(ctx, { ...defaultState })).not.toContain('Remediation policy')
+      expect(buildSectionContinuationPrompt(ctx, { ...sectionState }, '')).not.toContain('Remediation policy')
+    })
+  })
+
+  describe('recurrence escalation diagnostic policy', () => {
+    function ctxWithRecurrence(count: number) {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+      ]
+      return makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+        getFindingRecurrence: () => new Map([['x:src/bug.ts:5', count]]),
+      })
+    }
+
+    test('at threshold the coder block demands a revisited causal hypothesis and a reproducer', () => {
+      const result = buildFinalAuditFixPrompt(ctxWithRecurrence(3), { ...sectionState })
+      expect(result).toContain('Recurring blocking findings')
+      expect(result).toContain('`src/bug.ts:5`')
+      expect(result).toContain('recurred 3×')
+      expect(result).toContain('revisit the causal hypothesis')
+      expect(result).toContain('reproducer or counterexample')
+      expect(result).toContain('Do not repeat the previous patch')
+    })
+
+    test('below threshold the coder escalation block is absent', () => {
+      const result = buildFinalAuditFixPrompt(ctxWithRecurrence(2), { ...sectionState })
+      expect(result).not.toContain('Recurring blocking findings')
+      expect(result).not.toContain('revisit the causal hypothesis')
+    })
+
+    test('escalation changes the requested diagnostic method only, not gates or authority', () => {
+      const withRecurrence = buildFinalAuditFixPrompt(ctxWithRecurrence(3), { ...sectionState })
+      const withoutRecurrence = buildFinalAuditFixPrompt(makeCtx(), { ...sectionState })
+      for (const result of [withRecurrence, withoutRecurrence]) {
+        expect(result).not.toContain('review-delete')
+        expect(result).toContain('coder-decisions:start')
+        expect(result).toContain('Fix the reported bugs')
+      }
+      expect(withRecurrence).toContain('Recurring blocking findings')
+      expect(withoutRecurrence).not.toContain('Recurring blocking findings')
+    })
+
+    test('at threshold the auditor block renders locations and counts and defers policy to the addendum', () => {
+      const result = buildAuditPrompt(ctxWithRecurrence(3), { ...defaultState, iteration: 2 })
+      expect(result).toContain('Recurring findings — re-evaluate')
+      expect(result).toContain('Recurring Findings policy')
+      expect(result).toContain('`src/bug.ts:5` (3×)')
+      expect(result).not.toContain('genuinely, verifiably still broken')
+      expect(result).not.toContain('DELETE it with review-delete')
+    })
+  })
+
+  describe('coder decisions template consumers and auditor renderer', () => {
+    const startMarkerCount = (text: string) => text.split(CODER_DECISIONS_START_MARKER).length - 1
+
+    test('all five coder consumers retain exactly one decisions block with the evidence template', () => {
+      const ctx = makeCtx()
+      const goalCoding = buildContinuationPrompt(ctx, { ...goalState })
+      const legacyContinuation = buildContinuationPrompt(ctx, { ...defaultState })
+      const sectionInitial = buildSectionInitialPrompt(ctx, { ...sectionState })
+      const sectionContinuation = buildSectionContinuationPrompt(ctx, { ...sectionState })
+      const finalFix = buildFinalAuditFixPrompt(ctx, { ...sectionState })
+
+      for (const [label, prompt] of [
+        ['goal coding', goalCoding],
+        ['legacy continuation', legacyContinuation],
+        ['section initial', sectionInitial],
+        ['section continuation', sectionContinuation],
+        ['final fix', finalFix],
+      ] as const) {
+        expect(startMarkerCount(prompt), label).toBe(1)
+        expect(prompt, label).toContain('the exact command, the worktree-relative working directory, and the pass/fail/not-run outcome')
+        expect(prompt, label).toContain('do not paste credentials or huge logs')
+        expect(prompt, label).toContain('whether any source/test/config changes occurred after those commands ran')
+        expect(prompt, label).toContain('which regression check covers each fixed finding')
+      }
+    })
+
+    test('all four auditor paths share the coder decisions renderer and its evidence policy', () => {
+      const ctx = makeCtx({
+        getCoderDecisions: () => '### Decisions\n- documented choice\n### Verification\n- FOO=bar pnpm test — pass',
+      })
+      const goalAudit = buildAuditPrompt(ctx, { ...goalState, phase: 'auditing' })
+      const legacyAudit = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
+      const sectionAudit = buildSectionAuditPrompt(ctx, { ...sectionState })
+      const finalAudit = buildFinalAuditPrompt(ctx, { ...sectionState })
+
+      for (const [label, prompt] of [
+        ['goal audit', goalAudit],
+        ['legacy audit', legacyAudit],
+        ['section audit', sectionAudit],
+        ['final audit', finalAudit],
+      ] as const) {
+        expect(prompt, label).toContain('Coder decisions & verification notes')
+        expect(prompt, label).toContain('never an automatic waiver')
+        expect(prompt, label).toContain('current code plus evidence covering its specific scenario and acceptance criterion')
+        expect(prompt, label).not.toContain('DELETE that finding with review-delete')
+      }
+    })
+
+    test('auditor block does not clear findings on a documented choice or an unrelated passing test', () => {
+      const ctx = makeCtx({
+        getCoderDecisions: () => '### Decisions\n- documented choice\n### Verification\n- FOO=bar pnpm test — pass',
+      })
+      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      expect(result).toContain('A documented decision alone, or a different test passing, is not proof')
+    })
+
+    test('missing coder decisions provide no evidence and render no waiver language', () => {
+      const ctx = makeCtx({ getCoderDecisions: () => null })
+      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      expect(result).not.toContain('Coder decisions & verification notes')
+      expect(result).not.toContain('never an automatic waiver')
     })
   })
 })

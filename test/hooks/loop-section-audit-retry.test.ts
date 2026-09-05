@@ -438,6 +438,125 @@ describe('Loop Section Audit Retry', () => {
     })
   })
 
+  describe('retry prompt iteration reporting', () => {
+    test('dirty section retry prompt reports the next persisted iteration (N+1)', async () => {
+      const state = makeState({ loopName: 'retry-iteration-loop', sessionId: 'retry-iteration-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing', iteration: 39, maxIterations: 50 })
+      loopService.setState(state.loopName, state)
+
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A' },
+          { index: 1, title: 'Section B', content: 'Content B' },
+        ],
+      })
+      loopService.startSection(state.loopName, 0)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Found an issue',
+        loopName: state.loopName,
+        sectionIndex: 0,
+      })
+
+      const { logger } = createCapturingLogger()
+
+      const { client: forgeClient, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'dirty audit: found issues' }] }],
+        },
+      })
+      const getConfig = () => mockConfig as PluginConfig
+
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: {
+            sessionID: state.sessionId,
+            status: { type: 'idle' },
+          },
+        },
+      })
+
+      const after = loopService.getActiveState(state.loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.iteration).toBe(40)
+
+      const retryPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(retryPrompts.length).toBeGreaterThan(0)
+      const retryPromptText = (retryPrompts[retryPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      const headerMatch = /^\[Loop section 1\/2 -- iteration (\d+)\/(\d+) \(continuation\)\]/m.exec(retryPromptText)
+      expect(headerMatch).not.toBeNull()
+      expect(Number(headerMatch![1])).toBe(40)
+      expect(Number(headerMatch![1])).toBe(after.iteration)
+      expect(Number(headerMatch![2])).toBe(50)
+    })
+
+    test('dirty section retry at N=max-1 sends the final permitted iteration', async () => {
+      const state = makeState({ loopName: 'retry-cap-edge-loop', sessionId: 'retry-cap-edge-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing', iteration: 4, maxIterations: 5 })
+      loopService.setState(state.loopName, state)
+
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A' },
+          { index: 1, title: 'Section B', content: 'Content B' },
+        ],
+      })
+      loopService.startSection(state.loopName, 0)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Found an issue',
+        loopName: state.loopName,
+        sectionIndex: 0,
+      })
+
+      const { logger } = createCapturingLogger()
+
+      const { client: forgeClient, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'dirty audit: found issues' }] }],
+        },
+      })
+      const getConfig = () => mockConfig as PluginConfig
+
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: {
+            sessionID: state.sessionId,
+            status: { type: 'idle' },
+          },
+        },
+      })
+
+      const after = loopService.getActiveState(state.loopName)!
+      expect(after.active).toBe(true)
+      expect(after.phase).toBe('coding')
+      expect(after.iteration).toBe(5)
+
+      const retryPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(retryPrompts.length).toBeGreaterThan(0)
+      const retryPromptText = (retryPrompts[retryPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      expect(retryPromptText).toContain('[Loop section 1/2 -- iteration 5/5 (continuation)]')
+    })
+  })
+
   describe('exhausted retries', () => {
     test('exhausted iterations via idle event terminates with max_iterations', async () => {
       const state = makeState({ currentSectionIndex: 0, totalSections: 2, phase: 'auditing', maxIterations: 1 })
@@ -464,7 +583,7 @@ describe('Loop Section Audit Retry', () => {
 
       const { logger } = createCapturingLogger()
 
-      const { client: forgeClient } = createFakeForgeClient({
+      const { client: forgeClient, calls } = createFakeForgeClient({
         session: {
           messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'dirty audit: found issues' }] }],
         },
@@ -487,6 +606,14 @@ describe('Loop Section Audit Retry', () => {
       expect(terminatedState).not.toBeNull()
       expect(terminatedState!.active).toBe(false)
       expect(terminatedState!.terminationReason).toBe('max_iterations')
+
+      const retryPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(retryPrompts.length).toBe(0)
+
+      const retained = reviewFindingsRepo.listByLoopName(PROJECT_ID, state.loopName)
+      expect(retained.some((f) => f.severity === 'bug')).toBe(true)
     })
   })
 

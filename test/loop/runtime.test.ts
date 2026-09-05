@@ -2708,13 +2708,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(stateAfterFirstTick!.phase).toBe('final_audit_fix')
       const codeSessionId = stateAfterFirstTick!.sessionId
 
-      // Step 2: Change messages for the coding assistant response WITH coder-decisions markers
+      // Step 2: Change messages for the coding assistant response WITH coder-decisions markers,
+      // including the compact evidence the template asks for
       ;(client.session.messages as any).mockImplementation(async () => [
         {
           info: { role: 'assistant', finish: 'stop' },
           parts: [{
             type: 'text',
-            text: `Fixed the bug.\n<!-- coder-decisions:start -->\n### Decisions\n- Chose approach X\n### Verification\n- FOO=bar pnpm test\n### Notes for auditor\n- none\n<!-- coder-decisions:end -->`,
+            text: `Fixed the bug.\n<!-- coder-decisions:start -->\n### Decisions\n- Chose approach X\n### Verification\n- FOO=bar pnpm test from repo root — pass (required env: FOO=bar)\n- relevant non-secret setup: DATABASE_URL points at the test db; no credentials pasted\n- no source/test/config changes occurred after those commands ran\n- src/test.ts:1 → pnpm test --project node test/foo.test.ts\n### Notes for auditor\n- none\n<!-- coder-decisions:end -->`,
           }],
         },
       ])
@@ -2752,6 +2753,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(finalAuditPromptText).toContain('Coder decisions & verification notes')
       expect(finalAuditPromptText).toContain('Chose approach X')
       expect(finalAuditPromptText).toContain('FOO=bar pnpm test')
+      // The richer evidence survives the parseCoderDecisions → setCoderDecisions →
+      // buildCoderDecisionsAuditorBlock path verbatim, with no new parser or persistence.
+      expect(finalAuditPromptText).toContain('no source/test/config changes occurred after those commands ran')
+      expect(finalAuditPromptText).toContain('src/test.ts:1 → pnpm test --project node test/foo.test.ts')
       // The first dirty final-audit succeeded, so the persisted fallback index was
       // reset to 0: the subsequent final audit uses the primary model with its variant.
       expect(finalAuditPrompt?.model).toEqual({ providerID: 'test', modelID: 'auditor' })

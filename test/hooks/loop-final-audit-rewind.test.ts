@@ -201,6 +201,207 @@ describe('Loop final audit rewind behavior', () => {
       expect(stateAfterFixIdle!.phase).toBe('final_auditing')
       expect(stateAfterFixIdle!.sessionId).not.toBe(fixSessionId)
     })
+
+    test('dirty final-audit fix prompt reports the next persisted iteration (N+1)', async () => {
+      insertLoop({
+        loop_name: 'fix-iteration-loop',
+        phase: 'final_auditing',
+        current_session_id: 'fix-iteration-audit-session',
+        total_sections: 2,
+        current_section_index: 1,
+        iteration: 39,
+        audit_count: 1,
+        max_iterations: 50,
+      })
+
+      reviewFindingsRepo.write({
+        projectId,
+        loopName: 'fix-iteration-loop',
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Outstanding bug found during final audit',
+      })
+
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async (p: { sessionID?: string }) => {
+            if (p?.sessionID === 'fix-iteration-audit-session') {
+              return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Final audit found issues.' }] }]
+            }
+            return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Fixed the bug.' }] }]
+          },
+        },
+      })
+
+      const handler = createLoopEventHandler(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
+        client,
+        mockLogger,
+        () => mockConfig,
+        undefined,
+        tempDir,
+        undefined,
+        sectionPlansRepo,
+      )
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: 'fix-iteration-audit-session', status: { type: 'idle' } },
+        },
+      })
+
+      const stateAfterDirty = loopService.getActiveState('fix-iteration-loop')!
+      expect(stateAfterDirty.phase).toBe('final_audit_fix')
+      expect(stateAfterDirty.iteration).toBe(40)
+
+      const fixPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(fixPrompts.length).toBeGreaterThan(0)
+      const fixPromptText = (fixPrompts[fixPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      const headerMatch = /^\[Final-audit fix -- iteration (\d+)\/(\d+)\]/m.exec(fixPromptText)
+      expect(headerMatch).not.toBeNull()
+      expect(Number(headerMatch![1])).toBe(40)
+      expect(Number(headerMatch![1])).toBe(stateAfterDirty.iteration)
+      expect(Number(headerMatch![2])).toBe(50)
+    })
+
+    test('dirty final-audit fix at N=max-1 sends the final permitted iteration', async () => {
+      insertLoop({
+        loop_name: 'cap-edge-loop',
+        phase: 'final_auditing',
+        current_session_id: 'cap-edge-audit-session',
+        total_sections: 2,
+        current_section_index: 1,
+        iteration: 4,
+        audit_count: 1,
+        max_iterations: 5,
+      })
+
+      reviewFindingsRepo.write({
+        projectId,
+        loopName: 'cap-edge-loop',
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Outstanding bug found during final audit',
+      })
+
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async (p: { sessionID?: string }) => {
+            if (p?.sessionID === 'cap-edge-audit-session') {
+              return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Final audit found issues.' }] }]
+            }
+            return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Fixed the bug.' }] }]
+          },
+        },
+      })
+
+      const handler = createLoopEventHandler(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
+        client,
+        mockLogger,
+        () => mockConfig,
+        undefined,
+        tempDir,
+        undefined,
+        sectionPlansRepo,
+      )
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: 'cap-edge-audit-session', status: { type: 'idle' } },
+        },
+      })
+
+      const stateAfterDirty = loopService.getActiveState('cap-edge-loop')!
+      expect(stateAfterDirty.active).toBe(true)
+      expect(stateAfterDirty.phase).toBe('final_audit_fix')
+      expect(stateAfterDirty.iteration).toBe(5)
+
+      const fixPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(fixPrompts.length).toBeGreaterThan(0)
+      const fixPromptText = (fixPrompts[fixPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      expect(fixPromptText).toContain('[Final-audit fix -- iteration 5/5]')
+    })
+
+    test('dirty final-audit at N=max terminates with max_iterations without a fix prompt and retains findings', async () => {
+      insertLoop({
+        loop_name: 'cap-loop',
+        phase: 'final_auditing',
+        current_session_id: 'cap-audit-session',
+        total_sections: 2,
+        current_section_index: 1,
+        iteration: 5,
+        audit_count: 1,
+        max_iterations: 5,
+      })
+
+      reviewFindingsRepo.write({
+        projectId,
+        loopName: 'cap-loop',
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Outstanding bug found during final audit',
+      })
+
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async (p: { sessionID?: string }) => {
+            if (p?.sessionID === 'cap-audit-session') {
+              return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Final audit found issues.' }] }]
+            }
+            return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Fixed the bug.' }] }]
+          },
+        },
+      })
+
+      const handler = createLoopEventHandler(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
+        client,
+        mockLogger,
+        () => mockConfig,
+        undefined,
+        tempDir,
+        undefined,
+        sectionPlansRepo,
+      )
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: 'cap-audit-session', status: { type: 'idle' } },
+        },
+      })
+
+      const terminated = loopService.getAnyState('cap-loop')!
+      expect(terminated.active).toBe(false)
+      expect(terminated.terminationReason).toBe('max_iterations')
+
+      const fixPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(fixPrompts.length).toBe(0)
+
+      const retained = reviewFindingsRepo.listByLoopName(projectId, 'cap-loop')
+      expect(retained.some((f) => f.severity === 'bug')).toBe(true)
+    })
   })
 
   describe('buildFinalAuditPrompt', () => {
