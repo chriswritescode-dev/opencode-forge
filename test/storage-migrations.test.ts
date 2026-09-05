@@ -4,6 +4,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { openForgeDatabase } from '../src/storage/database'
+import { migrations } from '../src/storage/migrations'
+import { createLoopAttemptsRepo } from '../src/storage/repos/loop-attempts-repo'
+import type { LoopAttemptRecordInput } from '../src/storage/repos/loop-attempts-repo'
 
 function createTempDb(): string {
   const dir = tmpdir()
@@ -1161,6 +1164,187 @@ test('migration 144 is idempotent on re-opened databases', () => {
 
   const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('144') as { count: number }
   expect(count.count).toBe(1)
+
+  db2.close()
+})
+
+const LEGACY_COLLIDING_145_DESCRIPTION = 'Create loop_new_session_outcomes table for the single authoritative request-nonce-correlated launch signal used by the cross-process new-session resolver for both audited goal loops and the one-shot fallback'
+const LEGACY_COLLIDING_146_DESCRIPTION = 'Create loop_new_session_cancellations table for the cross-process new-session resolver'
+const LEGACY_COLLIDING_147_DESCRIPTION = 'Create loop_new_session_requests table for the cross-process new-session resolver'
+
+function buildLegacyCollided145Db(options: { failRepair?: boolean } = {}): string {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  db.run('PRAGMA foreign_keys = OFF')
+  db.run(`
+    CREATE TABLE migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+  `)
+  db.run('BEGIN')
+  try {
+    for (const migration of migrations) {
+      if (Number(migration.id) > 144) continue
+      migration.apply(db)
+      db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run(migration.id, migration.description, 1)
+    }
+    db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run('145', LEGACY_COLLIDING_145_DESCRIPTION, 1)
+    db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run('146', LEGACY_COLLIDING_146_DESCRIPTION, 1)
+    db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run('147', LEGACY_COLLIDING_147_DESCRIPTION, 1)
+
+    db.prepare(`
+      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+      VALUES ('proj-legacy', 'legacy-loop', 'running', 'sess-legacy', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+    `).run()
+    db.prepare(`
+      INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, scenario, section_index, created_at)
+      VALUES ('proj-legacy', 'legacy-loop', 'src/a.ts', 10, 'bug', 'legacy finding', 'scenario text', 0, 1)
+    `).run()
+
+    if (options.failRepair) {
+      db.run('CREATE VIEW loop_attempts AS SELECT 1 AS sentinel')
+    }
+    db.run('COMMIT')
+  } catch (err) {
+    db.run('ROLLBACK')
+    db.close()
+    throw err
+  }
+  db.close()
+  return dbPath
+}
+
+function attemptRecord(overrides: Partial<LoopAttemptRecordInput> = {}): LoopAttemptRecordInput {
+  return {
+    projectId: 'proj-legacy',
+    loopName: 'legacy-loop',
+    scope: 'section:0',
+    sourceSessionId: 'sess-legacy',
+    completionKey: 'key-1',
+    iteration: 1,
+    worktreeDir: '/tmp/wt',
+    planHash: 'hash-1',
+    coderDecisions: null,
+    snapshotCommit: 'abc123',
+    snapshotRef: 'refs/heads/forge/legacy-loop',
+    previousCommit: 'def456',
+    diffSummary: '1 file changed',
+    fallbackReason: null,
+    findingsBefore: [],
+    ...overrides,
+  }
+}
+
+test('migration 148 reuses the 145 loop_attempts apply implementation', () => {
+  const m145 = migrations.find(m => m.id === '145')
+  const m148 = migrations.find(m => m.id === '148')
+  expect(m145).toBeDefined()
+  expect(m148).toBeDefined()
+  expect(m148!.apply).toBe(m145!.apply)
+  expect(m148!.description).toBe('Ensure loop_attempts exists after historical migration ID collision')
+})
+
+test('migration 145 creates loop_attempts schema on fresh databases', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const colNames = db.prepare('PRAGMA table_info(loop_attempts)').all().map(c => (c as { name: string }).name)
+  expect(colNames).toEqual(expect.arrayContaining([
+    'project_id', 'loop_name', 'scope', 'attempt_number', 'source_session_id',
+    'completion_key', 'findings_before', 'outcome', 'created_at',
+  ]))
+  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_loop_attempts_loop'").get()
+  expect(idx).not.toBeNull()
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('145') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 148 repairs loop_attempts after historical migration ID 145 collision', () => {
+  const dbPath = buildLegacyCollided145Db()
+
+  const migrated = openForgeDatabase(dbPath)
+
+  const tables = migrated.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  expect(tables.map(t => t.name)).toContain('loop_attempts')
+
+  const legacy145 = migrated.prepare('SELECT description FROM migrations WHERE id = ?').get('145') as { description: string }
+  expect(legacy145.description).toBe(LEGACY_COLLIDING_145_DESCRIPTION)
+  expect(migrated.prepare('SELECT id FROM migrations WHERE id = ?').get('146')).toBeDefined()
+  expect(migrated.prepare('SELECT id FROM migrations WHERE id = ?').get('147')).toBeDefined()
+
+  const repairCount = migrated.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('148') as { count: number }
+  expect(repairCount.count).toBe(1)
+
+  const legacyLoop = migrated.prepare("SELECT status, current_session_id FROM loops WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { status: string; current_session_id: string }
+  expect(legacyLoop).toEqual({ status: 'running', current_session_id: 'sess-legacy' })
+
+  const legacyFinding = migrated.prepare("SELECT description FROM review_findings WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { description: string }
+  expect(legacyFinding.description).toBe('legacy finding')
+
+  const repo = createLoopAttemptsRepo(migrated)
+  const row = repo.record(attemptRecord())
+  expect(row).not.toBeNull()
+  expect(row!.attemptNumber).toBe(1)
+
+  migrated.close()
+})
+
+test('migration 148 repair is idempotent and preserves attempt rows on reopen', () => {
+  const dbPath = buildLegacyCollided145Db()
+
+  const db1 = openForgeDatabase(dbPath)
+  const repo1 = createLoopAttemptsRepo(db1)
+  expect(repo1.record(attemptRecord({ completionKey: 'key-1', iteration: 1 }))).not.toBeNull()
+  expect(repo1.record(attemptRecord({ completionKey: 'key-2', iteration: 2 }))).not.toBeNull()
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const repairCount = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('148') as { count: number }
+  expect(repairCount.count).toBe(1)
+
+  const repo2 = createLoopAttemptsRepo(db2)
+  const rows = repo2.list('proj-legacy', 'legacy-loop')
+  expect(rows).toHaveLength(2)
+  expect(rows.map(r => r.completionKey)).toEqual(['key-1', 'key-2'])
+
+  const next = repo2.record(attemptRecord({ completionKey: 'key-3', iteration: 3 }))
+  expect(next!.attemptNumber).toBe(3)
+
+  db2.close()
+})
+
+test('migration 148 repair failure rolls back and leaves migration unrecorded', () => {
+  const dbPath = buildLegacyCollided145Db({ failRepair: true })
+
+  expect(() => openForgeDatabase(dbPath)).toThrow(/loop_attempts|indexed/)
+
+  const raw = new Database(dbPath)
+  const repairCount = raw.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('148') as { count: number }
+  expect(repairCount.count).toBe(0)
+  const legacyLoop = raw.prepare("SELECT status FROM loops WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { status: string }
+  expect(legacyLoop.status).toBe('running')
+  raw.close()
+
+  const reopen = new Database(dbPath)
+  reopen.run('PRAGMA foreign_keys = OFF')
+  reopen.run('DROP VIEW IF EXISTS loop_attempts')
+  reopen.close()
+
+  const db2 = openForgeDatabase(dbPath)
+  const tables = db2.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  expect(tables.map(t => t.name)).toContain('loop_attempts')
+
+  const repairedCount = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('148') as { count: number }
+  expect(repairedCount.count).toBe(1)
+
+  const legacyFinding = db2.prepare("SELECT description FROM review_findings WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { description: string }
+  expect(legacyFinding.description).toBe('legacy finding')
 
   db2.close()
 })

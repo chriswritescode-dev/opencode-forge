@@ -15,6 +15,12 @@ function loadSql(filename: string): string {
   return readFileSync(join(migrationsDir, filename), 'utf-8')
 }
 
+function createLoopAttemptsTable(db: Database): void {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_attempts'").all()
+  if (tables.length > 0) return
+  db.run(loadSql('145_create_loop_attempts.sql'))
+}
+
 export const migrations: Migration[] = [
   {
     id: '100',
@@ -409,11 +415,12 @@ export const migrations: Migration[] = [
   {
     id: '145',
     description: 'Create loop_attempts table for durable loop attempt history storage',
-    apply: (db: Database) => {
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_attempts'").all()
-      if (tables.length > 0) return
-      db.run(loadSql('145_create_loop_attempts.sql'))
-    },
+    apply: createLoopAttemptsTable,
+  },
+  {
+    id: '148',
+    description: 'Ensure loop_attempts exists after historical migration ID collision',
+    apply: createLoopAttemptsTable,
   },
 
 ]
