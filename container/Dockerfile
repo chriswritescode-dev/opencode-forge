@@ -78,15 +78,9 @@ ENV HOME=/opt/forge \
 RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.npm \
     && chmod -R 0777 /opt/forge
 
-# fallow CLI — dead-code analysis tool — and the current Playwright Chromium
-# browser, installed globally with the same pnpm setup used by the rest of the
-# sandbox image. Binaries are linked into /usr/local/bin so they are on PATH for
-# arbitrary container UIDs.
-#
-# Chromium comes from playwright-core because Google publishes no linux/arm64
-# Chrome build, so on arm64 hosts it is the closest current Chrome build
-# available; `install --with-deps` pulls the system libraries Chromium needs at
-# runtime.
+# fallow CLI — dead-code analysis tool — installed globally with the same pnpm
+# setup used by the rest of the sandbox image. Binaries are linked into
+# /usr/local/bin so they are on PATH for arbitrary container UIDs.
 #
 # The trailing chmod is load-bearing: these global installs run as root and populate the
 # pnpm store (store/v10/{files,index,projects}) with root-owned 0755 dirs, AFTER the earlier
@@ -97,11 +91,24 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.np
 # Re-asserting 0777 here, as the last build step that touches /opt/forge, keeps the store
 # writable by any exec UID. Any future build step that runs pnpm as root must do the same.
 RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
-    && pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin \
-    && package_root="$(readlink -f "$(find "$(pnpm root -g)" -maxdepth 4 -path '*/node_modules/playwright-core' -print -quit)")" \
-    && node "$package_root/cli.js" install --with-deps chromium \
-    && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$package_root/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium \
     && chmod -R 0777 /opt/forge
+
+# Obscura (https://github.com/h4ckf0r0day/obscura) — Rust headless browser
+# engine with embedded V8 — replaces the former Playwright Chromium install.
+# The release tarball ships static `obscura` and `obscura-worker` binaries that
+# need no system libraries beyond the base image's glibc, so nothing is apt-
+# installed here. The archive layout is flat, so `tar xz` must extract straight
+# into /usr/local/bin; `obscura-worker` has to sit next to `obscura` for
+# parallel scraping. The architecture mapping matches dpkg naming to the
+# upstream release assets (amd64 -> x86_64, arm64 -> aarch64).
+RUN obscura_arch="$(case "$(dpkg --print-architecture)" in \
+        amd64) echo x86_64 ;; \
+        arm64) echo aarch64 ;; \
+        *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac)" \
+    && curl -fsSL "https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-${obscura_arch}-linux.tar.gz" \
+        | tar xz -C /usr/local/bin \
+    && chmod 0755 /usr/local/bin/obscura /usr/local/bin/obscura-worker
 
 # Docker Engine from Docker's official apt repository. The microVM boots a real
 # kernel, so the daemon runs natively — no privileged-container or nested-
