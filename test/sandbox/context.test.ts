@@ -36,6 +36,11 @@ describe('SANDBOX_CONTEXT_NOTE', () => {
     expect(SANDBOX_CONTEXT_NOTE).toMatch(/rerun the intended checks/i)
     expect(SANDBOX_CONTEXT_NOTE).toMatch(/not misreport/i)
   })
+
+  it('advertises the in-image tooling an agent cannot discover on its own', () => {
+    expect(SANDBOX_CONTEXT_NOTE).toContain('forge-dockerd-start')
+    expect(SANDBOX_CONTEXT_NOTE).toContain('Obscura is installed as a drop-in replacement for headless Chrome with Puppeteer and Playwright; run obscura --help for usage.')
+  })
 })
 
 describe('SANDBOX_OFF_NOTE', () => {

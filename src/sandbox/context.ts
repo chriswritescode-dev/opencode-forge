@@ -22,6 +22,7 @@ export const SANDBOX_CONTEXT_NOTE = [
   'Environment-specific tooling that is missing or incompatible is not acceptable: install or reinstall the required tooling and dependencies in the container, rerun the intended checks, and do not misreport environment-induced failures as code defects.',
   'Passwordless sudo is available for installing missing tools system-wide.',
   'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
+  'Obscura is installed as a drop-in replacement for headless Chrome with Puppeteer and Playwright; run obscura --help for usage.',
 ].join('\n')
 
 export const SANDBOX_OFF_NOTE = [

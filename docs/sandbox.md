@@ -26,16 +26,16 @@ msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 
 `msb load` registers the archive under the tag Forge looks up (`sandbox.image`, default `oc-forge-sandbox:latest`); list loaded images with `msb images --format json`.
 
-The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Chromium, and Docker Engine (see [Nested Docker](#nested-docker)).
+The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Obscura, and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
-### Chromium
+### Obscura
 
-The image ships the current Playwright Chromium build as `chromium`. Google publishes no linux/arm64 Chrome build, so Chromium is the arm64 equivalent of a current Chrome. Launch it headless with the usual sandbox flags:
+The image ships the Obscura headless browser engine as `obscura` — a Rust-based headless browser with embedded V8, built for web scraping and agent automation. `obscura serve` speaks the Chrome DevTools Protocol, so Puppeteer and Playwright connect to it like headless Chrome:
 
 ```bash
-chromium --no-sandbox --disable-dev-shm-usage --headless
+obscura serve --port 9222
 ```
 
 ## How It Works
