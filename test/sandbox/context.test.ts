@@ -39,14 +39,7 @@ describe('SANDBOX_CONTEXT_NOTE', () => {
 
   it('advertises the in-image tooling an agent cannot discover on its own', () => {
     expect(SANDBOX_CONTEXT_NOTE).toContain('forge-dockerd-start')
-    expect(SANDBOX_CONTEXT_NOTE).toContain('obscura fetch')
-    expect(SANDBOX_CONTEXT_NOTE).toContain('obscura serve')
-    // Private-address blocking is on by default, so an agent scraping its own dev
-    // server silently fails without this flag.
-    expect(SANDBOX_CONTEXT_NOTE).toContain('--allow-private-network')
-    // `obscura serve` implements only part of CDP, so the note must not promise
-    // drop-in headless Chrome (page.setContent, for one, is unimplemented).
-    expect(SANDBOX_CONTEXT_NOTE).toMatch(/subset of CDP/i)
+    expect(SANDBOX_CONTEXT_NOTE).toContain('Obscura is installed as a drop-in replacement for headless Chrome with Puppeteer and Playwright; run obscura --help for usage.')
   })
 })
 

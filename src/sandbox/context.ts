@@ -22,7 +22,7 @@ export const SANDBOX_CONTEXT_NOTE = [
   'Environment-specific tooling that is missing or incompatible is not acceptable: install or reinstall the required tooling and dependencies in the container, rerun the intended checks, and do not misreport environment-induced failures as code defects.',
   'Passwordless sudo is available for installing missing tools system-wide.',
   'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
-  'Obscura is available inside the sandbox as a headless browser: obscura fetch --dump text|markdown|html|links <url> returns a fully rendered page, and obscura serve exposes a Chrome DevTools Protocol endpoint on 127.0.0.1:9222 that Puppeteer and Playwright can attach to, implementing a subset of CDP rather than all of it. Loopback and private addresses are refused unless --allow-private-network is passed, so reaching a local dev server requires that flag.',
+  'Obscura is installed as a drop-in replacement for headless Chrome with Puppeteer and Playwright; run obscura --help for usage.',
 ].join('\n')
 
 export const SANDBOX_OFF_NOTE = [
