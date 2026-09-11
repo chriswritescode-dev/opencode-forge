@@ -9,6 +9,8 @@ import {
   buildNetworkAllow,
   egressRestrictionRequested,
   dockerDataVolumeName,
+  cacheDiskVolumeName,
+  SANDBOX_CACHE_DIR,
   parseMsbSandboxList,
   parseMsbSandboxListOrNull,
   mapMsbStatus,
@@ -114,6 +116,8 @@ describe('create args', () => {
       '/a:/a',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
     ])
   })
 
@@ -142,6 +146,8 @@ describe('create args', () => {
       '/b:/b:ro',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
     ])
   })
 
@@ -166,6 +172,8 @@ describe('create args', () => {
       '/work:/work',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
     ])
   })
 
@@ -185,6 +193,8 @@ describe('create args', () => {
       '/a:/a',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
       '--net-default',
       'deny',
       '--net-rule',
@@ -207,6 +217,8 @@ describe('create args', () => {
       '/a:/a',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
       '-e',
       'GITHUB_TOKEN',
       '-e',
@@ -230,6 +242,8 @@ describe('create args', () => {
       '/a:/a',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
       '-e',
       'KEEP',
     ])
@@ -264,6 +278,8 @@ describe('create args', () => {
       '/a:/a',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
       '--secret',
       'GITHUB_TOKEN@api.github.com,*.githubusercontent.com',
     ])
@@ -291,6 +307,8 @@ describe('create args', () => {
       '/a:/a',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
       '--secret',
       'KEEP@api.example.com',
     ])
@@ -417,10 +435,32 @@ describe('create args', () => {
     expect(args).toContain('forge-c-docker-data:/var/lib/docker:kind=disk,size=32g')
   })
 
+  test('emits the cache disk mount over the pinned cache dir by default', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+    })
+    expect(args).toContain('--mount-named')
+    expect(args).toContain('forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g')
+  })
+
+  test('uses the configured cache disk size when provided', () => {
+    const args = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      cacheDisk: '32g',
+    })
+    expect(args).toContain('forge-c-cache-data:/opt/forge/.cache:kind=disk,size=32g')
+  })
+
   test('dockerDataVolumeName derives a stable per-container volume name', () => {
     expect(dockerDataVolumeName('forge-my-worktree')).toBe('forge-my-worktree-docker-data')
     expect(dockerDataVolumeName('Forge/C!')).toBe('forge-c-docker-data')
     expect(dockerDataVolumeName('forge-a')).not.toBe(dockerDataVolumeName('forge-b'))
+  })
+
+  test('cacheDiskVolumeName derives a stable per-container volume name at the pinned cache dir', () => {
+    expect(cacheDiskVolumeName('forge-my-worktree')).toBe('forge-my-worktree-cache-data')
+    expect(cacheDiskVolumeName('Forge/C!')).toBe('forge-c-cache-data')
+    expect(SANDBOX_CACHE_DIR).toBe('/opt/forge/.cache')
   })
 })
 
@@ -913,6 +953,8 @@ describe('runtime', () => {
       '/work:/work',
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
+      '--mount-named',
+      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
     ])
     expect(calls[0].opts?.timeout).toBe(120000)
   })
@@ -1061,12 +1103,13 @@ describe('runtime', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('--replace'))
   })
 
-  test('removeSandbox removes the sandbox and then its derived docker data volume', async () => {
+  test('removeSandbox removes the sandbox and then both derived named volumes in one bulk call', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
     await rt.removeSandbox('forge-a')
     expect(calls[0].args).toEqual(['rm', '--force', 'forge-a', '--quiet'])
-    expect(calls[1].args).toEqual(['volume', 'rm', 'forge-a-docker-data'])
+    expect(calls).toHaveLength(2)
+    expect(calls[1].args).toEqual(['volume', 'rm', 'forge-a-docker-data', 'forge-a-cache-data'])
   })
 
   test('removeSandbox tolerates a not-found failure', async () => {
@@ -1079,7 +1122,7 @@ describe('runtime', () => {
     await expect(rt.removeSandbox('forge-a')).resolves.toBeUndefined()
   })
 
-  test('removeSandbox treats an already-removed docker data volume as success', async () => {
+  test('removeSandbox treats already-removed named volumes as success', async () => {
     const { runner } = recordingRunner((rec) =>
       rec.args[0] === 'rm'
         ? { stdout: '', stderr: '', exitCode: 0 }
@@ -1089,7 +1132,7 @@ describe('runtime', () => {
     await expect(rt.removeSandbox('forge-a')).resolves.toBeUndefined()
   })
 
-  test('a docker data volume removal failure is logged but does not fail sandbox removal', async () => {
+  test('a named volume removal failure is logged but does not fail sandbox removal', async () => {
     const log = vi.fn()
     const rt = createMsbRuntime({ ...logger, log }, {
       run: async (args) =>
@@ -1098,7 +1141,11 @@ describe('runtime', () => {
           : { stdout: '', stderr: 'permission denied', exitCode: 1 },
     })
     await expect(rt.removeSandbox('forge-a')).resolves.toBeUndefined()
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('failed to remove docker data volume'))
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('failed to remove named volumes forge-a-docker-data, forge-a-cache-data for forge-a'),
+    )
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('permission denied'))
   })
 
   test('removeSandbox throws on an unexpected failure', async () => {
@@ -1107,12 +1154,31 @@ describe('runtime', () => {
     await expect(rt.removeSandbox('forge-a')).rejects.toThrow('Failed to remove sandbox')
   })
 
-  test('a failed sandbox removal leaves the docker data volume untouched', async () => {
+  test('a failed sandbox removal leaves both named volumes untouched', async () => {
     const { calls, runner } = recordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 }))
     const rt = createMsbRuntime(logger, { run: runner })
     await expect(rt.removeSandbox('forge-a')).rejects.toThrow('Failed to remove sandbox')
     expect(calls).toHaveLength(1)
     expect(calls[0].args).toEqual(['rm', '--force', 'forge-a', '--quiet'])
+  })
+
+  test('removeSandbox removes exactly the set of volumes buildMsbCreateArgs mounts', async () => {
+    const sandboxName = 'forge-invariant'
+    const createArgs = buildMsbCreateArgs(sandboxName, [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+    })
+    const createdVolumes = createArgs
+      .filter((_, i) => createArgs[i - 1] === '--mount-named')
+      .map((mount) => mount.slice(0, mount.indexOf(':')))
+
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.removeSandbox(sandboxName)
+    const removedVolumes = calls
+      .filter((c) => c.args[0] === 'volume' && c.args[1] === 'rm')
+      .flatMap((c) => c.args.slice(2))
+
+    expect(new Set(removedVolumes)).toEqual(new Set(createdVolumes))
   })
 
   test('getSandboxState reports running, reusable stopped, transient for known non-executable states, and missing for an absent name', async () => {

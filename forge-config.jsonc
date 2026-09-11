@@ -145,6 +145,16 @@
     //   { "host": "/abs/host/reference" },
     //   { "host": "/abs/host/cache", "readonly": false }
     // ]
+    // Per-sandbox resources. Both disks are dedicated block devices mounted at create time and are
+    // sparse, so the generous defaults cost no real host disk until used. Resources are fixed at
+    // creation: changing them requires recreating the sandbox.
+    // "resources": {
+    //   // Backs the in-VM Docker Engine data dir (/var/lib/docker).
+    //   "dockerDisk": "16g",
+    //   // Backs /opt/forge/.cache (pnpm store, npm/uv/pip caches, uv-managed Pythons, cargo/rustup,
+    //   // Go modules), keeping unbounded tool caches off the small sandbox root filesystem.
+    //   "cacheDisk": "16g"
+    // }
   },
 
   // TUI sidebar widget configuration

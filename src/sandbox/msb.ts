@@ -42,6 +42,9 @@ export function buildMsbExecArgs(name: string, command: string, opts?: BuildMsbE
 
 const MSB_SIZE_RE = /^\d+(\.\d+)?[kmg]b?$/i
 const MSB_DOCKER_DISK_DEFAULT = '16g'
+const MSB_CACHE_DISK_DEFAULT = '16g'
+
+export const SANDBOX_CACHE_DIR = '/opt/forge/.cache'
 
 export function parseMsbCpus(raw: string | undefined, logger: Logger): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined
@@ -187,6 +190,10 @@ export function dockerDataVolumeName(containerName: string): string {
   return `${sanitizeMsbName(containerName)}-docker-data`
 }
 
+export function cacheDiskVolumeName(containerName: string): string {
+  return `${sanitizeMsbName(containerName)}-cache-data`
+}
+
 export function buildMsbCreateArgs(
   name: string,
   workspaces: SandboxWorkspace[],
@@ -197,6 +204,7 @@ export function buildMsbCreateArgs(
     networkAllow?: string[]
     restrictEgress?: boolean
     dockerDisk?: string
+    cacheDisk?: string
     env?: string[]
     secrets?: SandboxSecretConfig[]
   },
@@ -212,6 +220,8 @@ export function buildMsbCreateArgs(
   }
   const dockerDisk = opts.dockerDisk || MSB_DOCKER_DISK_DEFAULT
   args.push('--mount-named', `${dockerDataVolumeName(name)}:/var/lib/docker:kind=disk,size=${dockerDisk}`)
+  const cacheDisk = opts.cacheDisk || MSB_CACHE_DISK_DEFAULT
+  args.push('--mount-named', `${cacheDiskVolumeName(name)}:${SANDBOX_CACHE_DIR}:kind=disk,size=${cacheDisk}`)
   const restrictEgress =
     opts.restrictEgress === true || (opts.networkAllow ?? []).some((host) => host.trim() !== '')
   if (restrictEgress) {
@@ -516,6 +526,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
       networkAllow: opts.networkAllow,
       restrictEgress: opts.restrictEgress,
       dockerDisk: normalizeMsbSize(opts.resources?.dockerDisk, logger),
+      cacheDisk: normalizeMsbSize(opts.resources?.cacheDisk, logger),
       env: opts.env,
       secrets: opts.secrets,
     })
@@ -533,11 +544,10 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     }
   }
 
-  async function removeDockerDataVolume(name: string): Promise<void> {
-    const volume = dockerDataVolumeName(name)
-    const result = await run(['volume', 'rm', volume])
+  async function removeNamedVolumes(volumes: string[]): Promise<void> {
+    const result = await run(['volume', 'rm', ...volumes])
     if (result.exitCode !== 0 && !MSB_VOLUME_REMOVE_MISSING_RE.test(`${result.stdout}\n${result.stderr}`)) {
-      throw new Error(`Failed to remove docker data volume: ${result.stderr}`)
+      throw new Error(`Failed to remove named volumes: ${result.stderr}`)
     }
   }
 
@@ -546,11 +556,12 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     if (result.exitCode !== 0 && !MSB_REMOVE_MISSING_RE.test(`${result.stdout}\n${result.stderr}`)) {
       throw new Error(`Failed to remove sandbox: ${result.stderr}`)
     }
+    const volumes = [dockerDataVolumeName(name), cacheDiskVolumeName(name)]
     try {
-      await removeDockerDataVolume(name)
+      await removeNamedVolumes(volumes)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
-      logger.log(`Sandbox: failed to remove docker data volume for ${name}: ${errMsg}`)
+      logger.log(`Sandbox: failed to remove named volumes ${volumes.join(', ')} for ${name}: ${errMsg}`)
     }
   }
 

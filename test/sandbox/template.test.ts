@@ -8,11 +8,46 @@ import type { Logger } from '../../src/types'
 
 const logger: Logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
 
-test('sandbox image keeps the pnpm store outside mounted projects', () => {
+test('sandbox image keeps the pnpm store and every tool cache on the mounted cache disk', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
 
-  expect(dockerfile).toContain('PNPM_CONFIG_STORE_DIR=/opt/forge/.local/share/pnpm/store')
-  expect(dockerfile).toContain('npm_config_store_dir=/opt/forge/.local/share/pnpm/store')
+  expect(dockerfile).toContain('XDG_CACHE_HOME=/opt/forge/.cache')
+  expect(dockerfile).toContain('PNPM_CONFIG_STORE_DIR=/opt/forge/.cache/pnpm/store')
+  expect(dockerfile).toContain('npm_config_store_dir=/opt/forge/.cache/pnpm/store')
+  expect(dockerfile).toContain('npm_config_cache=/opt/forge/.cache/npm')
+  expect(dockerfile).toContain('UV_PYTHON_INSTALL_DIR=/opt/forge/.cache/uv-python')
+  expect(dockerfile).toContain('CARGO_HOME=/opt/forge/.cache/cargo')
+  expect(dockerfile).toContain('RUSTUP_HOME=/opt/forge/.cache/rustup')
+  expect(dockerfile).toContain('GOPATH=/opt/forge/.cache/go')
+  expect(dockerfile).toContain('mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm')
+  expect(dockerfile).toContain('forge-cache-prune')
+})
+
+test('forge-cache-prune preserves toolchain roots, prunes cache subtrees, and trims the cache mount', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+  const pruneStart = dockerfile.indexOf('cat > /usr/local/bin/forge-cache-prune')
+  const prune = dockerfile.slice(pruneStart, dockerfile.indexOf('\nEOF', pruneStart))
+
+  expect(prune).toContain('set -u')
+  expect(prune).toContain('XDG_CACHE_HOME:-/opt/forge/.cache')
+  expect(prune).toContain('"$cache"/rustup|"$cache"/uv-python) ;;')
+  expect(prune).toContain('wipe "$cache/cargo/registry"')
+  expect(prune).toContain('wipe "$cache/cargo/git"')
+  expect(prune).toContain('wipe "$cache/go/pkg/mod"')
+  expect(prune).toContain('*) wipe "$entry" ;;')
+  expect(prune).toContain('sudo -n apt-get clean')
+  expect(prune).toContain('sudo -n /usr/sbin/fstrim -v "$cache" 2>/dev/null || true')
+  expect(prune).toContain('sudo -n rm -rf "$1"')
+})
+
+test('globally installed CLIs are built against a store the cache-disk mount cannot shadow', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+  const globalInstalls = dockerfile.split('\n').filter((line) => line.includes('pnpm add -g'))
+
+  expect(globalInstalls.length).toBeGreaterThan(0)
+  for (const line of globalInstalls) {
+    expect(line).toContain('--store-dir /opt/forge/.local/share/pnpm/store')
+  }
 })
 
 function leftoverTars(dir: string): string[] {

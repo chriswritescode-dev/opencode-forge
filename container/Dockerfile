@@ -58,39 +58,62 @@ ENV UV_INSTALL_DIR=/usr/local/bin
 RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
     && chmod a+rx /usr/local/bin/uv /usr/local/bin/uvx
 
-# HOME and every tool cache/store are pinned to fixed, world-writable paths so
-# the layout is stable regardless of the executing UID.
+# HOME and every tool cache/store are pinned to fixed paths so the layout is
+# stable regardless of the executing UID. All of the caches below resolve under
+# /opt/forge/.cache, which Forge mounts as a dedicated sparse block device at
+# create time (forge-<name>-cache-data), so unbounded package caches never fill
+# the small root filesystem and nothing written to that path at build time
+# survives to runtime. forge-cache-prune wipes its cache subtrees while
+# preserving the installed toolchains and binary dirs (rustup, uv-python,
+# cargo/bin, go/bin).
 #
 # Both store-dir variables pin pnpm's content-addressable store to a
 # container-internal path: pnpm 11 reads PNPM_CONFIG_STORE_DIR while pnpm 10
 # ignores it and reads npm_config_store_dir instead. Projects pinned to pnpm 10
 # would otherwise place the store on the project filesystem (the msb-mounted
 # project directory, as a worktree-local .pnpm-store), which floods the host
-# file watcher and is slow over the macOS bind mount.
+# file watcher and is slow over the macOS bind mount. Because the store sits on
+# a different filesystem than the mounted project, pnpm copies packages into
+# node_modules instead of hard-linking, exactly as it already did against the
+# virtiofs project mount.
 ENV HOME=/opt/forge \
     XDG_CACHE_HOME=/opt/forge/.cache \
     XDG_DATA_HOME=/opt/forge/.local/share \
     PNPM_HOME=/opt/forge/.local/share/pnpm \
     PATH=/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
-    npm_config_cache=/opt/forge/.npm \
-    npm_config_store_dir=/opt/forge/.local/share/pnpm/store \
-    PNPM_CONFIG_STORE_DIR=/opt/forge/.local/share/pnpm/store
-RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm/store /opt/forge/.npm \
+    npm_config_cache=/opt/forge/.cache/npm \
+    npm_config_store_dir=/opt/forge/.cache/pnpm/store \
+    PNPM_CONFIG_STORE_DIR=/opt/forge/.cache/pnpm/store \
+    UV_PYTHON_INSTALL_DIR=/opt/forge/.cache/uv-python \
+    CARGO_HOME=/opt/forge/.cache/cargo \
+    RUSTUP_HOME=/opt/forge/.cache/rustup \
+    GOPATH=/opt/forge/.cache/go
+RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm \
     && chmod -R 0777 /opt/forge
 
 # fallow CLI — dead-code analysis tool — installed globally with the same pnpm
 # setup used by the rest of the sandbox image. Binaries are linked into
 # /usr/local/bin so they are on PATH for arbitrary container UIDs.
 #
-# The trailing chmod is load-bearing: these global installs run as root and populate the
-# pnpm store (store/v10/{files,index,projects}) with root-owned 0755 dirs, AFTER the earlier
-# `chmod -R 0777 /opt/forge`. Because the container runs as root but agent commands run as the
-# image's `agent` user via `msb exec`, that UID could not write into the root-owned store and
-# `pnpm install` failed with EACCES when registering the project — which previously drove the
-# agent to relocate the store onto the msb-mounted project directory (huge, slow file transfers).
-# Re-asserting 0777 here, as the last build step that touches /opt/forge, keeps the store
-# writable by any exec UID. Any future build step that runs pnpm as root must do the same.
-RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin \
+# --store-dir is load-bearing and must NOT be dropped to inherit the ENV store.
+# pnpm does not copy a globally installed package into PNPM_HOME: the global
+# node_modules entry is a symlink chain into the store's links/ directory. A
+# global installed against the cache-disk store therefore resolves to a dangling
+# symlink at runtime, because the dedicated cache disk is mounted over that path
+# and hides everything the build wrote there — `fallow --version` then dies with
+# "Cannot find module". Pinning the build-time store under /opt/forge/.local,
+# which the image actually ships and no mount shadows, keeps every global CLI
+# working; the ENV store keeps agent installs on the cache disk.
+#
+# The install then deletes whatever it cached under /opt/forge/.cache, since that
+# path is shadowed at runtime and those bytes would be unreachable weight on the
+# small root filesystem. The trailing chmod re-asserts 0777 on the tree the image
+# ships — PNPM_HOME and XDG_DATA_HOME under /opt/forge/.local — keeping it
+# writable by any exec UID. The cache tree's runtime permissions are owned by the
+# sandbox manager, which chowns and chmods the mounted cache disk at create time;
+# no build step establishes them.
+RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
+    && rm -rf /opt/forge/.cache/* /opt/forge/.cache/.[!.]* /opt/forge/.cache/..?* \
     && chmod -R 0777 /opt/forge
 
 # Obscura (https://github.com/h4ckf0r0day/obscura) — Rust headless browser
@@ -184,9 +207,31 @@ tail -n 20 "$log" 2>/dev/null >&2
 exit 1
 EOF
 
-# fallow CLI — dead-code analysis tool — installed globally with the same pnpm
-# setup used by the rest of the sandbox image. Binaries are linked into
-# /usr/local/bin so they are on PATH for arbitrary container UIDs.
+RUN cat > /usr/local/bin/forge-cache-prune <<'EOF' && chmod 0755 /usr/local/bin/forge-cache-prune
+#!/bin/sh
+set -u
+cache="${XDG_CACHE_HOME:-/opt/forge/.cache}"
+
+wipe() {
+    rm -rf "$1" 2>/dev/null || sudo -n rm -rf "$1" || true
+}
+
+for entry in "$cache"/* "$cache"/.[!.]* "$cache"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case "$entry" in
+        "$cache"/rustup|"$cache"/uv-python) ;;
+        "$cache"/cargo)
+            wipe "$cache/cargo/registry"
+            wipe "$cache/cargo/git"
+            ;;
+        "$cache"/go) wipe "$cache/go/pkg/mod" ;;
+        *) wipe "$entry" ;;
+    esac
+done
+
+sudo -n apt-get clean
+sudo -n /usr/sbin/fstrim -v "$cache" 2>/dev/null || true
+EOF
 
 # Allow git to operate on the msb-mounted project directory regardless of owner UID.
 RUN git config --system --add safe.directory '*'

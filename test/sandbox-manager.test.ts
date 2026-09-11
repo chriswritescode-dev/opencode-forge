@@ -412,7 +412,7 @@ describe('SandboxManager', () => {
       expect(manager.isActive('test')).toBe(false)
     })
 
-    test('clears stale local state without removal when the sandbox is confirmed missing', async () => {
+    test('clears stale local state and reclaims the named volumes when the sandbox is confirmed missing', async () => {
       const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
       const manager = createSandboxManager(
@@ -425,7 +425,7 @@ describe('SandboxManager', () => {
       mockRuntime.setSandboxState('forge-test', 'missing')
       await manager.stop('test')
 
-      expect(mockRuntime.getRemoveSandboxCalls()).not.toContain('forge-test')
+      expect(mockRuntime.getRemoveSandboxCalls()).toContain('forge-test')
       expect(manager.isActive('test')).toBe(false)
     })
   })

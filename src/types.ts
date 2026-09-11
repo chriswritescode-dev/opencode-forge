@@ -145,6 +145,10 @@ export interface SandboxResources {
   /** Size of the dedicated disk backing the sandbox's Docker Engine data dir (`/var/lib/docker`),
    *  e.g. '16g'. Maps to the `--mount-named ...:kind=disk,size=<size>` volume. Defaults to '16g'. */
   dockerDisk?: string
+  /** Size of the dedicated disk backing `/opt/forge/.cache` (the pnpm store, npm/uv/pip caches,
+   *  uv-managed Pythons, cargo/rustup, Go modules), e.g. '16g'. Maps to the
+   *  `--mount-named ...:kind=disk,size=<size>` volume. Defaults to '16g'. */
+  cacheDisk?: string
 }
 
 /**
