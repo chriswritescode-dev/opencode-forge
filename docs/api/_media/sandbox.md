@@ -203,6 +203,8 @@ Caches that do not honor `XDG_CACHE_HOME` are routed into that directory by imag
 | pnpm content store (pnpm 11 / pnpm 10) | `PNPM_CONFIG_STORE_DIR` / `npm_config_store_dir` = `/opt/forge/.cache/pnpm/store` |
 | npm cache | `npm_config_cache=/opt/forge/.cache/npm` |
 | uv-managed Pythons | `UV_PYTHON_INSTALL_DIR=/opt/forge/.cache/uv-python` |
+| uv-installed tools | `UV_TOOL_DIR=/opt/forge/.cache/uv-tools` |
+| uv tool executables | `UV_TOOL_BIN_DIR=/opt/forge/.cache/uv-bin` (on `PATH`) |
 | cargo and rustup | `CARGO_HOME` / `RUSTUP_HOME` under `/opt/forge/.cache` |
 | Go modules | `GOPATH=/opt/forge/.cache/go` |
 
@@ -210,7 +212,7 @@ CLIs installed globally at image-build time (`fallow`) are a deliberate exceptio
 
 uv, pip, puccinialin, Playwright browsers, and pnpm's own cache resolve under `XDG_CACHE_HOME` unchanged. The uv-managed interpreters deliberately sit at `uv-python`, *outside* uv's own cache directory (`$XDG_CACHE_HOME/uv`), because `uv cache clean` clears that directory entirely and would otherwise delete interpreters that project virtualenvs link against. Because the store sits on a different filesystem than the mounted project, pnpm copies packages into `node_modules` instead of hard-linking — the same trade the container-internal store already made against the virtiofs project mount.
 
-The image ships `forge-cache-prune`, safe to run as `agent` whenever the sandbox is idle. It clears re-downloadable caches — the pnpm store, npm and uv caches, `cargo/registry`, `cargo/git`, `go/pkg/mod`, and any unrecognized entry — while preserving installed toolchains: `rustup`, the uv-managed Pythons, and the `cargo/bin` and `go/bin` binaries. It then runs `apt-get clean` and `fstrim`, so the freed space is returned to the host's sparse disk image rather than only to the guest. The sandbox context note tells agents about it, so a full cache disk is reclaimed by running it instead of hand-hunting `du`.
+The image ships `forge-cache-prune`, safe to run as `agent` whenever the sandbox is idle. It clears re-downloadable caches — the pnpm store, npm and uv caches, `cargo/registry`, `cargo/git`, `go/pkg/mod`, and any unrecognized entry — while preserving installed toolchains: `rustup`, the uv-managed Pythons, uv tool environments and executable links (`uv-tools` and `uv-bin`), and the `cargo/bin` and `go/bin` binaries. It then runs `apt-get clean` and `fstrim`, so the freed space is returned to the host's sparse disk image rather than only to the guest. The sandbox context note tells agents about it, so a full cache disk is reclaimed by running it instead of hand-hunting `du`.
 
 The cache volume keeps its contents across sandbox recreation via `--replace`. Sandboxes created before this feature keep their caches on the root filesystem; as a stopgap their root disk can be grown in place (`msb modify <sandbox> --root-disk <size>`, grow-only), but the cache disk itself requires recreating the sandbox (`msb rm <sandbox>`). Changing `sandbox.resources.cacheDisk` does not resize an existing sandbox — see [Resource Defaults](#resource-defaults).
 

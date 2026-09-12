@@ -65,7 +65,7 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
 # the small root filesystem and nothing written to that path at build time
 # survives to runtime. forge-cache-prune wipes its cache subtrees while
 # preserving the installed toolchains and binary dirs (rustup, uv-python,
-# cargo/bin, go/bin).
+# uv-tools, uv-bin, cargo/bin, go/bin).
 #
 # Both store-dir variables pin pnpm's content-addressable store to a
 # container-internal path: pnpm 11 reads PNPM_CONFIG_STORE_DIR while pnpm 10
@@ -80,11 +80,13 @@ ENV HOME=/opt/forge \
     XDG_CACHE_HOME=/opt/forge/.cache \
     XDG_DATA_HOME=/opt/forge/.local/share \
     PNPM_HOME=/opt/forge/.local/share/pnpm \
-    PATH=/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
+    PATH=/opt/forge/.cache/uv-bin:/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
     npm_config_cache=/opt/forge/.cache/npm \
     npm_config_store_dir=/opt/forge/.cache/pnpm/store \
     PNPM_CONFIG_STORE_DIR=/opt/forge/.cache/pnpm/store \
     UV_PYTHON_INSTALL_DIR=/opt/forge/.cache/uv-python \
+    UV_TOOL_DIR=/opt/forge/.cache/uv-tools \
+    UV_TOOL_BIN_DIR=/opt/forge/.cache/uv-bin \
     CARGO_HOME=/opt/forge/.cache/cargo \
     RUSTUP_HOME=/opt/forge/.cache/rustup \
     GOPATH=/opt/forge/.cache/go
@@ -219,7 +221,7 @@ wipe() {
 for entry in "$cache"/* "$cache"/.[!.]* "$cache"/..?*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     case "$entry" in
-        "$cache"/rustup|"$cache"/uv-python) ;;
+        "$cache"/rustup|"$cache"/uv-python|"$cache"/uv-tools|"$cache"/uv-bin) ;;
         "$cache"/cargo)
             wipe "$cache/cargo/registry"
             wipe "$cache/cargo/git"
