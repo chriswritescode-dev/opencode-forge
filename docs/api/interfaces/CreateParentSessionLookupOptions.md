@@ -6,7 +6,7 @@
 
 # Interface: CreateParentSessionLookupOptions
 
-Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/blob/238a813db17d6acb585b8aacd52f41924f1a739a/src/index.ts#L54)
+Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/blob/46cf4516be5fff3ecd59a131c413ed8c17f16b8f/src/index.ts#L54)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **client**: `ForgeClient`
 
-Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/blob/238a813db17d6acb585b8aacd52f41924f1a739a/src/index.ts#L55)
+Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/blob/46cf4516be5fff3ecd59a131c413ed8c17f16b8f/src/index.ts#L55)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **directory**: `string`
 
-Defined in: [index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/blob/238a813db17d6acb585b8aacd52f41924f1a739a/src/index.ts#L56)
+Defined in: [index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/blob/46cf4516be5fff3ecd59a131c413ed8c17f16b8f/src/index.ts#L56)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **logger**: `object`
 
-Defined in: [index.ts:58](https://github.com/chriswritescode-dev/opencode-forge/blob/238a813db17d6acb585b8aacd52f41924f1a739a/src/index.ts#L58)
+Defined in: [index.ts:58](https://github.com/chriswritescode-dev/opencode-forge/blob/46cf4516be5fff3ecd59a131c413ed8c17f16b8f/src/index.ts#L58)
 
 #### debug
 
@@ -92,4 +92,4 @@ Defined in: [index.ts:58](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **loop**: `Loop`
 
-Defined in: [index.ts:57](https://github.com/chriswritescode-dev/opencode-forge/blob/238a813db17d6acb585b8aacd52f41924f1a739a/src/index.ts#L57)
+Defined in: [index.ts:57](https://github.com/chriswritescode-dev/opencode-forge/blob/46cf4516be5fff3ecd59a131c413ed8c17f16b8f/src/index.ts#L57)
