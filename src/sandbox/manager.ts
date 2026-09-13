@@ -1,5 +1,5 @@
 import type { SandboxRuntime, SandboxWorkspace } from './msb'
-import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, type MsbAvailability } from './msb'
+import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
 import type { Logger, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
 import { mkdirSync, existsSync } from 'fs'
@@ -196,6 +196,7 @@ export function createSandboxManager(
   const ensureRunningInFlight = new Map<string, Promise<string>>()
   const gitMountCache = new Map<string, SandboxMount[]>()
   const convergedSecrets = new Set<string>()
+  const preparedCacheDisks = new Set<string>()
   const handledSecretEnvs = new Map<string, Set<string>>()
   const warnedUnsetSecretEnv = new Set<string>()
   let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
@@ -464,6 +465,17 @@ export function createSandboxManager(
     logger.log(`Sandbox: egress for secret host(s) of ${introduced.map((s) => s.env).join(', ')} may be unreachable in ${containerName}: msb cannot change egress rules on an existing sandbox, so recreate the sandbox for the new host(s) to be allowed`)
   }
 
+  async function prepareCacheDisk(containerName: string): Promise<void> {
+    if (preparedCacheDisks.has(containerName)) return
+    const result = await runtime.exec(containerName, `sudo sh -c 'chown agent:agent ${SANDBOX_CACHE_DIR} && chmod 0777 ${SANDBOX_CACHE_DIR}'`)
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Failed to make the sandbox cache disk writable at ${SANDBOX_CACHE_DIR}: ${result.stderr || result.stdout}`,
+      )
+    }
+    preparedCacheDisks.add(containerName)
+  }
+
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
     await ensureRuntimeAvailable()
     await ensureTemplate()
@@ -485,6 +497,7 @@ export function createSandboxManager(
       if (!(await refreshSecrets(containerName))) {
         throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
       }
+      await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       return { containerName }
     }
@@ -495,6 +508,7 @@ export function createSandboxManager(
       memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
       cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
       dockerDisk: config.resources?.dockerDisk,
+      cacheDisk: config.resources?.cacheDisk,
     }
     // Secret destinations are unioned into the egress allow-list: msb's proxy is deny-by-default
     // at the sandbox level, so a secrets-only configuration would otherwise never reach its hosts.
@@ -508,6 +522,7 @@ export function createSandboxManager(
       env: resolvePassthroughEnv(),
       secrets,
     })
+    await prepareCacheDisk(containerName)
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)
     registerActiveSandbox(worktreeName, containerName, projectDir, startedAt, mounts)
@@ -524,7 +539,10 @@ export function createSandboxManager(
     // nothing about the sandbox, so removal could destroy a live container that a concurrent or
     // indeterminate query cannot see. Preserve the active-map entry (if any) so callers can
     // observe the indeterminate state, and refuse to touch the sandbox. `missing` is a confirmed
-    // absence: clear stale local bookkeeping without invoking msb.
+    // absence of the container, but the named volumes are reclaimed only through the shared
+    // `removeSandbox` removal path, which tolerates a missing sandbox and missing volumes, so the
+    // removal still runs to reclaim them; a removal failure is logged but not rethrown because
+    // the sandbox itself is genuinely gone.
     const state = await runtime.getSandboxState(containerName)
     if (state === 'unknown') {
       const err = new Error(
@@ -537,7 +555,14 @@ export function createSandboxManager(
       activeSandboxes.delete(worktreeName)
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
+      preparedCacheDisks.delete(containerName)
       logger.log(`Sandbox ${containerName} already gone`)
+      try {
+        await runtime.removeSandbox(containerName)
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        logger.log(`Sandbox ${containerName} removal: ${errMsg}`)
+      }
       return
     }
 
@@ -558,6 +583,7 @@ export function createSandboxManager(
       activeSandboxes.delete(worktreeName)
       convergedSecrets.delete(containerName)
       handledSecretEnvs.delete(containerName)
+      preparedCacheDisks.delete(containerName)
     }
     if (removalError) throw removalError
   }
@@ -587,6 +613,7 @@ export function createSandboxManager(
     if (state === 'missing') {
       logger.log(`Sandbox: sandbox ${containerName} no longer exists, removing stale map entry for ${worktreeName}`)
       activeSandboxes.delete(worktreeName)
+      preparedCacheDisks.delete(containerName)
       return false
     }
 
@@ -610,6 +637,7 @@ export function createSandboxManager(
         removed++
         convergedSecrets.delete(name)
         handledSecretEnvs.delete(name)
+        preparedCacheDisks.delete(name)
         logger.log(`Removed orphaned sandbox: ${name}`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -621,6 +649,7 @@ export function createSandboxManager(
       activeSandboxes.clear()
       convergedSecrets.clear()
       handledSecretEnvs.clear()
+      preparedCacheDisks.clear()
     } else {
       for (const key of activeSandboxes.keys()) {
         if (!preserveWorktrees.includes(key)) {
@@ -653,6 +682,7 @@ export function createSandboxManager(
       if (!(await refreshSecrets(containerName))) {
         throw new Error(`Failed to refresh secrets for sandbox ${containerName}; refusing to adopt`)
       }
+      await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
       lastLivenessCheck.set(worktreeName, Date.now())
       return containerName

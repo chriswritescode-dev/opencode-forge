@@ -11,6 +11,7 @@ import {
   resolveSandboxMountConfigs,
 } from '../../src/sandbox/context'
 import { resolveCustomMounts } from '../../src/sandbox/manager'
+import { SANDBOX_CACHE_DIR } from '../../src/sandbox/msb'
 import { createMockLogger } from '../helpers/sandbox-mocks'
 import type { SandboxMount } from '../../src/sandbox/path'
 
@@ -40,6 +41,10 @@ describe('SANDBOX_CONTEXT_NOTE', () => {
   it('advertises the in-image tooling an agent cannot discover on its own', () => {
     expect(SANDBOX_CONTEXT_NOTE).toContain('forge-dockerd-start')
     expect(SANDBOX_CONTEXT_NOTE).toContain('Obscura is installed as a drop-in replacement for headless Chrome with Puppeteer and Playwright; run obscura --help for usage.')
+    expect(SANDBOX_CONTEXT_NOTE).toContain(`mounted at ${SANDBOX_CACHE_DIR}`)
+    expect(SANDBOX_CONTEXT_NOTE).toContain('run forge-cache-prune to reclaim space when the disk fills')
+    expect(SANDBOX_CONTEXT_NOTE).toMatch(/preserving installed toolchains/)
+    expect(SANDBOX_CONTEXT_NOTE).not.toMatch(/re-downloadable/i)
   })
 })
 

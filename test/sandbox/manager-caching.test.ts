@@ -40,13 +40,13 @@ describe('SandboxManager caching', () => {
     expect(mockRuntime.templateExists).toHaveBeenCalledTimes(1)
   })
 
-  it('should not start a keep-alive exec', async () => {
+  it('should not start a keep-alive exec; the only exec is the create-time cache prepare', async () => {
     mockRuntime.exec = vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 }))
     const manager = createSandboxManager(mockRuntime, { image: 'oc-forge-sandbox:latest' }, mockLogger)
 
     await manager.start('test-wt', '/tmp/project')
 
-    expect(mockRuntime.exec).not.toHaveBeenCalled()
+    expect(mockRuntime.exec).toHaveBeenCalledTimes(1)
   })
 
   it('should reject both calls when runtime is unavailable and cache negative result within TTL', async () => {

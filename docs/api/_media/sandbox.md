@@ -182,13 +182,39 @@ msb runs its own `agentd` as PID 1 and ignores the image's `ENTRYPOINT`/`CMD`, s
 
 `/var/lib/docker` is backed by a real block device, because Docker's `overlayfs` driver cannot run on a virtiofs workspace mount. Forge passes `--mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>`, configurable via `sandbox.resources.dockerDisk` (default `16g`). The disk is sparse, so the default costs no real disk up front.
 
-Named volumes **survive `msb rm`**, so Forge explicitly removes the sandbox's docker data volume when it removes the sandbox (and during orphan cleanup) — otherwise a multi-gigabyte volume would leak per loop.
+Named volumes **survive `msb rm`**, so Forge explicitly removes the sandbox's docker data and cache data volumes when it removes the sandbox (and during orphan cleanup) — otherwise a multi-gigabyte volume would leak per loop.
 
 Verified working inside the sandbox: `docker info` reports server 29.7.2 with `storage=overlayfs`, `docker run --rm hello-world` succeeds, `docker compose version` works, and `docker build` works. The daemon survives across separate `msb exec` calls.
 
 Registry pulls work with the default allow-public egress posture and need no extra configuration. Under an opt-in restriction, pulling from Docker Hub requires allow-listing `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`, and the CloudFront blob host (`*.cloudfront.net`).
 
 The image derives from a plain OCI base, keeps the final `USER agent`, and declares no `ENTRYPOINT`/`CMD`. Docker remains required on the **host** to build the image. The built image is roughly 1.65 GB, up from about 1 GB, because Docker Engine is heavy.
+
+## Tool Caches and Disk Space
+
+The sandbox root filesystem is a small overlay (about 4 GB), while package-manager caches grow unbounded: real loops accumulated multi-gigabyte pnpm stores, uv wheel caches, and Rust sdist bootstrap caches (puccinialin) until the root filesystem hit 100%. The image therefore pins every tool cache under `/opt/forge/.cache` (`XDG_CACHE_HOME`), and Forge mounts that directory as a dedicated sparse block device at create time — the same mechanism as the Docker data disk: `--mount-named <sandbox>-cache-data:/opt/forge/.cache:kind=disk,size=<size>`, configurable via `sandbox.resources.cacheDisk` (default `16g`).
+
+msb formats a fresh named disk as root-owned `0755` while `msb exec` runs as `agent`, so Forge makes the mount root `agent`-owned and world-writable (`chown agent:agent` plus `chmod 0777`, non-recursive) in a single exec before the sandbox is registered. World-writable matches the image's build-time posture for `/opt/forge`, which the runtime mount would otherwise shadow, and keeps the tree usable when a command is run under `sudo`. The step is memoized per sandbox and re-applied on adoption, so a sandbox whose preparation failed — or one created by an older Forge build — is healed on the next start instead of being adopted with an unwritable cache.
+
+Caches that do not honor `XDG_CACHE_HOME` are routed into that directory by image environment variables:
+
+| Cache | Variable |
+|---|---|
+| pnpm content store (pnpm 11 / pnpm 10) | `PNPM_CONFIG_STORE_DIR` / `npm_config_store_dir` = `/opt/forge/.cache/pnpm/store` |
+| npm cache | `npm_config_cache=/opt/forge/.cache/npm` |
+| uv-managed Pythons | `UV_PYTHON_INSTALL_DIR=/opt/forge/.cache/uv-python` |
+| uv-installed tools | `UV_TOOL_DIR=/opt/forge/.cache/uv-tools` |
+| uv tool executables | `UV_TOOL_BIN_DIR=/opt/forge/.cache/uv-bin` (on `PATH`) |
+| cargo and rustup | `CARGO_HOME` / `RUSTUP_HOME` under `/opt/forge/.cache` |
+| Go modules | `GOPATH=/opt/forge/.cache/go` |
+
+CLIs installed globally at image-build time (`fallow`) are a deliberate exception: they are installed with an explicit `--store-dir` under `/opt/forge/.local/share/pnpm/store`. pnpm does not copy a global package into `PNPM_HOME` — the global `node_modules` entry is a symlink chain into the store — so a global built against the cache-disk store would resolve to a dangling symlink the moment the disk is mounted over that path, and the CLI would fail with `Cannot find module`. The build-time store therefore stays on a path no mount shadows, while the environment keeps agent installs on the cache disk.
+
+uv, pip, puccinialin, Playwright browsers, and pnpm's own cache resolve under `XDG_CACHE_HOME` unchanged. The uv-managed interpreters deliberately sit at `uv-python`, *outside* uv's own cache directory (`$XDG_CACHE_HOME/uv`), because `uv cache clean` clears that directory entirely and would otherwise delete interpreters that project virtualenvs link against. Because the store sits on a different filesystem than the mounted project, pnpm copies packages into `node_modules` instead of hard-linking — the same trade the container-internal store already made against the virtiofs project mount.
+
+The image ships `forge-cache-prune`, safe to run as `agent` whenever the sandbox is idle. It clears re-downloadable caches — the pnpm store, npm and uv caches, `cargo/registry`, `cargo/git`, `go/pkg/mod`, and any unrecognized entry — while preserving installed toolchains: `rustup`, the uv-managed Pythons, uv tool environments and executable links (`uv-tools` and `uv-bin`), and the `cargo/bin` and `go/bin` binaries. It then runs `apt-get clean` and `fstrim`, so the freed space is returned to the host's sparse disk image rather than only to the guest. The sandbox context note tells agents about it, so a full cache disk is reclaimed by running it instead of hand-hunting `du`.
+
+The cache volume keeps its contents across sandbox recreation via `--replace`. Sandboxes created before this feature keep their caches on the root filesystem; as a stopgap their root disk can be grown in place (`msb modify <sandbox> --root-disk <size>`, grow-only), but the cache disk itself requires recreating the sandbox (`msb rm <sandbox>`). Changing `sandbox.resources.cacheDisk` does not resize an existing sandbox — see [Resource Defaults](#resource-defaults).
 
 ## Sandbox Lifecycle
 
@@ -223,6 +249,7 @@ The mount is read-only because the setting exists to grant read access. To make 
 | `sandbox.resources.memory` | `"8g"` | `msb create -m` |
 | `sandbox.resources.cpus` | `"4"` | `msb create -c` (integer-only) |
 | `sandbox.resources.dockerDisk` | `"16g"` | `msb create --mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>` |
+| `sandbox.resources.cacheDisk` | `"16g"` | `msb create --mount-named <sandbox>-cache-data:/opt/forge/.cache:kind=disk,size=<size>` |
 
 `memory` and `cpus` are exactly what the guest gets, for its whole life. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
 
