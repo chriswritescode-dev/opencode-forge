@@ -73,6 +73,19 @@ describe('loadPrompt', () => {
     expect(prompt).toContain('AUDIT_SCOPE:1')
   })
 
+  test('auditor addenda treat sandbox-unsatisfiable requirements as plan defects, not coder failures', () => {
+    const loop = loadPrompt(['agents', 'auditor-loop-addendum.md'])
+    expect(loop).toContain('**Sandbox feasibility.**')
+    expect(loop).toContain('satisfiable inside the sandbox')
+    expect(loop).toContain('applying Terraform or other infrastructure-as-code against a cloud provider')
+    expect(loop).toContain('Never write a finding demanding the unsatisfiable requirement itself')
+    expect(loop).toContain('This substitution is not weakening')
+
+    const final = loadPrompt(['agents', 'auditor-final-audit-addendum.md'])
+    expect(final).toContain("unsatisfiable inside the sandbox under the loop addendum's Sandbox feasibility rule")
+    expect(final).toContain('required post-loop manual step')
+  })
+
   test('buildAgents with custom promptsDir uses the custom prompt', () => {
     const tmpDir = join(import.meta.dirname, '..', '..', '.forge', 'tmp', 'test-build-agents')
     mkdirSync(join(tmpDir, 'agents'), { recursive: true })

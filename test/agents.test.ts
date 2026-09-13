@@ -322,7 +322,6 @@ describe('Agent definitions', () => {
         expect(prompt).toContain(contract)
       }
       expect(prompt).toContain('repo-relative paths')
-      expect(prompt).toContain('Avoid manual checks and external-service dependencies unless the task explicitly requires them')
       expect(prompt).not.toContain('Do NOT use `pnpm build`')
       expect(prompt).not.toContain('marked plan')
       expect(prompt).not.toContain('<!-- forge-plan:start -->')
@@ -344,9 +343,19 @@ describe('Agent definitions', () => {
           'searching for a stale symbol',
           'current repository directory as the complete execution boundary',
           'execution sandbox will not expose them',
+          'unattended coding agent inside an isolated sandbox',
+          'Docker for local services',
+          '`obscura` headless browser',
+          'Not available: host environment variables, API keys, credentials, secrets, cloud or SaaS accounts',
+          'authenticates to or mutates a system outside the sandbox',
+          'applying Terraform or other infrastructure-as-code against a cloud provider',
+          'never as an acceptance criterion or verification command',
+          'Never include manual checks or commands that depend on external services, credentials, or host environment variables',
         ]) {
           expect(prompt).toContain(contract)
         }
+        expect(prompt).not.toContain('unless the task explicitly requires them')
+        expect(prompt).not.toContain('unless explicitly required')
       }
     })
 

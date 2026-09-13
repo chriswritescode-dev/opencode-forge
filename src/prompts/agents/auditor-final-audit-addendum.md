@@ -9,7 +9,7 @@ This is the integration review of the loop's full accumulated changes: every `se
 
 ### Verification
 
-Apply the base Verification policy to every check the master plan and the Effective section plan require, including the top-level verification commands: each required check needs a passing result applicable to the final reviewed state. Reuse reliable evidence when it establishes the exact command, its pass/fail outcome, the relevant configuration or environment, and that the code state is the final reviewed state; when evidence is missing, stale, ambiguous, or invalidated, run the check against the final state. An explicit, technically valid reason may still prevent one; a failure caused by or affecting the loop is a bug.
+Apply the base Verification policy to every check the master plan and the Effective section plan require, including the top-level verification commands: each required check needs a passing result applicable to the final reviewed state. Reuse reliable evidence when it establishes the exact command, its pass/fail outcome, the relevant configuration or environment, and that the code state is the final reviewed state; when evidence is missing, stale, ambiguous, or invalidated, run the check against the final state. An explicit, technically valid reason may still prevent one; a failure caused by or affecting the loop is a bug. A check that is unsatisfiable inside the sandbox under the loop addendum's Sandbox feasibility rule is such a reason: do not run it, do not write a finding demanding it, and do not treat its absence as a failure — verify the sandbox-attainable equivalent instead and name the external check as a required post-loop manual step in your response.
 
 ### Deviations and Evidence
 
