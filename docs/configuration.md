@@ -27,7 +27,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `logging.debug` | `false` | Enable debug logging. |
 | `logging.file` | `""` | Log path. Omit or set to `null` for the default log path. An empty string is passed through and can fail silently. |
 
-Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_HOME/opencode/forge/logs/forge.log`.
+Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_HOME/opencode/forge/logs/forge.log`. The log file rotates at 10 MB.
 
 ## Compaction
 
@@ -159,7 +159,7 @@ The host-session sandbox applies only to sessions outside active loops. Its desi
 
 ## Dashboard
 
-`dashboard` controls the bind address of the read-only observability dashboard, served by both `pnpm dashboard` and the TUI `Open dashboard` command. The default binds loopback only, so the dashboard is reachable exclusively from the machine running Forge.
+`dashboard` controls the bind address of the observability dashboard, served by both `pnpm dashboard` and the TUI `Open dashboard` command. The default binds loopback only. On a loopback bind the dashboard can send messages to the live loop session and edit the loop's persisted model columns; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only.
 
 | Option | Default | Description |
 |---|---:|---|
@@ -334,7 +334,7 @@ The installer can also write the plugin itself into opencode's plugin directory,
 | Flag | Behavior |
 |---|---|
 | `--link` | Writes `<configDir>/plugin/opencode-forge.js`, a one-line re-export shim whose target is the absolute path of the current build's `dist/index.js`. Because the shim re-exports the live build, a rebuild is picked up on the next opencode start with no reinstall. The shim is tied to that checkout path, so it is not portable to another machine. |
-| `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6 MB) and writes the shim with the relative target `./opencode-forge/dist/index.js`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
+| `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6.5 MB) and writes the shim with the relative target `./opencode-forge/dist/index.js`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
 | `--unlink` | Removes the shim, the vendored directory, and the `tui.json` entry. |
 
 From a source checkout the same flags are `pnpm run setup --link`, `pnpm run setup --vendor`, and `pnpm run setup --unlink` (the `run` is required — `setup` is a built-in pnpm command). In a non-interactive shell, `--link` and `--vendor` still require one of `-y`, `-f`, or `-k`, matching every other non-interactive use of the installer.

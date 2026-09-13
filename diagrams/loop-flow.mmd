@@ -1,0 +1,25 @@
+%% Regenerate: mmdc -i diagrams/loop-flow.mmd -o /tmp/loop-flow.png -b white -s 2
+%%             magick /tmp/loop-flow.png -quality 90 diagrams/loop-flow.webp
+stateDiagram-v2
+    direction TB
+    [*] --> Coding: loop triggered
+    Coding --> Auditing: session idle
+    Auditing --> Coding: findings remain
+    Auditing --> FinalAuditing: last section clean
+    Auditing --> PostAction: audit clear, post-action enabled
+    Auditing --> [*]: audit clear
+    FinalAuditing --> FinalAuditFix: bugs
+    FinalAuditFix --> FinalAuditing: fix idle
+    FinalAuditing --> PostAction: clean final audit, post-action enabled
+    FinalAuditing --> [*]: clean final audit
+    PostAction --> [*]: post-action complete
+    Coding --> [*]: max iterations / 3 consecutive errors / stall timeout / cancellation
+    note right of Coding
+        Loops start by creating a git worktree, an
+        optional msb sandbox, and a code session.
+        Plan loops decompose the plan into up to
+        24 sections once at start.
+    end note
+    note right of PostAction
+        Only when loop.postAction.enabled
+    end note

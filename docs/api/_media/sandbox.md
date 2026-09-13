@@ -26,7 +26,9 @@ msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 
 `msb load` registers the archive under the tag Forge looks up (`sandbox.image`, default `oc-forge-sandbox:latest`); list loaded images with `msb images --format json`.
 
-The default image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Obscura, and Docker Engine (see [Nested Docker](#nested-docker)).
+`container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a **Build sandbox template** command in the palette. Trigger it at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically. The dialog stays open for the duration and shows a live progress bar, the current Docker step, elapsed time, and streamed build output; on failure it keeps the last lines of Docker output so the cause is visible. A first build takes several minutes, and closing the dialog does not cancel it — it finishes in the background and reports with a toast. Restart OpenCode after changing sandbox configuration.
+
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Obscura, and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 

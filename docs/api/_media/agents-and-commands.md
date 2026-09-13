@@ -52,5 +52,6 @@ Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 | `/execute-goal` | Execute a goal in rotating dedicated code and auditor sessions inside an isolated worktree. | `code` | no |
 | `/loop-status` | Check status of all active loops. | `code` | no |
 | `/loop-cancel` | Cancel the active loop. | `code` | no |
+| `/launch-group` | Decompose a PRD or feature list into features and launch them as parallel planning + development loops. | `code` | no |
 
 Source: [`buildPluginCommands()`](../src/config.ts).

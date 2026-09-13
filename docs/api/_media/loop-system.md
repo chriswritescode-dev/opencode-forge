@@ -52,6 +52,18 @@ stateDiagram-v2
     FinalAuditing --> [*]: final audit clean (no post-action)
 ```
 
+### Phases
+
+A loop has five persisted phases:
+
+1. **`coding`** — a code session works on the current section, plan, or goal.
+2. **`auditing`** — the auditor reviews the change against conventions and stored findings.
+3. **`final_auditing`** — audits the whole accumulated diff (sectioned plan loops only).
+4. **`final_audit_fix`** — a coding pass that fixes final-audit findings without a section rewind.
+5. **`post_action`** — an optional best-effort action after a clean final audit (sectioned plan loops only).
+
+Each completed code or audit pass rotates to a fresh session, and audit findings feed back into the next coding iteration. Goal loops skip sections, the final audit, and the post-action phase.
+
 ## Loop States
 
 Each loop has a `LoopState` backed by the typed `loops` and `loop_large_fields` SQLite tables:
@@ -169,7 +181,7 @@ At the start of each audit:
 2. Resolved findings are deleted via `review-delete`
 3. Unresolved findings are carried forward
 
-Outstanding `severity: 'bug'` findings block loop completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
+Outstanding `severity: 'bug'` findings block completion of a sectioned plan loop; goal loops and non-sectioned plan loops require zero outstanding findings of any severity. The loop terminates only when the auditor has run at least once and no blocking findings remain.
 
 ## Worktree Isolation
 
@@ -239,6 +251,14 @@ A loop completes when the active phase emits a clean audit result (optionally fo
 - Dirty section audits rotate back to coding for the same section so findings can be addressed.
 - Dirty final audits rotate to a coding session in the `final_audit_fix` phase (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
 - After a clean final audit, if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion occurs when the post-action session goes idle (`post-action-complete` event).
+
+## Termination
+
+In addition to a clean audit, the loop terminates when:
+
+- **Max iterations** — The `maxIterations` cap is exceeded (0 = unlimited).
+- **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
+- **Consecutive errors** — 3 consecutive errors in either phase.
 
 ## Post-Completion Action Phase
 
@@ -332,10 +352,37 @@ Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, a
 | Post-completion action | Yes (when configured) | Never | Per feature loop |
 | Slash command | `/execute-plan` | `/execute-goal` | None (agent-invoked) |
 
+## Model Configuration
+
+Model and variant selection follows this priority order (first match wins):
+
+**Execution model:**
+
+1. In-session dialog override (instance lifetime)
+2. `config.executionModel`
+3. Last-used workspace preference
+4. Platform default
+
+**Auditor model:**
+
+1. In-session dialog override (instance lifetime)
+2. `config.auditorModel`
+3. `config.executionModel`
+4. Last-used auditor model
+5. Last-used execution model
+6. Platform default
+
+Variants use override → matching config value → last-used workspace value. The auditor variant does not inherit the execution variant. When launching from the TUI dialog, your selection is remembered and pre-filled on subsequent launches, and the dialog allows selecting a separate model for the auditor phase. On model errors during execution, automatic fallback to the default model kicks in.
+
+## Management
+
+- **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel.
+- **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel.
+
 ## Tool Restrictions
 
 Inside active loop sessions:
-- `git push` is denied (permission hook)
+- `git push` is not denied by default; add a scoped `loop.permissions.deny` entry such as `{ "permission": "bash", "pattern": "git push *" }` to deny it
 - `execute-plan` is blocked (tool hooks)
 - `execute-goal` is blocked (tool hooks)
 - `question` is blocked (tool hooks)
