@@ -6,6 +6,8 @@ export interface TuiLoopRestartRequest {
   loopName: string
   auditorModel: string
   auditorVariant: string
+  executionModel?: string
+  executionVariant?: string
 }
 
 export type TuiLoopRestartResult = { sessionId: string } | { error: string }
@@ -123,6 +125,8 @@ export function createTuiLoopRestartController(deps: TuiLoopRestartControllerDep
         loopName: desired.loopName,
         auditorModel: desired.auditorModel,
         auditorVariant: desired.auditorVariant,
+        executionModel: desired.executionModel,
+        executionVariant: desired.executionVariant,
       })
     } catch (err) {
       result = { error: err instanceof Error ? err.message : String(err) }

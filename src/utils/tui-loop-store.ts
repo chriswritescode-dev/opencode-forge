@@ -13,7 +13,7 @@ import { createLoopsRepo } from '../storage/repos/loops-repo'
 import { createPlansRepo } from '../storage/repos/plans-repo'
 import { createSectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopInfo } from './tui-models'
-import { createTuiLoopRestartRepo, type TuiLoopRestartAppliedState } from '../storage/repos/tui-loop-restart-repo'
+import { createTuiLoopRestartRepo, type TuiLoopRestartAppliedState, type TuiLoopRestartDesiredState } from '../storage/repos/tui-loop-restart-repo'
 import { getRestartability } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
 
@@ -86,6 +86,7 @@ function rowToLoopInfo(row: import('../storage/repos/loops-repo').LoopRow, secti
     executionModel: row.executionModel ?? undefined,
     auditorModel: row.auditorModel ?? undefined,
     auditorVariant: row.auditorVariant ?? undefined,
+    executionVariant: row.executionVariant ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
     currentSectionIndex: row.currentSectionIndex,
@@ -154,21 +155,24 @@ function waitForRestartPoll(ms: number, signal?: AbortSignal): Promise<boolean> 
 
 export async function requestTuiLoopRestart(
   projectId: string,
-  request: { loopName: string; auditorModel: string; auditorVariant: string },
+  request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel?: string; executionVariant?: string },
   opts: { dbPath?: string; timeoutMs?: number; pollMs?: number; signal?: AbortSignal } = {},
 ): Promise<TuiLoopRestartAppliedState> {
   if (opts.signal?.aborted) throw new Error('Loop restart cancelled')
   const revision = randomUUID()
   const writeDb = openWritableForgeDb(opts.dbPath)
   try {
-    const accepted = createTuiLoopRestartRepo(writeDb).trySetDesired(projectId, {
+    const desired: TuiLoopRestartDesiredState = {
       version: 1,
       revision,
       loopName: request.loopName,
       auditorModel: request.auditorModel,
       auditorVariant: request.auditorVariant,
       requestedAt: Date.now(),
-    })
+    }
+    if (request.executionModel !== undefined) desired.executionModel = request.executionModel
+    if (request.executionVariant !== undefined) desired.executionVariant = request.executionVariant
+    const accepted = createTuiLoopRestartRepo(writeDb).trySetDesired(projectId, desired)
     if (!accepted) throw new Error('Another loop restart request is already in progress')
   } finally {
     writeDb.close()

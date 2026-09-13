@@ -45,7 +45,7 @@ export interface ExecutePlanPanelProps {
   onSelectionChanged: (args: ExecutionSelection) => void
   restart?: {
     loops: LoopInfo[]
-    onRestart(request: { loopName: string; auditorModel: string; auditorVariant: string }): Promise<void>
+    onRestart(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel: string; executionVariant: string }): Promise<void>
   }
 }
 
@@ -276,6 +276,8 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
             props.api.ui.dialog.setSize('xlarge')
             props.onSelectionChanged(currentSelection({
               loopName: selected.name,
+              executionModel: selected.executionModel ?? executionModel(),
+              executionVariant: selected.executionModel ? selected.executionVariant ?? '' : executionVariant(),
               auditorModel: selected.auditorModel ?? auditorModel(),
               auditorVariant: selected.auditorModel ? selected.auditorVariant ?? '' : auditorVariant(),
             }))
@@ -462,8 +464,11 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         loopName: loopName(),
         auditorModel: auditorModel(),
         auditorVariant: auditorVariant(),
+        executionModel: executionModel(),
+        executionVariant: executionVariant(),
       })
       cache?.recordRecent(auditorModel())
+      cache?.recordRecent(executionModel())
       props.api.ui.toast({ message: `Loop restarted: ${loopName()}`, variant: 'success', duration: 5000 })
       props.api.ui.dialog.clear()
     } catch (err) {
@@ -477,6 +482,16 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
           name: `Loop: ${loopName()}`,
           description: 'Press enter to choose a restartable loop',
           value: 'loop-name',
+        },
+        {
+          name: `Execution model: ${getModelDisplayLabel(executionModel(), models(), openCodeDefaultModel())}`,
+          description: 'Press enter to change',
+          value: 'model:execution',
+        },
+        {
+          name: `Execution variant: ${getVariantDisplayLabel(executionVariant(), selectedModelInfo('execution'))}`,
+          description: 'Press enter to change',
+          value: 'variant:execution',
         },
         {
           name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,

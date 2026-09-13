@@ -127,6 +127,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     workspaceId: string | null
     auditorModel: string | null
     auditorVariant: string | null
+    executionModel: string | null
+    executionVariant: string | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -141,6 +143,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       workspaceId: null as string | null,
       auditorModel: null as string | null,
       auditorVariant: null as string | null,
+      executionModel: null as string | null,
+      executionVariant: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -157,9 +161,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditCount: 0,
       errorCount: 0,
       phase: opts.phase as any,
-      executionModel: null,
+      executionModel: opts.executionModel,
       auditorModel: opts.auditorModel,
-      executionVariant: null,
+      executionVariant: opts.executionVariant,
       auditorVariant: opts.auditorVariant,
       kind: 'plan',
       modelFailed: false,
@@ -2286,6 +2290,82 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(row.auditorModel).toBe('prov/newaud')
     expect(row.auditorVariant).toBe('max')
     expect(row.auditorFallbackIndex).toBe(0)
+  })
+
+  test('force restart of an active loop applies execution overrides', async () => {
+    insertLoop({
+      loopName: 'force-exec-override-loop',
+      status: 'running',
+      terminationReason: null,
+      phase: 'coding',
+      totalSections: 0,
+      iteration: 4,
+      active: true,
+      executionModel: 'prov/oldexec',
+      executionVariant: 'low',
+      auditorModel: 'prov/oldaud',
+      auditorVariant: 'high',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'force-exec-override-loop' },
+        force: true,
+        executionModel: 'prov/newexec',
+        executionVariant: 'max',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('code')
+    expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'newexec' })
+    expect(promptCall.variant).toBe('max')
+
+    const row = loopsRepo.get(PROJECT_ID, 'force-exec-override-loop')!
+    expect(row.executionModel).toBe('prov/newexec')
+    expect(row.executionVariant).toBe('max')
+    expect(row.auditorModel).toBe('prov/oldaud')
+    expect(row.auditorVariant).toBe('high')
+
+    const activeState = loopService.getActiveState('force-exec-override-loop')!
+    expect(activeState.executionModel).toBe('prov/newexec')
+    expect(activeState.executionVariant).toBe('max')
+    expect(activeState.auditorModel).toBe('prov/oldaud')
+    expect(activeState.auditorVariant).toBe('high')
+  })
+
+  test('restart with an empty execution variant clears the persisted variant', async () => {
+    insertLoop({
+      loopName: 'clear-exec-variant-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      totalSections: 0,
+      executionModel: 'prov/oldexec',
+      executionVariant: 'high',
+    })
+
+    const { service, client } = await createRestartOverrideService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'clear-exec-variant-loop' },
+        executionModel: 'prov/newexec',
+        executionVariant: '',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect((client.session.promptAsync as any).mock.calls[0][0].variant).toBeUndefined()
+    expect(loopsRepo.get(PROJECT_ID, 'clear-exec-variant-loop')!.executionVariant).toBeNull()
   })
 
   test('force restart stops when the active session cannot be aborted', async () => {

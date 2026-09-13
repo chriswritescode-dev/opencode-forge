@@ -246,6 +246,8 @@ export interface RestartLoopCommand {
   force?: boolean
   auditorModel?: string
   auditorVariant?: string
+  executionModel?: string
+  executionVariant?: string
 }
 
 export interface CancelLoopCommand {
@@ -1822,6 +1824,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         stoppedState.auditorVariant = overrideAuditorVariant
       }
 
+      const overrideExecutionModel = normalizeModelString(command.executionModel)
+      const overrideExecutionVariant = normalizeModelString(command.executionVariant)
+      if (overrideExecutionModel) {
+        stoppedState.executionModel = overrideExecutionModel
+      }
+      if (command.executionVariant !== undefined) {
+        stoppedState.executionVariant = overrideExecutionVariant
+      }
+
       if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
         deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
         // Persist the terminal transition row so the disabled post-action
@@ -2046,6 +2057,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         workspaceId: newState.workspaceId ?? null,
         auditorModel: restartAuditorState.auditorModel ?? null,
         auditorVariant: command.auditorVariant === undefined ? undefined : overrideAuditorVariant ?? null,
+        executionModel: overrideExecutionModel,
+        executionVariant: command.executionVariant === undefined ? undefined : overrideExecutionVariant ?? null,
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
         finalAuditDone: newState.finalAuditDone,

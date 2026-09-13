@@ -747,6 +747,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
               force: true,
               auditorModel: request.auditorModel,
               auditorVariant: request.auditorVariant,
+              executionModel: request.executionModel,
+              executionVariant: request.executionVariant,
             },
           )
           return response.ok

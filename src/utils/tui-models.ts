@@ -75,6 +75,7 @@ export interface ModelSortOptions {
   worktree?: boolean
   worktreeDir?: string
   executionModel?: string
+  executionVariant?: string
   auditorModel?: string
   auditorVariant?: string
   workspaceId?: string

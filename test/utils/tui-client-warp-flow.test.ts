@@ -122,11 +122,15 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       loopName: 'loop-1',
       auditorModel: 'provider/auditor',
       auditorVariant: '',
+      executionModel: 'provider/exec',
+      executionVariant: 'high',
     })).resolves.toEqual({ sessionId: 'sess-restarted' })
     expect(requestTuiLoopRestart).toHaveBeenCalledWith(PROJECT_ID, {
       loopName: 'loop-1',
       auditorModel: 'provider/auditor',
       auditorVariant: '',
+      executionModel: 'provider/exec',
+      executionVariant: 'high',
     }, {
       dbPath: undefined,
       signal: mockApi.lifecycle.signal,

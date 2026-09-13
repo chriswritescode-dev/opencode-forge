@@ -732,12 +732,16 @@ const tui: TuiPlugin = async (api) => {
     const currentSessionId = getCurrentRouteSessionId(api)
     const currentLoop = loops.find(loop => loop.sessionId === currentSessionId && loop.restartable)
       ?? loops.find(loop => loop.restartable)!
-    const restart = async (request: { loopName: string; auditorModel: string; auditorVariant: string }) => {
+    const restart = async (request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel: string; executionVariant: string }) => {
       const auditorModel = request.auditorModel
         || api.state.config?.model
         || ''
       if (!auditorModel) throw new Error('Select an auditor model before restarting')
-      const result = await currentClient.restartLoop({ ...request, auditorModel })
+      const executionModel = request.executionModel
+        || api.state.config?.model
+        || ''
+      if (!executionModel) throw new Error('Select an execution model before restarting')
+      const result = await currentClient.restartLoop({ ...request, auditorModel, executionModel })
       await currentClient.selectSession(result.sessionId)
     }
     api.ui.dialog.setSize('xlarge')
@@ -753,6 +757,8 @@ const tui: TuiPlugin = async (api) => {
         initialLoopName={currentLoop?.name}
         initialAuditorModel={currentLoop?.auditorModel}
         initialAuditorVariant={currentLoop?.auditorVariant}
+        initialExecutionModel={currentLoop?.executionModel}
+        initialExecutionVariant={currentLoop?.executionVariant}
         restart={{ loops, onRestart: restart }}
       />
     ))
@@ -788,7 +794,7 @@ const tui: TuiPlugin = async (api) => {
       {
         name: 'forge.loop.restart',
         title: 'Restart loop',
-        desc: 'Change the auditor model and restart a running or stopped loop from persisted progress',
+        desc: 'Change the execution and auditor models and restart a running or stopped loop from persisted progress',
         category: 'Forge',
         namespace: 'palette',
         run: () => { void runRestartLoop() },

@@ -160,7 +160,7 @@ export interface ForgeProjectClient {
   /** Single round-trip pair: read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
 
-  restartLoop(request: { loopName: string; auditorModel: string; auditorVariant: string }): Promise<{ sessionId: string }>
+  restartLoop(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel?: string; executionVariant?: string }): Promise<{ sessionId: string }>
 }
 
 function tuiDebug(message: string): void {

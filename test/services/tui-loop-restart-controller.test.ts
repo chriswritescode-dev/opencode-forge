@@ -87,7 +87,7 @@ describe('TuiLoopRestartController', () => {
   }
 
   test('persists a matching applied success for a fresh desired request', async () => {
-    repo.setDesired(PROJECT, makeDesired())
+    repo.setDesired(PROJECT, makeDesired({ executionModel: 'prov/exec', executionVariant: 'max' }))
     const controller = createController()
 
     const started = controller.start()
@@ -95,7 +95,7 @@ describe('TuiLoopRestartController', () => {
     await started
 
     expect(restart).toHaveBeenCalledTimes(1)
-    expect(restartCalls[0]).toEqual({ loopName: 'loop-1', auditorModel: 'model-x', auditorVariant: 'variant-y' })
+    expect(restartCalls[0]).toEqual({ loopName: 'loop-1', auditorModel: 'model-x', auditorVariant: 'variant-y', executionModel: 'prov/exec', executionVariant: 'max' })
     expect(repo.getApplied(PROJECT)).toEqual({
       version: 1,
       revision: 'rev-1',

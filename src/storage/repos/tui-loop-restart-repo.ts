@@ -9,6 +9,8 @@ export interface TuiLoopRestartDesiredState {
   loopName: string
   auditorModel: string
   auditorVariant: string
+  executionModel?: string
+  executionVariant?: string
   requestedAt: number
 }
 
@@ -62,8 +64,10 @@ function parseDesired(data: unknown): TuiLoopRestartDesiredState | null {
   if (!requireNonEmptyString(o.loopName)) return null
   if (!requireNonEmptyString(o.auditorModel)) return null
   if (typeof o.auditorVariant !== 'string') return null
+  if (o.executionModel !== undefined && !requireNonEmptyString(o.executionModel)) return null
+  if (o.executionVariant !== undefined && typeof o.executionVariant !== 'string') return null
   if (!requireFiniteNumber(o.requestedAt)) return null
-  return {
+  const result: TuiLoopRestartDesiredState = {
     version: 1,
     revision: o.revision,
     loopName: o.loopName,
@@ -71,6 +75,9 @@ function parseDesired(data: unknown): TuiLoopRestartDesiredState | null {
     auditorVariant: o.auditorVariant,
     requestedAt: o.requestedAt,
   }
+  if (o.executionModel !== undefined) result.executionModel = o.executionModel
+  if (o.executionVariant !== undefined) result.executionVariant = o.executionVariant
+  return result
 }
 
 function parseApplied(data: unknown): TuiLoopRestartAppliedState | null {

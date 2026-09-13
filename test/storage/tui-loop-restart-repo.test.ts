@@ -59,6 +59,24 @@ describe('TuiLoopRestartRepo', () => {
       expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
 
+    test('round-trips execution model and variant overrides', () => {
+      const state = makeDesired({ executionModel: 'prov/exec', executionVariant: 'max' })
+      repo.setDesired(PROJECT_A, state)
+      expect(repo.getDesired(PROJECT_A)).toEqual(state)
+    })
+
+    test('parses a legacy desired state without execution overrides', () => {
+      const legacy = { version: 1, revision: 'rev-1', loopName: 'loop-1', auditorModel: 'model-x', auditorVariant: 'variant-y', requestedAt: 1000 }
+      db.run(
+        'INSERT OR REPLACE INTO tui_preferences (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, NULL, ?)',
+        PROJECT_A,
+        TUI_LOOP_RESTART_DESIRED_KEY,
+        JSON.stringify(legacy),
+        Date.now(),
+      )
+      expect(repo.getDesired(PROJECT_A)).toEqual(legacy)
+    })
+
     test('replacement overwrites prior value under the same key', () => {
       repo.setDesired(PROJECT_A, makeDesired({ revision: 'v1' }))
       repo.setDesired(PROJECT_A, makeDesired({ revision: 'v2', loopName: 'loop-2' }))
