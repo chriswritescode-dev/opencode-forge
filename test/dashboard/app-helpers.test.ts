@@ -1855,10 +1855,10 @@ describe('computeTimelineEvents', () => {
 
 describe('summarizeAmendments', () => {
   test('empty amendments yield a zero summary', () => {
-    expect(summarizeAmendments([])).toEqual({ count: 0, lastAt: null, lastSection: null })
+    expect(summarizeAmendments([])).toEqual({ count: 0, lastId: null, lastAt: null, lastSection: null })
   })
 
-  test('counts rows and takes lastAt/lastSection from the newest createdAt, not the last array position', () => {
+  test('counts rows and takes lastId/lastAt/lastSection from the newest createdAt, not the last array position', () => {
     // Newest row (createdAt 3000) sits at index 0; the naive last-array-position
     // pick (createdAt 2000) would report the wrong stamp. The repo orders by
     // id ASC, so createdAt interleaving is the real-world input shape.
@@ -1866,13 +1866,13 @@ describe('summarizeAmendments', () => {
     const oldest = mockAmendment({ id: 1, createdAt: 1000, appliedAtSection: 2 })
     const middle = mockAmendment({ id: 3, createdAt: 2000, appliedAtSection: 5 })
     const summary = summarizeAmendments([newest, oldest, middle])
-    expect(summary).toEqual({ count: 3, lastAt: 3000, lastSection: 4 })
+    expect(summary).toEqual({ count: 3, lastId: 2, lastAt: 3000, lastSection: 4 })
   })
 
   test('equal createdAt ties break toward the highest id', () => {
     const a1 = mockAmendment({ id: 1, createdAt: 1000, appliedAtSection: 2 })
     const a2 = mockAmendment({ id: 2, createdAt: 1000, appliedAtSection: 4 })
-    expect(summarizeAmendments([a1, a2])).toEqual({ count: 2, lastAt: 1000, lastSection: 4 })
+    expect(summarizeAmendments([a1, a2])).toEqual({ count: 2, lastId: 2, lastAt: 1000, lastSection: 4 })
   })
 })
 

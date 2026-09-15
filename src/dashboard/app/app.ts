@@ -213,6 +213,23 @@ export function App() {
 
   const atRepoIndex = createMemo(() => projectId() === null)
 
+  // A project with at least one loop is an official repo: it has a projectDir,
+  // so the repo menu can label it. Projects discovered only from feature groups
+  // or unexecuted plans are unofficial — the repo menu omits them and the repo
+  // index lists those still holding unexecuted plans in a single section instead.
+  const officialEntries = createMemo<MatchedEntry[]>(
+    () => matchedByProject().filter(entry => entry.proj.loops.length > 0),
+  )
+
+  const unofficialProjects = createMemo<DashboardProject[]>(() =>
+    state.projects
+      .filter(proj => proj.loops.length === 0 && proj.unexecutedPlanCount > 0)
+      .slice()
+      .sort((a, b) =>
+        (b.unexecutedPlans[0]?.updatedAt ?? 0) - (a.unexecutedPlans[0]?.updatedAt ?? 0)
+        || a.projectId.localeCompare(b.projectId)),
+  )
+
   const atGroupsSection = createMemo(() => section() === 'groups')
   const atLoopsSection = createMemo(() => section() === 'loops')
   const atFindingsSection = createMemo(() => section() === 'findings')
@@ -561,27 +578,31 @@ export function App() {
 
     ${() => {
       if (!loaded()) return ''
-      if (atRepoIndex() && matchedByProject().length === 0) return EmptyState()
+      if (atRepoIndex() && officialEntries().length === 0 && unofficialProjects().length === 0) return EmptyState()
       return html`<div class="forge-shell">
         ${() => {
           if (atRepoIndex()) {
             return html`<div class="repo-index">
-              ${RepoMenu({
-                entries: () => matchedByProject(),
-                labels: () => repoLabels(),
-                onSelect: (projectId: string) => navigate({ projectId, loopName: null, section: 'loops', groupId: null }),
-              })}
+              ${() => (officialEntries().length > 0
+                ? RepoMenu({
+                    entries: officialEntries,
+                    labels: () => repoLabels(),
+                    onSelect: (projectId: string) => navigate({ projectId, loopName: null, section: 'loops', groupId: null }),
+                  })
+                : '')}
               ${RepoIndexPane({
-                entries: () => matchedByProject(),
+                entries: officialEntries,
                 labels: () => repoLabels(),
+                unofficial: unofficialProjects,
+                onPlansChanged: () => void load(),
                 onOpenLoop: (projectId: string, loopName: string) =>
                   navigate({ projectId, loopName, section: 'loops', groupId: null, statuses: [], query: '', tab: 'overview' }),
               })}
             </div>`
           }
           return html`<div class="repo-pane">
-            ${filterBarView}
             ${sectionNavView}
+            ${filterBarView}
             ${listView}
             ${detailView}
             ${groupsView}

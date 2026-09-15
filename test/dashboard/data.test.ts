@@ -847,12 +847,29 @@ describe('collectDashboardData', () => {
     expect(plan).not.toHaveProperty('content')
   })
 
-  test('unscoped payload ships the unexecuted plan count without rows', () => {
+  test('unscoped payload ships plan rows for a project with no loops', () => {
     const plansRepo = createPlansRepo(db!)
     plansRepo.writeForSession('p1', 'session-plan', '# Objective\n\nA plan')
 
     const payload = collectDashboardData(db!)
     const proj = payload.projects[0]
+    expect(proj.loops).toEqual([])
+    expect(proj.unexecutedPlanCount).toBe(1)
+    expect(proj.unexecutedPlans.map(p => p.sessionId)).toEqual(['session-plan'])
+  })
+
+  test('unscoped payload ships the unexecuted plan count without rows for a project with loops', () => {
+    const plansRepo = createPlansRepo(db!)
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    plansRepo.writeForSession('p1', 'session-plan', '# Objective\n\nA plan')
+
+    const payload = collectDashboardData(db!)
+    const proj = payload.projects[0]
+    expect(proj.loops).toHaveLength(1)
     expect(proj.unexecutedPlanCount).toBe(1)
     expect(proj.unexecutedPlans).toEqual([])
   })
@@ -922,6 +939,6 @@ describe('collectDashboardData', () => {
     expect(proj.loops).toEqual([])
     expect(proj.groups).toEqual([])
     expect(proj.unexecutedPlanCount).toBe(1)
-    expect(proj.unexecutedPlans).toEqual([])
+    expect(proj.unexecutedPlans.map(p => p.sessionId)).toEqual(['session-plan'])
   })
 })

@@ -71,7 +71,9 @@ export interface DashboardProject {
    * Session-scoped plans no loop has executed, newest first. Content itself is
    * not shipped — only the derived title and size — because a project can retain
    * many of them; the full plan is fetched on demand from `/api/plan`. Rows ship
-   * only for the scoped project.
+   * for the scoped project, and for a project with no loops whenever the payload
+   * is unscoped: such a project has no repo-menu entry, so the repo index lists
+   * its plans in the unofficial-projects section instead.
    */
   unexecutedPlans: DashboardUnexecutedPlan[]
   /** Number of unexecuted session-scoped plans. Always populated. */
@@ -185,9 +187,10 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
 
   for (const projectId of projectIds) {
     const loopRows = loopsRepo.listAll(projectId)
+    const hasLoops = loopRows.length > 0
 
     // Determine projectDir from first (most recent) loop row
-    const projectDir = loopRows.length > 0 ? loopRows[0].projectDir : null
+    const projectDir = hasLoops ? loopRows[0].projectDir : null
 
     // Sort: running first, then by startedAt desc within each group
     const sortedLoops = [...loopRows].sort((a, b) => {
@@ -263,7 +266,11 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
     }
 
     const unexecutedPlanCount = unexecutedCounts.get(projectId) ?? 0
-    const unexecutedPlans: DashboardUnexecutedPlan[] = inScopedProject
+    // A loopless project is hidden from the repo menu (no projectDir labels
+    // it), so an unscoped payload ships its plan rows for the repo index's
+    // unofficial-projects section to list and delete.
+    const shipUnexecutedPlans = inScopedProject || (scope.projectId === null && !hasLoops)
+    const unexecutedPlans: DashboardUnexecutedPlan[] = shipUnexecutedPlans
       ? plansRepo.listUnexecuted(projectId).map(row => ({
           id: row.sessionId,
           projectId: row.projectId,

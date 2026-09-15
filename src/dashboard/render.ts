@@ -131,6 +131,31 @@ export function renderDashboardHtml(): string {
   .repo-recent-label { color: var(--link); font-weight: 600; }
   .repo-recent-name { color: var(--fg-bright); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .repo-recent-when { color: var(--fg-2); font-family: var(--mono); font-size: var(--fs-xs); }
+  .unofficial-toggle {
+    display: flex; align-items: center; gap: var(--sp-3); min-width: 0;
+    cursor: pointer; user-select: none;
+  }
+  .unofficial-toggle:focus-visible {
+    outline: 1px solid var(--ph-coding); outline-offset: 2px; border-radius: var(--r-1);
+  }
+  .unofficial-caret {
+    flex-shrink: 0; width: 16px; text-align: center;
+    color: var(--fg-1); font-size: var(--fs-lg); line-height: 1;
+  }
+  .unofficial-toggle:hover .unofficial-caret { color: var(--fg-bright); }
+  .unofficial-count { color: var(--fg-dim); font-family: var(--mono); font-size: var(--fs-xs); }
+  .unofficial-projects { display: flex; flex-direction: column; gap: var(--sp-3); }
+  .unofficial-project {
+    display: flex; flex-direction: column; gap: var(--sp-2);
+    border: 1px solid var(--surface); border-radius: 6px; padding: 10px var(--sp-4);
+    background: var(--bg-0);
+  }
+  .unofficial-project-head { display: flex; align-items: baseline; gap: var(--sp-3); justify-content: space-between; }
+  .unofficial-project-name {
+    color: var(--fg-bright); font-family: var(--mono); font-weight: 600; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .unofficial-project-count { color: var(--fg-dim); font-family: var(--mono); font-size: var(--fs-xs); }
   .repo-menu {
     display: flex; flex-direction: column; gap: 1px;
     border: 1px solid var(--divider); border-radius: 8px; background: var(--panel);
@@ -706,7 +731,10 @@ export function renderDashboardHtml(): string {
   .amendments-panel { margin-bottom: 8px; }
   .amendments-panel h4 { color: var(--fg-bright); margin: 8px 0 4px; font-size: var(--fs-lg); }
   .amendments-list { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: 6px; }
-  .amendment-row { border: 1px solid var(--surface); border-radius: 4px; background: var(--bg-0); }
+  .amendment-row {
+    border: 1px solid var(--surface); border-radius: 4px; background: var(--bg-0);
+    scroll-margin-top: calc(var(--app-bar-h) + 36px);
+  }
   .amendment-head {
     display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 10px;
     cursor: pointer; user-select: none; font-size: var(--fs-sm);
