@@ -928,6 +928,44 @@ export function renderDashboardHtml(): string {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .plan-row-meta { color: var(--fg-1); font-size: var(--fs-sm); }
   .plan-row-iter { color: var(--fg-dim); font-family: var(--mono); font-size: var(--fs-xs); }
+  .plans-block { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .plans-block-title {
+    display: flex; align-items: baseline; gap: var(--sp-2);
+    color: var(--fg-0); font-size: var(--fs-md); font-weight: 600;
+  }
+  .plans-block-count { color: var(--fg-dim); font-family: var(--mono); font-size: var(--fs-sm); font-weight: 400; }
+  .unexecuted-plans { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .unexecuted-plan-drill { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .unexecuted-plan-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+  .unexecuted-plan-row {
+    display: grid; grid-template-columns: 1fr auto auto auto; align-items: baseline;
+    gap: 10px; padding: var(--sp-3) var(--sp-4); cursor: pointer; user-select: none;
+    border: 1px solid var(--surface); border-radius: 4px; background: var(--bg-0);
+    font-size: var(--fs-md);
+  }
+  .unexecuted-plan-row:hover { background: var(--panel); }
+  .unexecuted-plan-title {
+    color: var(--fg-bright); font-weight: 600; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .unexecuted-plan-meta { color: var(--fg-1); font-size: var(--fs-sm); }
+  .unexecuted-plan-delete {
+    border: 1px solid var(--surface); border-radius: 4px; background: var(--bg-0);
+    color: var(--status-error); font-size: var(--fs-xs); font-weight: 600;
+    padding: 2px 8px; cursor: pointer;
+  }
+  .unexecuted-plan-delete:hover { background: var(--panel); }
+  .unexecuted-plan-delete:disabled { color: var(--fg-dim); cursor: default; }
+  .unexecuted-plan-caret { color: var(--fg-muted); font-size: var(--fs-2xs); }
+  .back-to-unexecuted {
+    display: inline-flex; align-items: center; gap: var(--sp-2); cursor: pointer;
+    color: var(--link); font-size: var(--fs-md); margin-bottom: 10px; user-select: none;
+  }
+  .back-to-unexecuted:hover { color: var(--link-hover); }
+  .unexecuted-plan-head { display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: 8px; }
+  .unexecuted-plan-head-title { color: var(--fg-bright); font-weight: 600; }
+  .unexecuted-plan-loading { font-size: var(--fs-sm); color: var(--fg-muted); font-style: italic; }
+  .unexecuted-plan-error { font-size: var(--fs-sm); color: var(--status-error); }
   @media (max-width: 1100px) {
     [data-col="span"], [data-col="iter"], [data-col="sections"] { display: none; }
   }

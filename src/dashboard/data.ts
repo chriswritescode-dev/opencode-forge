@@ -18,6 +18,7 @@ import type { PlanAmendmentRow } from '../storage'
 import type { FeatureGroupRow, GroupFeatureRow } from '../storage'
 import { summarizeAmendmentSnapshots, type AmendmentChangeSummary } from './amendment-diff'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
+import { extractPlanTitle } from '../utils/plan-execution'
 
 export type { LoopRow, LoopTransitionRow }
 
@@ -66,6 +67,27 @@ export interface DashboardProject {
   projectDir: string | null
   loops: DashboardLoop[]
   groups: DashboardGroup[]
+  /**
+   * Session-scoped plans no loop has executed, newest first. Content itself is
+   * not shipped — only the derived title and size — because a project can retain
+   * many of them; the full plan is fetched on demand from `/api/plan`. Rows ship
+   * only for the scoped project.
+   */
+  unexecutedPlans: DashboardUnexecutedPlan[]
+  /** Number of unexecuted session-scoped plans. Always populated. */
+  unexecutedPlanCount: number
+}
+
+export interface DashboardUnexecutedPlan {
+  /** Stable identity for keyed store reconciliation; equals `sessionId`. */
+  id: string
+  projectId: string
+  sessionId: string
+  /** Plan title from the stored content, via the shared plan-title extractor. */
+  title: string
+  updatedAt: number
+  /** Plan length in characters, so a row can show size without the body. */
+  charCount: number
 }
 
 export interface DashboardPayload {
@@ -140,16 +162,24 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
   ).all() as { project_id: string }[]
 
   // A project may have a feature group persisted before any feature loop launches
-  // (group is in `extracting` or `planning`). Discover projects from the union of
-  // loop projects and feature-group projects so group-only projects still appear.
+  // (group is in `extracting` or `planning`), or a session plan authored before
+  // any loop exists. Discover projects from the union of loop projects,
+  // feature-group projects, and projects with unexecuted plans so group-only and
+  // plan-only projects still appear.
   const groupProjectIds = featureGroupsRepo
     ? (db.prepare(
         'SELECT DISTINCT project_id FROM feature_groups ORDER BY project_id'
       ).all() as { project_id: string }[])
     : []
 
+  const unexecutedCounts = plansRepo.unexecutedCountsByProject()
+
   const projectIds = Array.from(
-    new Set([...loopProjectIds.map(r => r.project_id), ...groupProjectIds.map(r => r.project_id)])
+    new Set([
+      ...loopProjectIds.map(r => r.project_id),
+      ...groupProjectIds.map(r => r.project_id),
+      ...unexecutedCounts.keys(),
+    ])
   ).sort()
   const projects: DashboardProject[] = []
 
@@ -232,7 +262,27 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       })
     }
 
-    projects.push({ id: projectId, projectId, projectDir, loops: dashboardLoops, groups })
+    const unexecutedPlanCount = unexecutedCounts.get(projectId) ?? 0
+    const unexecutedPlans: DashboardUnexecutedPlan[] = inScopedProject
+      ? plansRepo.listUnexecuted(projectId).map(row => ({
+          id: row.sessionId,
+          projectId: row.projectId,
+          sessionId: row.sessionId,
+          title: extractPlanTitle(row.content),
+          updatedAt: row.updatedAt,
+          charCount: row.content.length,
+        }))
+      : []
+
+    projects.push({
+      id: projectId,
+      projectId,
+      projectDir,
+      loops: dashboardLoops,
+      groups,
+      unexecutedPlans,
+      unexecutedPlanCount,
+    })
   }
 
   return {

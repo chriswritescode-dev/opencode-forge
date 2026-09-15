@@ -204,7 +204,7 @@ export function App() {
       const hasGroups = (proj.groups?.length ?? 0) > 0
       if (matched.length > 0) {
         result.push({ proj, loops: matched })
-      } else if (hasGroups && (!q || label.toLowerCase().indexOf(q) !== -1)) {
+      } else if ((hasGroups || proj.unexecutedPlanCount > 0) && (!q || label.toLowerCase().indexOf(q) !== -1)) {
         result.push({ proj, loops: [] })
       }
     }
@@ -250,7 +250,7 @@ export function App() {
       findings += dl.findings.length
       if (dl.hasPlan) plans++
     }
-    return { loops: proj.loops.length, groups, findings, plans }
+    return { loops: proj.loops.length, groups, findings, plans: plans + proj.unexecutedPlanCount }
   })
 
   const repoLoopOptions = createMemo<LoopOption[]>(() => {
@@ -453,6 +453,8 @@ export function App() {
     if (!pid) return ''
     return PlansPanel({
       loops: repoAllLoops,
+      unexecutedPlans: () => selectedRepoProject()?.unexecutedPlans ?? [],
+      onPlansChanged: () => void load(),
       onOpenLoop: openLoop,
     }) as Node
   })

@@ -378,6 +378,7 @@ Variants use override → matching config value → last-used workspace value. T
 
 - **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel.
 - **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel.
+- **Cleanup**: terminal loops (and their plans, via FK cascade) are swept automatically once `completedLoopTtlMs` passes after completion. Session-scoped plans have no TTL and are removed by `bun scripts/cleanup-plans.ts [--older-than=30d] [--project=<id>] [--dry-run]` (bulk purge) or from the dashboard's Plans section on a loopback bind; `bun scripts/cleanup-loop.ts <loopName>` wipes one loop's row, its plans, worktree, branch, and sandbox. These scripts are source-checkout only, like `pnpm dashboard`.
 
 ## Tool Restrictions
 

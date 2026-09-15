@@ -78,6 +78,8 @@ function makePayload(over: Record<string, any> = {}): any {
   delete over.loops
   const groups = over.groups ?? []
   delete over.groups
+  const unexecutedPlans = over.unexecutedPlans ?? []
+  delete over.unexecutedPlans
   return {
     generatedAt: Date.now(),
     projects: [
@@ -87,6 +89,8 @@ function makePayload(over: Record<string, any> = {}): any {
         projectDir: '/proj/p1',
         loops: loops ?? [makeLoop({ ...dashLoopOver, loop: loopOver })],
         groups,
+        unexecutedPlans,
+        unexecutedPlanCount: over.unexecutedPlanCount ?? unexecutedPlans.length,
       },
     ],
   }
@@ -4796,6 +4800,21 @@ describe('dashboard App findings and plans sections', () => {
     }
   }
 
+  function makeUnexecutedPlan(over: Record<string, any> = {}): any {
+    const sessionId = over.sessionId ?? 'session-plan'
+    const plan = {
+      projectId: 'p1',
+      sessionId,
+      title: 'review-the-plan',
+      updatedAt: 1700000000000,
+      charCount: 128,
+      ...over,
+    }
+    // `id` mirrors `sessionId` so the store's keyed reconcile preserves the
+    // draft list rows across polls.
+    return { ...plan, id: plan.sessionId }
+  }
+
   test('#p1/findings does not render the loops table and renders the findings panel', async () => {
     window.location.hash = '#p1/findings'
     payload = makePayload({
@@ -4974,6 +4993,220 @@ describe('dashboard App findings and plans sections', () => {
     expect(location.hash).toBe('#p1/loop/loop-a')
     expect(location.hash).not.toContain('status=')
     expect(location.hash).not.toContain('q=')
+  })
+
+  test('#p1/plans lists unexecuted session plans and renders the fetched body', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    const planFetches: string[] = []
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        planFetches.push(url)
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ sessionId: 'session-plan', content: '# Objective\n\nReview the plan' }),
+        }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rows = Array.from(container.querySelectorAll('.unexecuted-plan-row')) as HTMLElement[]
+    expect(rows.length).toBe(1)
+    expect(rows[0].querySelector('.unexecuted-plan-title')?.textContent).toBe('review-the-plan')
+
+    rows[0].click()
+    await flush()
+    expect(planFetches).toEqual(['/api/plan?project=p1&session=session-plan'])
+    expect(container.querySelector('.unexecuted-plan-head-title')?.textContent).toBe('review-the-plan')
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('Review the plan')
+
+    ;(container.querySelector('.back-to-unexecuted') as HTMLElement).click()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+    expect(container.querySelector('.markdown-section')).toBeFalsy()
+  })
+
+  test('a failed plan fetch shows the error and keeps the list reachable', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        return { ok: false, status: 500, text: async () => 'Plan not found.' }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.unexecuted-plan-error')?.textContent).toBe('Plan not found.')
+    expect(container.querySelector('.markdown-section')).toBeFalsy()
+
+    ;(container.querySelector('.back-to-unexecuted') as HTMLElement).click()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+  })
+
+  test('deleting an unexecuted plan posts the delete and refreshes the payload', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    const deleteCalls: Array<{ url: string; method?: string; body?: string }> = []
+    ;(globalThis as any).fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        deleteCalls.push({ url, method: init?.method, body: init?.body as string })
+        // The plan is gone on the next poll.
+        payload = makePayload({ loops: [], unexecutedPlans: [] })
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const row = container.querySelector('.unexecuted-plan-row') as HTMLElement
+    expect(row).toBeTruthy()
+    ;(row.querySelector('.unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+
+    expect(deleteCalls).toEqual([{
+      url: '/api/plan/delete',
+      method: 'POST',
+      body: JSON.stringify({ projectId: 'p1', sessionId: 'session-plan' }),
+    }])
+    // The delete never opens the plan body, and the refreshed payload drops the row.
+    expect(container.querySelector('.unexecuted-plan-drill')).toBeFalsy()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
+  })
+
+  test('a failed plan delete keeps the row and shows the error', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        return { ok: false, status: 403, text: async () => 'Deleting plans is disabled: open it via localhost.' }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+
+    expect(container.querySelector('.unexecuted-plan-error')?.textContent).toContain('Deleting plans is disabled')
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+  })
+
+  test('deleting from the plan drill returns to the list', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan(), makeUnexecutedPlan({ sessionId: 'session-plan-2', title: 'other-plan' })],
+    })
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        payload = makePayload({
+          loops: [],
+          unexecutedPlans: [makeUnexecutedPlan({ sessionId: 'session-plan-2', title: 'other-plan' })],
+        })
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      if (url.indexOf('/api/plan?') === 0) {
+        return { ok: true, status: 200, json: async () => ({ content: '# Objective\n\nReview the plan' }) }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.unexecuted-plan-drill')).toBeTruthy()
+
+    ;(container.querySelector('.unexecuted-plan-head .unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+
+    expect(container.querySelector('.unexecuted-plan-drill')).toBeFalsy()
+    const rows = Array.from(container.querySelectorAll('.unexecuted-plan-row')) as HTMLElement[]
+    expect(rows.length).toBe(1)
+    expect(rows[0].querySelector('.unexecuted-plan-title')?.textContent).toBe('other-plan')
+  })
+
+  test('#p1/plans with only unexecuted plans hides the empty state', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.plans-panel')).toBeTruthy()
+    expect(container.querySelector('.plans-panel .tab-empty')).toBeFalsy()
+    expect(container.querySelector('.plans-block-title')?.textContent).toContain('Unexecuted')
+    expect(container.querySelectorAll('.plan-row').length).toBe(0)
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+  })
+
+  test('a project with only unexecuted plans is discoverable in the repo menu', async () => {
+    window.location.hash = ''
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.repo-menu')).toBeTruthy()
+    const items = Array.from(container.querySelectorAll('.repo-menu-item')) as HTMLElement[]
+    expect(items.length).toBe(1)
+    expect(container.querySelector('.repo-menu-count')?.textContent).toBe('0 · 1 plans')
+
+    items[0].click()
+    await flush()
+    expect(location.hash.startsWith('#p1/loops') || location.hash.startsWith('#p1')).toBe(true)
+  })
+
+  test('section-nav Plans count includes unexecuted plans', async () => {
+    window.location.hash = '#p1/loops'
+    payload = makePayload({
+      loops: [makeLoop({ loop: { loopName: 'loop-a', status: 'completed' }, plan: 'PLAN A' })],
+      unexecutedPlans: [makeUnexecutedPlan(), makeUnexecutedPlan({ sessionId: 'session-plan-2' })],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
+    const plansItem = navItems.find(i => i.textContent?.startsWith('Plans'))!
+    expect(plansItem.querySelector('.section-nav-count')?.textContent).toBe('3')
+  })
+
+  test('repo-index summary counts unexecuted plans', async () => {
+    window.location.hash = ''
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan(), makeUnexecutedPlan({ sessionId: 'session-plan-2' })],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.repo-index-summary')!.textContent).toBe('0 running · 0 loops · 0 open bugs · 2 unexecuted plans')
   })
 
   test('role split surfaces unknown role cost in an other bar', async () => {

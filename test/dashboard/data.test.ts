@@ -822,4 +822,106 @@ describe('collectDashboardData', () => {
     expect(dl.transitions).toEqual([])
     expect(dl.amendments).toEqual([])
   })
+
+  // ─── Cycle 10: unexecuted session plans ──────────────────────────────
+
+  function setPlanUpdatedAt(projectId: string, sessionId: string, updatedAt: number): void {
+    db!.prepare('UPDATE plans SET updated_at = ? WHERE project_id = ? AND session_id = ?').run(updatedAt, projectId, sessionId)
+  }
+
+  test('an unexecuted session plan ships its derived title and size but not its content', () => {
+    const plansRepo = createPlansRepo(db!)
+    const content = '# Objective\n\nReview the unexecuted plan.\n\nLoop Name: review-the-plan'
+    plansRepo.writeForSession('p1', 'session-plan', content)
+
+    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: null })
+    const proj = payload.projects[0]
+    expect(proj.unexecutedPlanCount).toBe(1)
+    expect(proj.unexecutedPlans).toHaveLength(1)
+    const plan = proj.unexecutedPlans[0]
+    expect(plan.id).toBe('session-plan')
+    expect(plan.projectId).toBe('p1')
+    expect(plan.sessionId).toBe('session-plan')
+    expect(plan.title).toBe('review-the-plan')
+    expect(plan.charCount).toBe(content.length)
+    expect(plan).not.toHaveProperty('content')
+  })
+
+  test('unscoped payload ships the unexecuted plan count without rows', () => {
+    const plansRepo = createPlansRepo(db!)
+    plansRepo.writeForSession('p1', 'session-plan', '# Objective\n\nA plan')
+
+    const payload = collectDashboardData(db!)
+    const proj = payload.projects[0]
+    expect(proj.unexecutedPlanCount).toBe(1)
+    expect(proj.unexecutedPlans).toEqual([])
+  })
+
+  test('unexecuted session plans are newest first', () => {
+    const plansRepo = createPlansRepo(db!)
+    plansRepo.writeForSession('p1', 'older-plan', '# Objective\n\nolder')
+    plansRepo.writeForSession('p1', 'newer-plan', '# Objective\n\nnewer')
+    setPlanUpdatedAt('p1', 'older-plan', 1000)
+    setPlanUpdatedAt('p1', 'newer-plan', 2000)
+
+    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: null })
+    expect(payload.projects[0].unexecutedPlans.map(p => p.sessionId)).toEqual(['newer-plan', 'older-plan'])
+  })
+
+  test('a session plan executed by a loop is excluded until it is rewritten', () => {
+    const plansRepo = createPlansRepo(db!)
+    const loopsRepo = createLoopsRepo(db!)
+    plansRepo.writeForSession('p1', 'host-session', '# Objective\n\nExecuted plan')
+    setPlanUpdatedAt('p1', 'host-session', 1000)
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId: 'p1',
+        loopName: 'launched-loop',
+        currentSessionId: 'loop-session',
+        hostSessionId: 'host-session',
+        startedAt: 2000,
+      }),
+      { lastAuditResult: null },
+    )
+
+    const executed = collectDashboardData(db!, { projectId: 'p1', loopName: null })
+    expect(executed.projects[0].unexecutedPlanCount).toBe(0)
+    expect(executed.projects[0].unexecutedPlans).toEqual([])
+
+    // Re-authoring the plan after the loop launched makes it unexecuted again:
+    // the loop copied the earlier revision at launch, so the new one has not run.
+    setPlanUpdatedAt('p1', 'host-session', 3000)
+    const reauthored = collectDashboardData(db!, { projectId: 'p1', loopName: null })
+    expect(reauthored.projects[0].unexecutedPlanCount).toBe(1)
+    expect(reauthored.projects[0].unexecutedPlans.map(p => p.sessionId)).toEqual(['host-session'])
+  })
+
+  test('a loop-scoped plan is not an unexecuted session plan', () => {
+    const plansRepo = createPlansRepo(db!)
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    plansRepo.writeForLoop('p1', 'loop-a', 'plan-content-a')
+
+    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: null })
+    expect(payload.projects[0].unexecutedPlanCount).toBe(0)
+    expect(payload.projects[0].unexecutedPlans).toEqual([])
+  })
+
+  test('a project with only an unexecuted plan is discovered', () => {
+    const plansRepo = createPlansRepo(db!)
+    plansRepo.writeForSession('p1', 'session-plan', '# Objective\n\nA plan with no loop yet')
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects).toHaveLength(1)
+    const proj = payload.projects[0]
+    expect(proj.projectId).toBe('p1')
+    expect(proj.projectDir).toBeNull()
+    expect(proj.loops).toEqual([])
+    expect(proj.groups).toEqual([])
+    expect(proj.unexecutedPlanCount).toBe(1)
+    expect(proj.unexecutedPlans).toEqual([])
+  })
 })

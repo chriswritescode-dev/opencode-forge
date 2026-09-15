@@ -85,11 +85,14 @@ async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string
       console.log(`  no loops rows for ${loopName}`)
       return
     }
-    const dependentTables = ['loop_large_fields', 'section_plans', 'review_findings']
-    const labels = [
-      ...rows.map((row) => `delete loops row project=${row.project_id} status=${row.status}`),
-      ...dependentTables.map((table) => `delete ${table} entries for loop=${loopName}`),
-    ]
+    const dependentTables = ['loop_large_fields', 'section_plans', 'review_findings', 'plans']
+    const labels: string[] = []
+    for (const row of rows) {
+      labels.push(`delete loops row project=${row.project_id} status=${row.status}`)
+      for (const table of dependentTables) {
+        labels.push(`delete ${table} entries for project=${row.project_id} loop=${loopName}`)
+      }
+    }
     if (dryRun) {
       for (const label of labels) {
         await logAction(dryRun, label, () => {})
@@ -97,12 +100,14 @@ async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string
       return
     }
     db.transaction(() => {
-      db.run('DELETE FROM loops WHERE loop_name = ?', [loopName])
-      for (const table of dependentTables) {
-        try {
-          db.run(`DELETE FROM ${table} WHERE loop_name = ?`, [loopName])
-        } catch {
-          // some tables may not exist on older schemas
+      for (const row of rows) {
+        db.run('DELETE FROM loops WHERE project_id = ? AND loop_name = ?', [row.project_id, loopName])
+        for (const table of dependentTables) {
+          try {
+            db.run(`DELETE FROM ${table} WHERE project_id = ? AND loop_name = ?`, [row.project_id, loopName])
+          } catch {
+            // some tables may not exist on older schemas
+          }
         }
       }
     })()

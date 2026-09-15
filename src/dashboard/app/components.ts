@@ -1,6 +1,6 @@
 import html from 'solid-js/html'
 import { createMemo, createSignal, createEffect, getOwner, runWithOwner, onCleanup, untrack } from 'solid-js'
-import type { DashboardLoop, DashboardProject, DashboardGroup } from './types'
+import type { DashboardLoop, DashboardProject, DashboardGroup, DashboardUnexecutedPlan } from './types'
 import type { AmendmentDiff, AmendmentDiffLine } from '../amendment-diff'
 import type { GroupFeatureRow } from '../../storage'
 import type { RepoSection, SortMode } from './helpers'
@@ -169,7 +169,7 @@ export function RepoMenu(props: {
       return html`<div class="repo-menu-item" onclick=${() => props.onSelect(entry.proj.projectId)}>
         ${hasRunning ? html`<span class="repo-menu-running"></span>` : ''}
         <span class="repo-menu-name" title=${rawPath}>${label}</span>
-        <span class="repo-menu-count">${entry.loops.length}</span>
+        <span class="repo-menu-count">${entry.loops.length}${entry.proj.unexecutedPlanCount > 0 ? ' · ' + entry.proj.unexecutedPlanCount + ' plans' : ''}</span>
       </div>`
     }),
   )
@@ -183,16 +183,19 @@ function deriveRepoIndex(entries: MatchedEntry[], labels: Map<string, string>): 
   runningCount: number
   loopCount: number
   bugCount: number
+  unexecutedCount: number
   runningCards: RunningCard[]
   recentRows: RecentRow[]
 } {
   let runningCount = 0
   let loopCount = 0
   let bugCount = 0
+  let unexecutedCount = 0
   const runningCards: RunningCard[] = []
   const recent: RecentRow[] = []
   for (const entry of entries) {
     const label = repoLabel(labels, entry.proj)
+    unexecutedCount += entry.proj.unexecutedPlanCount ?? 0
     for (const dl of entry.loops) {
       loopCount++
       bugCount += dl.bugCount
@@ -206,7 +209,7 @@ function deriveRepoIndex(entries: MatchedEntry[], labels: Map<string, string>): 
     }
   }
   recent.sort((a, b) => b.when - a.when)
-  return { runningCount, loopCount, bugCount, runningCards, recentRows: recent.slice(0, 8) }
+  return { runningCount, loopCount, bugCount, unexecutedCount, runningCards, recentRows: recent.slice(0, 8) }
 }
 
 export function RepoIndexPane(props: {
@@ -218,12 +221,13 @@ export function RepoIndexPane(props: {
   const runningCount = createMemo(() => view().runningCount)
   const loopCount = createMemo(() => view().loopCount)
   const bugCount = createMemo(() => view().bugCount)
+  const unexecutedCount = createMemo(() => view().unexecutedCount)
   const runningCards = createMemo(() => view().runningCards)
   const recentRows = createMemo(() => view().recentRows)
   return html`<div class="repo-index-pane">
     <div class="repo-index-head">
       <h2>All repositories</h2>
-      <div class="repo-index-summary">${() => `${runningCount()} running · ${loopCount()} loops · ${bugCount()} open bugs`}</div>
+      <div class="repo-index-summary">${() => `${runningCount()} running · ${loopCount()} loops · ${bugCount()} open bugs` + (unexecutedCount() > 0 ? ` · ${unexecutedCount()} unexecuted plans` : '')}</div>
     </div>
     ${() => (runningCards().length > 0
       ? html`<div class="repo-index-section">
@@ -2001,21 +2005,191 @@ export function FindingsPanel(props: {
   </div>`
 }
 
+// ── Unexecuted plans ──────────────────────────────────────────────────────
+
+// A session-scoped plan that no loop has executed. The poll ships metadata only
+// (title, size, updated time) because a project can retain many plans and their
+// content is large; the body is fetched on demand and rendered with the shared
+// MarkdownSection so the whole plan can be reviewed before it is executed.
+// Delete is offered here because the plan is otherwise only removable from the
+// session that authored it.
+function UnexecutedPlanRow(props: {
+  plan: DashboardUnexecutedPlan
+  deleting: () => boolean
+  onOpen: (plan: DashboardUnexecutedPlan) => void
+  onDelete: (plan: DashboardUnexecutedPlan) => void
+}) {
+  const p = () => props.plan
+  return html`<div class="unexecuted-plan-row" onclick=${() => props.onOpen(p())}>
+    <span class="unexecuted-plan-title" title=${() => p().title}>${() => p().title}</span>
+    <span class="unexecuted-plan-meta">${() => formatRelativeTime(p().updatedAt) + ' · ' + p().charCount.toLocaleString() + ' chars'}</span>
+    <button
+      class="unexecuted-plan-delete"
+      title="Delete this unexecuted plan"
+      disabled=${() => props.deleting()}
+      onclick=${(e: Event) => {
+        e.stopPropagation()
+        props.onDelete(p())
+      }}
+    >${() => (props.deleting() ? 'Deleting…' : 'Delete')}</button>
+    <span class="unexecuted-plan-caret">▸</span>
+  </div>`
+}
+
+// List-to-detail for unexecuted plans, mirroring SectionsPanel: selecting a row
+// drills into the fetched plan body and "back" returns to the list. The fetched
+// body is keyed by the plan's `updatedAt`, so a plan edited while the dashboard
+// is open is refetched instead of showing stale content. Deleting calls
+// `onPlansChanged` so the panel re-reads the payload instead of waiting a poll.
+function UnexecutedPlansPanel(props: {
+  plans: () => DashboardUnexecutedPlan[]
+  onPlansChanged: () => void
+}) {
+  const [selectedId, setSelectedId] = createSignal<string | null>(null)
+  const [content, setContent] = createSignal<string | null>(null)
+  const [loading, setLoading] = createSignal(false)
+  const [error, setError] = createSignal('')
+  const [deletingId, setDeletingId] = createSignal<string | null>(null)
+  const [deleteError, setDeleteError] = createSignal('')
+  let loaded: { sessionId: string; updatedAt: number } | null = null
+
+  const current = createMemo(() => {
+    const id = selectedId()
+    if (id === null) return null
+    return props.plans().find(p => p.sessionId === id) ?? null
+  })
+
+  const select = (plan: DashboardUnexecutedPlan) => {
+    setSelectedId(plan.sessionId)
+    setContent(null)
+    setError('')
+  }
+
+  const remove = async (plan: DashboardUnexecutedPlan) => {
+    if (deletingId() !== null) return
+    if (typeof confirm === 'function' && !confirm(`Delete the unexecuted plan "${plan.title}"?`)) return
+    setDeletingId(plan.sessionId)
+    setDeleteError('')
+    try {
+      const res = await fetch('/api/plan/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: plan.projectId, sessionId: plan.sessionId }),
+      })
+      if (!res.ok) {
+        setDeleteError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+        return
+      }
+      if (selectedId() === plan.sessionId) setSelectedId(null)
+      props.onPlansChanged()
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  createEffect(() => {
+    const plan = current()
+    if (!plan) {
+      loaded = null
+      return
+    }
+    if (loaded && loaded.sessionId === plan.sessionId && loaded.updatedAt === plan.updatedAt) return
+    loaded = { sessionId: plan.sessionId, updatedAt: plan.updatedAt }
+    setLoading(true)
+    setError('')
+    const params = new URLSearchParams({ project: plan.projectId, session: plan.sessionId })
+    void fetch('/api/plan?' + params.toString())
+      .then(async res => {
+        // A response for a superseded selection must not overwrite the current one.
+        if (selectedId() !== plan.sessionId) return
+        if (!res.ok) {
+          setError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+          return
+        }
+        const payload = await res.json() as { content?: string }
+        setContent(payload.content ?? '')
+      })
+      .catch(err => {
+        if (selectedId() !== plan.sessionId) return
+        setError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (selectedId() === plan.sessionId) setLoading(false)
+      })
+  })
+
+  return html`<div class="unexecuted-plans">
+    ${() => {
+      const plan = current()
+      if (plan) {
+        return html`<div class="unexecuted-plan-drill">
+          <div class="back-to-unexecuted" onclick=${() => setSelectedId(null)}>← Back to unexecuted plans</div>
+          <div class="unexecuted-plan-head">
+            <span class="unexecuted-plan-head-title">${() => plan.title}</span>
+            <span class="unexecuted-plan-meta">${() => plan.sessionId + ' · updated ' + formatRelativeTime(plan.updatedAt)}</span>
+            <button
+              class="unexecuted-plan-delete"
+              title="Delete this unexecuted plan"
+              disabled=${() => deletingId() === plan.sessionId}
+              onclick=${() => void remove(plan)}
+            >${() => (deletingId() === plan.sessionId ? 'Deleting…' : 'Delete')}</button>
+          </div>
+          ${() => (loading() ? html`<div class="unexecuted-plan-loading">Loading plan…</div>` : '')}
+          ${() => (error() ? html`<div class="unexecuted-plan-error">${() => error()}</div>` : '')}
+          ${() => (content() !== null ? MarkdownSection({ label: 'Plan', src: content }) : '')}
+        </div>`
+      }
+      return html`<div class="unexecuted-plan-list">
+        ${() => (deleteError() ? html`<div class="unexecuted-plan-error">${() => deleteError()}</div>` : '')}
+        ${props.plans().map(p => UnexecutedPlanRow({
+          plan: p,
+          deleting: () => deletingId() === p.sessionId,
+          onOpen: select,
+          onDelete: (plan) => void remove(plan),
+        }))}
+      </div>`
+    }}
+  </div>`
+}
+
 export function PlansPanel(props: {
   loops: () => DashboardLoop[]
+  unexecutedPlans: () => DashboardUnexecutedPlan[]
+  onPlansChanged: () => void
   onOpenLoop: (loopName: string) => void
 }) {
   const [showAll, setShowAll] = createSignal(false)
+  const [showAllUnexecuted, setShowAllUnexecuted] = createSignal(false)
   const planLoops = createMemo(() => props.loops().filter(dl => dl.hasPlan))
   const view = createMemo(() => capList(planLoops(), MAX_RENDERED_LOOP_ROWS, showAll()))
+  const unexecutedView = createMemo(() => capList(props.unexecutedPlans(), MAX_RENDERED_LOOP_ROWS, showAllUnexecuted()))
+  const total = createMemo(() => view().total + unexecutedView().total)
+  const unexecutedPanel = UnexecutedPlansPanel({
+    plans: () => unexecutedView().rows,
+    onPlansChanged: props.onPlansChanged,
+  })
   return html`<div class="plans-panel">
-    <h4>Plans <span class="plans-panel-count">${() => view().total}</span></h4>
+    <h4>Plans <span class="plans-panel-count">${() => total()}</span></h4>
+    ${() => (unexecutedView().total > 0
+      ? html`<div class="plans-block">
+          <div class="plans-block-title">Unexecuted <span class="plans-block-count">${() => unexecutedView().total}</span></div>
+          ${() => (unexecutedView().capped
+            ? ListCapNotice({ shown: () => unexecutedView().rows.length, total: () => unexecutedView().total, noun: 'unexecuted plans', onShowAll: () => setShowAllUnexecuted(true) })
+            : '')}
+          ${unexecutedPanel}
+        </div>`
+      : '')}
     ${() => (view().capped
       ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'plans', onShowAll: () => setShowAll(true) })
       : '')}
     ${() => {
       const list = view().rows
-      if (list.length === 0) return html`<div class="tab-empty">No plans recorded for this repo.</div>`
+      if (list.length === 0) {
+        if (unexecutedView().total > 0) return ''
+        return html`<div class="tab-empty">No plans recorded for this repo.</div>`
+      }
       return html`<div class="plans-list">
         ${list.map(dl => html`<div class="plan-row" onclick=${() => props.onOpenLoop(dl.loop.loopName)}>
           <span class=${() => statusClass(dl.loop.status)}>${() => dl.loop.status}</span>
