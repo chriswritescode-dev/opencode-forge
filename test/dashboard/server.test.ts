@@ -386,6 +386,123 @@ describe('createRequestHandler', () => {
     })
   })
 
+  describe('GET /api/plan', () => {
+    test('returns the stored session plan content', async () => {
+      const handler = createRequestHandler(makeDeps(db!))
+      const plansRepo = createPlansRepo(db!)
+      plansRepo.writeForSession('p1', 'session-plan', '# Objective\n\nReview the plan')
+
+      const res = await handler(new Request('http://localhost/api/plan?project=p1&session=session-plan'))
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toMatch(/application\/json/)
+      expect(res.headers.get('cache-control')).toBe('no-store')
+      const body = await res.json()
+      expect(body.sessionId).toBe('session-plan')
+      expect(body.content).toBe('# Objective\n\nReview the plan')
+      expect(body.updatedAt).toBeGreaterThan(0)
+    })
+
+    test('returns 400 for missing params', async () => {
+      const handler = createRequestHandler(makeDeps(db!))
+      const cases = [
+        'http://localhost/api/plan',
+        'http://localhost/api/plan?project=p1',
+        'http://localhost/api/plan?session=session-plan',
+        'http://localhost/api/plan?project=&session=session-plan',
+        'http://localhost/api/plan?project=p1&session=',
+      ]
+      for (const url of cases) {
+        const res = await handler(new Request(url))
+        expect(res.status, url).toBe(400)
+      }
+    })
+
+    test('returns 404 for an unknown session', async () => {
+      const handler = createRequestHandler(makeDeps(db!))
+      const res = await handler(new Request('http://localhost/api/plan?project=p1&session=missing'))
+      expect(res.status).toBe(404)
+      expect(await res.text()).toBe('Plan not found.')
+    })
+
+    test('returns 404 for a loop-scoped plan addressed by session', async () => {
+      const handler = createRequestHandler(makeDeps(db!))
+      const loopsRepo = createLoopsRepo(db!)
+      const plansRepo = createPlansRepo(db!)
+      loopsRepo.insert(
+        makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+        { lastAuditResult: null },
+      )
+      plansRepo.writeForLoop('p1', 'loop-a', 'loop plan')
+
+      const res = await handler(new Request('http://localhost/api/plan?project=p1&session=loop-a'))
+      expect(res.status).toBe(404)
+    })
+  })
+
+  describe('POST /api/plan/delete', () => {
+    function postDelete(handler: (req: Request) => Promise<Response>, body: string, headers: Record<string, string> = {}): Promise<Response> {
+      return handler(new Request('http://localhost/api/plan/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', host: 'localhost', ...headers },
+        body,
+      }))
+    }
+
+    test('deletes the session plan and reports ok', async () => {
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
+      const plansRepo = createPlansRepo(db!)
+      plansRepo.writeForSession('p1', 'session-plan', 'plan body')
+
+      const res = await postDelete(handler, JSON.stringify({ projectId: 'p1', sessionId: 'session-plan' }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(plansRepo.getForSession('p1', 'session-plan')).toBeNull()
+    })
+
+    test('never deletes a loop-scoped plan', async () => {
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
+      const loopsRepo = createLoopsRepo(db!)
+      const plansRepo = createPlansRepo(db!)
+      loopsRepo.insert(
+        makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+        { lastAuditResult: null },
+      )
+      plansRepo.writeForLoop('p1', 'loop-a', 'loop plan')
+
+      const res = await postDelete(handler, JSON.stringify({ projectId: 'p1', sessionId: 'loop-a' }))
+      expect(res.status).toBe(404)
+      expect(plansRepo.getForLoop('p1', 'loop-a')?.content).toBe('loop plan')
+    })
+
+    test('is refused on a non-loopback bind', async () => {
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: false })
+      const plansRepo = createPlansRepo(db!)
+      plansRepo.writeForSession('p1', 'session-plan', 'plan body')
+
+      const res = await postDelete(handler, JSON.stringify({ projectId: 'p1', sessionId: 'session-plan' }))
+      expect(res.status).toBe(403)
+      expect(plansRepo.getForSession('p1', 'session-plan')).not.toBeNull()
+    })
+
+    test('validates the body and the session', async () => {
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
+      const plansRepo = createPlansRepo(db!)
+      plansRepo.writeForSession('p1', 'session-plan', 'plan body')
+
+      expect((await postDelete(handler, 'not-json')).status).toBe(400)
+      expect((await postDelete(handler, JSON.stringify({ projectId: 'p1' }))).status).toBe(400)
+      expect((await postDelete(handler, JSON.stringify({ projectId: '', sessionId: 'session-plan' }))).status).toBe(400)
+      expect((await postDelete(handler, JSON.stringify({ projectId: 'p1', sessionId: 'ghost' }))).status).toBe(404)
+      expect(plansRepo.getForSession('p1', 'session-plan')).not.toBeNull()
+    })
+
+    test('a GET is not routed', async () => {
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
+      const res = await handler(new Request('http://localhost/api/plan/delete'))
+      expect(res.status).toBe(404)
+    })
+  })
+
   // ─── Cycle 8: feature groups surface under the right project ──────────
 
   test('GET /api/data against a live database containing a group returns it under the right project', async () => {
@@ -676,7 +793,7 @@ describe('createRequestHandler', () => {
     // cross-origin without a preflight, so it must never reach the parser.
     const formBody = JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' })
 
-    for (const pathname of ['/api/loop/message', '/api/loop/models']) {
+    for (const pathname of ['/api/loop/message', '/api/loop/models', '/api/plan/delete']) {
       expect((await handler(new Request('http://localhost' + pathname, {
         method: 'POST',
         headers: { 'content-type': 'text/plain;charset=UTF-8', host: 'localhost' },

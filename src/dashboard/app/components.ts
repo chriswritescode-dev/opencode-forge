@@ -1,6 +1,6 @@
 import html from 'solid-js/html'
-import { createMemo, createSignal, createEffect, getOwner, runWithOwner, onCleanup, untrack } from 'solid-js'
-import type { DashboardLoop, DashboardProject, DashboardGroup } from './types'
+import { createMemo, createSignal, createEffect, getOwner, runWithOwner, onCleanup, untrack, batch } from 'solid-js'
+import type { DashboardLoop, DashboardProject, DashboardGroup, DashboardUnexecutedPlan } from './types'
 import type { AmendmentDiff, AmendmentDiffLine } from '../amendment-diff'
 import type { GroupFeatureRow } from '../../storage'
 import type { RepoSection, SortMode } from './helpers'
@@ -209,9 +209,38 @@ function deriveRepoIndex(entries: MatchedEntry[], labels: Map<string, string>): 
   return { runningCount, loopCount, bugCount, runningCards, recentRows: recent.slice(0, 8) }
 }
 
+// ── Unofficial projects ────────────────────────────────────────────────────
+
+// A project discovered only from feature groups or unexecuted plans has no
+// projectDir, so the repo menu cannot label it. The repo index lists it here
+// instead, with its unexecuted plans inline for viewing and deletion. Rows cap
+// like every other dashboard list, per project.
+function UnofficialProjectBlock(props: {
+  project: DashboardProject
+  onPlansChanged: () => void
+}) {
+  const [showAll, setShowAll] = createSignal(false)
+  const view = createMemo(() => capList(props.project.unexecutedPlans, MAX_RENDERED_LOOP_ROWS, showAll()))
+  return html`<div class="unofficial-project">
+    <div class="unofficial-project-head">
+      <span class="unofficial-project-name" title=${props.project.projectId}>${props.project.projectId}</span>
+      <span class="unofficial-project-count">${formatFindingCount(props.project.unexecutedPlanCount, 'unexecuted plan')}</span>
+    </div>
+    ${() => (view().capped
+      ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'unexecuted plans', onShowAll: () => setShowAll(true) })
+      : '')}
+    ${UnexecutedPlansPanel({
+      plans: () => view().rows,
+      onPlansChanged: props.onPlansChanged,
+    })}
+  </div>`
+}
+
 export function RepoIndexPane(props: {
   entries: () => MatchedEntry[]
   labels: () => Map<string, string>
+  unofficial: () => DashboardProject[]
+  onPlansChanged: () => void
   onOpenLoop: (projectId: string, loopName: string) => void
 }) {
   const view = createMemo(() => deriveRepoIndex(props.entries(), props.labels()))
@@ -220,6 +249,10 @@ export function RepoIndexPane(props: {
   const bugCount = createMemo(() => view().bugCount)
   const runningCards = createMemo(() => view().runningCards)
   const recentRows = createMemo(() => view().recentRows)
+  // Collapsed by default: these are leftover projects, not repos the user is
+  // working in, so they stay out of the way until asked for.
+  const [collapsed, setCollapsed] = createSignal(true)
+  const toggle = () => setCollapsed(c => !c)
   return html`<div class="repo-index-pane">
     <div class="repo-index-head">
       <h2>All repositories</h2>
@@ -247,6 +280,32 @@ export function RepoIndexPane(props: {
               <span class="repo-recent-name">${r.loopName}</span>
               <span class="repo-recent-when">${fmtTime(r.when)}</span>
             </div>`)}
+          </div>
+        </div>`
+      : '')}
+    ${() => (props.unofficial().length > 0
+      ? html`<div class="repo-index-section">
+          <div
+            class="unofficial-toggle"
+            role="button"
+            tabindex="0"
+            aria-expanded=${() => (collapsed() ? 'false' : 'true')}
+            onclick=${toggle}
+            onkeydown=${(e: KeyboardEvent) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return
+              e.preventDefault()
+              toggle()
+            }}
+          >
+            <span class="unofficial-caret">${() => (collapsed() ? '▸' : '▾')}</span>
+            <h3 class="repo-index-section-title">Unofficial projects</h3>
+            <span class="unofficial-count">${() => props.unofficial().length}</span>
+          </div>
+          <div class="unofficial-projects" style=${() => (collapsed() ? 'display:none' : 'display:block')}>
+            ${props.unofficial().map(proj => UnofficialProjectBlock({
+              project: proj,
+              onPlansChanged: props.onPlansChanged,
+            }))}
           </div>
         </div>`
       : '')}
@@ -815,7 +874,7 @@ function LoopDetailProgress(props: { label: string; current: () => number; total
 function LoopDetailHeader(props: {
   dashLoop: DashboardLoop
   split: () => { bugs: DashboardLoop['findings']; warnings: DashboardLoop['findings'] }
-  onSelectTab: (t: LoopTab) => void
+  onOpenAmendment: (amendmentId: number) => void
 }) {
   const lp = () => props.dashLoop.loop
   const dl = () => props.dashLoop
@@ -882,7 +941,7 @@ function LoopDetailHeader(props: {
       ${() => (amendmentsSummary().count > 0
         ? html`<button
             class="ldh-amendments"
-            onclick=${() => props.onSelectTab('plan')}
+            onclick=${() => props.onOpenAmendment(amendmentsSummary().lastId!)}
           >${() => 'Plan adjusted ' + amendmentsSummary().count + '× · last ' + formatRelativeTime(amendmentsSummary().lastAt) + ' @ section ' + formatSectionNumber(amendmentsSummary().lastSection!)}</button>`
         : '')}
       ${() => (isLive() ? html`<span class="ldh-phase">${phaseLabel(lp().phase)}</span>` : '')}
@@ -998,6 +1057,11 @@ function LoopUsage(props: {
 
 // ── Plan Amendments ───────────────────────────────────────────────────────
 
+interface AmendmentFocus {
+  id: number
+  nonce: number
+}
+
 // A single amendment row with an expand/collapse toggle. The expanded body
 // lazily fetches the per-amendment diff on first open and caches it for the
 // row's lifetime — amendments are immutable once written.
@@ -1053,7 +1117,7 @@ function AmendmentRow(props: {
     return line.text
   }
 
-  return html`<div class="amendment-row">
+  return html`<div class="amendment-row" data-amendment-id=${a.id}>
     <div class="amendment-head" onclick=${props.onToggle}>
       <span class="amendment-time">${() => formatRelativeTime(a.createdAt)}</span>
       <span class="amendment-section">${() => 'applied @ section ' + formatSectionNumber(a.appliedAtSection)}</span>
@@ -1091,11 +1155,20 @@ function AmendmentRow(props: {
 // via boolean memo so the block's identity persists across polls).
 function AmendmentsPanel(props: {
   amendments: () => NonNullable<DashboardLoop['amendments']>
+  focus: () => AmendmentFocus | null
 }) {
   const list = () => props.amendments()
   const [expandedId, setExpandedId] = createSignal<number | null>(null)
+  let panelEl: HTMLElement | null = null
+  createEffect(() => {
+    const f = props.focus()
+    if (!f) return
+    setExpandedId(f.id)
+    const row = panelEl?.querySelector<HTMLElement>('.amendment-row[data-amendment-id="' + f.id + '"]')
+    row?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  })
 
-  return html`<div class="amendments-panel">
+  return html`<div class="amendments-panel" ref=${(el: HTMLElement) => { panelEl = el }}>
     <h4>Plan amendments</h4>
     <div class="amendments-list">
       ${() => list().map(a => AmendmentRow({
@@ -1131,7 +1204,7 @@ function TabBar(props: {
   </div>`
 }
 
-function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; now: () => number; onSelectTab: (t: LoopTab) => void }) {
+function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; now: () => number; onOpenAmendment: (amendmentId: number) => void }) {
   const dl = () => props.dashLoop
   const lp = () => dl().loop
   const hasGoal = createMemo(() => !!dl().goal)
@@ -1144,7 +1217,7 @@ function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; n
     ${() => PhaseBar({ spans: () => phaseState().spans, variant: 'md' })}
     ${() => PhaseLegend({ spans: () => phaseState().spans })}
     ${() => (hasGoal() ? MarkdownSection({ label: 'Goal', src: () => dl().goal }) : '')}
-    ${LoopDetailHeader({ dashLoop: props.dashLoop, split: props.split, onSelectTab: props.onSelectTab })}
+    ${LoopDetailHeader({ dashLoop: props.dashLoop, split: props.split, onOpenAmendment: props.onOpenAmendment })}
     ${() => (hasReport() ? MarkdownSection({ label: reportLabel, src: () => reportSrc() }) : '')}
     ${() => (hasAudit() ? MarkdownSection({ label: 'Last Audit Result', src: () => dl().lastAuditResult }) : '')}
   </div>`
@@ -1302,7 +1375,7 @@ function FindingsTabBody(props: { dashLoop: DashboardLoop }) {
   </div>`
 }
 
-function PlanTabBody(props: { dashLoop: DashboardLoop }) {
+function PlanTabBody(props: { dashLoop: DashboardLoop; amendmentFocus: () => AmendmentFocus | null }) {
   const dl = () => props.dashLoop
   const hasPlan = createMemo(() => dl().hasPlan)
   const hasAmendments = createMemo(() => !!dl().amendments && dl().amendments.length > 0)
@@ -1310,7 +1383,7 @@ function PlanTabBody(props: { dashLoop: DashboardLoop }) {
     ${() => (hasPlan()
       ? MarkdownSection({ label: 'Plan', src: () => dl().plan })
       : html`<div class="tab-empty">No plan recorded for this loop.</div>`)}
-    ${() => (hasAmendments() ? AmendmentsPanel({ amendments: () => dl().amendments! }) : '')}
+    ${() => (hasAmendments() ? AmendmentsPanel({ amendments: () => dl().amendments!, focus: props.amendmentFocus }) : '')}
   </div>`
 }
 
@@ -1771,15 +1844,16 @@ function buildTabBody(props: {
   dashLoop: DashboardLoop
   split: () => Split
   now: () => number
-  onSelectTab: (t: LoopTab) => void
+  onOpenAmendment: (amendmentId: number) => void
+  amendmentFocus: () => AmendmentFocus | null
 }, visible: () => boolean): Node {
   switch (props.tab) {
-    case 'overview': return OverviewTabBody({ dashLoop: props.dashLoop, split: props.split, now: props.now, onSelectTab: props.onSelectTab }) as Node
+    case 'overview': return OverviewTabBody({ dashLoop: props.dashLoop, split: props.split, now: props.now, onOpenAmendment: props.onOpenAmendment }) as Node
     case 'live': return LiveTabBody({ dashLoop: props.dashLoop, visible }) as Node
     case 'timeline': return TimelineTabBody({ dashLoop: props.dashLoop, now: props.now }) as Node
     case 'sections': return SectionsTabBody({ dashLoop: props.dashLoop }) as Node
     case 'findings': return FindingsTabBody({ dashLoop: props.dashLoop }) as Node
-    case 'plan': return PlanTabBody({ dashLoop: props.dashLoop }) as Node
+    case 'plan': return PlanTabBody({ dashLoop: props.dashLoop, amendmentFocus: props.amendmentFocus }) as Node
     case 'usage': return UsageTabBody({ dashLoop: props.dashLoop }) as Node
   }
 }
@@ -1797,7 +1871,8 @@ function TabBody(props: {
   now: () => number
   tabs: () => LoopTab[]
   activeTab: () => LoopTab
-  onSelectTab: (t: LoopTab) => void
+  onOpenAmendment: (amendmentId: number) => void
+  amendmentFocus: () => AmendmentFocus | null
 }) {
   const visible = createMemo(() => props.tabs().includes(props.tab) && props.activeTab() === props.tab)
   const owner = getOwner()
@@ -1818,7 +1893,8 @@ function LoopDetailTabs(props: {
   now: () => number
   tabs: () => LoopTab[]
   activeTab: () => LoopTab
-  onSelectTab: (t: LoopTab) => void
+  onOpenAmendment: (amendmentId: number) => void
+  amendmentFocus: () => AmendmentFocus | null
 }) {
   return html`<div class="tab-bodies">
     ${ALL_TABS.map((t: LoopTab) => TabBody({
@@ -1828,7 +1904,8 @@ function LoopDetailTabs(props: {
       now: props.now,
       tabs: props.tabs,
       activeTab: props.activeTab,
-      onSelectTab: props.onSelectTab,
+      onOpenAmendment: props.onOpenAmendment,
+      amendmentFocus: props.amendmentFocus,
     }))}
   </div>`
 }
@@ -1846,11 +1923,18 @@ export function LoopDetail(props: {
     const t = props.routeTab()
     return tabs().includes(t) ? t : 'overview'
   })
+  const [amendmentFocus, setAmendmentFocus] = createSignal<AmendmentFocus | null>(null)
+  const openAmendment = (amendmentId: number) => {
+    batch(() => {
+      setAmendmentFocus(prev => ({ id: amendmentId, nonce: (prev?.nonce ?? 0) + 1 }))
+      props.onSelectTab('plan')
+    })
+  }
 
   return html`<div class="loop">
     <div class="loop-detail">
       ${TabBar({ tabs, activeTab, onSelect: props.onSelectTab })}
-      ${LoopDetailTabs({ dashLoop: props.dashLoop, split, now: props.now, tabs, activeTab, onSelectTab: props.onSelectTab })}
+      ${LoopDetailTabs({ dashLoop: props.dashLoop, split, now: props.now, tabs, activeTab, onOpenAmendment: openAmendment, amendmentFocus })}
     </div>
   </div>`
 }
@@ -2001,31 +2085,212 @@ export function FindingsPanel(props: {
   </div>`
 }
 
+// ── Unexecuted plans ──────────────────────────────────────────────────────
+
+// A session-scoped plan that no loop has executed. The poll ships metadata only
+// (title, size, updated time) because a project can retain many plans and their
+// content is large; the body is fetched on demand and rendered with the shared
+// MarkdownSection so the whole plan can be reviewed before it is executed.
+// Delete is offered here because the plan is otherwise only removable from the
+// session that authored it.
+function UnexecutedPlanRow(props: {
+  plan: DashboardUnexecutedPlan
+  deleting: () => boolean
+  onOpen: (plan: DashboardUnexecutedPlan) => void
+  onDelete: (plan: DashboardUnexecutedPlan) => void
+}) {
+  const p = () => props.plan
+  return html`<div class="unexecuted-plan-row" onclick=${() => props.onOpen(p())}>
+    <span class="unexecuted-plan-title" title=${() => p().title}>${() => p().title}</span>
+    <span class="unexecuted-plan-meta">${() => formatRelativeTime(p().updatedAt) + ' · ' + p().charCount.toLocaleString() + ' chars'}</span>
+    <button
+      class="unexecuted-plan-delete"
+      title="Delete this unexecuted plan"
+      disabled=${() => props.deleting()}
+      onclick=${(e: Event) => {
+        e.stopPropagation()
+        props.onDelete(p())
+      }}
+    >${() => (props.deleting() ? 'Deleting…' : 'Delete')}</button>
+    <span class="unexecuted-plan-caret">▸</span>
+  </div>`
+}
+
+// List-to-detail for unexecuted plans, mirroring SectionsPanel: selecting a row
+// drills into the fetched plan body and "back" returns to the list. The fetched
+// body is keyed by the plan's `updatedAt`, so a plan edited while the dashboard
+// is open is refetched instead of showing stale content. Deleting calls
+// `onPlansChanged` so the panel re-reads the payload instead of waiting a poll.
+function UnexecutedPlansPanel(props: {
+  plans: () => DashboardUnexecutedPlan[]
+  onPlansChanged: () => void
+}) {
+  const [selectedId, setSelectedId] = createSignal<string | null>(null)
+  const [content, setContent] = createSignal<string | null>(null)
+  const [loading, setLoading] = createSignal(false)
+  const [error, setError] = createSignal('')
+  const [deletingId, setDeletingId] = createSignal<string | null>(null)
+  const [deleteError, setDeleteError] = createSignal('')
+  let loaded: { sessionId: string; updatedAt: number } | null = null
+  let requestGeneration = 0
+
+  onCleanup(() => {
+    requestGeneration++
+  })
+
+  const current = createMemo(() => {
+    const id = selectedId()
+    if (id === null) return null
+    return props.plans().find(p => p.sessionId === id) ?? null
+  })
+
+  const select = (plan: DashboardUnexecutedPlan) => {
+    setSelectedId(plan.sessionId)
+    setContent(null)
+    setError('')
+  }
+
+  const remove = async (plan: DashboardUnexecutedPlan) => {
+    if (deletingId() !== null) return
+    if (typeof confirm === 'function' && !confirm(`Delete the unexecuted plan "${plan.title}"?`)) return
+    setDeletingId(plan.sessionId)
+    setDeleteError('')
+    try {
+      const res = await fetch('/api/plan/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ projectId: plan.projectId, sessionId: plan.sessionId }),
+      })
+      if (!res.ok) {
+        setDeleteError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+        return
+      }
+      if (selectedId() === plan.sessionId) setSelectedId(null)
+      props.onPlansChanged()
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  createEffect(() => {
+    const plan = current()
+    if (!plan) {
+      loaded = null
+      requestGeneration++
+      setLoading(false)
+      return
+    }
+    if (loaded && loaded.sessionId === plan.sessionId && loaded.updatedAt === plan.updatedAt) return
+    loaded = { sessionId: plan.sessionId, updatedAt: plan.updatedAt }
+    const generation = ++requestGeneration
+    setLoading(true)
+    setError('')
+    const params = new URLSearchParams({ project: plan.projectId, session: plan.sessionId })
+    void fetch('/api/plan?' + params.toString())
+      .then(async res => {
+        if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
+        if (!res.ok) {
+          const message = (await res.text().catch(() => '')) || `Failed (status ${res.status})`
+          if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
+          setError(message)
+          return
+        }
+        const payload = await res.json() as { content?: string }
+        if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
+        setContent(payload.content ?? '')
+      })
+      .catch(err => {
+        if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
+        setError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (selectedId() === plan.sessionId && generation === requestGeneration) setLoading(false)
+      })
+  })
+
+  return html`<div class="unexecuted-plans">
+    ${() => {
+      const plan = current()
+      if (plan) {
+        return html`<div class="unexecuted-plan-drill">
+          <div class="back-to-unexecuted" onclick=${() => setSelectedId(null)}>← Back to unexecuted plans</div>
+          <div class="unexecuted-plan-head">
+            <span class="unexecuted-plan-head-title">${() => plan.title}</span>
+            <span class="unexecuted-plan-meta">${() => plan.sessionId + ' · updated ' + formatRelativeTime(plan.updatedAt)}</span>
+            <button
+              class="unexecuted-plan-delete"
+              title="Delete this unexecuted plan"
+              disabled=${() => deletingId() === plan.sessionId}
+              onclick=${() => void remove(plan)}
+            >${() => (deletingId() === plan.sessionId ? 'Deleting…' : 'Delete')}</button>
+          </div>
+          ${() => (loading() ? html`<div class="unexecuted-plan-loading">Loading plan…</div>` : '')}
+          ${() => (error() ? html`<div class="unexecuted-plan-error">${() => error()}</div>` : '')}
+          ${() => (content() !== null ? MarkdownSection({ label: 'Plan', src: content }) : '')}
+        </div>`
+      }
+      return html`<div class="unexecuted-plan-list">
+        ${() => (deleteError() ? html`<div class="unexecuted-plan-error">${() => deleteError()}</div>` : '')}
+        ${props.plans().map(p => UnexecutedPlanRow({
+          plan: p,
+          deleting: () => deletingId() === p.sessionId,
+          onOpen: select,
+          onDelete: (plan) => void remove(plan),
+        }))}
+      </div>`
+    }}
+  </div>`
+}
+
 export function PlansPanel(props: {
   loops: () => DashboardLoop[]
+  unexecutedPlans: () => DashboardUnexecutedPlan[]
+  onPlansChanged: () => void
   onOpenLoop: (loopName: string) => void
 }) {
   const [showAll, setShowAll] = createSignal(false)
+  const [showAllUnexecuted, setShowAllUnexecuted] = createSignal(false)
   const planLoops = createMemo(() => props.loops().filter(dl => dl.hasPlan))
   const view = createMemo(() => capList(planLoops(), MAX_RENDERED_LOOP_ROWS, showAll()))
+  const unexecutedView = createMemo(() => capList(props.unexecutedPlans(), MAX_RENDERED_LOOP_ROWS, showAllUnexecuted()))
+  const total = createMemo(() => view().total + unexecutedView().total)
+  const unexecutedPanel = UnexecutedPlansPanel({
+    plans: () => unexecutedView().rows,
+    onPlansChanged: props.onPlansChanged,
+  })
   return html`<div class="plans-panel">
-    <h4>Plans <span class="plans-panel-count">${() => view().total}</span></h4>
-    ${() => (view().capped
-      ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'plans', onShowAll: () => setShowAll(true) })
+    <h4>Plans <span class="plans-panel-count">${() => total()}</span></h4>
+    ${() => (unexecutedView().total > 0
+      ? html`<div class="plans-block">
+          <div class="plans-block-title">Unexecuted <span class="plans-block-count">${() => unexecutedView().total}</span></div>
+          ${() => (unexecutedView().capped
+            ? ListCapNotice({ shown: () => unexecutedView().rows.length, total: () => unexecutedView().total, noun: 'unexecuted plans', onShowAll: () => setShowAllUnexecuted(true) })
+            : '')}
+          ${unexecutedPanel}
+        </div>`
       : '')}
-    ${() => {
-      const list = view().rows
-      if (list.length === 0) return html`<div class="tab-empty">No plans recorded for this repo.</div>`
-      return html`<div class="plans-list">
-        ${list.map(dl => html`<div class="plan-row" onclick=${() => props.onOpenLoop(dl.loop.loopName)}>
-          <span class=${() => statusClass(dl.loop.status)}>${() => dl.loop.status}</span>
-          <span class="plan-row-name">${() => dl.loop.loopName}</span>
-          <span class="plan-row-meta">
-            ${() => formatFindingCount(dl.findings.length, 'finding')}
-          </span>
-          <span class="plan-row-iter">iter ${() => dl.loop.iteration}/${() => dl.loop.maxIterations}</span>
-        </div>`)}
-      </div>`
-    }}
+    ${() => (view().total > 0
+      ? html`<div class="plans-block">
+          <div class="plans-block-title">Executed <span class="plans-block-count">${() => view().total}</span></div>
+          ${() => (view().capped
+            ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'plans', onShowAll: () => setShowAll(true) })
+            : '')}
+          <div class="plans-list">
+            ${view().rows.map(dl => html`<div class="plan-row" onclick=${() => props.onOpenLoop(dl.loop.loopName)}>
+              <span class=${() => statusClass(dl.loop.status)}>${() => dl.loop.status}</span>
+              <span class="plan-row-name">${() => dl.loop.loopName}</span>
+              <span class="plan-row-meta">
+                ${() => formatFindingCount(dl.findings.length, 'finding')}
+              </span>
+              <span class="plan-row-iter">iter ${() => dl.loop.iteration}/${() => dl.loop.maxIterations}</span>
+            </div>`)}
+          </div>
+        </div>`
+      : '')}
+    ${() => (view().total === 0 && unexecutedView().total === 0
+      ? html`<div class="tab-empty">No plans recorded for this repo.</div>`
+      : '')}
   </div>`
 }

@@ -25,6 +25,9 @@ import { defaultGitService } from '../src/utils/git-service'
 import { loadPluginConfig } from '../src/setup'
 import { resolveDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
+import { hasTable } from '../src/storage'
+
+const DEPENDENT_TABLES = ['loop_large_fields', 'section_plans', 'review_findings', 'plans']
 
 interface Args {
   loopName: string
@@ -67,7 +70,7 @@ async function logAction(dryRun: boolean, label: string, action: () => Promise<v
   }
 }
 
-async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string): Promise<void> {
+export async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string): Promise<void> {
   const path = resolveForgeDbPath(dataDir)
   if (!existsSync(path)) {
     console.log(`forge.db not found at ${path} — skipping`)
@@ -76,7 +79,7 @@ async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string
   console.log(`\nforge.db (${path}):`)
   const db = new Database(path)
   try {
-    const rows = db.query('SELECT project_id, loop_name, status FROM loops WHERE loop_name = ?').all(loopName) as Array<{
+    const rows = db.prepare('SELECT project_id, loop_name, status FROM loops WHERE loop_name = ?').all(loopName) as Array<{
       project_id: string
       loop_name: string
       status: string
@@ -85,11 +88,14 @@ async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string
       console.log(`  no loops rows for ${loopName}`)
       return
     }
-    const dependentTables = ['loop_large_fields', 'section_plans', 'review_findings']
-    const labels = [
-      ...rows.map((row) => `delete loops row project=${row.project_id} status=${row.status}`),
-      ...dependentTables.map((table) => `delete ${table} entries for loop=${loopName}`),
-    ]
+    const dependentTables = DEPENDENT_TABLES.filter(table => hasTable(db, table))
+    const labels: string[] = []
+    for (const row of rows) {
+      labels.push(`delete loops row project=${row.project_id} status=${row.status}`)
+      for (const table of dependentTables) {
+        labels.push(`delete ${table} entries for project=${row.project_id} loop=${loopName}`)
+      }
+    }
     if (dryRun) {
       for (const label of labels) {
         await logAction(dryRun, label, () => {})
@@ -97,12 +103,10 @@ async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string
       return
     }
     db.transaction(() => {
-      db.run('DELETE FROM loops WHERE loop_name = ?', [loopName])
-      for (const table of dependentTables) {
-        try {
-          db.run(`DELETE FROM ${table} WHERE loop_name = ?`, [loopName])
-        } catch {
-          // some tables may not exist on older schemas
+      for (const row of rows) {
+        db.run('DELETE FROM loops WHERE project_id = ? AND loop_name = ?', [row.project_id, loopName])
+        for (const table of dependentTables) {
+          db.run(`DELETE FROM ${table} WHERE project_id = ? AND loop_name = ?`, [row.project_id, loopName])
         }
       }
     })()
@@ -274,7 +278,9 @@ async function main(): Promise<void> {
   console.log(`\n${args.dryRun ? 'Dry run complete.' : 'Cleanup complete.'}`)
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err))
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err))
+    process.exit(1)
+  })
+}

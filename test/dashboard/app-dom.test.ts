@@ -78,6 +78,8 @@ function makePayload(over: Record<string, any> = {}): any {
   delete over.loops
   const groups = over.groups ?? []
   delete over.groups
+  const unexecutedPlans = over.unexecutedPlans ?? []
+  delete over.unexecutedPlans
   return {
     generatedAt: Date.now(),
     projects: [
@@ -87,6 +89,8 @@ function makePayload(over: Record<string, any> = {}): any {
         projectDir: '/proj/p1',
         loops: loops ?? [makeLoop({ ...dashLoopOver, loop: loopOver })],
         groups,
+        unexecutedPlans,
+        unexecutedPlanCount: over.unexecutedPlanCount ?? unexecutedPlans.length,
       },
     ],
   }
@@ -1505,7 +1509,7 @@ describe('dashboard App plan amendments panel', () => {
     expect(container.querySelector('.ldh-amendments')).toBeNull()
   })
 
-  test('clicking the adjustment callout opens the Plan tab', async () => {
+  test('clicking the adjustment callout opens the Plan tab with the referenced amendment expanded', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
       dashLoop: {
@@ -1523,6 +1527,53 @@ describe('dashboard App plan amendments panel', () => {
     expect(container.querySelector('.tab-item[data-tab="plan"]')?.classList.contains('tab-active')).toBe(true)
     expect((container.querySelector('.tab-body[data-tab="plan"]') as HTMLElement).style.display).not.toBe('none')
     expect(location.hash.endsWith('/plan')).toBe(true)
+
+    const row = container.querySelector('.amendment-row[data-amendment-id="1"]') as HTMLElement
+    expect(row).toBeTruthy()
+    expect((row.querySelector('.amendment-body') as HTMLElement).style.display).toBe('block')
+    expect(row.querySelector('.amendment-caret')!.textContent).toBe('▾')
+  })
+
+  test('a repeat adjustment callout click re-scrolls the newest amendment in the visible Plan tab', async () => {
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload({
+      dashLoop: {
+        amendments: [
+          amendRow({ id: 1, createdAt: Date.now() - 7200000, appliedAtSection: 0 }),
+          amendRow({ id: 2, createdAt: Date.now() - 3600000, appliedAtSection: 4 }),
+        ],
+      },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const callout = container.querySelector('.ldh-amendments') as HTMLElement
+    callout.click()
+    await flush()
+
+    const newest = container.querySelector('.amendment-row[data-amendment-id="2"]') as HTMLElement
+    const older = container.querySelector('.amendment-row[data-amendment-id="1"]') as HTMLElement
+    expect((newest.querySelector('.amendment-body') as HTMLElement).style.display).toBe('block')
+    expect((older.querySelector('.amendment-body') as HTMLElement).style.display).toBe('none')
+
+    let scrolled: HTMLElement | null = null
+    let planBodyAtScroll = ''
+    newest.scrollIntoView = function () {
+      scrolled = this
+      planBodyAtScroll = (container.querySelector('.tab-body[data-tab="plan"]') as HTMLElement).style.display
+    }
+    older.scrollIntoView = function () {
+      scrolled = this
+    }
+
+    ;(container.querySelector('.tab-item[data-tab="overview"]') as HTMLElement).click()
+    await flush()
+    callout.click()
+    await flush()
+
+    expect(scrolled).toBe(newest)
+    expect(planBodyAtScroll).toBe('block')
+    expect((newest.querySelector('.amendment-body') as HTMLElement).style.display).toBe('block')
   })
 
   test('plan adjustments appear as distinct rows interleaved in the timeline', async () => {
@@ -1608,6 +1659,21 @@ describe('dashboard App three-level shell', () => {
 
     expect(container.querySelector('.section-nav')).toBeTruthy()
     expect(container.querySelector('.repo-menu')).toBeFalsy()
+  })
+
+  test('the section nav sits above the loops-only filter bar so switching sections does not move it', async () => {
+    window.location.hash = '#p1'
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const pane = container.querySelector('.repo-pane') as HTMLElement
+    const nav = pane.querySelector('.section-nav') as HTMLElement
+    const filter = pane.querySelector('.filter-bar') as HTMLElement
+    expect(nav).toBeTruthy()
+    expect(filter).toBeTruthy()
+    const order = Array.from(pane.children).map(el => el.className)
+    expect(order.indexOf('section-nav')).toBeLessThan(order.indexOf('filter-bar'))
   })
 
   test('level 2 hides the repo section-nav, leaving only the loop tabs', async () => {
@@ -4578,7 +4644,7 @@ describe('dashboard App groups section', () => {
     expect(container.querySelectorAll('.group-row').length).toBe(2)
   })
 
-  test('a project with groups but no loops is discoverable in the repo menu and navigable', async () => {
+  test('a project with groups but no loops and no unexecuted plans is not listed', async () => {
     window.location.hash = ''
     payload = makePayload({
       loops: [],
@@ -4589,22 +4655,12 @@ describe('dashboard App groups section', () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    // No empty state: the project is discoverable via its group.
-    expect(container.querySelector('.repo-menu')).toBeTruthy()
-    const menuItems = Array.from(container.querySelectorAll('.repo-menu-item')) as HTMLElement[]
-    expect(menuItems.length).toBe(1)
-
-    // Selecting the project navigates to the (empty) loops section.
-    menuItems[0].click()
-    await flush()
-    expect(location.hash.startsWith('#p1/loops') || location.hash.startsWith('#p1')).toBe(true)
-
-    // The Groups section is reachable from the group-only project and renders.
-    window.location.hash = '#p1/groups'
-    await flush()
-    const rows = Array.from(container.querySelectorAll('.group-row')) as HTMLElement[]
-    expect(rows.length).toBe(1)
-    expect(rows[0].querySelector('.group-row-title')?.textContent).toBe('GroupOnly')
+    // No repo-menu entry (no projectDir to label it with) and no
+    // unofficial-projects entry (no unexecuted plan to view or delete).
+    expect(container.querySelector('.repo-menu')).toBeFalsy()
+    expect(container.querySelector('.repo-menu-item')).toBeFalsy()
+    expect(container.querySelector('.unofficial-projects')).toBeFalsy()
+    expect(container.querySelector('.empty-state')).toBeTruthy()
   })
 
   test('a PRD preview with embedded HTML event handlers is rendered as inert text', async () => {
@@ -4796,6 +4852,21 @@ describe('dashboard App findings and plans sections', () => {
     }
   }
 
+  function makeUnexecutedPlan(over: Record<string, any> = {}): any {
+    const sessionId = over.sessionId ?? 'session-plan'
+    const plan = {
+      projectId: 'p1',
+      sessionId,
+      title: 'review-the-plan',
+      updatedAt: 1700000000000,
+      charCount: 128,
+      ...over,
+    }
+    // `id` mirrors `sessionId` so the store's keyed reconcile preserves the
+    // draft list rows across polls.
+    return { ...plan, id: plan.sessionId }
+  }
+
   test('#p1/findings does not render the loops table and renders the findings panel', async () => {
     window.location.hash = '#p1/findings'
     payload = makePayload({
@@ -4870,6 +4941,9 @@ describe('dashboard App findings and plans sections', () => {
     expect(rows.length).toBe(1)
     expect(rows[0].querySelector('.plan-row-name')?.textContent).toBe('loop-a')
     expect(container.querySelector('.plans-panel-count')?.textContent).toBe('1')
+    // Executed plans are grouped under their own labeled block.
+    expect(container.querySelector('.plans-block-title')?.textContent).toContain('Executed')
+    expect(container.querySelector('.plans-block-count')?.textContent).toBe('1')
   })
 
   test('clicking a plan row navigates to the loop detail', async () => {
@@ -4976,6 +5050,362 @@ describe('dashboard App findings and plans sections', () => {
     expect(location.hash).not.toContain('q=')
   })
 
+  test('#p1/plans lists unexecuted session plans and renders the fetched body', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    const planFetches: string[] = []
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        planFetches.push(url)
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ sessionId: 'session-plan', content: '# Objective\n\nReview the plan' }),
+        }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rows = Array.from(container.querySelectorAll('.unexecuted-plan-row')) as HTMLElement[]
+    expect(rows.length).toBe(1)
+    expect(rows[0].querySelector('.unexecuted-plan-title')?.textContent).toBe('review-the-plan')
+
+    rows[0].click()
+    await flush()
+    expect(planFetches).toEqual(['/api/plan?project=p1&session=session-plan'])
+    expect(container.querySelector('.unexecuted-plan-head-title')?.textContent).toBe('review-the-plan')
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('Review the plan')
+
+    ;(container.querySelector('.back-to-unexecuted') as HTMLElement).click()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+    expect(container.querySelector('.markdown-section')).toBeFalsy()
+  })
+
+  test('a failed plan fetch shows the error and keeps the list reachable', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        return { ok: false, status: 500, text: async () => 'Plan not found.' }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.unexecuted-plan-error')?.textContent).toBe('Plan not found.')
+    expect(container.querySelector('.markdown-section')).toBeFalsy()
+
+    ;(container.querySelector('.back-to-unexecuted') as HTMLElement).click()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+  })
+
+  test('deleting an unexecuted plan posts the delete and refreshes the payload', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    const deleteCalls: Array<{ url: string; method?: string; body?: string }> = []
+    ;(globalThis as any).fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        deleteCalls.push({ url, method: init?.method, body: init?.body as string })
+        // The plan is gone on the next poll.
+        payload = makePayload({ loops: [], unexecutedPlans: [] })
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const row = container.querySelector('.unexecuted-plan-row') as HTMLElement
+    expect(row).toBeTruthy()
+    ;(row.querySelector('.unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+
+    expect(deleteCalls).toEqual([{
+      url: '/api/plan/delete',
+      method: 'POST',
+      body: JSON.stringify({ projectId: 'p1', sessionId: 'session-plan' }),
+    }])
+    // The delete never opens the plan body, and the refreshed payload drops the row.
+    expect(container.querySelector('.unexecuted-plan-drill')).toBeFalsy()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
+  })
+
+  test('deleting during an in-flight same-scope poll starts a fresh request and the stale response cannot reinstall the plan', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    let deferData = false
+    const pendingData: Array<() => void> = []
+    const dataUrls: string[] = []
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        payload = makePayload({ loops: [], unexecutedPlans: [] })
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true }) })
+      }
+      if (url.indexOf('/api/plan?') === 0) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ content: 'PLAN' }) })
+      }
+      dataUrls.push(url)
+      if (deferData) {
+        const snapshot = payload
+        return new Promise(resolve => {
+          pendingData.push(() => resolve({ ok: true, status: 200, json: async () => snapshot }))
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+
+    deferData = true
+    void intervalFn?.()
+    await flush()
+    expect(pendingData.length).toBe(1)
+
+    deferData = false
+    ;(container.querySelector('.unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
+    expect(dataUrls.length).toBe(3)
+
+    pendingData[0]()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
+  })
+
+  test('a failed plan delete keeps the row and shows the error', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        return { ok: false, status: 403, text: async () => 'Deleting plans is disabled: open it via localhost.' }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+
+    expect(container.querySelector('.unexecuted-plan-error')?.textContent).toContain('Deleting plans is disabled')
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+  })
+
+  test('deleting from the plan drill returns to the list', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan(), makeUnexecutedPlan({ sessionId: 'session-plan-2', title: 'other-plan' })],
+    })
+    ;(globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        payload = makePayload({
+          loops: [],
+          unexecutedPlans: [makeUnexecutedPlan({ sessionId: 'session-plan-2', title: 'other-plan' })],
+        })
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      if (url.indexOf('/api/plan?') === 0) {
+        return { ok: true, status: 200, json: async () => ({ content: '# Objective\n\nReview the plan' }) }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.unexecuted-plan-drill')).toBeTruthy()
+
+    ;(container.querySelector('.unexecuted-plan-head .unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+
+    expect(container.querySelector('.unexecuted-plan-drill')).toBeFalsy()
+    const rows = Array.from(container.querySelectorAll('.unexecuted-plan-row')) as HTMLElement[]
+    expect(rows.length).toBe(1)
+    expect(rows[0].querySelector('.unexecuted-plan-title')?.textContent).toBe('other-plan')
+  })
+
+  test('#p1/plans with only unexecuted plans hides the empty state', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.plans-panel')).toBeTruthy()
+    expect(container.querySelector('.plans-panel .tab-empty')).toBeFalsy()
+    expect(container.querySelector('.plans-block-title')?.textContent).toContain('Unexecuted')
+    expect(container.querySelectorAll('.plan-row').length).toBe(0)
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+  })
+
+  test('a project with only unexecuted plans is listed under the unofficial section, not the repo menu', async () => {
+    window.location.hash = ''
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    // No repo-menu entry: there is no projectDir to label it with.
+    expect(container.querySelector('.repo-menu')).toBeFalsy()
+    expect(container.querySelector('.repo-menu-item')).toBeFalsy()
+    // The single unofficial-projects section is collapsed by default.
+    const toggle = container.querySelector('.unofficial-toggle') as HTMLElement
+    expect(toggle).toBeTruthy()
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.querySelector('.repo-index-section-title')?.textContent).toBe('Unofficial projects')
+    expect(toggle.querySelector('.unofficial-count')?.textContent).toBe('1')
+    expect((container.querySelector('.unofficial-projects') as HTMLElement).getAttribute('style')).toContain('display: none')
+
+    toggle.click()
+    await flush()
+    expect(container.querySelector('.unofficial-toggle')?.getAttribute('aria-expanded')).toBe('true')
+    expect((container.querySelector('.unofficial-projects') as HTMLElement).getAttribute('style')).toContain('display: block')
+    expect(container.querySelector('.unofficial-project-name')?.textContent).toBe('p1')
+    expect(container.querySelector('.unofficial-project-count')?.textContent).toBe('1 unexecuted plan')
+    const rows = Array.from(container.querySelectorAll('.unexecuted-plan-row')) as HTMLElement[]
+    expect(rows.length).toBe(1)
+    expect(rows[0].querySelector('.unexecuted-plan-title')?.textContent).toBe('review-the-plan')
+
+    // Collapsing hides the body again without dropping it.
+    toggle.click()
+    await flush()
+    expect(container.querySelector('.unofficial-toggle')?.getAttribute('aria-expanded')).toBe('false')
+    expect((container.querySelector('.unofficial-projects') as HTMLElement).getAttribute('style')).toContain('display: none')
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+  })
+
+  test('an unexecuted plan in the unofficial section opens its body and deletes from the index', async () => {
+    window.location.hash = ''
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    const planFetches: string[] = []
+    const deleteCalls: Array<{ url: string; method?: string; body?: string }> = []
+    ;(globalThis as any).fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        planFetches.push(url)
+        return { ok: true, status: 200, json: async () => ({ sessionId: 'session-plan', content: '# Objective\n\nReview the plan' }) }
+      }
+      if (url.indexOf('/api/plan/delete') === 0) {
+        deleteCalls.push({ url, method: init?.method, body: init?.body as string })
+        payload = makePayload({ loops: [], unexecutedPlans: [] })
+        return { ok: true, status: 200, json: async () => ({ ok: true }) }
+      }
+      return { ok: true, status: 200, json: async () => payload }
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unofficial-toggle') as HTMLElement).click()
+    await flush()
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(planFetches).toEqual(['/api/plan?project=p1&session=session-plan'])
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('Review the plan')
+
+    ;(container.querySelector('.unexecuted-plan-head .unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+    expect(deleteCalls).toEqual([{
+      url: '/api/plan/delete',
+      method: 'POST',
+      body: JSON.stringify({ projectId: 'p1', sessionId: 'session-plan' }),
+    }])
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
+  })
+
+  test('the repo menu lists official repos only while the unofficial section lists loopless projects', async () => {
+    window.location.hash = ''
+    payload = {
+      generatedAt: Date.now(),
+      projects: [
+        {
+          id: 'p1',
+          projectId: 'p1',
+          projectDir: '/proj/p1',
+          loops: [makeLoop()],
+          groups: [],
+          unexecutedPlans: [],
+          unexecutedPlanCount: 0,
+        },
+        {
+          id: 'p2',
+          projectId: 'p2',
+          projectDir: null,
+          loops: [],
+          groups: [],
+          unexecutedPlans: [makeUnexecutedPlan({ projectId: 'p2' })],
+          unexecutedPlanCount: 1,
+        },
+      ],
+    }
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const menuNames = Array.from(container.querySelectorAll('.repo-menu-name')).map(n => n.textContent)
+    expect(menuNames).toEqual(['p1'])
+    const unofficialNames = Array.from(container.querySelectorAll('.unofficial-project-name')).map(n => n.textContent)
+    expect(unofficialNames).toEqual(['p2'])
+  })
+
+  test('section-nav Plans count includes unexecuted plans', async () => {
+    window.location.hash = '#p1/loops'
+    payload = makePayload({
+      loops: [makeLoop({ loop: { loopName: 'loop-a', status: 'completed' }, plan: 'PLAN A' })],
+      unexecutedPlans: [makeUnexecutedPlan(), makeUnexecutedPlan({ sessionId: 'session-plan-2' })],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
+    const plansItem = navItems.find(i => i.textContent?.startsWith('Plans'))!
+    expect(plansItem.querySelector('.section-nav-count')?.textContent).toBe('3')
+  })
+
+  test('repo-index summary does not count unexecuted plans', async () => {
+    window.location.hash = ''
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan(), makeUnexecutedPlan({ sessionId: 'session-plan-2' })],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    // The summary stays on loops and bugs; unexecuted plans are only surfaced
+    // in the unofficial-projects section.
+    expect(container.querySelector('.repo-index-summary')!.textContent).toBe('0 running · 0 loops · 0 open bugs')
+    expect(container.querySelector('.unofficial-project-count')?.textContent).toBe('2 unexecuted plans')
+  })
+
   test('role split surfaces unknown role cost in an other bar', async () => {
     window.location.hash = '#p1/loop/loop-a/usage'
     payload = makePayload({
@@ -5022,6 +5452,146 @@ describe('dashboard App findings and plans sections', () => {
     expect(execMeta).toContain('tok')
     // 4000 + 2000 + 400 = 6400 → "6.4k" via formatTokenCount.
     expect(execMeta).toContain('6.4k tok')
+  })
+
+  test('an out-of-order same-session revision response cannot overwrite the newer revision body', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    const planRequests: string[] = []
+    let releaseStaleBody: (() => void) | null = null
+    let staleBodyRead = false
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        planRequests.push(url)
+        if (planRequests.length === 1) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => {
+              staleBodyRead = true
+              await new Promise<void>(r => { releaseStaleBody = r })
+              return { content: 'STALE REVISION' }
+            },
+          })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ content: 'NEW REVISION' }) })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(planRequests.length).toBe(1)
+
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 2000 })],
+    })
+    await intervalFn?.()
+    await flush()
+    expect(planRequests.length).toBe(2)
+    expect(staleBodyRead).toBe(true)
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+
+    releaseStaleBody?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+    expect(container.querySelector('.markdown-content')?.textContent).not.toContain('STALE REVISION')
+    expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
+  })
+
+  test('a stale same-session revision error cannot overwrite the newer revision state', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    let releaseStaleText: (() => void) | null = null
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        if (!releaseStaleText) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            text: async () => {
+              await new Promise<void>(r => { releaseStaleText = r })
+              return 'STALE REVISION ERROR'
+            },
+          })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ content: 'NEW REVISION' }) })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 2000 })],
+    })
+    await intervalFn?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+
+    releaseStaleText?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+    expect(container.querySelector('.unexecuted-plan-error')).toBeFalsy()
+    expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
+  })
+
+  test('an unchanged revision poll does not supersede the in-flight plan fetch', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    const planRequests: string[] = []
+    let releaseBody: (() => void) | null = null
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        planRequests.push(url)
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => {
+            await new Promise<void>(r => { releaseBody = r })
+            return { content: 'PLAN BODY' }
+          },
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(planRequests.length).toBe(1)
+
+    const rerendered = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    rerendered.projects[0].unexecutedPlans[0].id = 'session-plan-recreated'
+    payload = rerendered
+    await intervalFn?.()
+    await flush()
+    expect(planRequests.length).toBe(1)
+
+    releaseBody?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('PLAN BODY')
+    expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
   })
 })
 
@@ -5242,6 +5812,39 @@ describe('dashboard App bounded list caps', () => {
     const notice = container.querySelector('.findings-panel .list-cap-notice') as HTMLElement
     expect(notice).toBeTruthy()
     expect(notice.querySelector('.list-cap-text')?.textContent ?? '').toContain(String(total))
+  })
+
+  test('the unofficial section caps a project\'s plan rows and reports the true total', async () => {
+    window.location.hash = ''
+    const plans: any[] = []
+    for (let i = 0; i < MAX_RENDERED_LOOP_ROWS + 5; i++) {
+      plans.push({
+        id: 'session-' + i,
+        projectId: 'p1',
+        sessionId: 'session-' + i,
+        title: 'plan-' + i,
+        updatedAt: 1700000000000 + i,
+        charCount: 128,
+      })
+    }
+    payload = makePayload({ loops: [], unexecutedPlans: plans })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unofficial-toggle') as HTMLElement).click()
+    await flush()
+
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(MAX_RENDERED_LOOP_ROWS)
+    expect(container.querySelector('.unofficial-project-count')?.textContent).toBe(String(MAX_RENDERED_LOOP_ROWS + 5) + ' unexecuted plans')
+    const notice = container.querySelector('.unofficial-project .list-cap-notice') as HTMLElement
+    expect(notice).toBeTruthy()
+    expect(notice.querySelector('.list-cap-text')?.textContent ?? '').toContain(String(MAX_RENDERED_LOOP_ROWS + 5))
+
+    const showAll = notice.querySelector('.list-cap-show-all') as HTMLButtonElement
+    expect(showAll).toBeTruthy()
+    showAll.click()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(MAX_RENDERED_LOOP_ROWS + 5)
   })
 
   test('the loop picker caps rendered options and ArrowUp from the first option wraps to the last rendered one', async () => {

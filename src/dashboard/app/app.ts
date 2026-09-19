@@ -85,9 +85,9 @@ export function App() {
   let loadGen = 0
   const inFlight = { url: null as string | null, gen: 0 }
 
-  const load = async () => {
+  const load = async (force = false) => {
     const url = scopedDataUrl()
-    if (inFlight.url === url) return // coalesce overlapping same-scope polls
+    if (!force && inFlight.url === url) return // coalesce overlapping same-scope polls
     const gen = ++loadGen
     inFlight.url = url
     inFlight.gen = gen
@@ -204,7 +204,7 @@ export function App() {
       const hasGroups = (proj.groups?.length ?? 0) > 0
       if (matched.length > 0) {
         result.push({ proj, loops: matched })
-      } else if (hasGroups && (!q || label.toLowerCase().indexOf(q) !== -1)) {
+      } else if ((hasGroups || proj.unexecutedPlanCount > 0) && (!q || label.toLowerCase().indexOf(q) !== -1)) {
         result.push({ proj, loops: [] })
       }
     }
@@ -212,6 +212,23 @@ export function App() {
   })
 
   const atRepoIndex = createMemo(() => projectId() === null)
+
+  // A project with at least one loop is an official repo: it has a projectDir,
+  // so the repo menu can label it. Projects discovered only from feature groups
+  // or unexecuted plans are unofficial — the repo menu omits them and the repo
+  // index lists those still holding unexecuted plans in a single section instead.
+  const officialEntries = createMemo<MatchedEntry[]>(
+    () => matchedByProject().filter(entry => entry.proj.loops.length > 0),
+  )
+
+  const unofficialProjects = createMemo<DashboardProject[]>(() =>
+    state.projects
+      .filter(proj => proj.loops.length === 0 && proj.unexecutedPlanCount > 0)
+      .slice()
+      .sort((a, b) =>
+        (b.unexecutedPlans[0]?.updatedAt ?? 0) - (a.unexecutedPlans[0]?.updatedAt ?? 0)
+        || a.projectId.localeCompare(b.projectId)),
+  )
 
   const atGroupsSection = createMemo(() => section() === 'groups')
   const atLoopsSection = createMemo(() => section() === 'loops')
@@ -250,7 +267,7 @@ export function App() {
       findings += dl.findings.length
       if (dl.hasPlan) plans++
     }
-    return { loops: proj.loops.length, groups, findings, plans }
+    return { loops: proj.loops.length, groups, findings, plans: plans + proj.unexecutedPlanCount }
   })
 
   const repoLoopOptions = createMemo<LoopOption[]>(() => {
@@ -453,6 +470,8 @@ export function App() {
     if (!pid) return ''
     return PlansPanel({
       loops: repoAllLoops,
+      unexecutedPlans: () => selectedRepoProject()?.unexecutedPlans ?? [],
+      onPlansChanged: () => void load(true),
       onOpenLoop: openLoop,
     }) as Node
   })
@@ -559,27 +578,31 @@ export function App() {
 
     ${() => {
       if (!loaded()) return ''
-      if (atRepoIndex() && matchedByProject().length === 0) return EmptyState()
+      if (atRepoIndex() && officialEntries().length === 0 && unofficialProjects().length === 0) return EmptyState()
       return html`<div class="forge-shell">
         ${() => {
           if (atRepoIndex()) {
             return html`<div class="repo-index">
-              ${RepoMenu({
-                entries: () => matchedByProject(),
-                labels: () => repoLabels(),
-                onSelect: (projectId: string) => navigate({ projectId, loopName: null, section: 'loops', groupId: null }),
-              })}
+              ${() => (officialEntries().length > 0
+                ? RepoMenu({
+                    entries: officialEntries,
+                    labels: () => repoLabels(),
+                    onSelect: (projectId: string) => navigate({ projectId, loopName: null, section: 'loops', groupId: null }),
+                  })
+                : '')}
               ${RepoIndexPane({
-                entries: () => matchedByProject(),
+                entries: officialEntries,
                 labels: () => repoLabels(),
+                unofficial: unofficialProjects,
+                onPlansChanged: () => void load(true),
                 onOpenLoop: (projectId: string, loopName: string) =>
                   navigate({ projectId, loopName, section: 'loops', groupId: null, statuses: [], query: '', tab: 'overview' }),
               })}
             </div>`
           }
           return html`<div class="repo-pane">
-            ${filterBarView}
             ${sectionNavView}
+            ${filterBarView}
             ${listView}
             ${detailView}
             ${groupsView}

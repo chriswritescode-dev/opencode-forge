@@ -979,6 +979,7 @@ export function computeTimelineEvents(
 
 export interface AmendmentSummary {
   count: number
+  lastId: number | null
   lastAt: number | null
   lastSection: number | null
 }
@@ -990,14 +991,14 @@ export interface AmendmentSummary {
  * higher id (insertion order).
  */
 export function summarizeAmendments(amendments: DashboardLoop['amendments']): AmendmentSummary {
-  if (amendments.length === 0) return { count: 0, lastAt: null, lastSection: null }
+  if (amendments.length === 0) return { count: 0, lastId: null, lastAt: null, lastSection: null }
   let newest = amendments[0]
   for (const a of amendments) {
     if (a.createdAt > newest.createdAt || (a.createdAt === newest.createdAt && a.id > newest.id)) {
       newest = a
     }
   }
-  return { count: amendments.length, lastAt: newest.createdAt, lastSection: newest.appliedAtSection }
+  return { count: amendments.length, lastId: newest.id, lastAt: newest.createdAt, lastSection: newest.appliedAtSection }
 }
 
 /** Distinct section indexes amended at least once, in first-seen order. */

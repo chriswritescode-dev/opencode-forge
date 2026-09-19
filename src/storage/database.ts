@@ -23,6 +23,15 @@ const FORGE_PRAGMAS = [
   'PRAGMA synchronous=NORMAL',
 ]
 
+export function hasTable(db: Database, table: string): boolean {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get(table) as { cnt: number }
+  return (row?.cnt ?? 0) > 0
+}
+
 function runMigrations(db: Database): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS migrations (

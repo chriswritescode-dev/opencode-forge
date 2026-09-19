@@ -363,4 +363,30 @@ describe('PlansRepo', () => {
       expect(rows[1].updatedAt).toBe(t2)
     })
   })
+
+  describe('listUnexecuted', () => {
+    test('prepares the loops join lazily, so a plans-only database still constructs', () => {
+      expect(() => repo.listUnexecuted(projectId)).toThrow(/no such table: loops/)
+    })
+
+    test('lists session plans whose session launched no loop at or after the write', () => {
+      db.run('CREATE TABLE loops (project_id TEXT NOT NULL, host_session_id TEXT, started_at INTEGER)')
+      repo.writeForSession(projectId, 'executed-session', 'Executed plan')
+      repo.writeForSession(projectId, 'unexecuted-session', 'Unexecuted plan')
+      repo.writeForLoop(projectId, 'loop-a', 'Loop plan')
+      db.run(
+        "UPDATE plans SET updated_at = ? WHERE project_id = ? AND session_id = ?",
+        [1000, projectId, 'executed-session']
+      )
+      db.run(
+        'INSERT INTO loops (project_id, host_session_id, started_at) VALUES (?, ?, ?)',
+        [projectId, 'executed-session', 2000]
+      )
+
+      const rows = repo.listUnexecuted(projectId)
+      expect(rows.map(r => r.sessionId)).toEqual(['unexecuted-session'])
+      expect(rows[0].content).toBe('Unexecuted plan')
+      expect(repo.unexecutedCountsByProject().get(projectId)).toBe(1)
+    })
+  })
 })

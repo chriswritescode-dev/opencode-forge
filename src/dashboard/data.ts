@@ -8,6 +8,7 @@ import {
   createLoopTransitionsRepo,
   createPlanAmendmentsRepo,
   createFeatureGroupsRepo,
+  hasTable,
 } from '../storage'
 import type { LoopRow } from '../storage'
 import type { SectionPlanRow } from '../storage'
@@ -18,6 +19,7 @@ import type { PlanAmendmentRow } from '../storage'
 import type { FeatureGroupRow, GroupFeatureRow } from '../storage'
 import { summarizeAmendmentSnapshots, type AmendmentChangeSummary } from './amendment-diff'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
+import { extractPlanTitle } from '../utils/plan-execution'
 
 export type { LoopRow, LoopTransitionRow }
 
@@ -66,6 +68,29 @@ export interface DashboardProject {
   projectDir: string | null
   loops: DashboardLoop[]
   groups: DashboardGroup[]
+  /**
+   * Session-scoped plans no loop has executed, newest first. Content itself is
+   * not shipped — only the derived title and size — because a project can retain
+   * many of them; the full plan is fetched on demand from `/api/plan`. Rows ship
+   * for the scoped project, and for a project with no loops whenever the payload
+   * is unscoped: such a project has no repo-menu entry, so the repo index lists
+   * its plans in the unofficial-projects section instead.
+   */
+  unexecutedPlans: DashboardUnexecutedPlan[]
+  /** Number of unexecuted session-scoped plans. Always populated. */
+  unexecutedPlanCount: number
+}
+
+export interface DashboardUnexecutedPlan {
+  /** Stable identity for keyed store reconciliation; equals `sessionId`. */
+  id: string
+  projectId: string
+  sessionId: string
+  /** Plan title from the stored content, via the shared plan-title extractor. */
+  title: string
+  updatedAt: number
+  /** Plan length in characters, so a row can show size without the body. */
+  charCount: number
 }
 
 export interface DashboardPayload {
@@ -85,16 +110,6 @@ export interface DashboardScope {
 }
 
 const UNSCOPED: DashboardScope = { projectId: null, loopName: null }
-
-/** Check whether *tbl* exists on this database. */
-function hasTable(database: Database, tbl: string): boolean {
-  const row = database
-    .prepare(
-      "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
-    )
-    .get(tbl) as { cnt: number }
-  return (row?.cnt ?? 0) > 0
-}
 
 interface DashboardRepos {
   loopsRepo: ReturnType<typeof createLoopsRepo>
@@ -140,24 +155,33 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
   ).all() as { project_id: string }[]
 
   // A project may have a feature group persisted before any feature loop launches
-  // (group is in `extracting` or `planning`). Discover projects from the union of
-  // loop projects and feature-group projects so group-only projects still appear.
+  // (group is in `extracting` or `planning`), or a session plan authored before
+  // any loop exists. Discover projects from the union of loop projects,
+  // feature-group projects, and projects with unexecuted plans so group-only and
+  // plan-only projects still appear.
   const groupProjectIds = featureGroupsRepo
     ? (db.prepare(
         'SELECT DISTINCT project_id FROM feature_groups ORDER BY project_id'
       ).all() as { project_id: string }[])
     : []
 
+  const unexecutedCounts = plansRepo.unexecutedCountsByProject()
+
   const projectIds = Array.from(
-    new Set([...loopProjectIds.map(r => r.project_id), ...groupProjectIds.map(r => r.project_id)])
+    new Set([
+      ...loopProjectIds.map(r => r.project_id),
+      ...groupProjectIds.map(r => r.project_id),
+      ...unexecutedCounts.keys(),
+    ])
   ).sort()
   const projects: DashboardProject[] = []
 
   for (const projectId of projectIds) {
     const loopRows = loopsRepo.listAll(projectId)
+    const hasLoops = loopRows.length > 0
 
     // Determine projectDir from first (most recent) loop row
-    const projectDir = loopRows.length > 0 ? loopRows[0].projectDir : null
+    const projectDir = hasLoops ? loopRows[0].projectDir : null
 
     // Sort: running first, then by startedAt desc within each group
     const sortedLoops = [...loopRows].sort((a, b) => {
@@ -232,7 +256,31 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       })
     }
 
-    projects.push({ id: projectId, projectId, projectDir, loops: dashboardLoops, groups })
+    const unexecutedPlanCount = unexecutedCounts.get(projectId) ?? 0
+    // A loopless project is hidden from the repo menu (no projectDir labels
+    // it), so an unscoped payload ships its plan rows for the repo index's
+    // unofficial-projects section to list and delete.
+    const shipUnexecutedPlans = inScopedProject || (scope.projectId === null && !hasLoops)
+    const unexecutedPlans: DashboardUnexecutedPlan[] = shipUnexecutedPlans
+      ? plansRepo.listUnexecuted(projectId).map(row => ({
+          id: row.sessionId,
+          projectId: row.projectId,
+          sessionId: row.sessionId,
+          title: extractPlanTitle(row.content),
+          updatedAt: row.updatedAt,
+          charCount: row.content.length,
+        }))
+      : []
+
+    projects.push({
+      id: projectId,
+      projectId,
+      projectDir,
+      loops: dashboardLoops,
+      groups,
+      unexecutedPlans,
+      unexecutedPlanCount,
+    })
   }
 
   return {

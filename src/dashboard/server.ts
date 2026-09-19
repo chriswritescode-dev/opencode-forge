@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import type { ForgeClient } from '../client/port'
-import { createLoopsRepo, createPlanAmendmentsRepo } from '../storage'
+import { createLoopsRepo, createPlanAmendmentsRepo, createPlansRepo } from '../storage'
 import { providersFromProviderList, flattenProviders, getAvailableModelVariants } from '../utils/tui-models'
 import { parseModelString } from '../utils/model-fallback'
 import { collectDashboardData } from './data'
@@ -21,9 +21,10 @@ export interface DashboardDeps {
    */
   client?: ForgeClient
   /**
-   * Whether `POST /api/loop/message` and `POST /api/loop/models` are allowed.
-   * Set only for a loopback bind: the dashboard has no auth, so a reachable
-   * bind must not drive the agent or change its models.
+   * Whether the dashboard's mutating routes (`POST /api/loop/message`,
+   * `POST /api/loop/models`, `POST /api/plan/delete`) are allowed. Set only for
+   * a loopback bind: the dashboard has no auth, so a reachable bind must not
+   * drive the agent, change its models, or delete plans.
    */
   allowSend?: boolean
 }
@@ -181,6 +182,7 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
   const client = deps.client
   const allowSend = deps.allowSend ?? false
   const loopsRepo = createLoopsRepo(deps.forgeDb)
+  const plansRepo = createPlansRepo(deps.forgeDb)
   let amendmentsRepo: ReturnType<typeof createPlanAmendmentsRepo> | null = null
   try {
     amendmentsRepo = createPlanAmendmentsRepo(deps.forgeDb)
@@ -484,6 +486,31 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
       }
     }
 
+    if (pathname === '/api/plan/delete') {
+      if (req.method !== 'POST') return new Response('Not found', { status: 404 })
+      if (!allowSend || !isLoopbackHostHeader(req.headers.get('host'))) {
+        return new Response(
+          'Deleting plans is disabled: the dashboard must be reached via a loopback address and has ' +
+          'no authentication. Open it via localhost to delete plans.',
+          { status: 403 },
+        )
+      }
+      const parsed = await readJsonRecord(req)
+      if (!parsed.ok) return parsed.response
+      const record = parsed.record
+      const projectId = typeof record.projectId === 'string' ? record.projectId : ''
+      const sessionId = typeof record.sessionId === 'string' ? record.sessionId : ''
+      if (!projectId || !sessionId) {
+        return new Response('projectId and sessionId are required.', { status: 400 })
+      }
+      if (!plansRepo.deleteForSession(projectId, sessionId)) {
+        return new Response('Plan not found.', { status: 404 })
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      })
+    }
+
     if (req.method !== 'GET') {
       return new Response('Not found', { status: 404 })
     }
@@ -500,6 +527,24 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
         loopName: url.searchParams.get('loop'),
       })
       return new Response(JSON.stringify(data), {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        },
+      })
+    }
+
+    if (pathname === '/api/plan') {
+      const project = url.searchParams.get('project')
+      const session = url.searchParams.get('session')
+      if (!project || !session) {
+        return new Response('project and session are required.', { status: 400 })
+      }
+      const row = plansRepo.getForSession(project, session)
+      if (!row) {
+        return new Response('Plan not found.', { status: 404 })
+      }
+      return new Response(JSON.stringify({ sessionId: row.sessionId, updatedAt: row.updatedAt, content: row.content }), {
         headers: {
           'content-type': 'application/json; charset=utf-8',
           'cache-control': 'no-store',

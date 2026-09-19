@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from 'vitest'
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname } from 'path'
@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
 import { Database } from 'bun:sqlite'
 import { sandboxContainerName } from '../../src/sandbox/msb'
+import { cleanupForgeDb } from '../../scripts/cleanup-loop'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -204,11 +205,14 @@ describe('cleanup-loop forge db cleanup', () => {
     mkdirSync(join(xdg, 'opencode', 'forge'), { recursive: true })
     const db = new Database(dbPath)
     db.run('CREATE TABLE loops (project_id TEXT, loop_name TEXT, status TEXT)')
-    db.run('CREATE TABLE loop_large_fields (loop_name TEXT)')
-    db.run('CREATE TABLE section_plans (loop_name TEXT)')
-    db.run('CREATE TABLE review_findings (loop_name TEXT)')
+    db.run('CREATE TABLE loop_large_fields (project_id TEXT, loop_name TEXT)')
+    db.run('CREATE TABLE section_plans (project_id TEXT, loop_name TEXT)')
+    db.run('CREATE TABLE review_findings (project_id TEXT, loop_name TEXT)')
+    db.run('CREATE TABLE plans (project_id TEXT, loop_name TEXT, session_id TEXT, content TEXT, updated_at INTEGER)')
     db.run('INSERT INTO loops (project_id, loop_name, status) VALUES (?, ?, ?)', ['p1', 'foo_bar', 'completed'])
-    db.run('INSERT INTO loop_large_fields (loop_name) VALUES (?)', ['foo_bar'])
+    db.run('INSERT INTO loop_large_fields (project_id, loop_name) VALUES (?, ?)', ['p1', 'foo_bar'])
+    db.run('INSERT INTO plans (project_id, loop_name, session_id, content, updated_at) VALUES (?, ?, NULL, ?, ?)', ['p1', 'foo_bar', 'loop plan', Date.now()])
+    db.run('INSERT INTO plans (project_id, loop_name, session_id, content, updated_at) VALUES (?, NULL, ?, ?, ?)', ['p1', null, 'session plan', Date.now()])
     db.close()
 
     const run = runCleanup('foo_bar', {
@@ -218,11 +222,14 @@ describe('cleanup-loop forge db cleanup', () => {
     expect(run.status).toBe(0)
     expect(run.stdout).toContain(`forge.db (${dbPath}):`)
     expect(run.stdout).toContain('✓ delete loops row project=p1 status=completed')
-    expect(run.stdout).toContain('✓ delete loop_large_fields entries for loop=foo_bar')
+    expect(run.stdout).toContain('✓ delete loop_large_fields entries for project=p1 loop=foo_bar')
+    expect(run.stdout).toContain('✓ delete plans entries for project=p1 loop=foo_bar')
 
     const verify = new Database(dbPath)
     expect(verify.prepare('SELECT loop_name FROM loops').all()).toHaveLength(0)
     expect(verify.prepare('SELECT loop_name FROM loop_large_fields').all()).toHaveLength(0)
+    expect(verify.prepare('SELECT loop_name FROM plans WHERE loop_name IS NOT NULL').all()).toHaveLength(0)
+    expect(verify.prepare('SELECT session_id FROM plans WHERE loop_name IS NULL').all()).toHaveLength(1)
     verify.close()
   })
 
@@ -252,6 +259,43 @@ describe('cleanup-loop forge db cleanup', () => {
     expect(verify.prepare("SELECT id FROM session WHERE id = 's1'").all()).toHaveLength(1)
     expect(verify.prepare("SELECT id FROM workspace WHERE id = 'w1'").all()).toHaveLength(1)
     verify.close()
+  })
+})
+
+describe('cleanupForgeDb rollback', () => {
+  test('rolls back the loop row and earlier dependent deletes when a dependent table schema is incompatible', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'cleanup-loop-rollback-'))
+    const dbPath = join(dataDir, 'forge.db')
+    const db = new Database(dbPath)
+    db.run('CREATE TABLE loops (project_id TEXT, loop_name TEXT, status TEXT)')
+    db.run('CREATE TABLE loop_large_fields (project_id TEXT, loop_name TEXT)')
+    db.run('CREATE TABLE section_plans (id TEXT)')
+    db.run("INSERT INTO loops (project_id, loop_name, status) VALUES ('p1', 'foo_bar', 'completed')")
+    db.run("INSERT INTO loop_large_fields (project_id, loop_name) VALUES ('p1', 'foo_bar')")
+    db.close()
+
+    const logs: string[] = []
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.join(' '))
+    })
+    let failure: unknown
+    try {
+      await cleanupForgeDb('foo_bar', false, dataDir)
+    } catch (err) {
+      failure = err
+    } finally {
+      logSpy.mockRestore()
+    }
+
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toMatch(/project_id/)
+    expect(logs.some(line => line.includes('✓'))).toBe(false)
+
+    const verify = new Database(dbPath)
+    expect(verify.prepare("SELECT loop_name FROM loops WHERE loop_name = 'foo_bar'").all()).toHaveLength(1)
+    expect(verify.prepare("SELECT loop_name FROM loop_large_fields WHERE loop_name = 'foo_bar'").all()).toHaveLength(1)
+    verify.close()
+    rmSync(dataDir, { recursive: true, force: true })
   })
 })
 
