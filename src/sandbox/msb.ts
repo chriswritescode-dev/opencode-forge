@@ -44,7 +44,7 @@ const MSB_SIZE_RE = /^\d+(\.\d+)?[kmg]b?$/i
 const MSB_DOCKER_DISK_DEFAULT = '16g'
 const MSB_CACHE_DISK_DEFAULT = '16g'
 
-export const SANDBOX_CACHE_DIR = '/opt/forge/.cache'
+export const SANDBOX_CACHE_DIR = '/opt/forge/cache'
 
 export function parseMsbCpus(raw: string | undefined, logger: Logger): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined

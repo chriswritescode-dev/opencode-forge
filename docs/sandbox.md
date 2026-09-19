@@ -194,7 +194,7 @@ The image derives from a plain OCI base, keeps the final `USER agent`, and decla
 
 ## Tool Caches and Disk Space
 
-The sandbox root filesystem is a small overlay (about 4 GB), while package-manager caches grow unbounded: real loops accumulated multi-gigabyte pnpm stores, uv wheel caches, and Rust sdist bootstrap caches (puccinialin) until the root filesystem hit 100%. The image therefore pins every tool cache under `/opt/forge/.cache` (`XDG_CACHE_HOME`), and Forge mounts that directory as a dedicated sparse block device at create time — the same mechanism as the Docker data disk: `--mount-named <sandbox>-cache-data:/opt/forge/.cache:kind=disk,size=<size>`, configurable via `sandbox.resources.cacheDisk` (default `16g`).
+The sandbox root filesystem is a small overlay (about 4 GB), while package-manager caches grow unbounded: real loops accumulated multi-gigabyte pnpm stores, uv wheel caches, and Rust sdist bootstrap caches (puccinialin) until the root filesystem hit 100%. The image therefore pins every tool cache under `/opt/forge/cache` (`XDG_CACHE_HOME`), and Forge mounts that directory as a dedicated sparse block device at create time — the same mechanism as the Docker data disk: `--mount-named <sandbox>-cache-data:/opt/forge/cache:kind=disk,size=<size>`, configurable via `sandbox.resources.cacheDisk` (default `16g`).
 
 msb formats a fresh named disk as root-owned `0755` while `msb exec` runs as `agent`, so Forge makes the mount root `agent`-owned and world-writable (`chown agent:agent` plus `chmod 0777`, non-recursive) in a single exec before the sandbox is registered. World-writable matches the image's build-time posture for `/opt/forge`, which the runtime mount would otherwise shadow, and keeps the tree usable when a command is run under `sudo`. The step is memoized per sandbox and re-applied on adoption, so a sandbox whose preparation failed — or one created by an older Forge build — is healed on the next start instead of being adopted with an unwritable cache.
 
@@ -202,13 +202,13 @@ Caches that do not honor `XDG_CACHE_HOME` are routed into that directory by imag
 
 | Cache | Variable |
 |---|---|
-| pnpm content store (pnpm 11 / pnpm 10) | `PNPM_CONFIG_STORE_DIR` / `npm_config_store_dir` = `/opt/forge/.cache/pnpm/store` |
-| npm cache | `npm_config_cache=/opt/forge/.cache/npm` |
-| uv-managed Pythons | `UV_PYTHON_INSTALL_DIR=/opt/forge/.cache/uv-python` |
-| uv-installed tools | `UV_TOOL_DIR=/opt/forge/.cache/uv-tools` |
-| uv tool executables | `UV_TOOL_BIN_DIR=/opt/forge/.cache/uv-bin` (on `PATH`) |
-| cargo and rustup | `CARGO_HOME` / `RUSTUP_HOME` under `/opt/forge/.cache` |
-| Go modules | `GOPATH=/opt/forge/.cache/go` |
+| pnpm content store (pnpm 11 / pnpm 10) | `PNPM_CONFIG_STORE_DIR` / `npm_config_store_dir` = `/opt/forge/cache/pnpm/store` |
+| npm cache | `npm_config_cache=/opt/forge/cache/npm` |
+| uv-managed Pythons | `UV_PYTHON_INSTALL_DIR=/opt/forge/cache/uv-python` |
+| uv-installed tools | `UV_TOOL_DIR=/opt/forge/cache/uv-tools` |
+| uv tool executables | `UV_TOOL_BIN_DIR=/opt/forge/cache/uv-bin` (on `PATH`) |
+| cargo and rustup | `CARGO_HOME` / `RUSTUP_HOME` under `/opt/forge/cache` |
+| Go modules | `GOPATH=/opt/forge/cache/go` |
 
 CLIs installed globally at image-build time (`fallow`) are a deliberate exception: they are installed with an explicit `--store-dir` under `/opt/forge/.local/share/pnpm/store`. pnpm does not copy a global package into `PNPM_HOME` — the global `node_modules` entry is a symlink chain into the store — so a global built against the cache-disk store would resolve to a dangling symlink the moment the disk is mounted over that path, and the CLI would fail with `Cannot find module`. The build-time store therefore stays on a path no mount shadows, while the environment keeps agent installs on the cache disk.
 
@@ -251,7 +251,7 @@ The mount is read-only because the setting exists to grant read access. To make 
 | `sandbox.resources.memory` | `"8g"` | `msb create -m` |
 | `sandbox.resources.cpus` | `"4"` | `msb create -c` (integer-only) |
 | `sandbox.resources.dockerDisk` | `"16g"` | `msb create --mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>` |
-| `sandbox.resources.cacheDisk` | `"16g"` | `msb create --mount-named <sandbox>-cache-data:/opt/forge/.cache:kind=disk,size=<size>` |
+| `sandbox.resources.cacheDisk` | `"16g"` | `msb create --mount-named <sandbox>-cache-data:/opt/forge/cache:kind=disk,size=<size>` |
 
 `memory` and `cpus` are exactly what the guest gets, for its whole life. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
 

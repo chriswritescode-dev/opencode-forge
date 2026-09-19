@@ -117,7 +117,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
     ])
   })
 
@@ -147,7 +147,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
     ])
   })
 
@@ -173,7 +173,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
     ])
   })
 
@@ -194,7 +194,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '--net-default',
       'deny',
       '--net-rule',
@@ -218,7 +218,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '-e',
       'GITHUB_TOKEN',
       '-e',
@@ -243,7 +243,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '-e',
       'KEEP',
     ])
@@ -279,7 +279,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '--secret',
       'GITHUB_TOKEN@api.github.com,*.githubusercontent.com',
     ])
@@ -308,7 +308,7 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '--secret',
       'KEEP@api.example.com',
     ])
@@ -440,7 +440,7 @@ describe('create args', () => {
       image: 'oc-forge-sandbox:latest',
     })
     expect(args).toContain('--mount-named')
-    expect(args).toContain('forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g')
+    expect(args).toContain('forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g')
   })
 
   test('uses the configured cache disk size when provided', () => {
@@ -448,7 +448,7 @@ describe('create args', () => {
       image: 'oc-forge-sandbox:latest',
       cacheDisk: '32g',
     })
-    expect(args).toContain('forge-c-cache-data:/opt/forge/.cache:kind=disk,size=32g')
+    expect(args).toContain('forge-c-cache-data:/opt/forge/cache:kind=disk,size=32g')
   })
 
   test('dockerDataVolumeName derives a stable per-container volume name', () => {
@@ -460,7 +460,7 @@ describe('create args', () => {
   test('cacheDiskVolumeName derives a stable per-container volume name at the pinned cache dir', () => {
     expect(cacheDiskVolumeName('forge-my-worktree')).toBe('forge-my-worktree-cache-data')
     expect(cacheDiskVolumeName('Forge/C!')).toBe('forge-c-cache-data')
-    expect(SANDBOX_CACHE_DIR).toBe('/opt/forge/.cache')
+    expect(SANDBOX_CACHE_DIR).toBe('/opt/forge/cache')
   })
 })
 
@@ -954,7 +954,7 @@ describe('runtime', () => {
       '--mount-named',
       'forge-c-docker-data:/var/lib/docker:kind=disk,size=16g',
       '--mount-named',
-      'forge-c-cache-data:/opt/forge/.cache:kind=disk,size=16g',
+      'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
     ])
     expect(calls[0].opts?.timeout).toBe(120000)
   })

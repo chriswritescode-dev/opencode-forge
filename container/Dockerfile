@@ -60,7 +60,7 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
 
 # HOME and every tool cache/store are pinned to fixed paths so the layout is
 # stable regardless of the executing UID. All of the caches below resolve under
-# /opt/forge/.cache, which Forge mounts as a dedicated sparse block device at
+# /opt/forge/cache, which Forge mounts as a dedicated sparse block device at
 # create time (forge-<name>-cache-data), so unbounded package caches never fill
 # the small root filesystem and nothing written to that path at build time
 # survives to runtime. forge-cache-prune wipes its cache subtrees while
@@ -77,20 +77,20 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
 # node_modules instead of hard-linking, exactly as it already did against the
 # virtiofs project mount.
 ENV HOME=/opt/forge \
-    XDG_CACHE_HOME=/opt/forge/.cache \
+    XDG_CACHE_HOME=/opt/forge/cache \
     XDG_DATA_HOME=/opt/forge/.local/share \
     PNPM_HOME=/opt/forge/.local/share/pnpm \
-    PATH=/opt/forge/.cache/uv-bin:/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
-    npm_config_cache=/opt/forge/.cache/npm \
-    npm_config_store_dir=/opt/forge/.cache/pnpm/store \
-    PNPM_CONFIG_STORE_DIR=/opt/forge/.cache/pnpm/store \
-    UV_PYTHON_INSTALL_DIR=/opt/forge/.cache/uv-python \
-    UV_TOOL_DIR=/opt/forge/.cache/uv-tools \
-    UV_TOOL_BIN_DIR=/opt/forge/.cache/uv-bin \
-    CARGO_HOME=/opt/forge/.cache/cargo \
-    RUSTUP_HOME=/opt/forge/.cache/rustup \
-    GOPATH=/opt/forge/.cache/go
-RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm \
+    PATH=/opt/forge/cache/uv-bin:/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
+    npm_config_cache=/opt/forge/cache/npm \
+    npm_config_store_dir=/opt/forge/cache/pnpm/store \
+    PNPM_CONFIG_STORE_DIR=/opt/forge/cache/pnpm/store \
+    UV_PYTHON_INSTALL_DIR=/opt/forge/cache/uv-python \
+    UV_TOOL_DIR=/opt/forge/cache/uv-tools \
+    UV_TOOL_BIN_DIR=/opt/forge/cache/uv-bin \
+    CARGO_HOME=/opt/forge/cache/cargo \
+    RUSTUP_HOME=/opt/forge/cache/rustup \
+    GOPATH=/opt/forge/cache/go
+RUN mkdir -p /opt/forge/cache /opt/forge/.local/share/pnpm \
     && chmod -R 0777 /opt/forge
 
 # fallow CLI — dead-code analysis tool — installed globally with the same pnpm
@@ -107,7 +107,7 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm \
 # which the image actually ships and no mount shadows, keeps every global CLI
 # working; the ENV store keeps agent installs on the cache disk.
 #
-# The install then deletes whatever it cached under /opt/forge/.cache, since that
+# The install then deletes whatever it cached under /opt/forge/cache, since that
 # path is shadowed at runtime and those bytes would be unreachable weight on the
 # small root filesystem. The trailing chmod re-asserts 0777 on the tree the image
 # ships — PNPM_HOME and XDG_DATA_HOME under /opt/forge/.local — keeping it
@@ -115,7 +115,7 @@ RUN mkdir -p /opt/forge/.cache /opt/forge/.local/share/pnpm \
 # sandbox manager, which chowns and chmods the mounted cache disk at create time;
 # no build step establishes them.
 RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
-    && rm -rf /opt/forge/.cache/* /opt/forge/.cache/.[!.]* /opt/forge/.cache/..?* \
+    && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
     && chmod -R 0777 /opt/forge
 
 # Obscura (https://github.com/h4ckf0r0day/obscura) — Rust headless browser
@@ -212,7 +212,7 @@ EOF
 RUN cat > /usr/local/bin/forge-cache-prune <<'EOF' && chmod 0755 /usr/local/bin/forge-cache-prune
 #!/bin/sh
 set -u
-cache="${XDG_CACHE_HOME:-/opt/forge/.cache}"
+cache="${XDG_CACHE_HOME:-/opt/forge/cache}"
 
 wipe() {
     rm -rf "$1" 2>/dev/null || sudo -n rm -rf "$1" || true
