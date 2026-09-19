@@ -7,6 +7,44 @@ import { LRUCache } from '../utils/lru-cache'
 
 export const SANDBOX_TRACKED_SESSION_LIMIT = 500
 
+export const SANDBOX_BLOCK_OPEN = '<forge-sandbox-context>'
+export const SANDBOX_BLOCK_CLOSE = '</forge-sandbox-context>'
+
+function sandboxBlockBounds(entry: string): { start: number; end: number } | null {
+  const start = entry.indexOf(SANDBOX_BLOCK_OPEN)
+  if (start === -1) return null
+  const close = entry.indexOf(SANDBOX_BLOCK_CLOSE, start + SANDBOX_BLOCK_OPEN.length)
+  if (close === -1) return null
+  return { start, end: close + SANDBOX_BLOCK_CLOSE.length }
+}
+
+function applySandboxSystemNote(system: string[], note: string | null): void {
+  const index = system.findIndex((entry) => sandboxBlockBounds(entry) !== null)
+
+  if (note === null) {
+    if (index === -1) return
+    const entry = system[index]!
+    const bounds = sandboxBlockBounds(entry)!
+    system[index] = entry.slice(0, bounds.start) + entry.slice(bounds.end)
+    return
+  }
+
+  const block = `${SANDBOX_BLOCK_OPEN}\n${note}\n${SANDBOX_BLOCK_CLOSE}`
+  if (index !== -1) {
+    const entry = system[index]!
+    const bounds = sandboxBlockBounds(entry)!
+    system[index] = entry.slice(0, bounds.start) + block + entry.slice(bounds.end)
+    return
+  }
+  if (system.length === 0) {
+    system.push(block)
+    return
+  }
+  const last = system.length - 1
+  const previous = system[last]!
+  system[last] = previous === '' ? block : `${previous}\n\n${block}`
+}
+
 export interface CreateSandboxMessageHookDeps {
   /**
    * The unified loop-first sandbox resolver — the same one that routes bash, glob, and grep.
@@ -27,7 +65,7 @@ type SystemTransformInput = { sessionID?: string }
 type SystemTransformOutput = { system: string[] }
 
 /**
- * Appends environment guidance to the system prompt when a session runs in a container and once
+ * Merges environment guidance into the system prompt when a session runs in a container and once
  * when it returns to the host. This covers sandbox loops, their Task-tool subagents, and sessions
  * with the host sandbox toggled on.
  *
@@ -69,13 +107,19 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
         probe ? probe.describeSandbox(sandbox) : null,
       ])
       sandboxedSessions.set(sessionID, containerEnv)
-      output.system.push(buildSandboxContextNote({ from: hostEnv, to: containerEnv }))
+      applySandboxSystemNote(output.system, buildSandboxContextNote({ from: hostEnv, to: containerEnv }))
       return
     }
 
-    if (!sandboxedSessions.has(sessionID)) return
+    if (!sandboxedSessions.has(sessionID)) {
+      applySandboxSystemNote(output.system, null)
+      return
+    }
     const containerEnv = sandboxedSessions.get(sessionID) ?? null
     sandboxedSessions.delete(sessionID)
-    output.system.push(buildSandboxOffNote({ from: containerEnv, to: probe ? await probe.describeHost() : null }))
+    applySandboxSystemNote(
+      output.system,
+      buildSandboxOffNote({ from: containerEnv, to: probe ? await probe.describeHost() : null }),
+    )
   }
 }
