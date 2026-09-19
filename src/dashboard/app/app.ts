@@ -85,9 +85,9 @@ export function App() {
   let loadGen = 0
   const inFlight = { url: null as string | null, gen: 0 }
 
-  const load = async () => {
+  const load = async (force = false) => {
     const url = scopedDataUrl()
-    if (inFlight.url === url) return // coalesce overlapping same-scope polls
+    if (!force && inFlight.url === url) return // coalesce overlapping same-scope polls
     const gen = ++loadGen
     inFlight.url = url
     inFlight.gen = gen
@@ -471,7 +471,7 @@ export function App() {
     return PlansPanel({
       loops: repoAllLoops,
       unexecutedPlans: () => selectedRepoProject()?.unexecutedPlans ?? [],
-      onPlansChanged: () => void load(),
+      onPlansChanged: () => void load(true),
       onOpenLoop: openLoop,
     }) as Node
   })
@@ -594,7 +594,7 @@ export function App() {
                 entries: officialEntries,
                 labels: () => repoLabels(),
                 unofficial: unofficialProjects,
-                onPlansChanged: () => void load(),
+                onPlansChanged: () => void load(true),
                 onOpenLoop: (projectId: string, loopName: string) =>
                   navigate({ projectId, loopName, section: 'loops', groupId: null, statuses: [], query: '', tab: 'overview' }),
               })}

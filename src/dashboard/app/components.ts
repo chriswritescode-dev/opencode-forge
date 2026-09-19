@@ -2132,6 +2132,11 @@ function UnexecutedPlansPanel(props: {
   const [deletingId, setDeletingId] = createSignal<string | null>(null)
   const [deleteError, setDeleteError] = createSignal('')
   let loaded: { sessionId: string; updatedAt: number } | null = null
+  let requestGeneration = 0
+
+  onCleanup(() => {
+    requestGeneration++
+  })
 
   const current = createMemo(() => {
     const id = selectedId()
@@ -2173,30 +2178,35 @@ function UnexecutedPlansPanel(props: {
     const plan = current()
     if (!plan) {
       loaded = null
+      requestGeneration++
+      setLoading(false)
       return
     }
     if (loaded && loaded.sessionId === plan.sessionId && loaded.updatedAt === plan.updatedAt) return
     loaded = { sessionId: plan.sessionId, updatedAt: plan.updatedAt }
+    const generation = ++requestGeneration
     setLoading(true)
     setError('')
     const params = new URLSearchParams({ project: plan.projectId, session: plan.sessionId })
     void fetch('/api/plan?' + params.toString())
       .then(async res => {
-        // A response for a superseded selection must not overwrite the current one.
-        if (selectedId() !== plan.sessionId) return
+        if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
         if (!res.ok) {
-          setError((await res.text().catch(() => '')) || `Failed (status ${res.status})`)
+          const message = (await res.text().catch(() => '')) || `Failed (status ${res.status})`
+          if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
+          setError(message)
           return
         }
         const payload = await res.json() as { content?: string }
+        if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
         setContent(payload.content ?? '')
       })
       .catch(err => {
-        if (selectedId() !== plan.sessionId) return
+        if (selectedId() !== plan.sessionId || generation !== requestGeneration) return
         setError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => {
-        if (selectedId() === plan.sessionId) setLoading(false)
+        if (selectedId() === plan.sessionId && generation === requestGeneration) setLoading(false)
       })
   })
 

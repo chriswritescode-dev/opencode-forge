@@ -33,7 +33,6 @@ interface Args {
 interface SessionPlanRow {
   project_id: string
   session_id: string
-  content: string
   updated_at: number
 }
 
@@ -106,7 +105,7 @@ function main(): void {
     const orphanParams: string[] = args.projectId ? [args.projectId] : []
 
     const sessionPlans = db.prepare(`
-      SELECT project_id, session_id, content, updated_at
+      SELECT project_id, session_id, updated_at
       FROM plans
       WHERE loop_name IS NULL AND updated_at < ?${projectClause}
       ORDER BY updated_at DESC

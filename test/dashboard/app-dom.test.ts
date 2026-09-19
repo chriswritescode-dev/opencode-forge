@@ -5146,6 +5146,52 @@ describe('dashboard App findings and plans sections', () => {
     expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
   })
 
+  test('deleting during an in-flight same-scope poll starts a fresh request and the stale response cannot reinstall the plan', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan()],
+    })
+    let deferData = false
+    const pendingData: Array<() => void> = []
+    const dataUrls: string[] = []
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan/delete') === 0) {
+        payload = makePayload({ loops: [], unexecutedPlans: [] })
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true }) })
+      }
+      if (url.indexOf('/api/plan?') === 0) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ content: 'PLAN' }) })
+      }
+      dataUrls.push(url)
+      if (deferData) {
+        const snapshot = payload
+        return new Promise(resolve => {
+          pendingData.push(() => resolve({ ok: true, status: 200, json: async () => snapshot }))
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(1)
+
+    deferData = true
+    void intervalFn?.()
+    await flush()
+    expect(pendingData.length).toBe(1)
+
+    deferData = false
+    ;(container.querySelector('.unexecuted-plan-delete') as HTMLElement).click()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
+    expect(dataUrls.length).toBe(3)
+
+    pendingData[0]()
+    await flush()
+    expect(container.querySelectorAll('.unexecuted-plan-row').length).toBe(0)
+  })
+
   test('a failed plan delete keeps the row and shows the error', async () => {
     window.location.hash = '#p1/plans'
     payload = makePayload({
@@ -5406,6 +5452,146 @@ describe('dashboard App findings and plans sections', () => {
     expect(execMeta).toContain('tok')
     // 4000 + 2000 + 400 = 6400 → "6.4k" via formatTokenCount.
     expect(execMeta).toContain('6.4k tok')
+  })
+
+  test('an out-of-order same-session revision response cannot overwrite the newer revision body', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    const planRequests: string[] = []
+    let releaseStaleBody: (() => void) | null = null
+    let staleBodyRead = false
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        planRequests.push(url)
+        if (planRequests.length === 1) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => {
+              staleBodyRead = true
+              await new Promise<void>(r => { releaseStaleBody = r })
+              return { content: 'STALE REVISION' }
+            },
+          })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ content: 'NEW REVISION' }) })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(planRequests.length).toBe(1)
+
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 2000 })],
+    })
+    await intervalFn?.()
+    await flush()
+    expect(planRequests.length).toBe(2)
+    expect(staleBodyRead).toBe(true)
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+
+    releaseStaleBody?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+    expect(container.querySelector('.markdown-content')?.textContent).not.toContain('STALE REVISION')
+    expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
+  })
+
+  test('a stale same-session revision error cannot overwrite the newer revision state', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    let releaseStaleText: (() => void) | null = null
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        if (!releaseStaleText) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            text: async () => {
+              await new Promise<void>(r => { releaseStaleText = r })
+              return 'STALE REVISION ERROR'
+            },
+          })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ content: 'NEW REVISION' }) })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 2000 })],
+    })
+    await intervalFn?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+
+    releaseStaleText?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('NEW REVISION')
+    expect(container.querySelector('.unexecuted-plan-error')).toBeFalsy()
+    expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
+  })
+
+  test('an unchanged revision poll does not supersede the in-flight plan fetch', async () => {
+    window.location.hash = '#p1/plans'
+    payload = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    const planRequests: string[] = []
+    let releaseBody: (() => void) | null = null
+    ;(globalThis as any).fetch = vi.fn((url: string) => {
+      if (url.indexOf('/api/plan?') === 0) {
+        planRequests.push(url)
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => {
+            await new Promise<void>(r => { releaseBody = r })
+            return { content: 'PLAN BODY' }
+          },
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('.unexecuted-plan-row') as HTMLElement).click()
+    await flush()
+    expect(planRequests.length).toBe(1)
+
+    const rerendered = makePayload({
+      loops: [],
+      unexecutedPlans: [makeUnexecutedPlan({ updatedAt: 1000 })],
+    })
+    rerendered.projects[0].unexecutedPlans[0].id = 'session-plan-recreated'
+    payload = rerendered
+    await intervalFn?.()
+    await flush()
+    expect(planRequests.length).toBe(1)
+
+    releaseBody?.()
+    await flush()
+    expect(container.querySelector('.markdown-content')?.textContent).toContain('PLAN BODY')
+    expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
   })
 })
 

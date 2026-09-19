@@ -8,6 +8,7 @@ import {
   createLoopTransitionsRepo,
   createPlanAmendmentsRepo,
   createFeatureGroupsRepo,
+  hasTable,
 } from '../storage'
 import type { LoopRow } from '../storage'
 import type { SectionPlanRow } from '../storage'
@@ -109,16 +110,6 @@ export interface DashboardScope {
 }
 
 const UNSCOPED: DashboardScope = { projectId: null, loopName: null }
-
-/** Check whether *tbl* exists on this database. */
-function hasTable(database: Database, tbl: string): boolean {
-  const row = database
-    .prepare(
-      "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
-    )
-    .get(tbl) as { cnt: number }
-  return (row?.cnt ?? 0) > 0
-}
 
 interface DashboardRepos {
   loopsRepo: ReturnType<typeof createLoopsRepo>
