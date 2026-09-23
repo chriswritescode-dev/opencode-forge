@@ -78,7 +78,7 @@ Preserve everything needed for seamless continuation.
 export function createSessionHooks(
   projectId: string,
   logger: Logger,
-  _ctx: PluginInput,
+  _ctx?: PluginInput,
   config?: CompactionConfig
 ): SessionHooks {
   const initializedSessions = new Set<string>()
