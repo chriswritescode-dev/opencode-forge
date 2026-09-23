@@ -42,6 +42,11 @@ export function resolveLogPath(): string {
   return join(resolveDataDir(), 'logs', 'forge.log')
 }
 
+export function resolveForgeDataDir(configuredDataDir?: string): string {
+  const trimmed = configuredDataDir?.trim()
+  return trimmed && trimmed.length > 0 ? trimmed : resolveDataDir()
+}
+
 /**
  * The single builder for the forge database path. `configuredDataDir` is
  * `PluginConfig.dataDir`; every entry point (plugin, TUI, dashboard, loop
@@ -49,7 +54,6 @@ export function resolveLogPath(): string {
  * by some readers and ignored by others.
  */
 export function resolveForgeDbPath(configuredDataDir?: string): string {
-  const trimmed = configuredDataDir?.trim()
-  return join(trimmed && trimmed.length > 0 ? trimmed : resolveDataDir(), 'forge.db')
+  return join(resolveForgeDataDir(configuredDataDir), 'forge.db')
 }
 

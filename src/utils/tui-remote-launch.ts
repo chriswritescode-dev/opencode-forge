@@ -5,7 +5,7 @@ import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
 import { resolveRemoteLoopPermissionOptions } from '../constants/loop'
 import { emitLoopPermissionConfigWarnings } from './loop-permission-warnings'
-import { resolveDataDir } from './opencode-paths'
+import { resolveForgeDataDir } from './opencode-paths'
 import { reserveTuiLoopName, launchTuiLoop } from './tui-client'
 
 export interface RemoteLoopRequest {
@@ -126,7 +126,7 @@ export async function executeRemoteLoop(
   // because they do not exist on the remote machine.
   const remotePermissionOptions = resolveRemoteLoopPermissionOptions(deps.config)
 
-  emitLoopPermissionConfigWarnings(deps.config, deps.config.dataDir || resolveDataDir(), req.localDirectory, {
+  emitLoopPermissionConfigWarnings(deps.config, resolveForgeDataDir(deps.config.dataDir), req.localDirectory, {
     logger: { log: debug, error: debug, debug },
     onWarnings: (warnings) => deps.onWarning?.(warnings.join(' ')),
   })

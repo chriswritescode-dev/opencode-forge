@@ -1,12 +1,12 @@
 import type { Hooks, WorkspaceAdapter } from '@opencode-ai/plugin'
 import { join } from 'path'
-import type { ForgeClient, SessionGetParams } from '../client/port'
+import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
 import type { AgentDefinition, AgentRole } from '../agents'
 import { buildAgents } from '../agents'
 import { createConfigHandler } from '../config'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createTuiLoopRestartRepo } from '../storage'
+import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createTuiLoopRestartRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
 import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
 import { resolveLogPath } from '../storage'
@@ -17,7 +17,7 @@ import { defaultGitService } from '../utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
 import { canonicalizePath } from '../sandbox/path'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
-import { resolveOpencodeTmpDir } from '../utils/opencode-paths'
+import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
 import { isForgeWorktreeDir } from '../workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
@@ -79,7 +79,7 @@ export interface ForgeCore {
   shellEnv(input: HookInput<'shell.env'>, output: HookOutput<'shell.env'>): Promise<void>
   chatMessage(input: { sessionID: string; messageID?: string; agent?: string }, output: unknown): Promise<void>
   systemTransform(input: { sessionID?: string }, output: { system: string[] }): Promise<void>
-  onEvent(input: HookInput<'event'>): Promise<void>
+  onEvent(input: { event: ForgeEvent }): Promise<void>
   toolBefore(input: HookInput<'tool.execute.before'>, output: HookOutput<'tool.execute.before'>): Promise<void>
   toolAfter(input: HookInput<'tool.execute.after'>, output: HookOutput<'tool.execute.after'>): Promise<void>
   compacting(input: HookInput<'experimental.session.compacting'>, output: HookOutput<'experimental.session.compacting'>): Promise<void>
@@ -345,7 +345,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   })
   logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
 
-  const dataDir = config.dataDir || resolveDataDir()
+  const dataDir = resolveForgeDataDir(config.dataDir)
 
   const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox as unknown)
   for (const warning of legacySandboxWarnings) {

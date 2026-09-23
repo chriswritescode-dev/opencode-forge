@@ -1,11 +1,14 @@
-import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
+import type { Plugin as V1Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
+import { define } from '@opencode/plugin/promise/plugin'
 import { createForgeCore } from './host/forge-core'
+import { setupForgeV2 } from './host/v2'
 import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 import { loadPluginConfig } from './setup'
 import type { PluginConfig } from './types'
 
 export { createParentSessionLookup, createSessionDirectoryLookup } from './host/forge-core'
 export type { CreateParentSessionLookupOptions, CreateSessionDirectoryLookupOptions } from './host/forge-core'
+export { setupForgeV2 } from './host/v2'
 
 /**
  * Creates an OpenCode plugin instance with loop management and sandboxing.
@@ -13,7 +16,7 @@ export type { CreateParentSessionLookupOptions, CreateSessionDirectoryLookupOpti
  * @param config - Plugin configuration including loop, sandbox, and logging settings
  * @returns OpenCode Plugin instance with hooks for tools, events, and session management
  */
-export function createForgePlugin(config: PluginConfig): Plugin {
+export function createForgePlugin(config: PluginConfig): V1Plugin {
   return async (input: PluginInput): Promise<Hooks> => {
     const core = await createForgeCore(config, {
       directory: input.directory,
@@ -41,7 +44,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
   }
 }
 
-const plugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
+const plugin: V1Plugin = async (input: PluginInput): Promise<Hooks> => {
   const config = loadPluginConfig()
 
   const factory = createForgePlugin(config)
@@ -51,7 +54,7 @@ const plugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
 }
 
 const pluginModule = {
-  id: 'oc-forge',
+  ...define({ id: 'oc-forge', setup: setupForgeV2 }),
   server: plugin,
 }
 

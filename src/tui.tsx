@@ -3,7 +3,8 @@ import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plug
 import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
 import { loadPluginConfig, resolveBundledContainerDir } from './setup'
-import { resolveForgeDbPath, resolveDataDir } from './storage'
+import { resolveForgeDbPath } from './storage'
+import { resolveForgeDataDir } from './utils/opencode-paths'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
@@ -254,7 +255,7 @@ const tui: TuiPlugin = async (api) => {
 
   createEffect(() => {
     if (!api.state.ready) return
-    emitLoopPermissionConfigWarnings(pluginConfig, pluginConfig.dataDir || resolveDataDir(), directory, {
+    emitLoopPermissionConfigWarnings(pluginConfig, resolveForgeDataDir(pluginConfig.dataDir), directory, {
       logger: console,
       onWarnings: (warnings) => {
         api.ui.toast({ title: 'Forge loop permissions', message: warnings.join(' '), variant: 'warning', duration: 10_000 })
