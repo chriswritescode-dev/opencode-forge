@@ -1,25 +1,38 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { basename, join } from 'path'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { basename, join, resolve } from 'path'
 import { tmpdir } from 'os'
 import {
   buildShimSource,
   disableConfigRegistration,
-  ensureTuiRegistration,
+  ensurePluginRegistration,
   findConfigRegistrations,
   isVendoredShim,
   linkPlugin,
   readPluginShimState,
-  removeTuiRegistration,
+  removePluginRegistration,
+  resolveCliConfigTarget,
+  resolveCliPluginDir,
   resolveServerEntry,
+  resolveTuiConfigTarget,
   resolveTuiEntry,
   unlinkPlugin,
   unvendorPlugin,
   vendorPlugin,
+  VENDORED_CLI_SPEC,
   VENDORED_TUI_SPEC,
   type ConfigRegistration,
 } from '../../src/install/plugin-link'
-import { resolvePluginShimDir, resolvePluginShimPath, resolveTuiConfigPath, resolveVendorDir } from '../../src/install/paths'
+import {
+  resolveCliConfigPath,
+  resolvePluginShimDir,
+  resolvePluginShimPath,
+  resolveTuiConfigPath,
+  resolveVendorDir,
+} from '../../src/install/paths'
+
+const tuiTarget = () => resolveTuiConfigTarget()
+const cliTarget = () => resolveCliConfigTarget()
 
 let configHome: string
 const inheritedXdgConfigHome = process.env.XDG_CONFIG_HOME
@@ -288,9 +301,9 @@ describe('disableConfigRegistration', () => {
   })
 })
 
-describe('ensureTuiRegistration', () => {
+describe('ensurePluginRegistration', () => {
   test('creates tui.json with the schema key and the spec when missing', () => {
-    const result = ensureTuiRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC })
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC, target: tuiTarget() })
     expect(result.action).toBe('created')
     expect(result.file).toBe(resolveTuiConfigPath())
     expect(result.spec).toBe(VENDORED_TUI_SPEC)
@@ -311,7 +324,7 @@ describe('ensureTuiRegistration', () => {
       '}',
       '',
     ])
-    const result = ensureTuiRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC })
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC, target: tuiTarget() })
     expect(result.action).toBe('added')
     const text = readFileSync(resolveTuiConfigPath(), 'utf-8')
     expect(text).toContain('// TUI plugins are not auto-discovered; list them explicitly.')
@@ -320,9 +333,9 @@ describe('ensureTuiRegistration', () => {
   })
 
   test('returns present and leaves the file byte-identical when the spec already exists', () => {
-    ensureTuiRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC })
+    ensurePluginRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC, target: tuiTarget() })
     const before = readFileSync(resolveTuiConfigPath(), 'utf-8')
-    const result = ensureTuiRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC })
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC, target: tuiTarget() })
     expect(result.action).toBe('present')
     expect(readFileSync(resolveTuiConfigPath(), 'utf-8')).toBe(before)
   })
@@ -338,7 +351,7 @@ describe('ensureTuiRegistration', () => {
       '}',
       '',
     ])
-    const result = ensureTuiRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC })
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_TUI_SPEC, target: tuiTarget() })
     expect(result.action).toBe('updated')
     const text = readFileSync(resolveTuiConfigPath(), 'utf-8')
     expect(text).toContain('// user comment')
@@ -346,10 +359,75 @@ describe('ensureTuiRegistration', () => {
     expect(text).not.toContain('opencode-forge@0.8.8')
     expect(text).toContain(JSON.stringify(VENDORED_TUI_SPEC))
   })
+
+  test('creates cli.json with the schema key and the plugins array when missing', () => {
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_CLI_SPEC, target: cliTarget() })
+    expect(result.action).toBe('created')
+    expect(result.file).toBe(resolveCliConfigPath())
+    expect(result.spec).toBe(VENDORED_CLI_SPEC)
+    expect(existsSync(resolveCliConfigPath())).toBe(true)
+    const text = readFileSync(resolveCliConfigPath(), 'utf-8')
+    expect(text).toContain('"$schema": "https://opencode.ai/v2/cli.json"')
+    expect(text).toContain(JSON.stringify(VENDORED_CLI_SPEC))
+    expect(JSON.parse(text)).toEqual({
+      $schema: 'https://opencode.ai/v2/cli.json',
+      plugins: [VENDORED_CLI_SPEC],
+    })
+  })
+
+  test('appends the spec to an existing commented cli.json without disturbing keys or comments', () => {
+    writeGlobalConfig('cli.json', [
+      '{',
+      '  // CLI plugins are loaded by opencode V2 only.',
+      '  "theme": "legacy",',
+      '  "plugins": [',
+      '    "some-other-plugin"',
+      '  ]',
+      '}',
+      '',
+    ])
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_CLI_SPEC, target: cliTarget() })
+    expect(result.action).toBe('added')
+    const text = readFileSync(resolveCliConfigPath(), 'utf-8')
+    expect(text).toContain('// CLI plugins are loaded by opencode V2 only.')
+    expect(text).toContain('"theme": "legacy"')
+    expect(text).toContain('"some-other-plugin"')
+    expect(text).toContain(JSON.stringify(VENDORED_CLI_SPEC))
+  })
+
+  test('is idempotent for the vendored cli.json spec', () => {
+    expect(ensurePluginRegistration({ dryRun: false, spec: VENDORED_CLI_SPEC, target: cliTarget() }).action).toBe('created')
+    const before = readFileSync(resolveCliConfigPath(), 'utf-8')
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_CLI_SPEC, target: cliTarget() })
+    expect(result.action).toBe('present')
+    expect(readFileSync(resolveCliConfigPath(), 'utf-8')).toBe(before)
+  })
+
+  test('replaces a stale file spec migrated from tui.json', () => {
+    writeGlobalConfig('cli.json', [
+      '{',
+      '  "plugins": [',
+      '    "./plugin/opencode-forge/dist/tui.js"',
+      '  ]',
+      '}',
+      '',
+    ])
+    const result = ensurePluginRegistration({ dryRun: false, spec: VENDORED_CLI_SPEC, target: cliTarget() })
+    expect(result.action).toBe('updated')
+    const text = readFileSync(resolveCliConfigPath(), 'utf-8')
+    expect(text).not.toContain('dist/tui.js')
+    expect(JSON.parse(text).plugins).toEqual([VENDORED_CLI_SPEC])
+  })
+
+  test('dry run reports the action without writing cli.json', () => {
+    const result = ensurePluginRegistration({ dryRun: true, spec: VENDORED_CLI_SPEC, target: cliTarget() })
+    expect(result.action).toBe('created')
+    expect(existsSync(resolveCliConfigPath())).toBe(false)
+  })
 })
 
-describe('removeTuiRegistration', () => {
-  test('removes forge entries, reports absent on a second call, and keeps unrelated entries', () => {
+describe('removePluginRegistration', () => {
+  test('removes forge entries from tui.json, reports absent on a second call, and keeps unrelated entries', () => {
     const file = writeGlobalConfig('tui.json', [
       '{',
       '  "plugin": [',
@@ -361,12 +439,31 @@ describe('removeTuiRegistration', () => {
       '}',
       '',
     ])
-    expect(removeTuiRegistration({ dryRun: false })).toBe('removed')
+    expect(removePluginRegistration({ dryRun: false, target: tuiTarget() })).toBe('removed')
     const text = readFileSync(file, 'utf-8')
     expect(text).toContain('"unrelated"')
     expect(text).toContain('"other"')
     expect(text).not.toContain('opencode-forge')
-    expect(removeTuiRegistration({ dryRun: false })).toBe('absent')
+    expect(removePluginRegistration({ dryRun: false, target: tuiTarget() })).toBe('absent')
+  })
+
+  test('removes the vendored cli.json entry and keeps unrelated entries', () => {
+    const file = writeGlobalConfig('cli.json', [
+      '{',
+      '  "plugins": [',
+      '    "unrelated",',
+      `    ${JSON.stringify(VENDORED_CLI_SPEC)},`,
+      '    "other",',
+      '  ],',
+      '}',
+      '',
+    ])
+    expect(removePluginRegistration({ dryRun: false, target: cliTarget() })).toBe('removed')
+    const text = readFileSync(file, 'utf-8')
+    expect(text).toContain('"unrelated"')
+    expect(text).toContain('"other"')
+    expect(text).not.toContain('opencode-forge')
+    expect(removePluginRegistration({ dryRun: false, target: cliTarget() })).toBe('absent')
   })
 })
 
@@ -409,5 +506,28 @@ describe('resolveTuiEntry', () => {
     expect(entry).toBeDefined()
     expect(existsSync(entry!)).toBe(true)
     expect(basename(entry!)).toBe('tui.js')
+  })
+})
+
+describe('resolveCliPluginDir', () => {
+  test('points at the built dist directory holding both entrypoints', () => {
+    const dir = resolveCliPluginDir()
+    expect(dir).toBeDefined()
+    expect(basename(dir!)).toBe('dist')
+    expect(existsSync(join(dir!, 'index.js'))).toBe(true)
+    expect(existsSync(join(dir!, 'tui.js'))).toBe(true)
+  })
+})
+
+describe('VENDORED_CLI_SPEC', () => {
+  test('resolves against the config dir to a directory holding the tui entrypoint', () => {
+    const configDir = join(configHome, 'opencode')
+    mkdirSync(join(configDir, 'plugin', 'opencode-forge', 'dist'), { recursive: true })
+    writeFileSync(join(configDir, 'plugin', 'opencode-forge', 'dist', 'tui.js'), '// built')
+
+    const resolved = resolve(configDir, VENDORED_CLI_SPEC)
+    expect(existsSync(resolved)).toBe(true)
+    expect(statSync(resolved).isDirectory()).toBe(true)
+    expect(existsSync(join(resolved, 'tui.js'))).toBe(true)
   })
 })

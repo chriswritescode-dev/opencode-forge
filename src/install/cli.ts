@@ -5,6 +5,7 @@ import { createInterface } from 'readline/promises'
 import { stdin, stdout } from 'process'
 import {
   getBundleSpecs,
+  resolveCliConfigPath,
   resolveConfigDir,
   resolveConfigPath,
   resolveBundledConfigPath,
@@ -20,16 +21,20 @@ import {
 } from './installer'
 import {
   disableConfigRegistration,
-  ensureTuiRegistration,
+  ensurePluginRegistration,
   findConfigRegistrations,
   linkPlugin,
-  removeTuiRegistration,
+  removePluginRegistration,
+  resolveCliConfigTarget,
+  resolveCliPluginDir,
+  resolveTuiConfigTarget,
   resolveTuiEntry,
   unlinkPlugin,
   unvendorPlugin,
   vendorPlugin,
+  VENDORED_CLI_SPEC,
   VENDORED_TUI_SPEC,
-  type TuiRegistrationResult,
+  type PluginRegistrationResult,
 } from './plugin-link'
 import { MSB_INSTALL_COMMAND } from '../sandbox/msb'
 import type { OrphanFile, PlannedFile } from '../utils/bundled-sync'
@@ -103,8 +108,8 @@ The --link mode always loads the current build, so a rebuild needs no
 reinstall, but is tied to this machine's checkout path. The --vendor mode copies
 forge into the config dir, so the whole config folder can be version-controlled
 and moved to another machine, at the cost of re-running after an upgrade. Both
-modes write the tui.json entry, because the TUI plugin is not auto-loaded from
-the plugin directory.
+modes write the tui.json entry for opencode V1 and the cli.json entry for
+opencode V2, because neither loads the TUI plugin from the plugin directory.
 
 Options:
   -f, --force      Overwrite all conflicting files and delete all orphans
@@ -241,9 +246,26 @@ function printSummary(summary: InstallSummary): void {
   }
 }
 
-function reportTuiRegistration(tui: TuiRegistrationResult): void {
-  stdout.write(`  ${tui.action}: ${tui.file} ${JSON.stringify(tui.spec)}\n`)
-  if (tui.action === 'failed') process.exitCode = 1
+function reportPluginRegistration(result: PluginRegistrationResult): void {
+  stdout.write(`  ${result.action}: ${result.file} ${JSON.stringify(result.spec)}\n`)
+  if (result.action === 'failed') process.exitCode = 1
+}
+
+function ensurePluginEntries(options: { dryRun: boolean; tuiSpec?: string; cliSpec?: string }): void {
+  if (options.tuiSpec) {
+    reportPluginRegistration(
+      ensurePluginRegistration({ dryRun: options.dryRun, spec: options.tuiSpec, target: resolveTuiConfigTarget() }),
+    )
+  } else {
+    stdout.write('  warning: TUI entry skipped because dist/tui.js was not found.\n')
+  }
+  if (options.cliSpec) {
+    reportPluginRegistration(
+      ensurePluginRegistration({ dryRun: options.dryRun, spec: options.cliSpec, target: resolveCliConfigTarget() }),
+    )
+  } else {
+    stdout.write('  warning: V2 entry skipped because dist was not found.\n')
+  }
 }
 
 async function handleConfigRegistrations(
@@ -270,8 +292,8 @@ async function handleConfigRegistrations(
 
 /**
  * Perform the plugin-directory step after the bundle install: install or remove
- * the server re-export shim, register the TUI entry, and surface any
- * double-loading config registrations.
+ * the server re-export shim, register the tui.json and cli.json entries, and
+ * surface any double-loading config registrations.
  */
 async function runPluginLinkStep(
   opts: CliOptions,
@@ -290,8 +312,10 @@ async function runPluginLinkStep(
     stdout.write(`  ${unlinked.action}: ${unlinked.shimPath}\n`)
     const unvendored = unvendorPlugin({ dryRun: opts.dryRun })
     stdout.write(`  ${unvendored}: ${resolveVendorDir()}\n`)
-    const tuiRemoved = removeTuiRegistration({ dryRun: opts.dryRun })
+    const tuiRemoved = removePluginRegistration({ dryRun: opts.dryRun, target: resolveTuiConfigTarget() })
     stdout.write(`  ${tuiRemoved}: ${resolveTuiConfigPath()}\n`)
+    const cliRemoved = removePluginRegistration({ dryRun: opts.dryRun, target: resolveCliConfigTarget() })
+    stdout.write(`  ${cliRemoved}: ${resolveCliConfigPath()}\n`)
     return
   }
   if (opts.link === 'vendored') {
@@ -310,7 +334,7 @@ async function runPluginLinkStep(
     const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'vendored' })
     stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
     if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
-    reportTuiRegistration(ensureTuiRegistration({ dryRun: opts.dryRun, spec: VENDORED_TUI_SPEC }))
+    ensurePluginEntries({ dryRun: opts.dryRun, tuiSpec: VENDORED_TUI_SPEC, cliSpec: VENDORED_CLI_SPEC })
     await handleConfigRegistrations(opts, prompter)
     return
   }
@@ -323,12 +347,7 @@ async function runPluginLinkStep(
   }
   stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
   if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
-  const tuiEntry = resolveTuiEntry()
-  if (tuiEntry) {
-    reportTuiRegistration(ensureTuiRegistration({ dryRun: opts.dryRun, spec: tuiEntry }))
-  } else {
-    stdout.write('  warning: TUI entry skipped because dist/tui.js was not found.\n')
-  }
+  ensurePluginEntries({ dryRun: opts.dryRun, tuiSpec: resolveTuiEntry(), cliSpec: resolveCliPluginDir() })
   await handleConfigRegistrations(opts, prompter)
 }
 

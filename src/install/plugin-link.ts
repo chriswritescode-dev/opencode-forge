@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 import { applyEdits, findNodeAtLocation, modify, parseTree } from 'jsonc-parser/lib/esm/main.js'
 import type { Node } from 'jsonc-parser/lib/esm/main.js'
 import {
+  resolveCliConfigPath,
   resolveConfigDir,
   resolveOpencodeConfigCandidates,
   resolvePluginShimPath,
@@ -61,6 +62,9 @@ export const VENDORED_SERVER_SPEC = './opencode-forge/dist/index.js'
 /** Relative specifier for `tui.json`, resolved by opencode against the config dir. */
 export const VENDORED_TUI_SPEC = './plugin/opencode-forge/dist/tui.js'
 
+/** Relative specifier for `cli.json`, resolved by opencode against the config dir. */
+export const VENDORED_CLI_SPEC = './plugin/opencode-forge/dist'
+
 /** First built server entry candidate that exists on disk, if any. */
 export function resolveServerEntry(): string | undefined {
   return resolveServerEntryCandidates().find((candidate) => existsSync(candidate))
@@ -88,6 +92,19 @@ export function resolveTuiEntry(): string | undefined {
   if (!root) return undefined
   const entry = join(root, 'dist', 'tui.js')
   return existsSync(entry) ? entry : undefined
+}
+
+/**
+ * Built `dist` directory of the package, or undefined when it is absent. opencode
+ * V2 rejects a file target for a configured plugin and resolves a directory's
+ * `server` and `tui` entrypoints, so this directory is the spec written into
+ * `cli.json` for the external mode.
+ */
+export function resolveCliPluginDir(): string | undefined {
+  const root = resolvePackageRoot()
+  if (!root) return undefined
+  const dir = join(root, 'dist')
+  return existsSync(dir) ? dir : undefined
 }
 
 /** Read the installed shim, extracting its re-export target when parseable. */
@@ -200,27 +217,48 @@ export function unvendorPlugin(options: { dryRun: boolean }): 'removed' | 'absen
   return 'removed'
 }
 
-export interface TuiRegistrationResult {
+export interface PluginConfigTarget {
+  file: string
+  key: string
+  schema: string
+}
+
+/** `tui.json` is opencode V1's TUI plugin list. */
+export function resolveTuiConfigTarget(): PluginConfigTarget {
+  return { file: resolveTuiConfigPath(), key: 'plugin', schema: 'https://opencode.ai/tui.json' }
+}
+
+/** `cli.json` is opencode V2's plugin list for both the server and TUI surfaces. */
+export function resolveCliConfigTarget(): PluginConfigTarget {
+  return { file: resolveCliConfigPath(), key: 'plugins', schema: 'https://opencode.ai/v2/cli.json' }
+}
+
+export interface PluginRegistrationResult {
   action: 'created' | 'added' | 'updated' | 'present' | 'failed'
   file: string
   spec: string
 }
 
-const TUI_MODIFY_OPTIONS = { formattingOptions: { insertSpaces: true, tabSize: 2 } } as const
+const PLUGIN_MODIFY_OPTIONS = { formattingOptions: { insertSpaces: true, tabSize: 2 } } as const
 
-function tuiConfigSource(spec: string): string {
-  return `{\n  "$schema": "https://opencode.ai/tui.json",\n  "plugin": [${JSON.stringify(spec)}]\n}\n`
+function pluginConfigSource(spec: string, target: PluginConfigTarget): string {
+  return `{\n  "$schema": ${JSON.stringify(target.schema)},\n  ${JSON.stringify(target.key)}: [${JSON.stringify(spec)}]\n}\n`
 }
 
 /**
- * Ensure `tui.json` lists the given plugin spec. opencode loads the TUI surface
- * only from the `plugin` array in this file — there is no directory scan — so
- * the entry must be written explicitly. The file is parsed and edited as JSONC
+ * Ensure the target config file lists the given plugin spec. opencode loads the
+ * TUI surface only from the `plugin` array in `tui.json`, and V2 loads both
+ * surfaces from the `plugins` array in `cli.json` — there is no directory scan —
+ * so the entry must be written explicitly. The file is parsed and edited as JSONC
  * so existing comments and trailing commas survive, and an already-present or
  * stale forge entry is handled without rewriting unrelated content.
  */
-export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }): TuiRegistrationResult {
-  const file = resolveTuiConfigPath()
+export function ensurePluginRegistration(options: {
+  dryRun: boolean
+  spec: string
+  target: PluginConfigTarget
+}): PluginRegistrationResult {
+  const { file, key } = options.target
   const report = { file, spec: options.spec }
   let text: string
   try {
@@ -229,7 +267,7 @@ export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }
     if (!options.dryRun) {
       try {
         mkdirSync(dirname(file), { recursive: true })
-        writeFileSync(file, tuiConfigSource(options.spec))
+        writeFileSync(file, pluginConfigSource(options.spec, options.target))
         return { action: 'created', ...report }
       } catch {
         return { action: 'failed', ...report }
@@ -238,21 +276,21 @@ export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }
     return { action: 'created', ...report }
   }
   try {
-    const { plugin, entries } = scanPluginArray(text, resolveConfigDir())
+    const { plugin, entries } = scanPluginArray(text, key, resolveConfigDir())
     let next = text
     let action: 'added' | 'updated' | 'present'
     if (plugin) {
       if (entries.some((entry) => entry.spec === options.spec)) {
         action = 'present'
       } else if (entries.length > 0) {
-        next = applyEdits(next, modify(next, ['plugin', entries[0].index], options.spec, TUI_MODIFY_OPTIONS))
+        next = applyEdits(next, modify(next, [key, entries[0].index], options.spec, PLUGIN_MODIFY_OPTIONS))
         action = 'updated'
       } else {
-        next = applyEdits(next, modify(next, ['plugin', -1], options.spec, TUI_MODIFY_OPTIONS))
+        next = applyEdits(next, modify(next, [key, -1], options.spec, PLUGIN_MODIFY_OPTIONS))
         action = 'added'
       }
     } else {
-      next = applyEdits(next, modify(next, ['plugin'], [options.spec], TUI_MODIFY_OPTIONS))
+      next = applyEdits(next, modify(next, [key], [options.spec], PLUGIN_MODIFY_OPTIONS))
       action = 'added'
     }
     if (!options.dryRun) {
@@ -265,12 +303,15 @@ export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }
 }
 
 /**
- * Remove every forge entry from the `tui.json` `plugin` array, highest index
- * first so earlier indices stay valid. Returns `'absent'` when the file or any
- * forge entry does not exist.
+ * Remove every forge entry from the target config file's plugin array, highest
+ * index first so earlier indices stay valid. Returns `'absent'` when the file or
+ * any forge entry does not exist.
  */
-export function removeTuiRegistration(options: { dryRun: boolean }): 'removed' | 'absent' | 'failed' {
-  const file = resolveTuiConfigPath()
+export function removePluginRegistration(options: {
+  dryRun: boolean
+  target: PluginConfigTarget
+}): 'removed' | 'absent' | 'failed' {
+  const { file, key } = options.target
   let text: string
   try {
     text = readFileSync(file, 'utf-8')
@@ -278,11 +319,11 @@ export function removeTuiRegistration(options: { dryRun: boolean }): 'removed' |
     return 'absent'
   }
   try {
-    const { entries } = scanPluginArray(text, resolveConfigDir())
+    const { entries } = scanPluginArray(text, key, resolveConfigDir())
     if (entries.length === 0) return 'absent'
     let next = text
     for (const { index } of [...entries].sort((a, b) => b.index - a.index)) {
-      next = applyEdits(next, modify(next, ['plugin', index], undefined, TUI_MODIFY_OPTIONS))
+      next = applyEdits(next, modify(next, [key, index], undefined, PLUGIN_MODIFY_OPTIONS))
     }
     if (!options.dryRun) {
       writeFileSync(file, next)
@@ -303,7 +344,7 @@ export function findConfigRegistrations(): ConfigRegistration[] {
   for (const file of resolveOpencodeConfigCandidates()) {
     try {
       const text = readFileSync(file, 'utf-8')
-      for (const { node, spec } of scanPluginArray(text, dirname(file)).entries) {
+      for (const { node, spec } of scanPluginArray(text, 'plugin', dirname(file)).entries) {
         regs.push({ file, spec, line: lineOf(text, node.offset) })
       }
     } catch {
@@ -375,10 +416,10 @@ interface ForgeEntry {
   node: Node
 }
 
-function scanPluginArray(text: string, baseDir: string): { plugin?: Node; entries: ForgeEntry[] } {
+function scanPluginArray(text: string, key: string, baseDir: string): { plugin?: Node; entries: ForgeEntry[] } {
   const root = parseTree(text, undefined, { allowTrailingComma: true })
   if (!root) return { entries: [] }
-  const plugin = findNodeAtLocation(root, ['plugin'])
+  const plugin = findNodeAtLocation(root, [key])
   if (!plugin || plugin.type !== 'array' || !plugin.children) return { plugin, entries: [] }
   const entries: ForgeEntry[] = []
   plugin.children.forEach((child, index) => {
