@@ -8,14 +8,16 @@ See also: [Architecture](architecture.md), [Loop System](loop-system.md), [API R
 
 ```
 src/
-├── index.ts                 # Server plugin entry point (createForgePlugin)
-├── tui.tsx                  # TUI plugin entry point
+├── index.ts                 # Server plugin entry point (V1 server + V2 setup)
+├── tui.tsx                  # TUI plugin entry point (V1 tui + V2 setup)
 ├── config.ts                # Agent/command configuration handler
 ├── setup.ts                 # Config loading, skill installation
 ├── types.ts                 # Core type definitions (PluginConfig, etc.)
 ├── version.ts               # VERSION constant generated from package.json
 │
 ├── agents/                  # AI agent definitions
+├── client/                  # ForgeClient port + V1/V2 host adapters
+├── host/                    # Host-neutral core + V1/V2 composition adapters
 ├── hooks/                   # Plugin event/lifecycle hooks
 ├── loop/                    # Core loop state machine & runtime
 ├── services/                # Business logic services
@@ -33,13 +35,14 @@ src/
 
 ### `src/index.ts` — Server Plugin Entry
 
-The main server plugin factory function that initializes all services and returns the `Hooks` object.
+The main server plugin factory function that initializes all services and returns the `Hooks` object. The default export carries both hosts: the 1.x plugin function as `server` and the 2.x module (`id` + `setup`) built with `define`.
 
 **Public API** (`src/index.ts`):
 
 | Export | Type | Description |
 |--------|------|-------------|
-| `createForgePlugin(config)` | Function | Factory returning an OpenCode `Plugin` |
+| `createForgePlugin(config)` | Function | Factory returning an OpenCode 1.x `Plugin` |
+| `setupForgeV2(ctx)` | Function | OpenCode 2.x `setup` entry, exported for the module and tests |
 | `createParentSessionLookup(options)` | Function | Resolves parent sessions across worktrees |
 | `createSessionDirectoryLookup(options)` | Function | Resolves session directory across worktrees |
 | `PluginConfig` | Interface | Complete plugin configuration |
@@ -52,11 +55,58 @@ Source: [src/index.ts](../src/index.ts)
 
 The TUI plugin providing sidebar widget and dialog system. Communicates with the server plugin via RPC over the opencode bus.
 
-- Exports `{ id: 'oc-forge', tui }`
-- Registers commands: `forge.plan.view`, `forge.plan.load`
-- Provides plan viewer, execution dialog, loop details, model and variant selection
+- Exports `{ id: 'oc-forge', tui, setup }`: the 1.x `tui` object plus the 2.x `setup`
+- On 1.x, registers commands: `forge.plan.view`, `forge.plan.load`, and provides the plan viewer, execution dialog, loop details, model and variant selection
+- On 2.x, provides the loop sidebar, the `Open dashboard` command, and the missing-build-context toast
 
 Source: [src/tui.tsx](../src/tui.tsx)
+
+---
+
+## `host/` — Dual-host Composition
+
+Host-neutral core plus the thin adapters that map each OpenCode host onto it.
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
+| `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
+| `v2-events.ts` | Normalizes V2 events into Forge's event shape |
+| `v2-hooks.ts` | Registers the core handlers through V2's hook API |
+| `v2-tools.ts` | Registers the shared Forge tools on V2 |
+| `v2-config.ts` | Resolves and registers agents and commands on V2 |
+
+### Public API
+
+```typescript
+createForgeCore(config: PluginConfig, host: ForgeHostInput): Promise<ForgeCore>
+buildArchitectReminder(): string
+createParentSessionLookup(options): ...
+createSessionDirectoryLookup(options): ...
+setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<void>>
+```
+
+Source: [src/host/forge-core.ts](../src/host/forge-core.ts), [src/host/v2.ts](../src/host/v2.ts)
+
+---
+
+## `client/` — ForgeClient Port and Adapters
+
+The port every Forge service depends on, plus one adapter per host.
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `port.ts` | `ForgeClient` interface (V1-derived types) |
+| `sdk-adapter.ts` | 1.x adapter over `PluginInput` and the V1 SDK client |
+| `v2-adapter.ts` | 2.x adapter over the V2 plugin context |
+| `v2-workspaces.ts` | V2 worktree/location workspace implementation |
+| `errors.ts` | Shared error classification and `unavailableError()` |
+
+Source: [src/client/port.ts](../src/client/port.ts)
 
 ---
 

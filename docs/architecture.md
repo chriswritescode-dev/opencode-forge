@@ -19,6 +19,19 @@ OpenCode Forge is a dual-plugin: it exports both a server plugin (`src/index.ts`
 | `.` / `./server` | `src/index.ts` | Server-side plugin: hooks, tools, agents, config |
 | `./tui` | `src/tui.tsx` | TUI plugin: sidebar, plan viewer, execution panel |
 
+### Dual-host entry
+
+One package supports both OpenCode lines. `src/index.ts` default-exports an object that carries the 1.x plugin function as `server` alongside the 2.x module (`id` + `setup`) built with `define` from `@opencode/plugin/promise/plugin`; `src/tui.tsx` likewise carries the 1.x `tui` object alongside the 2.x `setup`. OpenCode 1.x's plugin reader rejects a default export that has both `server` and `tui`, which is why the server and TUI surfaces stay in separate entry files.
+
+Both hosts are thin adapters over one host-neutral core (`src/host/forge-core.ts`), so the loop runtime, storage, sandbox, and tools stay single-sourced:
+
+| Host | Adapter files | Role |
+|---|---|---|
+| OpenCode 1.x | `src/index.ts` | Maps the 1.x `Hooks` object onto the core's handlers |
+| OpenCode 2.x | `src/host/v2.ts` | Runs `setup(ctx)`, registers tools/agents/commands/hooks, and pumps normalized events into the core |
+
+The 2.x side is split by concern: `src/client/v2-adapter.ts` implements the `ForgeClient` port over the V2 context, `src/client/v2-workspaces.ts` adapts V2 worktrees and locations, `src/host/v2-events.ts` normalizes V2 events into Forge's event shape, and `src/host/v2-config.ts`, `src/host/v2-tools.ts`, and `src/host/v2-hooks.ts` handle agent/command registration, tool registration, and hooks.
+
 ### Server Plugin (`src/index.ts`)
 
 The server plugin is the core of the plugin. It:
@@ -62,7 +75,9 @@ The TUI communicates with the server via RPC over the opencode bus using `tui.co
 The codebase is organized into these module groups under `src/`:
 
 | Module | Purpose | Key Files |
-|--------|---------|-----------|
+|--------|-----------|-----------|
+| `host/` | Dual-host composition: host-neutral core plus V1/V2 adapters | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts` |
+| `client/` | `ForgeClient` port and host adapters | `port.ts`, `sdk-adapter.ts`, `v2-adapter.ts`, `v2-workspaces.ts`, `errors.ts` |
 | `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
@@ -134,9 +149,21 @@ The sandbox state model has five states. `running` and `stopped` are both usable
   absolute paths outside the sandbox mounts, so that host execution stays confined to the
   mounted worktree.
 
+On OpenCode 2.x the same shim is wired in through the `shell` `create.before` hook instead of the `config`/`shell.env` pair: the hook fires for every shell spawn with a location directory, resolves the sandbox for the loop worktree location, and sets the shell plus `FORGE_SANDBOX_CONTAINER` in the spawn environment. `glob`/`grep` redirection is unchanged.
+
 ## Hook System
 
-OpenCode Forge integrates with OpenCode through several hook points. The plugin returns a standard `Hooks` object.
+OpenCode Forge integrates with OpenCode through several hook points. On OpenCode 1.x the plugin returns a standard `Hooks` object; on OpenCode 2.x `setup(ctx)` registers the same core handlers through V2's hook API.
+
+### OpenCode 2.x hooks (`src/host/v2-hooks.ts`)
+
+The V2 adapter registers the shared core handlers through V2's hook API:
+
+- `tool.hook('execute.before')` / `tool.hook('execute.after')` — sandbox tool redirection and logging, with V2 tool names (`shell`, `subagent`) mapped back to Forge's 1.x names (`bash`, `task`)
+- `shell.hook('create.before')` — sandbox shell routing, keyed by the loop worktree location
+- `session.hook('prompt')` — plan capture from submitted prompts
+- `session.hook('context')` — system context injection and the architect reminder
+- `session.hook('compaction')` — compaction instructions
 
 ### Session Hooks (`src/hooks/session.ts`)
 
@@ -207,7 +234,7 @@ Plugin configuration is stored at `~/.config/opencode/forge-config.jsonc` (JSONC
 
 ## Service Initialization Order
 
-The plugin follows this initialization sequence within `createForgePlugin()`:
+The plugin follows this initialization sequence within `createForgeCore()`, shared by both hosts:
 
 1. **Logger** - Always first (`createLogger()`)
 2. **v2 Client** - Create OpenCode v2 SDK client for API calls
@@ -240,6 +267,8 @@ On plugin shutdown (`server.instance.disposed` event):
 graph TD
     TUI["TUI Plugin (tui.tsx)"] --> RPC["RPC Bus"]
     RPC --> Server["Server Plugin (index.ts)"]
+    V2["OpenCode 2 setup (host/v2.ts)"] --> Core["Forge Core (host/forge-core.ts)"]
+    Server --> Core
 
     subgraph Server
         Hooks["Hook System"] --> LoopHandler["Loop Event Handler"]
@@ -254,6 +283,11 @@ graph TD
         Tools --> ReviewTools["Review Tools"]
         Tools --> PlanTools["Plan Tools"]
     end
+
+    V2 --> V2Client["V2 ForgeClient (client/v2-adapter.ts)"]
+    Server --> V1Client["V1 ForgeClient (client/sdk-adapter.ts)"]
+    V2Client --> Core
+    V1Client --> Core
 
     LoopRuntime --> SandboxManager["Sandbox Manager"]
     SandboxManager --> Msb["msb Sandbox"]

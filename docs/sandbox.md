@@ -42,7 +42,7 @@ obscura serve --port 9222
 
 ## How It Works
 
-1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI.
+1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI (OpenCode 1.x only).
 2. Forge creates one sandbox per loop, or one project-scoped host-session sandbox shared by plugin instances in the process.
 3. The active directory, the read-only source project (when `sandbox.mountProjectReadonly` is enabled), and the worktree's git metadata directory are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
 4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work.
@@ -53,10 +53,12 @@ The read-only project mount is dropped whenever it would nest over the writable 
 
 Sandbox loops use opencode's native `bash` tool — streaming output, truncation with spill-to-file, timeouts, and abort all behave exactly as in a normal session. Routing happens underneath the tool:
 
-> Requires opencode >= 1.15.5 (the session-aware `shell.env` plugin hook). Enforced via the `engines.opencode` field in Forge's package.json: older opencode versions refuse to load the plugin instead of silently running sandbox loop commands on the host.
+> On OpenCode 1.x, routing requires opencode >= 1.15.5 (the session-aware `shell.env` plugin hook). Enforced via the `engines.opencode` field in Forge's package.json: older opencode versions refuse to load the plugin instead of silently running sandbox loop commands on the host. On OpenCode 2.x the same shim is wired in through the `shell` `create.before` hook instead.
 
-1. Forge points opencode's `shell` config at a generated shim (`<dataDir>/forge-shell`).
-2. On every bash tool call, Forge's `shell.env` hook resolves the session. Sessions belonging to an active sandbox loop, or to the acknowledged host-session selection, get `FORGE_SANDBOX_CONTAINER` injected; descendants such as Task-tool subagents inherit the same routing. The shim then runs the command via `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
+1. Forge points opencode's shell at a generated shim (`<dataDir>/forge-shell`) — through the `shell` config option on 1.x, through the `shell` `create.before` hook on 2.x.
+2. Every bash tool call injects `FORGE_SANDBOX_CONTAINER` when a sandbox is expected, and the shim runs the command via `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
+   - On 1.x, Forge's `shell.env` hook resolves the session. Sessions belonging to an active sandbox loop, or to the acknowledged host-session selection, get the container; descendants such as Task-tool subagents inherit the same routing.
+   - On 2.x, the `create.before` hook has no session ID, so Forge routes by location instead: loop sessions live in their worktree location, and that location resolves to the loop's sandbox. A non-loop session has no routing key, so host-session sandboxing stays 1.x only.
 3. Sessions with no expected sandbox get no container env, and the shim execs the host shell unchanged (respecting a user-configured `shell` via `FORGE_HOST_SHELL`). Active loop routing always takes precedence over host-session preference.
 
 The shim fails closed: if the sandbox is expected but `msb exec` fails (or the loop sandbox cannot be restored), the command errors — it never silently runs on the host. `msb exec` propagates the guest command's exit code verbatim, so the bash tool keeps seeing real exit statuses.

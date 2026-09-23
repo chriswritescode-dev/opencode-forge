@@ -155,7 +155,9 @@ Notes:
 | `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
 | `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle host sandbox`, which enables or disables the project host-session sandbox for the current session. Empty registers the command without a default binding. Requires `sandbox.enabled`. |
 
-The host-session sandbox applies only to sessions outside active loops. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. `bash`, `glob`, and `grep` route through the sandbox; file tools remain host-side. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
+The host-session sandbox applies only to sessions outside active loops and is OpenCode 1.x only. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. `bash`, `glob`, and `grep` route through the sandbox; file tools remain host-side. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
+
+`tui.keybinds.executePlan` and `tui.keybinds.toggleHostSandbox` apply to the OpenCode 1.x TUI only. The V2 TUI surface reads `tui.sidebar`, `tui.showVersion`, and `tui.keybinds.dashboard` — see [TUI → OpenCode 2.x](tui.md#opencode-2x).
 
 ## Dashboard
 
@@ -197,7 +199,7 @@ Example:
 
 ## Remotes
 
-`remotes` registers remote opencode servers as loop launch targets. When at least one remote is configured, the TUI execution dialog shows a `Target` picker; selecting a remote launches the loop on that server instead of locally. Remote targets support **Loop mode only** — `New session` and `Execute here` remain local.
+`remotes` registers remote opencode servers as loop launch targets. When at least one remote is configured, the TUI execution dialog shows a `Target` picker; selecting a remote launches the loop on that server instead of locally. Remote targets support **Loop mode only** — `New session` and `Execute here` remain local. Remote launch is OpenCode 1.x only: the V2 host has no remote-client path.
 
 | Option | Default | Description |
 |---|---:|---|
@@ -335,11 +337,11 @@ The installer can also write the plugin itself into opencode's plugin directory,
 |---|---|
 | `--link` | Writes `<configDir>/plugin/opencode-forge.js`, a one-line re-export shim whose target is the absolute path of the current build's `dist/index.js`. Because the shim re-exports the live build, a rebuild is picked up on the next opencode start with no reinstall. The shim is tied to that checkout path, so it is not portable to another machine. |
 | `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6.5 MB) and writes the shim with the relative target `./opencode-forge/dist/index.js`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
-| `--unlink` | Removes the shim, the vendored directory, and the `tui.json` entry. |
+| `--unlink` | Removes the shim, the vendored directory, and the `tui.json` and `cli.json` entries. |
 
 From a source checkout the same flags are `pnpm run setup --link`, `pnpm run setup --vendor`, and `pnpm run setup --unlink` (the `run` is required — `setup` is a built-in pnpm command). In a non-interactive shell, `--link` and `--vendor` still require one of `-y`, `-f`, or `-k`, matching every other non-interactive use of the installer.
 
-Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loading](#server-vs-tui-loading)).
+Both modes also write the terminal-config entries — the `plugin` entry in `tui.json` for OpenCode 1.x and the `plugins` entry in `cli.json` for OpenCode 2.x (see [Server vs TUI loading](#server-vs-tui-loading)).
 
 #### Resolved layout
 
@@ -349,7 +351,8 @@ Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loa
 <configDir>/
 ├── plugin/
 │   └── opencode-forge.js          # export { default } from "/abs/path/to/dist/index.js"
-└── tui.json                       # plugin: ["/abs/path/to/dist/tui.js"]
+├── tui.json                        # plugin: ["/abs/path/to/dist/tui.js"] (OpenCode 1.x)
+└── cli.json                        # plugins: ["/abs/path/to/dist"] (OpenCode 2.x)
 ```
 
 `--vendor` copies the whole package:
@@ -366,20 +369,23 @@ Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loa
 │       │   └── tui.js
 │       ├── container/
 │       └── skills/
-└── tui.json                       # plugin: ["./plugin/opencode-forge/dist/tui.js"]
+├── tui.json                        # plugin: ["./plugin/opencode-forge/dist/tui.js"] (OpenCode 1.x)
+└── cli.json                        # plugins: ["./plugin/opencode-forge/dist"] (OpenCode 2.x)
 ```
 
 The vendored copy mirrors the npm package layout rather than being "just dist": forge resolves its bundled assets as siblings of its package root (`container/`, `skills/`, `forge-config.jsonc`), so the sandbox template and the bundled skill sync resolve inside the vendored copy.
 
 #### Server vs TUI loading
 
-opencode auto-loads server plugins from the config dir by globbing `{plugin,plugins}/*.{ts,js}`. Both the singular `plugin/` and plural `plugins/` directory names work. The scan is not recursive and does not match `.mjs`, which is why the installer uses a top-level shim file and keeps the vendored payload in a subdirectory — the payload itself is never scanned.
+On OpenCode 1.x, opencode auto-loads server plugins from the config dir by globbing `{plugin,plugins}/*.{ts,js}`. Both the singular `plugin/` and plural `plugins/` directory names work. The scan is not recursive and does not match `.mjs`, which is why the installer uses a top-level shim file and keeps the vendored payload in a subdirectory — the payload itself is never scanned.
 
-That scan serves the server plugin surface only. The TUI surface is loaded exclusively from the `plugin` array in `tui.json`; there is no TUI directory scan. This is why both modes write a `tui.json` entry, and why the plugin directory alone cannot enable the sidebar and execution dialog. Path specs in a config file resolve relative to that config file's own directory, which is what makes the vendored `./plugin/opencode-forge/dist/tui.js` entry portable.
+On 1.x that scan serves the server plugin surface only. The TUI surface is loaded exclusively from the `plugin` array in `tui.json`; there is no TUI directory scan. This is why the installer writes a `tui.json` entry, and why the plugin directory alone cannot enable the sidebar and execution dialog.
+
+OpenCode 2.x loads the terminal surfaces from the `plugins` array in `cli.json`, which replaces `tui.json`, and resolves a directory spec's package entrypoints rather than accepting a file target — which is why the installer points `cli.json` at the built `dist` directory. Path specs in a config file resolve relative to that config file's own directory, which is what makes the vendored `./plugin/opencode-forge/dist` entry portable.
 
 #### Double-loading
 
-Local (`file://`) plugin specs dedup by exact file URL, while npm specs dedup by package name. So keeping a `plugin` array entry for forge AND installing the shim makes opencode initialize forge twice under the same id `oc-forge`. The installer detects an existing forge entry in the global `opencode.json`/`opencode.jsonc`; when run interactively it offers to comment the entry out, and in non-interactive mode it warns and changes nothing.
+Local (`file://`) plugin specs dedup by exact file URL, while npm specs dedup by package name. So keeping a `plugin` array entry for forge AND installing the shim makes opencode initialize forge twice under the same id `oc-forge`. The installer detects an existing forge entry in the global `opencode.json`/`opencode.jsonc` `plugin` array; when run interactively it offers to comment the entry out, and in non-interactive mode it warns and changes nothing. On OpenCode 2.x, that detection does not cover the `plugins` array — if you list forge there and also install it into the config directory, remove one of the two entries by hand.
 
 #### Verification
 

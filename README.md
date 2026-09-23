@@ -20,6 +20,22 @@
 pnpm add opencode-forge
 ```
 
+Forge supports OpenCode 1.x and OpenCode 2.x from the same package: the server entry exports both the 1.x plugin function and the 2.x `setup` module, and the TUI entry covers both terminal surfaces.
+
+### OpenCode 2.x
+
+Add to your `opencode.json` to enable Forge's server-side hooks, tools, and agents:
+
+```json
+{
+  "plugins": ["opencode-forge@latest"]
+}
+```
+
+OpenCode 2 loads the plugin's TUI surface from the same entry, so no separate terminal config is needed. A config-directory install writes a `cli.json` entry instead — see [Plugin-directory install](#plugin-directory-install).
+
+### OpenCode 1.x
+
 Add to your `opencode.json` to enable Forge's server-side hooks, tools, and agents:
 
 ```json
@@ -39,14 +55,14 @@ Add to your `opencode.json` to enable Forge's server-side hooks, tools, and agen
 
 ### Plugin-directory install
 
-Instead of editing the `plugin` arrays by hand, the installer can wire the plugin into opencode's config directory:
+Instead of editing the plugin arrays by hand, the installer can wire the plugin into opencode's config directory:
 
 ```bash
 bunx opencode-forge --link        # re-export shim for the current build
 bunx opencode-forge --vendor      # self-contained copy (portable)
 ```
 
-From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`. Both modes also write the `tui.json` `plugin` entry automatically — opencode does not auto-load the TUI plugin from the plugin directory, so the plugin directory alone cannot enable the sidebar and execution dialog. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
+From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`. Both modes also write the terminal-config entries automatically — the `tui.json` `plugin` entry for OpenCode 1.x and the `cli.json` `plugins` entry for OpenCode 2.x — because neither version auto-loads the TUI plugin from the plugin directory. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
 
 | | `--link` | `--vendor` |
 | --- | --- | --- |
@@ -55,7 +71,7 @@ From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`
 | Payload in config dir | Shim only | Full copy (~6.5 MB) |
 | Needs re-run after upgrade | No | Yes |
 
-Loops require OpenCode 1.17.8 or newer with `OPENCODE_EXPERIMENTAL_WORKSPACES=true` set in the environment that launches `opencode`:
+Loops on OpenCode 1.x require version 1.17.8 or newer with `OPENCODE_EXPERIMENTAL_WORKSPACES=true` set in the environment that launches `opencode`:
 
 ```bash
 export OPENCODE_EXPERIMENTAL_WORKSPACES=true
@@ -63,16 +79,27 @@ export OPENCODE_EXPERIMENTAL_WORKSPACES=true
 
 Without it, Forge cannot create loop worktrees, so plan loops, goal loops, TUI Loop launches, and grouped execution fail before their first session. See [Workspace Integration](docs/workspaces.md).
 
+On OpenCode 2.x, loop worktrees use V2's native worktree and location model: no environment variable and no 1.17.8 floor.
+
 ## What Forge Adds
 
 Forge ships two plugin entrypoints plus standalone management surfaces:
 
-- **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. Provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support.
-- **TUI plugin** — enabled separately in `tui.json`. Layers on the sidebar and execution dialog.
+- **Server plugin** — enabled through OpenCode plugin config in `opencode.json` (`plugin` on 1.x, `plugins` on 2.x). Provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support.
+- **TUI plugin** — the sidebar and execution dialog on 1.x, enabled separately in `tui.json`. On 2.x it loads from the server plugin entry (or the `cli.json` `plugins` array) and provides the loop sidebar plus the `Open dashboard` command.
 - **Installer CLI** — installs/upgrades bundled prompts and skills, and installs the plugin itself into opencode's plugin directory (`--link`/`--vendor`/`--unlink`).
 - **Dashboard** — an observability interface launchable from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only).
 
 For a quick tour of the loop itself, see [Loop Flow](#loop-flow) below.
+
+## OpenCode 2.x limitations
+
+The server side — loops, plans, review findings, tools, agents, commands, permissions, sandboxing, and event handling — works on both hosts. These surfaces remain OpenCode 1.x only:
+
+- **Execution dialog and loop restart** — the `Execute plan` / `Execute pasted plan` dialogs and the loop restart controls are not in the V2 TUI. Use the `execute-plan` tool, `loop-status` with `restart`, or the dashboard instead.
+- **Host-session sandbox toggle** — sandboxing a non-loop session from the TUI (`Toggle host sandbox`) has no routing key on V2. Loop sandboxes work on both hosts.
+- **Subtask commands** — `review` and `review-plan` run inline in the invoking session on V2 instead of spawning a subtask.
+- **Remote loops and remote dashboard** — launching a loop against a configured remote opencode server, and opening the dashboard for a remote server, are 1.x only.
 
 ## Features
 

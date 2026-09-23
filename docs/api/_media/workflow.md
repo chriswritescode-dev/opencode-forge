@@ -12,6 +12,8 @@ The stored plan is the source of truth for execution: `execute-plan`, the approv
 
 ## Execution
 
+On OpenCode 2.x there is no execution dialog: launch the same modes with the `execute-plan` tool (`mode: new-session`, or the default loop) or `/execute-goal`. Remote loop launches are 1.x only. The rest of this section describes the 1.x dialog.
+
 After the architect presents a summary, the user chooses an execution mode from the execution dialog:
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.

@@ -1,8 +1,18 @@
 # TUI Plugin
 
-The plugin includes a TUI sidebar widget and an execution dialog for launching plans directly in the OpenCode terminal interface. It is enabled separately from the server plugin in `tui.json` — see [Quick Start](../README.md#quick-start).
+The plugin includes a TUI sidebar widget and an execution dialog for launching plans directly in the OpenCode terminal interface. On OpenCode 1.x it is enabled separately from the server plugin in `tui.json` — see [Quick Start](../README.md#quick-start). On OpenCode 2.x the TUI surface loads from the same package entry the server plugin uses, or from the `cli.json` `plugins` array, and provides a smaller surface (see [OpenCode 2.x](#opencode-2x)).
 
 See also: [Dashboard](dashboard.md), [Workflow](workflow.md), [Configuration → TUI](configuration.md#tui).
+
+## OpenCode 2.x
+
+The V2 TUI surface is deliberately minimal:
+
+- the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project and refreshed every couple of seconds
+- the `Open dashboard` palette command (and `tui.keybinds.dashboard`)
+- a warning toast when sandboxing is enabled but the bundled build context is missing
+
+Not available on V2: the execution dialog, plan viewer and editing, loop details/restart, model and variant selection, `Toggle host sandbox`, and `Build sandbox template`. Use the `execute-plan` / `execute-goal` tools, `loop-status` with `restart`, and the [Sandbox](sandbox.md) build commands instead.
 
 ## Sidebar
 
@@ -50,7 +60,9 @@ The dialog tracks only loop-mode executions for recents / last-used defaults; `N
 
 When installed from the package, the TUI plugin loads automatically when added to your TUI config. The plugin is auto-detected via the `./tui` export in `package.json`.
 
-Add to your `~/.config/opencode/tui.json` or project-level `tui.json`:
+On OpenCode 2.x there is no `tui.json`: the TUI surface loads from the plugin configured for the server (`plugins` in `opencode.json`) or from the `cli.json` `plugins` array, so no separate terminal entry is needed. See [Configuration → Plugin-directory install](configuration.md#plugin-directory-install).
+
+Add to your `~/.config/opencode/tui.json` or project-level `tui.json` (OpenCode 1.x):
 
 ```json
 {

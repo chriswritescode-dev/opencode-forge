@@ -8,14 +8,28 @@
 
 > `const` **default**: `object`
 
-Defined in: [index.ts:1051](https://github.com/chriswritescode-dev/opencode-forge/blob/0c56a14e5107192a9f0125515640433f3577bdb8/src/index.ts#L1051)
+Defined in: [src/index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/blob/5adc14b9321073ceca26dbf8136d835a3f7f4c04/src/index.ts#L56)
 
 ## Type Declaration
 
 ### id
 
-> **id**: `string` = `'oc-forge'`
+> `readonly` **id**: `string`
 
 ### server
 
 > **server**: `Plugin` = `plugin`
+
+### setup
+
+> `readonly` **setup**: (`context`) => `void` \| `Cleanup` \| `Promise`\<`void` \| `Cleanup`\>
+
+#### Parameters
+
+##### context
+
+`Context`
+
+#### Returns
+
+`void` \| `Cleanup` \| `Promise`\<`void` \| `Cleanup`\>

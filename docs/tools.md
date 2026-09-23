@@ -1,6 +1,6 @@
 # Tools Reference
 
-Forge exposes server-side tools for plan storage, review findings, loop management, group orchestration, section navigation, and sandbox shell execution.
+Forge exposes server-side tools for plan storage, review findings, loop management, group orchestration, section navigation, and sandbox shell execution. The same tools are registered on both OpenCode hosts. Two host differences apply: on OpenCode 2.x a loop cannot launch against a configured remote opencode server (remote loops are 1.x only), and the `review` / `review-plan` slash commands run inline instead of spawning a subtask. See [OpenCode 2.x limitations](../README.md#opencode-2x-limitations).
 
 See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](configuration.md), [Loop System](loop-system.md).
 

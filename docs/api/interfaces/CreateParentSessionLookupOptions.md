@@ -6,7 +6,7 @@
 
 # Interface: CreateParentSessionLookupOptions
 
-Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/blob/0c56a14e5107192a9f0125515640433f3577bdb8/src/index.ts#L54)
+Defined in: [src/host/forge-core.ts:100](https://github.com/chriswritescode-dev/opencode-forge/blob/5adc14b9321073ceca26dbf8136d835a3f7f4c04/src/host/forge-core.ts#L100)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [index.ts:54](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **client**: `ForgeClient`
 
-Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/blob/0c56a14e5107192a9f0125515640433f3577bdb8/src/index.ts#L55)
+Defined in: [src/host/forge-core.ts:101](https://github.com/chriswritescode-dev/opencode-forge/blob/5adc14b9321073ceca26dbf8136d835a3f7f4c04/src/host/forge-core.ts#L101)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [index.ts:55](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **directory**: `string`
 
-Defined in: [index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/blob/0c56a14e5107192a9f0125515640433f3577bdb8/src/index.ts#L56)
+Defined in: [src/host/forge-core.ts:102](https://github.com/chriswritescode-dev/opencode-forge/blob/5adc14b9321073ceca26dbf8136d835a3f7f4c04/src/host/forge-core.ts#L102)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [index.ts:56](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **logger**: `object`
 
-Defined in: [index.ts:58](https://github.com/chriswritescode-dev/opencode-forge/blob/0c56a14e5107192a9f0125515640433f3577bdb8/src/index.ts#L58)
+Defined in: [src/host/forge-core.ts:104](https://github.com/chriswritescode-dev/opencode-forge/blob/5adc14b9321073ceca26dbf8136d835a3f7f4c04/src/host/forge-core.ts#L104)
 
 #### debug
 
@@ -92,4 +92,4 @@ Defined in: [index.ts:58](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **loop**: `Loop`
 
-Defined in: [index.ts:57](https://github.com/chriswritescode-dev/opencode-forge/blob/0c56a14e5107192a9f0125515640433f3577bdb8/src/index.ts#L57)
+Defined in: [src/host/forge-core.ts:103](https://github.com/chriswritescode-dev/opencode-forge/blob/5adc14b9321073ceca26dbf8136d835a3f7f4c04/src/host/forge-core.ts#L103)
