@@ -29,7 +29,7 @@ type V2ToolContent = Extract<V2ToolState, { status: 'completed' }>['content'][nu
 type V2ModelInfo = Awaited<ReturnType<Plugin.Context['model']['list']>>['data'][number]
 
 type V1PermissionRule = NonNullable<Session['permission']>[number]
-type V2PermissionRule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
+export type V2PermissionRule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
 
 export interface V2ClientLike {
   readonly session: V2Session
@@ -76,6 +76,27 @@ export function fromV2Ruleset(ruleset: ReadonlyArray<V2PermissionRule>): V1Permi
     pattern: rule.resource,
     action: rule.effect,
   }))
+}
+
+function isV2Effect(value: unknown): value is V2PermissionRule['effect'] {
+  return value === 'allow' || value === 'deny' || value === 'ask'
+}
+
+export function toV2PermissionMap(permission: unknown): V2PermissionRule[] {
+  if (!permission || typeof permission !== 'object' || Array.isArray(permission)) return []
+  const rules: V2PermissionRule[] = []
+  for (const [tool, value] of Object.entries(permission as Record<string, unknown>)) {
+    const action = ACTION_RENAMES[tool] ?? tool
+    if (isV2Effect(value)) {
+      rules.push({ action, resource: '*', effect: value })
+      continue
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    for (const [resource, effect] of Object.entries(value as Record<string, unknown>)) {
+      if (isV2Effect(effect)) rules.push({ action, resource, effect })
+    }
+  }
+  return rules
 }
 
 function isSessionStatus(value: unknown): value is SessionStatus[string] {

@@ -16,10 +16,24 @@ export interface RecordedTool {
   execute: (input: unknown, context: unknown) => Promise<unknown>
 }
 
+export interface RecordedAgent {
+  id: string
+  info: Record<string, any>
+}
+
+export interface RecordedCommand {
+  name: string
+  description?: string
+  execute: (input: any) => Promise<void>
+}
+
 export interface FakeV2Context {
   ctx: Plugin.Context
   calls: V2ContextCall[]
   tools: RecordedTool[]
+  agents: RecordedAgent[]
+  commands: RecordedCommand[]
+  defaultAgent: { id: string | undefined }
 }
 
 export interface FakeV2ContextOptions {
@@ -112,15 +126,66 @@ function makeToolDefaults(recorded: RecordedTool[]): Record<string, AnyMethod> {
   }
 }
 
-const AGENT_DEFAULTS: Record<string, AnyMethod> = {
-  transform: async () => ({ dispose: async () => {} }),
-  reload: async () => {},
+const AGENT_PERMISSION_DEFAULTS = [
+  { action: '*', resource: '*', effect: 'allow' },
+  { action: 'external_directory', resource: '*', effect: 'ask' },
+  { action: 'read', resource: '*.env', effect: 'ask' },
+  { action: 'read', resource: '*.env.*', effect: 'ask' },
+  { action: 'read', resource: '*.env.example', effect: 'allow' },
+]
+
+function makeAgentInfo(id: string): Record<string, any> {
+  return {
+    id,
+    name: id,
+    request: { settings: {}, headers: {}, body: {} },
+    mode: 'primary',
+    hidden: false,
+    permissions: AGENT_PERMISSION_DEFAULTS.map((rule) => ({ ...rule })),
+  }
 }
 
-const COMMAND_DEFAULTS: Record<string, AnyMethod> = {
-  list: async () => [],
-  transform: async () => ({ dispose: async () => {} }),
-  reload: async () => {},
+function makeAgentDefaults(
+  agents: RecordedAgent[],
+  defaultAgent: { id: string | undefined },
+): Record<string, AnyMethod> {
+  const find = (id: string) => agents.find((agent) => agent.id === id)
+  return {
+    transform: async (callback: (editor: Record<string, AnyMethod>) => void) => {
+      callback({
+        list: () => agents.map((agent) => agent.info),
+        get: (id: string) => find(id)?.info,
+        default: (id: string | undefined) => {
+          defaultAgent.id = id
+        },
+        update: (id: string, update: (agent: Record<string, any>) => void) => {
+          let existing = find(id)
+          if (!existing) {
+            existing = { id, info: makeAgentInfo(id) }
+            agents.push(existing)
+          }
+          update(existing.info)
+        },
+        remove: (id: string) => {
+          const index = agents.findIndex((agent) => agent.id === id)
+          if (index >= 0) agents.splice(index, 1)
+        },
+      })
+      return { dispose: async () => {} }
+    },
+    reload: async () => {},
+  }
+}
+
+function makeCommandDefaults(commands: RecordedCommand[]): Record<string, AnyMethod> {
+  return {
+    list: async () => commands.map((command) => ({ name: command.name, description: command.description })),
+    transform: async (callback: (editor: { add: (definition: RecordedCommand) => void }) => void) => {
+      callback({ add: (definition) => commands.push(definition) })
+      return { dispose: async () => {} }
+    },
+    reload: async () => {},
+  }
 }
 
 const SHELL_DEFAULTS: Record<string, AnyMethod> = {
@@ -162,6 +227,9 @@ function makeDomain(
 export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2Context {
   const calls: V2ContextCall[] = []
   const tools: RecordedTool[] = []
+  const agents: RecordedAgent[] = []
+  const commands: RecordedCommand[] = []
+  const defaultAgent: { id: string | undefined } = { id: undefined }
   const directory = options.location?.directory ?? DEFAULT_DIRECTORY
   const project = {
     id: options.location?.project?.id ?? DEFAULT_PROJECT_ID,
@@ -183,12 +251,12 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     provider: makeDomain('provider', PROVIDER_DEFAULTS, options.provider, calls),
     model: makeDomain('model', MODEL_DEFAULTS, options.model, calls),
     tool: makeDomain('tool', makeToolDefaults(tools), options.tool, calls),
-    agent: makeDomain('agent', AGENT_DEFAULTS, options.agent, calls),
-    command: makeDomain('command', COMMAND_DEFAULTS, options.command, calls),
+    agent: makeDomain('agent', makeAgentDefaults(agents, defaultAgent), options.agent, calls),
+    command: makeDomain('command', makeCommandDefaults(commands), options.command, calls),
     shell: makeDomain('shell', SHELL_DEFAULTS, options.shell, calls),
     storage: makeDomain('storage', STORAGE_DEFAULTS, options.storage, calls),
     worktree: makeDomain('worktree', WORKTREE_DEFAULTS, options.worktree, calls),
   } as unknown as Plugin.Context
 
-  return { ctx, calls, tools }
+  return { ctx, calls, tools, agents, commands, defaultAgent }
 }
