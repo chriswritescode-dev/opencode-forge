@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import type { V2Event } from '@opencode/client'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -11,6 +12,7 @@ import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
 import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
+import { normalizeV2Event } from '../../src/host/v2-events'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
@@ -495,6 +497,44 @@ describe('Loop Runtime start()', () => {
       await loop.tick(abortEvent(state.sessionId))
 
       expect(loop.inspect(state.loopName)?.active).toBe(false)
+    })
+
+    // Regression: V2 reports an explicit user stop as
+    // session.execution.interrupted(reason=user), not as a MessageAbortedError,
+    // and follows it with idle. The normalized stop must terminate the loop
+    // through the existing abort branch; otherwise the trailing idle runs the
+    // coding phase runner and the loop advances instead of honoring the stop.
+    test('a normalized V2 user interruption terminates an owned coding loop as user_aborted', async () => {
+      const { loop } = createRuntimeIn('/tmp/owned-worktree')
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      loop.start({ state })
+
+      const interrupted: V2Event = {
+        id: 'evt-1',
+        created: 1,
+        type: 'session.execution.interrupted',
+        durable: { aggregateID: state.sessionId, seq: 1, version: 1 },
+        location: { directory: '/tmp/owned-worktree' },
+        data: { sessionID: state.sessionId, reason: 'user' },
+      }
+      const idle: V2Event = {
+        id: 'evt-2',
+        created: 2,
+        type: 'session.status',
+        data: { sessionID: state.sessionId, status: { type: 'idle' } },
+      }
+
+      for (const event of normalizeV2Event(interrupted)) {
+        await loop.tick(event)
+      }
+      for (const event of normalizeV2Event(idle)) {
+        await loop.tick(event)
+      }
+
+      const terminated = loopService.getAnyState(state.loopName)
+      expect(terminated?.active).toBe(false)
+      expect(terminated?.terminationReason).toBe('user_aborted')
+      expect(terminated?.phase).toBe('coding')
     })
   })
 })
