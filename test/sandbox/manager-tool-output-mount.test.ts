@@ -95,24 +95,26 @@ describe('SandboxManager tool-output mount', () => {
   })
 
   test('coexists with the project mount', async () => {
+    const tmpProject = createTempDir()
     const toolOutputDir = createTempDir()
 
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      sourceProjectDir: '/tmp',
+      sourceProjectDir: tmpProject,
       toolOutputDir,
     }
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
+    const resolvedProject = resolve(tmpProject)
     const resolved = resolve(toolOutputDir)
     const active = manager.getActive('test')
     expect(active?.mounts).toHaveLength(3)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
-    expect(active?.mounts[1]).toEqual({ hostDir: '/tmp', containerDir: '/tmp', readOnly: true })
+    expect(active?.mounts[1]).toEqual({ hostDir: resolvedProject, containerDir: resolvedProject, readOnly: true })
     expect(active?.mounts[2]).toEqual({ hostDir: resolved, containerDir: resolved, readOnly: true })
   })
 })

@@ -132,13 +132,15 @@ afterEach(() => {
   container.remove()
   window.location.hash = ''
   vi.unstubAllGlobals()
+  vi.useRealTimers()
   delete (globalThis as any).marked
   delete (globalThis as any).fetch
 })
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 8; i++) await Promise.resolve()
-  await new Promise((r) => setTimeout(r, 0))
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0)
+  else await new Promise((r) => setTimeout(r, 0))
   for (let i = 0; i < 4; i++) await Promise.resolve()
 }
 
@@ -2077,11 +2079,12 @@ describe('dashboard App status filters and search', () => {
 
     // Search for a substring matching neither loop name, branch, nor label.
     let input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'nomatch-xyz'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
-    // Wait past the 250ms debounce trailing edge, then settle effects.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance past the 250ms debounce trailing edge, then settle effects.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
 
     // The hash carries the query and we stay at level 1.
@@ -2101,8 +2104,9 @@ describe('dashboard App status filters and search', () => {
     input = container.querySelector('#loop-search') as HTMLInputElement
     input.value = ''
     input.dispatchEvent(new Event('input', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 350))
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     expect(location.hash).toBe('#p1')
     expect(container.querySelectorAll('tr.lt-row').length).toBe(2)
@@ -2142,6 +2146,7 @@ describe('dashboard App status filters and search', () => {
     await flush()
 
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'loop-running'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2160,9 +2165,10 @@ describe('dashboard App status filters and search', () => {
     // The input retains the typed text despite the count update.
     expect((container.querySelector('#loop-search') as HTMLInputElement).value).toBe('loop-running')
 
-    // Wait past the 250ms debounce trailing edge, then settle effects.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance past the 250ms debounce trailing edge, then settle effects.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     // The pending query reached the hash despite the intervening poll.
     expect(location.hash).toBe('#p1?q=loop-running')
@@ -2180,6 +2186,7 @@ describe('dashboard App status filters and search', () => {
     expect(container.querySelectorAll('tr.lt-row').length).toBe(2)
 
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'loop-running'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2192,9 +2199,10 @@ describe('dashboard App status filters and search', () => {
     // The input retains the typed text — no reset from the status update.
     expect((container.querySelector('#loop-search') as HTMLInputElement).value).toBe('loop-running')
 
-    // Wait past the 250ms debounce trailing edge, then settle effects.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance past the 250ms debounce trailing edge, then settle effects.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     // The typed query reaches the hash despite the intervening status toggle.
     expect(location.hash).toBe('#p1?status=running&q=loop-running')
@@ -2211,6 +2219,7 @@ describe('dashboard App status filters and search', () => {
 
     // Type a query — schedules the debounce timer but does not navigate yet.
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'nomatch-xyz'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2221,9 +2230,10 @@ describe('dashboard App status filters and search', () => {
     // Navigated to the loop route; no query yet.
     expect(location.hash).toBe('#p1/loop/loop-running')
 
-    // Wait well past the debounce trailing edge.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance well past the debounce trailing edge.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     // The stale timer was cancelled on disposal — the discarded query never
     // landed in the hash.
@@ -2238,6 +2248,7 @@ describe('dashboard App status filters and search', () => {
     await flush()
 
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'stale-query'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2248,8 +2259,9 @@ describe('dashboard App status filters and search', () => {
     expect(location.hash).toBe('#p1?status=running')
     expect((container.querySelector('#loop-search') as HTMLInputElement).value).toBe('')
 
-    await new Promise((r) => setTimeout(r, 350))
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     expect(location.hash).toBe('#p1?status=running')
     expect(location.hash).not.toContain('q=stale-query')

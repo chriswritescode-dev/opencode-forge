@@ -48,12 +48,12 @@ Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 |---|---|---|---|
 | `/review` | Run a code review. | `auditor` | yes |
 | `/review-plan` | Review a completed implementation against its original plan. | `auditor` | yes |
-
-Subtask commands spawn a child session on OpenCode 1.x. On OpenCode 2.x the same commands run inline in the invoking session, because a V2 plugin command cannot create a child session.
 | `/execute-plan` | Start an iterative development loop in a worktree (or launch the plan in a fresh standalone session with `mode: new-session`). | `code` | no |
 | `/execute-goal` | Execute a goal in rotating dedicated code and auditor sessions inside an isolated worktree. | `code` | no |
 | `/loop-status` | Check status of all active loops. | `code` | no |
 | `/loop-cancel` | Cancel the active loop. | `code` | no |
 | `/launch-group` | Decompose a PRD or feature list into features and launch them as parallel planning + development loops. | `code` | no |
+
+Subtask commands spawn a child session on OpenCode 1.x. On OpenCode 2.x the same commands run inline in the invoking session, because a V2 plugin command cannot create a child session.
 
 Source: [`buildPluginCommands()`](../src/config.ts).

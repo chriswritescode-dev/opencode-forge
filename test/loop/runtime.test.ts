@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -97,6 +97,7 @@ describe('Loop Runtime', () => {
       // ignore cleanup errors
     }
     sessionsAwaitingBusy.clear()
+    vi.useRealTimers()
   })
 
   function makeState(overrides: Partial<LoopState> = {}): LoopState {
@@ -595,13 +596,14 @@ describe('Loop Runtime', () => {
         description: 'Missing error handling',
       })
 
+      vi.useFakeTimers()
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
       })
 
-      // handlePromptError schedules the retry re-send after 2000ms; wait for it.
-      await new Promise(resolve => setTimeout(resolve, 2200))
+      // handlePromptError schedules the retry re-send after 2000ms; advance to it.
+      await vi.advanceTimersByTimeAsync(2000)
 
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
@@ -674,13 +676,14 @@ describe('Loop Runtime', () => {
         description: 'Missing error handling',
       })
 
+      vi.useFakeTimers()
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
       })
 
       // The scheduled retryFn fires once after 2000ms and also fails.
-      await new Promise(resolve => setTimeout(resolve, 2200))
+      await vi.advanceTimersByTimeAsync(2000)
 
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
@@ -740,10 +743,13 @@ describe('Loop Runtime', () => {
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(executorSessionId, loopName)
 
-      await loop.tick({
+      vi.useFakeTimers()
+      const tickPromise = loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: executorSessionId },
       })
+      await vi.advanceTimersByTimeAsync(1500)
+      await tickPromise
 
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
@@ -813,14 +819,17 @@ describe('Loop Runtime', () => {
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(executorSessionId, loopName)
 
-      await loop.tick({
+      vi.useFakeTimers()
+      const tickPromise = loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: executorSessionId },
       })
 
       // createAuditWithRetry exhausts with ~1.5s of backoff inside the tick; the
       // rotated session continuation then schedules the retry re-send after 2000ms.
-      await new Promise(resolve => setTimeout(resolve, 2300))
+      await vi.advanceTimersByTimeAsync(1500)
+      await tickPromise
+      await vi.advanceTimersByTimeAsync(2000)
 
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
@@ -1690,15 +1699,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
 
       // Start watchdog
+      vi.useFakeTimers()
       loop.startWatchdog(state.loopName)
       loop.recordActivity(state.loopName, 'initial')
 
-      // Wait long enough for the first stall to be detected and recovered
-      await new Promise(resolve => setTimeout(resolve, 150))
+      // Advance past the first stall detection and recovery
+      await vi.advanceTimersByTimeAsync(150)
 
-      // Record activity again and wait for another stall detection cycle
+      // Record activity again and advance to another stall detection cycle
       loop.recordActivity(state.loopName, 'after-recovery')
-      await new Promise(resolve => setTimeout(resolve, 150))
+      await vi.advanceTimersByTimeAsync(150)
 
       // After two stalls (exceeding max of 2), the loop must be terminated with stall_timeout
       const afterState = loopService.getAnyState(state.loopName)
@@ -1749,7 +1759,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     async function stopWatchdogAndDrain(loop: Loop, loopName: string): Promise<void> {
       loop.clearLoopTimers(loopName)
-      await new Promise(resolve => setTimeout(resolve, 400))
+      await vi.advanceTimersByTimeAsync(400)
     }
 
     test('a wedged auditing session is aborted and re-dispatched on the next fallback model instead of a generic continue nudge', async () => {
@@ -1779,8 +1789,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
+      vi.useFakeTimers()
       loop.startWatchdog(state.loopName)
-      await new Promise(resolve => setTimeout(resolve, 600))
+      await vi.advanceTimersByTimeAsync(600)
 
       const afterState = loopService.getActiveState(state.loopName)
       expect(afterState).not.toBeNull()
@@ -1814,8 +1825,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
+      vi.useFakeTimers()
       loop.startWatchdog(state.loopName)
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      await vi.advanceTimersByTimeAsync(1500)
 
       const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(codeCalls.length).toBeGreaterThanOrEqual(1)
@@ -1844,8 +1856,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
+      vi.useFakeTimers()
       loop.startWatchdog(state.loopName)
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      await vi.advanceTimersByTimeAsync(1500)
 
       const afterState = loopService.getAnyState(state.loopName)
       expect(afterState).not.toBeNull()

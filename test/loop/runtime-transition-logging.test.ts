@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -122,6 +122,7 @@ describe('Runtime transition logging', () => {
   afterEach(() => {
     db.close()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    vi.useRealTimers()
   })
 
   function tickIdle(loopInstance: ReturnType<typeof createLoop>, sessionId: string): Promise<void> {
@@ -1088,15 +1089,16 @@ describe('Runtime transition logging', () => {
       // (records the audit-error/error-recovery row) → continuation prompt
       // fails → handlePromptError schedules the 2-second retry timer
       // (errorCount 1 → 2 in DB).
+      vi.useFakeTimers()
       await tickIdle(loopInstance, 'audit-sess')
 
-      // Wait for the retry timer to fire (~2s). Its body wraps in
+      // Advance to the 2-second retry. Its body wraps in
       // withStateLock and pauses on `retryPaused`, holding the lock.
-      await new Promise((r) => setTimeout(r, 2200))
+      await vi.advanceTimersByTimeAsync(2000)
       // Yield through microtasks so the retry body has acquired the lock,
       // read fresh state, called retryFn → defaultSend → and is now
       // suspended on `retryPaused`.
-      await new Promise((r) => setTimeout(r, 0))
+      await vi.advanceTimersByTimeAsync(0)
 
       // Fire terminateAll while the retry body holds the lock. terminateAll's
       // contended-loop pass detects stateLocks.has(loopName) === true (set by

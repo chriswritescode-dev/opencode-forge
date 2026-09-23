@@ -16,7 +16,7 @@ export {
   resolveForgeDbPath,
 } from '../utils/opencode-paths'
 
-const FORGE_PRAGMAS = [
+export const FORGE_PRAGMAS = [
   'PRAGMA foreign_keys=ON',
   'PRAGMA journal_mode=WAL',
   'PRAGMA busy_timeout=5000',

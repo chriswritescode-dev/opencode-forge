@@ -11,7 +11,7 @@ describe('forge workspace adapter e2e', () => {
     const tmpDataDir = mkdtempSync(join(tmpdir(), 'forge-e2e-data-'))
 
     try {
-      execSync('git init && git commit --allow-empty -m "init"', {
+      execSync('git init && git -c user.name="Forge Test" -c user.email="forge-test@example.invalid" commit --allow-empty -m "init"', {
         cwd: tmpRepo,
         encoding: 'utf-8',
       })
@@ -77,7 +77,7 @@ describe('forge workspace adapter e2e', () => {
     const tmpDataDir = mkdtempSync(join(tmpdir(), 'forge-e2e-data-'))
 
     try {
-      execSync('git init && git commit --allow-empty -m "init"', {
+      execSync('git init && git -c user.name="Forge Test" -c user.email="forge-test@example.invalid" commit --allow-empty -m "init"', {
         cwd: tmpRepo,
         encoding: 'utf-8',
       })

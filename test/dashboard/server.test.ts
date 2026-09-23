@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
 import { createRequestHandler, type DashboardDeps } from '../../src/dashboard/server'
@@ -69,6 +69,7 @@ describe('createRequestHandler', () => {
 
   afterEach(() => {
     closeDb()
+    vi.useRealTimers()
   })
 
   // ─── Cycle 1: root route returns HTML ─────────────────────────────────
@@ -833,6 +834,7 @@ describe('createRequestHandler', () => {
     // its transcript (shared storage) still advances. The stream must notice.
     seedRunningLoop()
     let reads = 0
+    const controller = new AbortController()
     const client = {
       session: {
         messages: async () => {
@@ -847,25 +849,29 @@ describe('createRequestHandler', () => {
       event: {
         subscribe: async () => ({
           stream: (async function* () {
-            await new Promise(resolve => setTimeout(resolve, 12000))
+            await new Promise<void>((resolve) => {
+              if (controller.signal.aborted) return resolve()
+              controller.signal.addEventListener('abort', () => resolve(), { once: true })
+            })
           })(),
         }),
       },
     } as unknown as ForgeClient
     const handler = createRequestHandler({ forgeDb: db!, client })
 
-    const controller = new AbortController()
+    vi.useFakeTimers()
     const res = await handler(new Request('http://localhost/api/loop/stream?project=p1&loop=loop-a', {
       signal: controller.signal,
     }))
 
-    // Read frames until the polled snapshot arrives (or the read budget ends).
+    // Read frames until the polled snapshot arrives, advancing the transcript poll.
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let body = ''
-    const deadline = Date.now() + 9000
-    while (Date.now() < deadline && !body.includes('"reason":"poll"')) {
-      const { value, done } = await reader.read()
+    for (let i = 0; i < 20 && !body.includes('"reason":"poll"'); i++) {
+      const read = reader.read()
+      await vi.advanceTimersByTimeAsync(4000)
+      const { value, done } = await read
       if (done) break
       body += decoder.decode(value, { stream: true })
     }
