@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
-import { resolveDashboardDbPath, startDashboardServer, type DashboardServerHandle } from '../../src/dashboard/launch'
+import { createDashboardLauncher, resolveDashboardDbPath, startDashboardServer, type DashboardServerHandle } from '../../src/dashboard/launch'
 
 describe('resolveDashboardDbPath', () => {
   const originalForgeDb = process.env.FORGE_DB
@@ -176,5 +176,85 @@ describe('startDashboardServer', () => {
     const res = await capturedFetch(new Request('http://localhost/api/data'))
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toMatch(/application\/json/)
+  })
+})
+
+describe('createDashboardLauncher', () => {
+  let dbPath: string
+  let serveCalls: number
+  let stop: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    const rand = Math.random().toString(36).slice(2, 10)
+    dbPath = `/tmp/forge-dashboard-launcher-test-${rand}.db`
+    const db = openForgeDatabase(dbPath)
+    closeDatabase(db)
+    serveCalls = 0
+    stop = vi.fn()
+    vi.stubGlobal('Bun', {
+      serve: (opts: { port?: number }) => {
+        serveCalls += 1
+        return { port: opts.port === 0 ? OS_ASSIGNED_PORT : opts.port, stop }
+      },
+      spawn: () => ({ unref: () => {} }),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  test('starts one server across repeated opens and stops it on dispose', () => {
+    const toasts: Array<Record<string, unknown>> = []
+    const launcher = createDashboardLauncher({
+      dbPath,
+      config: { dashboard: { port: 0 } },
+      toast: (input) => toasts.push(input),
+    })
+
+    launcher.open()
+    launcher.open()
+
+    expect(serveCalls).toBe(1)
+    expect(toasts).toHaveLength(2)
+    expect(toasts[0]).toMatchObject({
+      title: `Forge dashboard: http://localhost:${OS_ASSIGNED_PORT}`,
+      variant: 'info',
+    })
+
+    launcher.dispose()
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports the exposed bind and its warning through the toast', () => {
+    const toasts: Array<Record<string, unknown>> = []
+    const launcher = createDashboardLauncher({
+      dbPath,
+      config: { dashboard: { host: '0.0.0.0', port: 5123 } },
+      toast: (input) => toasts.push(input),
+    })
+
+    launcher.open()
+
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]?.variant).toBe('warning')
+    expect(String(toasts[0]?.message)).toContain('Local: http://localhost:5123')
+    expect(String(toasts[0]?.message)).toContain('no authentication')
+
+    launcher.dispose()
+  })
+
+  test('toasts an error instead of throwing when the database is missing', () => {
+    const toasts: Array<Record<string, unknown>> = []
+    const launcher = createDashboardLauncher({
+      dbPath: '/tmp/does-not-exist-forge-launcher.db',
+      toast: (input) => toasts.push(input),
+    })
+
+    expect(() => launcher.open()).not.toThrow()
+    expect(serveCalls).toBe(0)
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]?.variant).toBe('error')
+    expect(String(toasts[0]?.message)).toMatch(/Forge database not found/)
   })
 })

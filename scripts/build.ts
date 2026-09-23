@@ -74,7 +74,7 @@ if (!result.success) {
 
 console.log('Generating TUI type declarations...')
 const tuiDtsContent = `import type { TuiPluginModule } from '@opencode-ai/plugin/tui';
-declare const plugin: TuiPluginModule & { id: string };
+declare const plugin: TuiPluginModule & { id: string; setup: (context: unknown) => unknown };
 export default plugin;
 `
 writeFileSync(join(__dirname, '..', 'dist', 'tui.d.ts'), tuiDtsContent, 'utf-8')

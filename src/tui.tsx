@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
+import type { Plugin } from '@opencode/plugin/tui'
 import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
 import { loadPluginConfig, resolveBundledContainerDir } from './setup'
@@ -27,28 +28,13 @@ import {
 } from './tui/session-sandbox-store'
 import type { SessionSandboxPreference } from './tui/session-sandbox-store'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
-import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
-import { describeDashboardBinding } from './dashboard/config'
+import { createDashboardLauncher } from './dashboard/launch'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 import { fetchLoopsList } from './utils/tui-loop-store'
+import { setupForgeTuiV2 } from './tui/v2'
 
-type TuiKeybinds = {
-  executePlan: string
-  dashboard: string
-  toggleHostSandbox: string
-}
-
-const DEFAULT_KEYBINDS: TuiKeybinds = {
-  executePlan: '<leader>f',
-  dashboard: '',
-  toggleHostSandbox: '',
-}
-
-type TuiOptions = {
-  sidebar: boolean
-  showVersion: boolean
-  keybinds: TuiKeybinds
-}
+import type { TuiOptions } from './tui/options'
+import { resolveTuiOptions } from './tui/options'
 
 type ForgeConnectionStatus = 'connecting' | 'connected' | 'unavailable'
 
@@ -241,17 +227,12 @@ const id = 'oc-forge'
 const tui: TuiPlugin = async (api) => {
 
   const pluginConfig = loadPluginConfig()
-  const tuiConfig = pluginConfig.tui
   const directory = api.state.path.directory
   // Every TUI reader of the forge database resolves it here so a configured
   // `dataDir` cannot leave the dashboard and the execute-plan dialog pointed at
   // different databases.
   const forgeDbPath = resolveForgeDbPath(pluginConfig.dataDir)
-  const opts: TuiOptions = {
-    sidebar: tuiConfig?.sidebar ?? true,
-    showVersion: tuiConfig?.showVersion ?? true,
-    keybinds: { ...DEFAULT_KEYBINDS, ...tuiConfig?.keybinds },
-  }
+  const opts: TuiOptions = resolveTuiOptions(pluginConfig.tui)
 
   createEffect(() => {
     if (!api.state.ready) return
@@ -484,54 +465,18 @@ const tui: TuiPlugin = async (api) => {
   api.lifecycle.onDispose(detachSessionFollower)
 
   // Dashboard command. Registered independently of the sidebar option so it is
-  // available even when the sidebar is disabled. The bind host/port come from
-  // `dashboard.*` in the plugin config (resolved via `startDashboardServer`),
-  // and the HTTP server is started in-process on first use and reused on
-  // subsequent invocations.
-  let dashboardServer: DashboardServerHandle | null = null
-  const runOpenDashboard = () => {
-    if (!dashboardServer) {
-      try {
-        dashboardServer = startDashboardServer({
-          dbPath: forgeDbPath,
-          config: pluginConfig,
-          client: createForgeClient(api.client),
-        })
-      } catch (err) {
-        api.ui.toast({
-          message: err instanceof Error ? err.message : 'Failed to start dashboard',
-          variant: 'error',
-          duration: 5000,
-        })
-        return
-      }
-    }
-    const notice = describeDashboardBinding(dashboardServer)
-    const opened = openInBrowser(dashboardServer.localUrl)
-    const details = [
-      ...(notice.localUrl ? [`Local: ${notice.localUrl}`] : []),
-      ...dashboardServer.warnings,
-      ...(notice.warning ? [notice.warning] : []),
-    ]
-    const alert = Boolean(notice.warning) || dashboardServer.warnings.length > 0
-    api.ui.toast({
-      title: `Forge dashboard: ${notice.url}`,
-      message: details.length > 0
-        ? details.join('\n')
-        : opened
-          ? 'Opened in your browser.'
-          : 'Could not open a browser automatically; open the URL manually.',
-      variant: alert ? 'warning' : 'info',
-      duration: alert ? 10_000 : 5000,
-    })
-  }
-
-  api.lifecycle.onDispose(() => {
-    if (dashboardServer) {
-      dashboardServer.stop()
-      dashboardServer = null
-    }
+  // available even when the sidebar is disabled. The shared launcher starts the
+  // HTTP server in-process on first use, reuses it afterwards, and owns its
+  // disposal.
+  const dashboard = createDashboardLauncher({
+    dbPath: forgeDbPath,
+    config: pluginConfig,
+    client: createForgeClient(api.client),
+    toast: (input) => api.ui.toast(input),
   })
+  const runOpenDashboard = () => dashboard.open()
+
+  api.lifecycle.onDispose(dashboard.dispose)
 
   const runBuildSandboxImage = () => {
     const buildContextDir = resolveBundledContainerDir()
@@ -825,6 +770,6 @@ const tui: TuiPlugin = async (api) => {
   })
 }
 
-const plugin: TuiPluginModule & { id: string } = { id, tui }
+const plugin: TuiPluginModule & { id: string; setup: (context: Plugin.Context) => () => void } = { id, tui, setup: setupForgeTuiV2 }
 
 export default plugin
