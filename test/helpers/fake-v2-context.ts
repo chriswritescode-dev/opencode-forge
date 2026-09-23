@@ -8,9 +8,18 @@ export interface V2ContextCall {
   args: unknown[]
 }
 
+export interface RecordedTool {
+  name: string
+  description: string
+  input: unknown
+  options?: unknown
+  execute: (input: unknown, context: unknown) => Promise<unknown>
+}
+
 export interface FakeV2Context {
   ctx: Plugin.Context
   calls: V2ContextCall[]
+  tools: RecordedTool[]
 }
 
 export interface FakeV2ContextOptions {
@@ -89,9 +98,18 @@ const MODEL_DEFAULTS: Record<string, AnyMethod> = {
 }
 
 const TOOL_DEFAULTS: Record<string, AnyMethod> = {
-  transform: async () => ({ dispose: async () => {} }),
   reload: async () => {},
   hook: async () => ({ dispose: async () => {} }),
+}
+
+function makeToolDefaults(recorded: RecordedTool[]): Record<string, AnyMethod> {
+  return {
+    transform: async (callback: (editor: { add: (tool: RecordedTool) => void }) => void) => {
+      callback({ add: (tool) => recorded.push(tool) })
+      return { dispose: async () => {} }
+    },
+    ...TOOL_DEFAULTS,
+  }
 }
 
 const AGENT_DEFAULTS: Record<string, AnyMethod> = {
@@ -143,6 +161,7 @@ function makeDomain(
 
 export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2Context {
   const calls: V2ContextCall[] = []
+  const tools: RecordedTool[] = []
   const directory = options.location?.directory ?? DEFAULT_DIRECTORY
   const project = {
     id: options.location?.project?.id ?? DEFAULT_PROJECT_ID,
@@ -163,7 +182,7 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     event: makeDomain('event', EVENT_DEFAULTS, options.event, calls),
     provider: makeDomain('provider', PROVIDER_DEFAULTS, options.provider, calls),
     model: makeDomain('model', MODEL_DEFAULTS, options.model, calls),
-    tool: makeDomain('tool', TOOL_DEFAULTS, options.tool, calls),
+    tool: makeDomain('tool', makeToolDefaults(tools), options.tool, calls),
     agent: makeDomain('agent', AGENT_DEFAULTS, options.agent, calls),
     command: makeDomain('command', COMMAND_DEFAULTS, options.command, calls),
     shell: makeDomain('shell', SHELL_DEFAULTS, options.shell, calls),
@@ -171,5 +190,5 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     worktree: makeDomain('worktree', WORKTREE_DEFAULTS, options.worktree, calls),
   } as unknown as Plugin.Context
 
-  return { ctx, calls }
+  return { ctx, calls, tools }
 }
