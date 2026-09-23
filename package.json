@@ -56,6 +56,8 @@
   "dependencies": {
     "@opencode-ai/plugin": "1.15.5",
     "@opencode-ai/sdk": "1.15.5",
+    "@opencode/client": "2.0.14",
+    "@opencode/plugin": "2.0.14",
     "jsonc-parser": "^3.3.1",
     "web-tree-sitter": "0.25.10"
   },

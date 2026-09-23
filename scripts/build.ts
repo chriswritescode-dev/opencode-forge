@@ -46,7 +46,7 @@ const serverResult = await Bun.build({
   entrypoints: [join(__dirname, '..', 'src', 'index.ts')],
   outdir: join(__dirname, '..', 'dist'),
   target: 'node',
-  external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', 'solid-js'],
+  external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', '@opencode/plugin/tui', 'solid-js'],
 })
 
 if (!serverResult.success) {
@@ -62,7 +62,7 @@ const result = await Bun.build({
   outdir: join(__dirname, '..', 'dist'),
   target: 'node',
   plugins: [solidPlugin],
-  external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', 'solid-js'],
+  external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', '@opencode/plugin/tui', 'solid-js'],
 })
 
 if (!result.success) {
