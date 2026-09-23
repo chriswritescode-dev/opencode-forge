@@ -1,5 +1,5 @@
 import type { V2Event } from '@opencode/client'
-import type { Session } from '../client/port'
+import type { ForgeEvent, Session } from '../client/port'
 
 export const V2_EVENT_TYPES = {
   sessionIdle: 'session.idle',
@@ -38,11 +38,6 @@ export const FORGE_EVENT_TYPES = {
   messagePartUpdated: 'message.part.updated',
 } as const
 
-export interface ForgeEvent {
-  type: string
-  properties: Record<string, unknown>
-}
-
 export interface V2SessionInfoLike {
   id: string
   slug?: string
@@ -68,7 +63,7 @@ export function mapV2SessionInfo(info: V2SessionInfoLike): Session {
   }
 }
 
-function mapV2Error(error: { type: string; message: string; status?: number }): Record<string, unknown> {
+export function mapV2Error(error: { type: string; message: string; status?: number }): Record<string, unknown> {
   return {
     name: error.type,
     data: {

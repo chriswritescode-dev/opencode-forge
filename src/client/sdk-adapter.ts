@@ -2,42 +2,8 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { PluginInput } from '@opencode-ai/plugin'
 import { DEFAULT_REMOTE_USERNAME } from '../utils/remote-config'
-import {
-  ForgeClientError,
-  type ForgeClient,
-  type ForgeClientErrorKind,
-} from './port'
-
-// ── Error classification ─────────────────────────────────────────────────────
-
-function extractMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  if (typeof err === 'string') return err
-  if (err && typeof err === 'object') {
-    const obj = err as Record<string, unknown>
-    if (typeof obj.message === 'string') return obj.message
-    if (obj.data && typeof obj.data === 'object') {
-      const data = obj.data as Record<string, unknown>
-      if (typeof data.message === 'string') return data.message
-    }
-  }
-  try {
-    return JSON.stringify(err)
-  } catch {
-    return String(err)
-  }
-}
-
-function classify(err: unknown, method: string): ForgeClientError {
-  const rawMessage = extractMessage(err)
-  let kind: ForgeClientErrorKind = 'request'
-  if (/Unable to connect|fetch failed|ECONNREFUSED/i.test(rawMessage)) {
-    kind = 'connection'
-  } else if (/not found/i.test(rawMessage)) {
-    kind = 'not-found'
-  }
-  return new ForgeClientError({ kind, method, message: rawMessage, cause: err })
-}
+import { classify, unavailableError } from './errors'
+import type { ForgeClient } from './port'
 
 // ── Result normalisation helpers ─────────────────────────────────────────────
 
@@ -98,11 +64,10 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     list: (params) => {
       const expSession = v2.experimental?.session
       if (!expSession || typeof expSession.list !== 'function') {
-        return Promise.reject(new ForgeClientError({
-          kind: 'unavailable',
-          method: 'session.list',
-          message: 'experimental.session.list not available on this host',
-        }))
+        return Promise.reject(unavailableError(
+          'session.list',
+          'experimental.session.list not available on this host',
+        ))
       }
       return withData('session.list', expSession.list(params))
     },
@@ -117,11 +82,10 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
 
   function requireWsApi(method: string): NonNullable<typeof wsApi> {
     if (!wsApi || typeof wsApi[method.split('.').pop() as keyof typeof wsApi] !== 'function') {
-      throw new ForgeClientError({
-        kind: 'unavailable',
-        method: `workspace.${method}`,
-        message: `experimental.workspace.${method} not available on this host`,
-      })
+      throw unavailableError(
+        `workspace.${method}`,
+        `experimental.workspace.${method} not available on this host`,
+      )
     }
     return wsApi
   }
@@ -163,11 +127,7 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     },
     selectSession: async (params) => {
       if (!v2.tui) {
-        throw new ForgeClientError({
-          kind: 'unavailable',
-          method: 'tui.selectSession',
-          message: 'tui namespace not available on this host',
-        })
+        throw unavailableError('tui.selectSession', 'tui namespace not available on this host')
       }
       return withVoid('tui.selectSession', v2.tui.selectSession(params))
     },
@@ -185,11 +145,7 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
   const event: ForgeClient['event'] = {
     subscribe: async (params) => {
       if (!v2.event || typeof v2.event.subscribe !== 'function') {
-        throw new ForgeClientError({
-          kind: 'unavailable',
-          method: 'event.subscribe',
-          message: 'event.subscribe not available on this host',
-        })
+        throw unavailableError('event.subscribe', 'event.subscribe not available on this host')
       }
       try {
         return await v2.event.subscribe(params)

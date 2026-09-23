@@ -14,8 +14,41 @@ export type SessionDeleteParams = NonNullable<Parameters<V2['session']['delete']
 
 // ── Session result types ─────────────────────────────────────────────────────
 export type Session = NonNullable<Awaited<ReturnType<V2['session']['create']>>['data']>
-export type SessionMessages = NonNullable<Awaited<ReturnType<V2['session']['messages']>>['data']>
 export type SessionStatus = NonNullable<Awaited<ReturnType<V2['session']['status']>>['data']>
+
+// ── Session message types ────────────────────────────────────────────────────
+export type SessionMessagePart = {
+  id?: string
+  messageID?: string
+  sessionID?: string
+  type: string
+  text?: string
+  synthetic?: boolean
+  tool?: string
+  callID?: string
+  state?: Record<string, unknown>
+}
+
+export type SessionMessageInfo = {
+  id?: string
+  role: string
+  agent?: string
+  sessionID?: string
+  time: { created: number; completed?: number }
+  finish?: string
+  cost?: number
+  tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+  providerID?: string
+  modelID?: string
+  error?: { name?: string; data?: { message?: string; statusCode?: number } }
+}
+
+export type SessionMessage = {
+  info: SessionMessageInfo
+  parts: SessionMessagePart[]
+}
+
+export type SessionMessages = SessionMessage[]
 
 // ── Workspace param types ────────────────────────────────────────────────────
 export type WorkspaceCreateParams = NonNullable<Parameters<V2['experimental']['workspace']['create']>[0]>
@@ -38,13 +71,43 @@ export type SessionList = NonNullable<Awaited<ReturnType<V2['experimental']['ses
 
 // ── Project param/result types ───────────────────────────────────────────────
 export type ProjectListParams = NonNullable<Parameters<V2['project']['list']>[0]>
-export type ProjectList = NonNullable<Awaited<ReturnType<V2['project']['list']>>['data']>
 export type ProjectCurrentParams = NonNullable<Parameters<V2['project']['current']>[0]>
-export type ProjectCurrent = NonNullable<Awaited<ReturnType<V2['project']['current']>>['data']>
+
+export type Project = {
+  id: string
+  worktree: string
+}
+
+export type ProjectList = Project[]
+export type ProjectCurrent = Project
 
 // ── Provider param/result types ──────────────────────────────────────────────
 export type ProviderListParams = NonNullable<Parameters<V2['provider']['list']>[0]>
-export type ProviderList = NonNullable<Awaited<ReturnType<V2['provider']['list']>>['data']>
+export type ProviderModelInfo = {
+  id: string
+  name: string
+  release_date?: string
+  capabilities?: {
+    temperature?: boolean
+    toolcall?: boolean
+    reasoning?: boolean
+    attachment?: boolean
+  }
+  cost?: { input?: number; output?: number }
+  variants?: Record<string, { disabled?: boolean; [key: string]: unknown }>
+}
+
+export type ProviderInfo = {
+  id: string
+  name: string
+  models: Record<string, ProviderModelInfo>
+}
+
+export type ProviderList = {
+  all: ProviderInfo[]
+  connected: string[]
+  default: Record<string, string>
+}
 
 // ── TUI param types ──────────────────────────────────────────────────────────
 export type TuiPublishParams = NonNullable<Parameters<V2['tui']['publish']>[0]>
@@ -55,8 +118,15 @@ export type SyncStartParams = NonNullable<Parameters<V2['sync']['start']>[0]>
 
 // ── Event types ──────────────────────────────────────────────────────────────
 export type EventSubscribeParams = NonNullable<Parameters<V2['event']['subscribe']>[0]>
-/** `{ stream: AsyncGenerator<Event> }` — the live server-sent event feed. */
-export type EventSubscription = Awaited<ReturnType<V2['event']['subscribe']>>
+
+export type ForgeEvent = {
+  type: string
+  properties: Record<string, unknown>
+}
+
+export type EventSubscription = {
+  stream: AsyncGenerator<ForgeEvent>
+}
 
 // ── Error model ──────────────────────────────────────────────────────────────
 
