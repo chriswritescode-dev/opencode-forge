@@ -31,6 +31,7 @@ export interface FakeV2ContextOptions {
   command?: Record<string, AnyMethod>
   shell?: Record<string, AnyMethod>
   storage?: Record<string, AnyMethod>
+  worktree?: Record<string, AnyMethod>
 }
 
 const DEFAULT_DIRECTORY = '/tmp/forge-project'
@@ -115,6 +116,15 @@ const STORAGE_DEFAULTS: Record<string, AnyMethod> = {
   scan: async () => ({ entries: [] }),
 }
 
+const WORKTREE_DEFAULTS: Record<string, AnyMethod> = {
+  list: async () => [],
+  create: async (input?: { directory?: string }) => ({ directory: input?.directory ?? DEFAULT_DIRECTORY }),
+  remove: async () => {},
+  refresh: async () => {},
+  transform: async () => ({ dispose: async () => {} }),
+  reload: async () => {},
+}
+
 function makeDomain(
   name: string,
   defaults: Record<string, AnyMethod>,
@@ -158,6 +168,7 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     command: makeDomain('command', COMMAND_DEFAULTS, options.command, calls),
     shell: makeDomain('shell', SHELL_DEFAULTS, options.shell, calls),
     storage: makeDomain('storage', STORAGE_DEFAULTS, options.storage, calls),
+    worktree: makeDomain('worktree', WORKTREE_DEFAULTS, options.worktree, calls),
   } as unknown as Plugin.Context
 
   return { ctx, calls }

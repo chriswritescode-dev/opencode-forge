@@ -223,7 +223,7 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     create: (params) => call('session.create', async () =>
       toPortSession(await ctx.session.create({
         title: params.title,
-        location: { directory: params.directory ?? options.directory },
+        location: { directory: params.workspaceID ?? params.workspace ?? params.directory ?? options.directory },
         ...(params.permission ? { permissions: toV2Ruleset(params.permission) } : {}),
       }))),
     get: (params) => call('session.get', async () =>
