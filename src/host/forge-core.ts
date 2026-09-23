@@ -14,7 +14,8 @@ import { createLogger, slugify } from '../utils/logger'
 import { createMsbRuntime, describeMsbUnavailable } from '../sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from '../sandbox/config-warnings'
 import { defaultGitService } from '../utils/git-service'
-import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs } from '../sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
+import { canonicalizePath } from '../sandbox/path'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
 import { resolveOpencodeTmpDir } from '../utils/opencode-paths'
 import { isForgeWorktreeDir } from '../workspace/forge-naming'
@@ -76,11 +77,8 @@ export interface ForgeCore {
   tools: NonNullable<Hooks['tool']>
   applyConfig(cfg: Record<string, unknown>): Promise<void>
   shellEnv(input: HookInput<'shell.env'>, output: HookOutput<'shell.env'>): Promise<void>
-  chatMessage(input: HookInput<'chat.message'>, output: HookOutput<'chat.message'>): Promise<void>
-  systemTransform(
-    input: HookInput<'experimental.chat.system.transform'>,
-    output: HookOutput<'experimental.chat.system.transform'>,
-  ): Promise<void>
+  chatMessage(input: { sessionID: string; messageID?: string; agent?: string }, output: unknown): Promise<void>
+  systemTransform(input: { sessionID?: string }, output: { system: string[] }): Promise<void>
   onEvent(input: HookInput<'event'>): Promise<void>
   toolBefore(input: HookInput<'tool.execute.before'>, output: HookOutput<'tool.execute.before'>): Promise<void>
   toolAfter(input: HookInput<'tool.execute.after'>, output: HookOutput<'tool.execute.after'>): Promise<void>
@@ -89,6 +87,8 @@ export interface ForgeCore {
     input: Record<string, never>,
     output: { messages: Array<{ info: { role: string; agent?: string; id?: string }; parts: Array<Record<string, unknown>> }> },
   ): Promise<void>
+  architectReminderFor(agent: string | undefined): string | null
+  resolveSandboxForDirectory(directory: string, opts?: { throwOnRestoreError?: boolean }): Promise<SandboxContext | null>
   cleanup(): Promise<void>
   shellShimPath: string | null
   agents: Record<AgentRole, AgentDefinition>
@@ -244,6 +244,12 @@ export function createSessionDirectoryLookup(
   return async (sessionId) => (await lookup(sessionId))?.directory ?? null
 }
 
+export function buildArchitectReminder(): string {
+  return `<system-reminder>
+READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
+Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
+</system-reminder>`
+}
 
 type SessionSandboxProvider = {
   worktree: boolean
@@ -944,6 +950,24 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     logger,
   })
 
+  const architectReminderFor = (agent: string | undefined): string | null => {
+    if (messagesTransformConfig?.enabled === false) return null
+    if (agent !== agents.architect.displayName) return null
+    return buildArchitectReminder()
+  }
+
+  const resolveSandboxForDirectory = async (
+    targetDirectory: string,
+    opts?: { throwOnRestoreError?: boolean },
+  ): Promise<SandboxContext | null> => {
+    const canonicalTarget = canonicalizePath(targetDirectory)
+    const state = loopHandler.loop.listActive().find(
+      (active) => !!active.worktreeDir && canonicalizePath(active.worktreeDir) === canonicalTarget,
+    )
+    if (!state) return null
+    return resolveSandboxContextForLoop(sandboxManager, state, logger, opts)
+  }
+
   return {
     tools,
     applyConfig: (() => {
@@ -971,10 +995,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       await sessionHooks.onMessage(input, output)
     },
     systemTransform: async (input, output) => {
-      await sandboxMessageHook(
-        input as { sessionID?: string },
-        output as { system: string[] },
-      )
+      await sandboxMessageHook(input, output)
     },
     onEvent: async (input) => {
       const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
@@ -1052,21 +1073,17 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
       if (!userMessage) return
 
-      const messagesTransformEnabled = messagesTransformConfig?.enabled ?? true
-      if (!messagesTransformEnabled) return
-
-      const isArchitect = userMessage.info.agent === agents.architect.displayName
-      if (!isArchitect) return
+      const reminder = architectReminderFor(userMessage.info.agent)
+      if (!reminder) return
 
       userMessage.parts.push({
         type: 'text',
-        text: `<system-reminder>
-READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
-Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
-</system-reminder>`,
+        text: reminder,
         synthetic: true,
       })
     },
+    architectReminderFor,
+    resolveSandboxForDirectory,
     cleanup,
     shellShimPath,
     agents,

@@ -8,6 +8,12 @@ export interface V2ContextCall {
   args: unknown[]
 }
 
+export interface V2HookRegistration {
+  domain: string
+  event: string
+  callback: (event: any) => unknown
+}
+
 export interface RecordedTool {
   name: string
   description: string
@@ -30,6 +36,7 @@ export interface RecordedCommand {
 export interface FakeV2Context {
   ctx: Plugin.Context
   calls: V2ContextCall[]
+  hooks: V2HookRegistration[]
   tools: RecordedTool[]
   agents: RecordedAgent[]
   commands: RecordedCommand[]
@@ -213,9 +220,18 @@ function makeDomain(
   defaults: Record<string, AnyMethod>,
   overrides: Record<string, AnyMethod> | undefined,
   calls: V2ContextCall[],
+  hooks: V2HookRegistration[],
 ): Record<string, AnyMethod> {
   const domain: Record<string, AnyMethod> = {}
   for (const [method, impl] of Object.entries({ ...defaults, ...overrides })) {
+    if (method === 'hook') {
+      domain[method] = vi.fn((event: string, callback: (event: any) => unknown) => {
+        calls.push({ method: `${name}.hook`, args: [event, callback] })
+        hooks.push({ domain: name, event, callback })
+        return impl(event, callback)
+      })
+      continue
+    }
     domain[method] = vi.fn((...args: unknown[]) => {
       calls.push({ method: `${name}.${method}`, args })
       return impl(...args)
@@ -226,6 +242,7 @@ function makeDomain(
 
 export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2Context {
   const calls: V2ContextCall[] = []
+  const hooks: V2HookRegistration[] = []
   const tools: RecordedTool[] = []
   const agents: RecordedAgent[] = []
   const commands: RecordedCommand[] = []
@@ -245,18 +262,18 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
       project,
     },
     options: options.options ?? {},
-    session: makeDomain('session', makeSessionDefaults(directory), options.session, calls),
-    permission: makeDomain('permission', PERMISSION_DEFAULTS, options.permission, calls),
-    event: makeDomain('event', EVENT_DEFAULTS, options.event, calls),
-    provider: makeDomain('provider', PROVIDER_DEFAULTS, options.provider, calls),
-    model: makeDomain('model', MODEL_DEFAULTS, options.model, calls),
-    tool: makeDomain('tool', makeToolDefaults(tools), options.tool, calls),
-    agent: makeDomain('agent', makeAgentDefaults(agents, defaultAgent), options.agent, calls),
-    command: makeDomain('command', makeCommandDefaults(commands), options.command, calls),
-    shell: makeDomain('shell', SHELL_DEFAULTS, options.shell, calls),
-    storage: makeDomain('storage', STORAGE_DEFAULTS, options.storage, calls),
-    worktree: makeDomain('worktree', WORKTREE_DEFAULTS, options.worktree, calls),
+    session: makeDomain('session', makeSessionDefaults(directory), options.session, calls, hooks),
+    permission: makeDomain('permission', PERMISSION_DEFAULTS, options.permission, calls, hooks),
+    event: makeDomain('event', EVENT_DEFAULTS, options.event, calls, hooks),
+    provider: makeDomain('provider', PROVIDER_DEFAULTS, options.provider, calls, hooks),
+    model: makeDomain('model', MODEL_DEFAULTS, options.model, calls, hooks),
+    tool: makeDomain('tool', makeToolDefaults(tools), options.tool, calls, hooks),
+    agent: makeDomain('agent', makeAgentDefaults(agents, defaultAgent), options.agent, calls, hooks),
+    command: makeDomain('command', makeCommandDefaults(commands), options.command, calls, hooks),
+    shell: makeDomain('shell', SHELL_DEFAULTS, options.shell, calls, hooks),
+    storage: makeDomain('storage', STORAGE_DEFAULTS, options.storage, calls, hooks),
+    worktree: makeDomain('worktree', WORKTREE_DEFAULTS, options.worktree, calls, hooks),
   } as unknown as Plugin.Context
 
-  return { ctx, calls, tools, agents, commands, defaultAgent }
+  return { ctx, calls, hooks, tools, agents, commands, defaultAgent }
 }
