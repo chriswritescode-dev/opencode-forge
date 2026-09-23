@@ -550,6 +550,146 @@ ${PLAN_END_MARKER}`
   })
 })
 
+describe('plan capture event directory ownership', () => {
+  function createFakePlansRepo() {
+    const plans = new Map<string, { content: string; updatedAt: number }>()
+    let nextUpdatedAt = 1
+    return {
+      writeForSession: (_projectId: string, sessionId: string, content: string) => {
+        plans.set(sessionId, { content, updatedAt: nextUpdatedAt++ })
+      },
+      getForSession: (_projectId: string, sessionId: string) => {
+        const row = plans.get(sessionId)
+        if (!row) return null
+        return { projectId: 'test-project', loopName: null, sessionId, content: row.content, updatedAt: row.updatedAt }
+      },
+    }
+  }
+
+  const logger = {
+    log: () => {},
+    error: () => {},
+    debug: () => {},
+  }
+
+  const locatedText = `${PLAN_START_MARKER}
+# Objective
+
+Change /project-a/src/index.ts
+${PLAN_END_MARKER}`
+
+  test('a plan event located in another directory is never captured by this location', async () => {
+    const plansRepo = createFakePlansRepo()
+    const hook = createPlanCaptureEventHook({
+      client: { session: { messages: async () => [] } },
+      plansRepo,
+      projectId: 'project-b',
+      directory: '/project-b',
+      logger,
+    } as any)
+
+    await hook({
+      event: {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'session-a',
+          directory: '/project-a',
+          part: { type: 'text', messageID: 'message-a', text: locatedText },
+        },
+      },
+    })
+
+    expect(plansRepo.getForSession('project-b', 'session-a')).toBeNull()
+  })
+
+  test('the owning location captures with its own path sanitization', async () => {
+    const plansRepo = createFakePlansRepo()
+    const hook = createPlanCaptureEventHook({
+      client: { session: { messages: async () => [] } },
+      plansRepo,
+      projectId: 'project-a',
+      directory: '/project-a',
+      logger,
+    } as any)
+
+    await hook({
+      event: {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'session-a',
+          directory: '/project-a',
+          part: { type: 'text', messageID: 'message-a', text: locatedText },
+        },
+      },
+    })
+
+    expect(plansRepo.getForSession('project-a', 'session-a')?.content).toBe('# Objective\n\nChange src/index.ts')
+  })
+
+  test('only the worktree location of a project captures its own text event', async () => {
+    const rootPlansRepo = createFakePlansRepo()
+    const worktreePlansRepo = createFakePlansRepo()
+    const rootHook = createPlanCaptureEventHook({
+      client: { session: { messages: async () => [] } },
+      plansRepo: rootPlansRepo,
+      projectId: 'project-a',
+      directory: '/project-a',
+      logger,
+    } as any)
+    const worktreeHook = createPlanCaptureEventHook({
+      client: { session: { messages: async () => [] } },
+      plansRepo: worktreePlansRepo,
+      projectId: 'project-a',
+      directory: '/project-a/.forge/worktrees/loop-1',
+      logger,
+    } as any)
+
+    const event = {
+      event: {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'session-a',
+          directory: '/project-a/.forge/worktrees/loop-1',
+          part: {
+            type: 'text',
+            messageID: 'message-a',
+            text: `${PLAN_START_MARKER}\n# Objective\n\nChange /project-a/.forge/worktrees/loop-1/src/index.ts\n${PLAN_END_MARKER}`,
+          },
+        },
+      },
+    }
+
+    await rootHook(event)
+    await worktreeHook(event)
+
+    expect(rootPlansRepo.getForSession('project-a', 'session-a')).toBeNull()
+    expect(worktreePlansRepo.getForSession('project-a', 'session-a')?.content).toBe('# Objective\n\nChange src/index.ts')
+  })
+
+  test('events without a directory scope keep capturing through the receiver', async () => {
+    const plansRepo = createFakePlansRepo()
+    const hook = createPlanCaptureEventHook({
+      client: { session: { messages: async () => [] } },
+      plansRepo,
+      projectId: 'project-a',
+      directory: '/project-a',
+      logger,
+    } as any)
+
+    await hook({
+      event: {
+        type: 'message.part.updated',
+        properties: {
+          sessionID: 'session-a',
+          part: { type: 'text', messageID: 'message-a', text: locatedText },
+        },
+      },
+    })
+
+    expect(plansRepo.getForSession('project-a', 'session-a')?.content).toBe('# Objective\n\nChange src/index.ts')
+  })
+})
+
 describe('captureLatestPlanForSession with ForgeClient', () => {
   function createFakePlansRepo() {
     const plans = new Map<string, { content: string; updatedAt: number }>()

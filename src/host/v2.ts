@@ -1,13 +1,21 @@
 import type { Plugin } from '@opencode/plugin'
+import type { V2Event } from '@opencode/client'
 import type { WorkspaceAdapter } from '@opencode-ai/plugin'
 import { createForgeClientFromV2 } from '../client/v2-adapter'
 import { createV2ForgeWorkspaces, type V2ForgeWorkspacesDeps } from '../client/v2-workspaces'
 import { unavailableError } from '../client/errors'
 import type { ForgeClient } from '../client/port'
+import { canonicalizePath } from '../sandbox/path'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { createForgeCore } from './forge-core'
-import { normalizeV2Event } from './v2-events'
+import {
+  V2_EVENT_TYPES,
+  isV2LocationBoundEvent,
+  normalizeV2Event,
+  v2EventDirectory,
+  v2EventSessionID,
+} from './v2-events'
 import { registerForgeAgentsV2, registerForgeCommandsV2, resolveForgeConfigMaps } from './v2-config'
 import { registerForgeHooksV2 } from './v2-hooks'
 import { registerForgeToolsV2 } from './v2-tools'
@@ -79,10 +87,48 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
   await registerForgeCommandsV2(ctx, cfg.command)
   await registerForgeHooksV2(ctx, core)
 
+  const canonicalDirectory = canonicalizePath(directory)
   const controller = new AbortController()
+
+  function ownsDirectory(candidate: string): boolean {
+    return canonicalizePath(candidate) === canonicalDirectory
+  }
+
+  async function resolveSessionDirectory(sessionID: string): Promise<string | null> {
+    try {
+      const session = await ctx.session.get({ sessionID })
+      return canonicalizePath(session.location.directory)
+    } catch (err) {
+      console.error(`[forge] V2 session location lookup failed for session ${sessionID}`, err)
+      return null
+    }
+  }
+
+  async function admitsEvent(event: V2Event): Promise<boolean> {
+    if (!isV2LocationBoundEvent(event)) return true
+    const eventDirectory = v2EventDirectory(event)
+    if (eventDirectory !== undefined) return ownsDirectory(eventDirectory)
+    const sessionID = v2EventSessionID(event)
+    if (!sessionID) return false
+    const sessionDirectory = await resolveSessionDirectory(sessionID)
+    return sessionDirectory !== null && sessionDirectory === canonicalDirectory
+  }
+
+  const dispose = async () => {
+    controller.abort()
+    await core.cleanup()
+  }
+
   void (async () => {
     try {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (event.type === V2_EVENT_TYPES.locationShutdown) {
+          const eventDirectory = v2EventDirectory(event)
+          if (eventDirectory === undefined || !ownsDirectory(eventDirectory)) continue
+          await dispose()
+          return
+        }
+        if (!(await admitsEvent(event))) continue
         for (const normalized of normalizeV2Event(event)) {
           try {
             client.recordStatusEvent(normalized)
@@ -99,8 +145,5 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     }
   })()
 
-  return async () => {
-    controller.abort()
-    await core.cleanup()
-  }
+  return dispose
 }

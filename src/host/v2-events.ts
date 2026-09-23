@@ -38,6 +38,39 @@ export const FORGE_EVENT_TYPES = {
   messagePartUpdated: 'message.part.updated',
 } as const
 
+const V2_LOCATION_BOUND_EVENT_TYPES: ReadonlySet<string> = new Set([
+  V2_EVENT_TYPES.sessionTextStarted,
+  V2_EVENT_TYPES.sessionTextDelta,
+  V2_EVENT_TYPES.sessionTextEnded,
+  V2_EVENT_TYPES.sessionReasoningStarted,
+  V2_EVENT_TYPES.sessionReasoningDelta,
+  V2_EVENT_TYPES.sessionReasoningEnded,
+  V2_EVENT_TYPES.sessionToolInputStarted,
+  V2_EVENT_TYPES.sessionToolInputDelta,
+  V2_EVENT_TYPES.sessionToolInputEnded,
+  V2_EVENT_TYPES.sessionToolCalled,
+  V2_EVENT_TYPES.sessionToolProgress,
+  V2_EVENT_TYPES.sessionToolSuccess,
+  V2_EVENT_TYPES.sessionToolFailed,
+  V2_EVENT_TYPES.sessionStepStarted,
+  V2_EVENT_TYPES.sessionStepStreamed,
+  V2_EVENT_TYPES.sessionStepEnded,
+  V2_EVENT_TYPES.sessionStepFailed,
+])
+
+export function isV2LocationBoundEvent(event: V2Event): boolean {
+  return V2_LOCATION_BOUND_EVENT_TYPES.has(event.type)
+}
+
+export function v2EventDirectory(event: V2Event): string | undefined {
+  return event.location?.directory
+}
+
+export function v2EventSessionID(event: V2Event): string | undefined {
+  const data = event.data as { sessionID?: unknown }
+  return typeof data.sessionID === 'string' ? data.sessionID : undefined
+}
+
 export interface V2SessionInfoLike {
   id: string
   slug?: string
@@ -94,6 +127,16 @@ function partEvent(
 }
 
 export function normalizeV2Event(event: V2Event): ForgeEvent[] {
+  const events = mapV2EventBody(event)
+  const directory = v2EventDirectory(event)
+  if (directory === undefined || !isV2LocationBoundEvent(event)) return events
+  return events.map((item) => ({
+    ...item,
+    properties: { ...item.properties, directory },
+  }))
+}
+
+function mapV2EventBody(event: V2Event): ForgeEvent[] {
   switch (event.type) {
     case V2_EVENT_TYPES.sessionIdle:
       return [{ type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: event.data.sessionID } }]

@@ -1,6 +1,13 @@
 import { describe, test, expect } from 'vitest'
 import type { V2Event } from '@opencode/client'
-import { FORGE_EVENT_TYPES, mapV2SessionInfo, normalizeV2Event } from '../../src/host/v2-events'
+import {
+  FORGE_EVENT_TYPES,
+  isV2LocationBoundEvent,
+  mapV2SessionInfo,
+  normalizeV2Event,
+  v2EventDirectory,
+  v2EventSessionID,
+} from '../../src/host/v2-events'
 
 const durableV1 = { aggregateID: 's1', seq: 1, version: 1 } as const
 const durableV2 = { aggregateID: 's1', seq: 1, version: 2 } as const
@@ -496,6 +503,61 @@ describe('normalizeV2Event', () => {
     expect(normalizeV2Event(streamed)).toEqual(expected)
     expect(normalizeV2Event(ended)).toEqual(expected)
     expect(normalizeV2Event(failed)).toEqual(expected)
+  })
+
+  test('preserves the location directory on location-bound content events', () => {
+    const event: V2Event = {
+      id: 'evt-1',
+      created: 1,
+      type: 'session.text.ended',
+      durable: durableV1,
+      location: { directory: '/project-a' },
+      data: { sessionID: 's1', assistantMessageID: 'm1', ordinal: 0, text: 'full text' },
+    }
+
+    expect(normalizeV2Event(event)).toEqual([
+      {
+        type: FORGE_EVENT_TYPES.messagePartUpdated,
+        properties: {
+          sessionID: 's1',
+          directory: '/project-a',
+          part: { sessionID: 's1', messageID: 'm1', type: 'text', text: 'full text' },
+        },
+      },
+    ])
+  })
+
+  test('classifies location-bound events and reads their directory and session', () => {
+    const content: V2Event = {
+      id: 'evt-1',
+      created: 1,
+      type: 'session.text.ended',
+      durable: durableV1,
+      location: { directory: '/project-a' },
+      data: { sessionID: 's1', assistantMessageID: 'm1', ordinal: 0, text: 'full text' },
+    }
+    const idle: V2Event = {
+      id: 'evt-2',
+      created: 2,
+      type: 'session.idle',
+      location: { directory: '/project-a' },
+      data: { sessionID: 's1' },
+    }
+    const shutdown: V2Event = {
+      id: 'evt-3',
+      created: 3,
+      type: 'location.shutdown',
+      location: { directory: '/project-a' },
+      data: {},
+    }
+
+    expect(isV2LocationBoundEvent(content)).toBe(true)
+    expect(isV2LocationBoundEvent(idle)).toBe(false)
+    expect(isV2LocationBoundEvent(shutdown)).toBe(false)
+    expect(v2EventDirectory(content)).toBe('/project-a')
+    expect(v2EventDirectory(idle)).toBe('/project-a')
+    expect(v2EventSessionID(content)).toBe('s1')
+    expect(v2EventSessionID(shutdown)).toBeUndefined()
   })
 
   test('returns an empty list for V2 events with no V1 consumer', () => {
