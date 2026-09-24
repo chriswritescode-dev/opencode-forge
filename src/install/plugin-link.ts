@@ -13,10 +13,29 @@ import {
   VENDORED_ASSETS,
 } from './paths'
 
+export type ShimMode = 'external' | 'vendored'
+
+export interface LinkResult {
+  action: 'created' | 'updated' | 'unchanged' | 'missing-entry'
+  shimPath: string
+  target?: string
+}
+
 export interface UnlinkResult {
   action: 'removed' | 'absent'
   shimPath: string
 }
+
+/**
+ * Source of the `<configDir>/plugin/opencode-forge.js` re-export shim. OpenCode 2.x loads the
+ * server plugin from `*.js` files in that directory; the `cli.json` entry loads only the TUI.
+ */
+export function buildShimSource(serverEntry: string): string {
+  return `export { default } from ${JSON.stringify(serverEntry)}\n`
+}
+
+/** Shim re-export target for the vendored copy, relative to the shim's own directory. */
+export const VENDORED_SERVER_SPEC = './opencode-forge/dist/index.js'
 
 /** Relative specifier for `cli.json`, resolved by opencode against the config dir. */
 export const VENDORED_CLI_SPEC = './plugin/opencode-forge/dist'
@@ -51,7 +70,26 @@ export function resolveCliPluginDir(): string | undefined {
   return existsSync(dir) ? dir : undefined
 }
 
-/** Remove a leftover V1 server re-export shim from opencode's plugin directory. */
+/**
+ * Write the server re-export shim: the absolute built entry for the external mode, or the
+ * vendored copy's entry for the vendored mode.
+ */
+export function linkPlugin(options: { dryRun: boolean; mode: ShimMode }): LinkResult {
+  const shimPath = resolvePluginShimPath()
+  const entry = resolveServerEntry()
+  if (!entry) return { action: 'missing-entry', shimPath }
+  const target = options.mode === 'vendored' ? VENDORED_SERVER_SPEC : entry
+  const source = buildShimSource(target)
+  const existing = existsSync(shimPath) ? readFileSync(shimPath, 'utf-8') : undefined
+  if (existing === source) return { action: 'unchanged', shimPath, target }
+  if (!options.dryRun) {
+    mkdirSync(dirname(shimPath), { recursive: true })
+    writeFileSync(shimPath, source)
+  }
+  return { action: existing === undefined ? 'created' : 'updated', shimPath, target }
+}
+
+/** Remove the server re-export shim from opencode's plugin directory. */
 export function unlinkPlugin(options: { dryRun: boolean }): UnlinkResult {
   const shimPath = resolvePluginShimPath()
   if (!existsSync(shimPath)) {

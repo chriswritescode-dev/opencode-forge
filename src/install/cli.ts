@@ -23,7 +23,9 @@ import {
   removePluginRegistration,
   resolveCliConfigTarget,
   resolveCliPluginDir,
+  linkPlugin,
   unlinkPlugin,
+  type LinkResult,
   unvendorPlugin,
   vendorPlugin,
   VENDORED_CLI_SPEC,
@@ -101,7 +103,8 @@ The --link mode always loads the current build, so a rebuild needs no
 reinstall, but is tied to this machine's checkout path. The --vendor mode copies
 forge into the config dir, so the whole config folder can be version-controlled
 and moved to another machine, at the cost of re-running after an upgrade. Both
-modes register the plugin in opencode's cli.json plugins array.
+modes write the server shim plugin/opencode-forge.js and register the TUI in
+opencode's cli.json plugins array.
 
 Options:
   -f, --force      Overwrite all conflicting files and delete all orphans
@@ -109,9 +112,9 @@ Options:
   -y, --yes        Non-interactive: keep edited files, prune orphans
   -n, --dry-run    Show what would change without writing anything
       --no-prune   Do not touch orphaned files (only report them)
-      --link       Register the current build's dist dir in cli.json
+      --link       Point the server shim and cli.json at the current build
       --vendor     Install a self-contained copy into the config dir (portable)
-      --unlink     Remove the vendored copy and cli.json entry
+      --unlink     Remove the shim, the vendored copy, and the cli.json entry
   -h, --help       Show this help
 `
 
@@ -243,6 +246,11 @@ function reportPluginRegistration(result: PluginRegistrationResult): void {
   if (result.action === 'failed') process.exitCode = 1
 }
 
+function reportShim(linked: LinkResult): void {
+  stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
+  if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
+}
+
 function ensurePluginEntries(options: { dryRun: boolean; cliSpec: string }): void {
   reportPluginRegistration(
     ensurePluginRegistration({ dryRun: options.dryRun, spec: options.cliSpec, target: resolveCliConfigTarget() }),
@@ -259,7 +267,7 @@ async function runPluginLinkStep(
 ): Promise<void> {
   if (opts.link === 'prompt') {
     if (!prompter.confirm) return
-    const yes = await prompter.confirm('Register forge in opencode\u2019s cli.json?', true)
+    const yes = await prompter.confirm('Register forge in opencode\u2019s config directory?', true)
     if (!yes) return
     const selfContained = await prompter.confirm('Make it self-contained so the config folder is portable?', false)
     opts.link = selfContained ? 'vendored' : 'external'
@@ -287,16 +295,19 @@ async function runPluginLinkStep(
     stdout.write(`  copied: ${vendor.vendorDir}\n`)
     list('copied', vendor.copied)
     list('missing', vendor.missing)
+    reportShim(linkPlugin({ dryRun: opts.dryRun, mode: 'vendored' }))
     ensurePluginEntries({ dryRun: opts.dryRun, cliSpec: VENDORED_CLI_SPEC })
     return
   }
   const cliSpec = resolveCliPluginDir()
-  if (!cliSpec) {
+  const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'external' })
+  if (!cliSpec || linked.action === 'missing-entry') {
     stdout.write('  missing-entry: the built dist directory could not be found.\n')
     stdout.write('  Run `pnpm build` first, then re-run.\n')
     process.exitCode = 1
     return
   }
+  reportShim(linked)
   ensurePluginEntries({ dryRun: opts.dryRun, cliSpec })
 }
 

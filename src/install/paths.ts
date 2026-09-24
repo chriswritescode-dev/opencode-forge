@@ -77,7 +77,7 @@ export function resolveBundledSkillsDir(): string {
   return join(resolvePluginDir(), '..', 'skills')
 }
 
-/** Legacy V1 server re-export shim filename, kept only so `--unlink` can clean up old installs. */
+/** Server re-export shim filename; OpenCode 2.x loads the server plugin from `*.js` files in `<configDir>/plugin`. */
 const PLUGIN_SHIM_FILENAME = 'opencode-forge.js'
 
 /** opencode's global plugin directory (`<configDir>/plugin`), home of the vendored copy. */
@@ -85,7 +85,7 @@ export function resolvePluginShimDir(): string {
   return join(resolveConfigDir(), 'plugin')
 }
 
-/** Absolute path of the legacy V1 server re-export shim, removed by `--unlink` when present. */
+/** Absolute path of the server re-export shim. */
 export function resolvePluginShimPath(): string {
   return join(resolvePluginShimDir(), PLUGIN_SHIM_FILENAME)
 }

@@ -43,17 +43,17 @@ OpenCode 2 loads the plugin's TUI surface from the same entry, so no separate te
 Instead of editing the plugin arrays by hand, the installer can wire the plugin into opencode's config directory:
 
 ```bash
-bunx opencode-forge --link        # register the current build's dist dir in cli.json
+bunx opencode-forge --link        # point the server shim and cli.json at the current build
 bunx opencode-forge --vendor      # self-contained copy (portable)
 ```
 
-From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`. Both modes register the plugin in `cli.json`'s `plugins` array, because opencode does not auto-load plugins from the config directory. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
+From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`. Both modes write a server shim `<configDir>/plugin/opencode-forge.js` (OpenCode loads the server plugin from `*.js` files there) and register the TUI in `cli.json`'s `plugins` array. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
 
 | | `--link` | `--vendor` |
 | --- | --- | --- |
-| Picks up a rebuild | Yes — `cli.json` points at the live `dist` directory | No — re-run after upgrade |
+| Picks up a rebuild | Yes — the shim and `cli.json` point at the live `dist` directory | No — re-run after upgrade |
 | Portable to another machine | No — absolute path to this checkout | Yes |
-| Payload in config dir | `cli.json` entry only | Full copy (~6.5 MB) |
+| Payload in config dir | Shim file and `cli.json` entry | Full copy (~6.5 MB) |
 | Needs re-run after upgrade | No | Yes |
 
 Loop worktrees use OpenCode 2's native worktree and location model: no environment variable and no version floor. See [Workspace Integration](_media/workspaces.md).

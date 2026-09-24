@@ -7,6 +7,8 @@ import {
   removePluginRegistration,
   resolveCliConfigTarget,
   resolveCliPluginDir,
+  buildShimSource,
+  linkPlugin,
   unlinkPlugin,
   unvendorPlugin,
   vendorPlugin,
@@ -45,6 +47,37 @@ function writeGlobalConfig(name: string, lines: string[]): string {
   writeFileSync(file, lines.join('\n'))
   return file
 }
+
+describe('buildShimSource', () => {
+  test('produces a valid single-line re-export', () => {
+    expect(buildShimSource('/abs/path/dist/index.js')).toBe('export { default } from "/abs/path/dist/index.js"\n')
+  })
+})
+
+describe('linkPlugin', () => {
+  test('external mode writes an absolute shim, then reports unchanged and updated', () => {
+    const created = linkPlugin({ dryRun: false, mode: 'external' })
+    expect(created.action).toBe('created')
+    expect(created.target).toMatch(/dist[\\/]index\.js$/)
+    expect(readFileSync(resolvePluginShimPath(), 'utf-8')).toBe(buildShimSource(created.target!))
+
+    expect(linkPlugin({ dryRun: false, mode: 'external' }).action).toBe('unchanged')
+
+    writeFileSync(resolvePluginShimPath(), 'export { default } from "/somewhere/else"\n')
+    expect(linkPlugin({ dryRun: false, mode: 'external' }).action).toBe('updated')
+  })
+
+  test('vendored mode writes a shim relative to the plugin directory', () => {
+    const result = linkPlugin({ dryRun: false, mode: 'vendored' })
+    expect(result.target).toBe('./opencode-forge/dist/index.js')
+    expect(readFileSync(resolvePluginShimPath(), 'utf-8')).toBe('export { default } from "./opencode-forge/dist/index.js"\n')
+  })
+
+  test('dry run reports the action without writing anything', () => {
+    expect(linkPlugin({ dryRun: true, mode: 'external' }).action).toBe('created')
+    expect(existsSync(resolvePluginShimPath())).toBe(false)
+  })
+})
 
 describe('unlinkPlugin', () => {
   test('removes a leftover shim and reports absent when already gone', () => {

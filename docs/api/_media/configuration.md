@@ -291,20 +291,22 @@ The installer can also register the plugin in opencode's config directory, inste
 
 | Flag | Behavior |
 |---|---|
-| `--link` | Writes the `plugins` entry in `<configDir>/cli.json` pointing at the absolute path of the current build's `dist` directory. Because the entry points at the live build, a rebuild is picked up on the next opencode start with no reinstall. The entry is tied to that checkout path, so it is not portable to another machine. |
-| `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6.5 MB) and registers the relative spec `./plugin/opencode-forge/dist` in `cli.json`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
-| `--unlink` | Removes the `cli.json` entry, the vendored directory, and any leftover V1 re-export shim from an older install. |
+| `--link` | Writes the server shim `<configDir>/plugin/opencode-forge.js`, re-exporting the absolute path of the current build's `dist/index.js`, and the `plugins` entry in `<configDir>/cli.json` pointing at the build's `dist` directory. Because both point at the live build, a rebuild is picked up on the next opencode start with no reinstall. The entry is tied to that checkout path, so it is not portable to another machine. |
+| `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6.5 MB), writes the server shim re-exporting `./opencode-forge/dist/index.js`, and registers the relative spec `./plugin/opencode-forge/dist` in `cli.json`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
+| `--unlink` | Removes the server shim, the vendored directory, and the `cli.json` entry. |
 
 From a source checkout the same flags are `pnpm run setup --link`, `pnpm run setup --vendor`, and `pnpm run setup --unlink` (the `run` is required — `setup` is a built-in pnpm command). In a non-interactive shell, `--link` and `--vendor` still require one of `-y`, `-f`, or `-k`, matching every other non-interactive use of the installer.
 
-Both modes register the plugin in the `plugins` array of `<configDir>/cli.json` (see [Plugin loading](#plugin-loading)).
+Both modes write the server shim and the `cli.json` entry (see [Plugin loading](#plugin-loading)).
 
 #### Resolved layout
 
-`--link` writes only the `cli.json` entry:
+`--link` writes the shim and the `cli.json` entry:
 
 ```text
 <configDir>/
+├── plugin/
+│   └── opencode-forge.js           # export { default } from "/abs/path/to/dist/index.js"
 └── cli.json                        # plugins: ["/abs/path/to/dist"]
 ```
 
@@ -313,6 +315,7 @@ Both modes register the plugin in the `plugins` array of `<configDir>/cli.json` 
 ```text
 <configDir>/
 ├── plugin/
+│   ├── opencode-forge.js           # export { default } from "./opencode-forge/dist/index.js"
 │   └── opencode-forge/
 │       ├── package.json
 │       ├── forge-config.jsonc
@@ -328,10 +331,15 @@ The vendored copy mirrors the npm package layout rather than being "just dist": 
 
 #### Plugin loading
 
-OpenCode 2.x loads plugins from the `plugins` array in `cli.json` and resolves a directory spec's package entrypoints rather than accepting a file target — which is why the installer points `cli.json` at the built `dist` directory. Path specs in a config file resolve relative to that config file's own directory, which is what makes the vendored `./plugin/opencode-forge/dist` entry portable. opencode does not auto-load plugins from the config directory, so the entry must be written explicitly.
+OpenCode 2.x (verified on 2.0.15) loads the two surfaces from different places:
 
-The installer updates an existing forge entry in `cli.json` in place, so re-running it is safe. It does not inspect `opencode.json` — if you list forge there and also install it into the config directory, remove one of the two entries by hand.
+- **Server** — the `plugins` array in `opencode.json`/`opencode.jsonc`, or any `*.js` file directly in `<configDir>/plugin/`. The installer uses the second: `opencode-forge.js` is a one-line re-export of the server entry. Package directories under `plugin/`, such as the vendored copy, are not loaded on their own.
+- **TUI** — the `plugins` array in `cli.json`, which resolves a directory spec's package entrypoints rather than accepting a file target. That is why the installer points `cli.json` at the built `dist` directory. Path specs resolve relative to the config file's own directory, which makes the vendored `./plugin/opencode-forge/dist` entry portable.
+
+A `cli.json` entry alone loads only the TUI: the sidebar appears but Forge's agents, tools, and hooks do not.
+
+The installer rewrites the shim and updates an existing forge entry in `cli.json` in place, so re-running it is safe. It does not inspect `opencode.json` — if you list forge there and also install it into the config directory, the server loads twice; remove one of them by hand.
 
 #### Verification
 
-`opencode debug config` prints the resolved config. Its `plugins` array should list the forge entry exactly once.
+`opencode debug config` prints the resolved config. Its `plugins` array should list the forge entry exactly once. `opencode plugin list` should show the shim (`oc-forge`, from `plugin/opencode-forge.js`) and the `cli.json` dist entry.
