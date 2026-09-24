@@ -4,6 +4,7 @@ import { createForgeCore } from './host/forge-core'
 import { setupForgeV2 } from './host/v2'
 import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 import { loadPluginConfig } from './setup'
+import { FORGE_PLUGIN_ID } from './constants/plugin'
 import type { PluginConfig } from './types'
 
 export { createParentSessionLookup, createSessionDirectoryLookup } from './host/forge-core'
@@ -54,7 +55,7 @@ const plugin: V1Plugin = async (input: PluginInput): Promise<Hooks> => {
 }
 
 const pluginModule = {
-  ...define({ id: 'oc-forge', setup: setupForgeV2 }),
+  ...define({ id: FORGE_PLUGIN_ID, setup: setupForgeV2 }),
   server: plugin,
 }
 

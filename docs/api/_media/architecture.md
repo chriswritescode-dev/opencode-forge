@@ -76,7 +76,7 @@ The codebase is organized into these module groups under `src/`:
 
 | Module | Purpose | Key Files |
 |--------|-----------|-----------|
-| `host/` | Dual-host composition: host-neutral core plus V1/V2 adapters | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts` |
+| `host/` | Dual-host composition: host-neutral core plus V1/V2 adapters | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts`, `forge-rpc.ts` |
 | `client/` | `ForgeClient` port and host adapters | `port.ts`, `sdk-adapter.ts`, `v2-adapter.ts`, `v2-workspaces.ts`, `errors.ts` |
 | `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts` |

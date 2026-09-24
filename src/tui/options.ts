@@ -1,3 +1,5 @@
+import { VERSION } from '../version'
+
 /** Keyboard shortcut overrides for the Forge TUI commands. */
 export type TuiKeybinds = {
   executePlan: string
@@ -5,7 +7,7 @@ export type TuiKeybinds = {
   toggleHostSandbox: string
 }
 
-export const DEFAULT_KEYBINDS: TuiKeybinds = {
+const DEFAULT_KEYBINDS: TuiKeybinds = {
   executePlan: '<leader>f',
   dashboard: '',
   toggleHostSandbox: '',
@@ -24,10 +26,26 @@ export type TuiOptionOverrides = {
   readonly keybinds?: Record<string, string>
 }
 
-export function resolveTuiOptions(overrides: TuiOptionOverrides | undefined): TuiOptions {
-  return {
-    sidebar: overrides?.sidebar ?? true,
-    showVersion: overrides?.showVersion ?? true,
-    keybinds: { ...DEFAULT_KEYBINDS, ...overrides?.keybinds },
+export const FORGE_DASHBOARD_COMMAND = {
+  id: 'forge.dashboard',
+  title: 'Open dashboard',
+  description: 'Start the Forge dashboard server and open it in the browser',
+  group: 'Forge',
+} as const
+
+export function formatForgeTitle(showVersion: boolean): string {
+  return showVersion ? `Forge v${VERSION}` : 'Forge'
+}
+
+export function resolveTuiOptions(...layers: Array<TuiOptionOverrides | undefined>): TuiOptions {
+  let sidebar = true
+  let showVersion = true
+  let keybinds: TuiKeybinds = { ...DEFAULT_KEYBINDS }
+  for (const layer of layers) {
+    if (!layer) continue
+    if (layer.sidebar !== undefined) sidebar = layer.sidebar
+    if (layer.showVersion !== undefined) showVersion = layer.showVersion
+    if (layer.keybinds) keybinds = { ...keybinds, ...layer.keybinds }
   }
+  return { sidebar, showVersion, keybinds }
 }

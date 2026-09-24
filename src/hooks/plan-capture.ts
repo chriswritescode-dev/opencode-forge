@@ -1,24 +1,18 @@
 import type { ToolContext } from '../tools/types'
 import { captureMarkedPlanTextForSession, capturePlanForCompletedMessage } from '../services/plan-capture'
 import { PLAN_END_MARKER, PLAN_START_MARKER } from '../utils/marked-plan-parser'
-import { canonicalizePath } from '../sandbox/path'
 
 const MESSAGE_PART_UPDATED_EVENT = 'message.part.updated'
 const MESSAGE_UPDATED_EVENT = 'message.updated'
 
 interface MessagePartUpdatedEvent {
   type: typeof MESSAGE_PART_UPDATED_EVENT
-  properties?: { sessionID?: string; directory?: string; part?: { type?: string; text?: string; messageID?: string; id?: string } }
+  properties?: { sessionID?: string; part?: { type?: string; text?: string; messageID?: string; id?: string } }
 }
 
 interface MessageUpdatedEvent {
   type: typeof MESSAGE_UPDATED_EVENT
-  properties?: { sessionID?: string; directory?: string; info?: { id?: string; role?: string; time?: { created?: number; completed?: number } } }
-}
-
-function ownsEventDirectory(eventDirectory: string | undefined, directory: string): boolean {
-  if (eventDirectory === undefined) return true
-  return canonicalizePath(eventDirectory) === canonicalizePath(directory)
+  properties?: { sessionID?: string; info?: { id?: string; role?: string; time?: { created?: number; completed?: number } } }
 }
 
 type PlanCaptureEvent = MessagePartUpdatedEvent | MessageUpdatedEvent | { type: string; properties?: Record<string, unknown> }
@@ -98,13 +92,11 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
     if (!event) return
 
     if (isMessagePartUpdatedEvent(event)) {
-      if (!ownsEventDirectory(event.properties?.directory, directory)) return
       await handleStreamingPart(event)
       return
     }
 
     if (isMessageUpdatedEvent(event)) {
-      if (!ownsEventDirectory(event.properties?.directory, directory)) return
       await handleAssistantMessageCompleted(event)
       return
     }

@@ -6,7 +6,7 @@
 
 # Interface: CreateParentSessionLookupOptions
 
-Defined in: [src/host/forge-core.ts:100](https://github.com/chriswritescode-dev/opencode-forge/blob/30e2b2843752de790a0cf6b42c82bec8a65631b9/src/host/forge-core.ts#L100)
+Defined in: [src/host/forge-core.ts:94](https://github.com/chriswritescode-dev/opencode-forge/blob/5f94a30fb58e918ef80f842973ab9f48464bed4b/src/host/forge-core.ts#L94)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [src/host/forge-core.ts:100](https://github.com/chriswritescode-dev/
 
 > **client**: `ForgeClient`
 
-Defined in: [src/host/forge-core.ts:101](https://github.com/chriswritescode-dev/opencode-forge/blob/30e2b2843752de790a0cf6b42c82bec8a65631b9/src/host/forge-core.ts#L101)
+Defined in: [src/host/forge-core.ts:95](https://github.com/chriswritescode-dev/opencode-forge/blob/5f94a30fb58e918ef80f842973ab9f48464bed4b/src/host/forge-core.ts#L95)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [src/host/forge-core.ts:101](https://github.com/chriswritescode-dev/
 
 > **directory**: `string`
 
-Defined in: [src/host/forge-core.ts:102](https://github.com/chriswritescode-dev/opencode-forge/blob/30e2b2843752de790a0cf6b42c82bec8a65631b9/src/host/forge-core.ts#L102)
+Defined in: [src/host/forge-core.ts:96](https://github.com/chriswritescode-dev/opencode-forge/blob/5f94a30fb58e918ef80f842973ab9f48464bed4b/src/host/forge-core.ts#L96)
 
 ***
 
@@ -30,7 +30,7 @@ Defined in: [src/host/forge-core.ts:102](https://github.com/chriswritescode-dev/
 
 > **logger**: `object`
 
-Defined in: [src/host/forge-core.ts:104](https://github.com/chriswritescode-dev/opencode-forge/blob/30e2b2843752de790a0cf6b42c82bec8a65631b9/src/host/forge-core.ts#L104)
+Defined in: [src/host/forge-core.ts:98](https://github.com/chriswritescode-dev/opencode-forge/blob/5f94a30fb58e918ef80f842973ab9f48464bed4b/src/host/forge-core.ts#L98)
 
 #### debug
 
@@ -92,4 +92,4 @@ Defined in: [src/host/forge-core.ts:104](https://github.com/chriswritescode-dev/
 
 > **loop**: `Loop`
 
-Defined in: [src/host/forge-core.ts:103](https://github.com/chriswritescode-dev/opencode-forge/blob/30e2b2843752de790a0cf6b42c82bec8a65631b9/src/host/forge-core.ts#L103)
+Defined in: [src/host/forge-core.ts:97](https://github.com/chriswritescode-dev/opencode-forge/blob/5f94a30fb58e918ef80f842973ab9f48464bed4b/src/host/forge-core.ts#L97)

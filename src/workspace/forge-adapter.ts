@@ -1,10 +1,9 @@
-import { join } from 'path'
 import { mkdir } from 'fs/promises'
 import { existsSync, readFileSync, appendFileSync } from 'fs'
 import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
-import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug } from './forge-naming'
+import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
@@ -231,7 +230,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
         throw new Error('forge workspace adapter: configure must set directory and branch')
       }
       const projectDir = deriveProjectDirectory(info)
-      await mkdir(join(dataDir, 'worktrees'), { recursive: true })
+      await mkdir(forgeWorktreesRoot(dataDir), { recursive: true })
 
       if (!git.isInsideWorkTree(projectDir)) {
         throw new Error(`forge workspace adapter: projectDirectory ${projectDir} is not a git work tree`)

@@ -102,7 +102,9 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 
 - **Execution dialog and loop restart** — the `Execute plan` / `Execute pasted plan` dialogs and the loop restart controls are not in the V2 TUI. Use the `execute-plan` tool, `loop-status` with `restart`, or the dashboard instead.
 - **Host-session sandbox toggle** — sandboxing a non-loop session from the TUI (`Toggle host sandbox`) has no routing key on V2. Loop sandboxes work on both hosts.
-- **Subtask commands** — `review` and `review-plan` run inline in the invoking session on V2 instead of spawning a subtask.
+- **Subtask commands** — `review` and `review-plan` run inline in the invoking session on V2 instead of spawning a subtask. Every Forge command runs its turn as the command's agent, then Forge switches the session back to the agent it had before.
+- **Retired loop sessions** — the V2 plugin API cannot delete sessions, so rotated coding and audit sessions stay in the session list under their Forge titles.
+- **Session transcripts** — V2 exposes a session's history only from its latest compaction onward. Loop usage totals stay exact because Forge reconciles them against the session's cumulative cost and tokens, attributing the pre-compaction share to the session's model.
 - **Remote loops and remote dashboard** — launching a loop against a configured remote opencode server, and opening the dashboard for a remote server, are 1.x only.
 
 ## Features

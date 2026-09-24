@@ -14,9 +14,6 @@ importers:
       '@opencode-ai/sdk':
         specifier: 1.15.5
         version: 1.15.5
-      '@opencode/client':
-        specifier: 2.0.14
-        version: 2.0.14(effect@4.0.0-rc.112)(solid-js@1.9.12)
       '@opencode/plugin':
         specifier: 2.0.14
         version: 2.0.14(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(@opentui/core@0.1.105(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))(@opentui/solid@0.1.105(solid-js@1.9.12)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))(redis@6.2.1(@opentelemetry/api@1.9.0))(solid-js@1.9.12)
@@ -33,6 +30,9 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.2.0)
+      '@opencode/client':
+        specifier: 2.0.14
+        version: 2.0.14(effect@4.0.0-rc.112)(solid-js@1.9.12)
       '@opentui/core':
         specifier: 0.1.105
         version: 0.1.105(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
@@ -1115,6 +1115,7 @@ packages:
     resolution: {integrity: sha512-Whjj2qoiJ6+OOJMGptTYazaJvjOJm+iKHpXQM1P3LzGjt7Ff++Tp7nH4N8J/BUA7R9IHfDyx4DJIflifwnbmIA==}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.60.2':
     resolution: {integrity: sha512-hr26p7e93Rl0Za+JwW7EAnwAvKkehh12BU1Llm9Ykiibg4uIr2rbpxG9WCf56GuvidlTG9KiiQT/TXT1yAWxTA==}

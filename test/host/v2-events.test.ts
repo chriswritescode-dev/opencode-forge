@@ -2,11 +2,9 @@ import { describe, test, expect } from 'vitest'
 import type { V2Event } from '@opencode/client'
 import {
   FORGE_EVENT_TYPES,
-  isV2LocationBoundEvent,
   mapV2SessionInfo,
   normalizeV2Event,
   v2EventDirectory,
-  v2EventSessionID,
 } from '../../src/host/v2-events'
 
 const durableV1 = { aggregateID: 's1', seq: 1, version: 1 } as const
@@ -56,50 +54,79 @@ describe('mapV2SessionInfo', () => {
 })
 
 describe('normalizeV2Event', () => {
-  test('maps session.idle to the V1 idle event', () => {
+  test('maps session.execution.started onto a busy session.status', () => {
     const event: V2Event = {
+      id: 'evt-1',
+      created: 1,
+      type: 'session.execution.started',
+      durable: durableV1,
+      location: { directory: '/repo' },
+      data: { sessionID: 's1' },
+    }
+
+    expect(normalizeV2Event(event)).toEqual([
+      {
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 's1', status: { type: 'busy' } },
+      },
+    ])
+  })
+
+  test('maps session.execution.succeeded onto idle status and the idle event', () => {
+    const event: V2Event = {
+      id: 'evt-1',
+      created: 1,
+      type: 'session.execution.succeeded',
+      durable: durableV1,
+      location: { directory: '/repo' },
+      data: { sessionID: 's1' },
+    }
+
+    expect(normalizeV2Event(event)).toEqual([
+      {
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 's1', status: { type: 'idle' } },
+      },
+      { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 's1' } },
+    ])
+  })
+
+  test('returns an empty list for the never-published V2 session.idle and session.status types', () => {
+    const idle: V2Event = {
       id: 'evt-1',
       created: 1,
       type: 'session.idle',
       location: { directory: '/repo' },
       data: { sessionID: 's1' },
     }
-
-    expect(normalizeV2Event(event)).toEqual([
-      { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 's1' } },
-    ])
-  })
-
-  test('maps session.status busy, retry and idle statuses through unchanged', () => {
-    const busy: V2Event = {
-      id: 'evt-1',
-      created: 1,
-      type: 'session.status',
-      data: { sessionID: 's1', status: { type: 'busy' } },
-    }
-    const retry: V2Event = {
+    const status: V2Event = {
       id: 'evt-2',
       created: 2,
       type: 'session.status',
-      data: {
-        sessionID: 's1',
-        status: { type: 'retry', attempt: 2, message: 'rate limited', next: 1500 },
-      },
-    }
-    const idle: V2Event = {
-      id: 'evt-3',
-      created: 3,
-      type: 'session.status',
-      data: { sessionID: 's1', status: { type: 'idle' } },
+      data: { sessionID: 's1', status: { type: 'busy' } },
     }
 
-    expect(normalizeV2Event(busy)).toEqual([
-      {
-        type: FORGE_EVENT_TYPES.sessionStatus,
-        properties: { sessionID: 's1', status: { type: 'busy' } },
+    expect(normalizeV2Event(idle)).toEqual([])
+    expect(normalizeV2Event(status)).toEqual([])
+  })
+
+  test('maps session.retry.scheduled onto a retry session.status with attempt, message and next', () => {
+    const event: V2Event = {
+      id: 'evt-1',
+      created: 1,
+      type: 'session.retry.scheduled',
+      durable: durableV1,
+      location: { directory: '/repo' },
+      data: {
+        sessionID: 's1',
+        assistantMessageID: 'm1',
+        attempt: 2,
+        at: 1500,
+        error: { type: 'provider.overloaded', message: 'rate limited' },
       },
-    ])
-    expect(normalizeV2Event(retry)).toEqual([
+    }
+
+    expect(normalizeV2Event(event)).toEqual([
       {
         type: FORGE_EVENT_TYPES.sessionStatus,
         properties: {
@@ -108,15 +135,9 @@ describe('normalizeV2Event', () => {
         },
       },
     ])
-    expect(normalizeV2Event(idle)).toEqual([
-      {
-        type: FORGE_EVENT_TYPES.sessionStatus,
-        properties: { sessionID: 's1', status: { type: 'idle' } },
-      },
-    ])
   })
 
-  test('maps session.execution.failed onto the V1 session.error shape the loop runtime reads', () => {
+  test('maps session.execution.failed onto session.error, idle status and idle in that order', () => {
     const event: V2Event = {
       id: 'evt-1',
       created: 1,
@@ -137,10 +158,15 @@ describe('normalizeV2Event', () => {
           error: { name: 'provider.quota', data: { message: 'quota exceeded', statusCode: 429 } },
         },
       },
+      {
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 's1', status: { type: 'idle' } },
+      },
+      { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 's1' } },
     ])
   })
 
-  test('maps a statusless session.execution.failed error without a statusCode', () => {
+  test('maps a statusless session.execution.failed error without a statusCode and still emits idle', () => {
     const event: V2Event = {
       id: 'evt-1',
       created: 1,
@@ -157,10 +183,15 @@ describe('normalizeV2Event', () => {
           error: { name: 'unknown', data: { message: 'boom' } },
         },
       },
+      {
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 's1', status: { type: 'idle' } },
+      },
+      { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 's1' } },
     ])
   })
 
-  test('maps a user session.execution.interrupted onto the V1 abort session.error the runtime abort branch reads', () => {
+  test('maps a user session.execution.interrupted onto abort error, idle status and idle in that order', () => {
     const event: V2Event = {
       id: 'evt-1',
       created: 1,
@@ -181,10 +212,15 @@ describe('normalizeV2Event', () => {
           },
         },
       },
+      {
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 's1', status: { type: 'idle' } },
+      },
+      { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 's1' } },
     ])
   })
 
-  test('drops shutdown, superseded and inactivity interruptions because none is a user stop', () => {
+  test('drops shutdown interruptions but idles superseded and inactivity', () => {
     const shutdown: V2Event = {
       id: 'evt-1',
       created: 1,
@@ -207,9 +243,17 @@ describe('normalizeV2Event', () => {
       data: { sessionID: 's1', reason: 'inactivity' },
     }
 
+    const idle = [
+      {
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 's1', status: { type: 'idle' } },
+      },
+      { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 's1' } },
+    ]
+
     expect(normalizeV2Event(shutdown)).toEqual([])
-    expect(normalizeV2Event(superseded)).toEqual([])
-    expect(normalizeV2Event(inactivity)).toEqual([])
+    expect(normalizeV2Event(superseded)).toEqual(idle)
+    expect(normalizeV2Event(inactivity)).toEqual(idle)
   })
 
   test('maps session.created onto the V1 session.created event with a port session info', () => {
@@ -265,7 +309,7 @@ describe('normalizeV2Event', () => {
     ])
   })
 
-  test('maps location.shutdown onto server.instance.disposed with the location directory', () => {
+  test('returns an empty list for location.shutdown because the host pump handles it raw', () => {
     const event: V2Event = {
       id: 'evt-1',
       created: 1,
@@ -274,9 +318,8 @@ describe('normalizeV2Event', () => {
       data: {},
     }
 
-    expect(normalizeV2Event(event)).toEqual([
-      { type: FORGE_EVENT_TYPES.serverInstanceDisposed, properties: { directory: '/repo' } },
-    ])
+    expect(normalizeV2Event(event)).toEqual([])
+    expect(v2EventDirectory(event)).toBe('/repo')
   })
 
   test('maps session.text.started, delta and ended onto message.part.updated text parts', () => {
@@ -505,7 +548,7 @@ describe('normalizeV2Event', () => {
     expect(normalizeV2Event(failed)).toEqual(expected)
   })
 
-  test('preserves the location directory on location-bound content events', () => {
+  test('does not stamp the location directory onto content events', () => {
     const event: V2Event = {
       id: 'evt-1',
       created: 1,
@@ -520,44 +563,10 @@ describe('normalizeV2Event', () => {
         type: FORGE_EVENT_TYPES.messagePartUpdated,
         properties: {
           sessionID: 's1',
-          directory: '/project-a',
           part: { sessionID: 's1', messageID: 'm1', type: 'text', text: 'full text' },
         },
       },
     ])
-  })
-
-  test('classifies location-bound events and reads their directory and session', () => {
-    const content: V2Event = {
-      id: 'evt-1',
-      created: 1,
-      type: 'session.text.ended',
-      durable: durableV1,
-      location: { directory: '/project-a' },
-      data: { sessionID: 's1', assistantMessageID: 'm1', ordinal: 0, text: 'full text' },
-    }
-    const idle: V2Event = {
-      id: 'evt-2',
-      created: 2,
-      type: 'session.idle',
-      location: { directory: '/project-a' },
-      data: { sessionID: 's1' },
-    }
-    const shutdown: V2Event = {
-      id: 'evt-3',
-      created: 3,
-      type: 'location.shutdown',
-      location: { directory: '/project-a' },
-      data: {},
-    }
-
-    expect(isV2LocationBoundEvent(content)).toBe(true)
-    expect(isV2LocationBoundEvent(idle)).toBe(false)
-    expect(isV2LocationBoundEvent(shutdown)).toBe(false)
-    expect(v2EventDirectory(content)).toBe('/project-a')
-    expect(v2EventDirectory(idle)).toBe('/project-a')
-    expect(v2EventSessionID(content)).toBe('s1')
-    expect(v2EventSessionID(shutdown)).toBeUndefined()
   })
 
   test('returns an empty list for V2 events with no V1 consumer', () => {
@@ -567,13 +576,6 @@ describe('normalizeV2Event', () => {
       type: 'session.moved',
       durable: durableV1,
       data: { sessionID: 's1', location: { directory: '/repo' }, projectID: 'proj-1' },
-    }
-    const succeeded: V2Event = {
-      id: 'evt-2',
-      created: 2,
-      type: 'session.execution.succeeded',
-      durable: durableV1,
-      data: { sessionID: 's1' },
     }
     const renamed: V2Event = {
       id: 'evt-3',
@@ -590,7 +592,6 @@ describe('normalizeV2Event', () => {
     }
 
     expect(normalizeV2Event(moved)).toEqual([])
-    expect(normalizeV2Event(succeeded)).toEqual([])
     expect(normalizeV2Event(renamed)).toEqual([])
     expect(normalizeV2Event(toast)).toEqual([])
   })

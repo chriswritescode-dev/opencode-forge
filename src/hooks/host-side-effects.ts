@@ -10,6 +10,7 @@ import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-r
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
 import { selectSessionBestEffort } from '../utils/tui-navigation'
+import type { ToastVariant } from '../utils/toast'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 export interface TerminationSideEffectsContext {
@@ -127,7 +128,7 @@ function publishTerminationToast(
   })
 }
 
-function getToastVariant(reason: TerminationReason): { variant: 'info' | 'success' | 'warning' | 'error'; duration: number } {
+function getToastVariant(reason: TerminationReason): { variant: ToastVariant; duration: number } {
   switch (reason.kind) {
     case 'completed':
       return { variant: 'success', duration: 5000 }

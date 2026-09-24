@@ -19,8 +19,12 @@ export function forgeBranchName(loopName: string): string {
   return `forge/${forgeWorktreeSlug(loopName)}`
 }
 
+export function forgeWorktreesRoot(dataDir: string): string {
+  return join(dataDir, 'worktrees')
+}
+
 export function forgeWorktreeDir(dataDir: string, loopName: string): string {
-  return join(dataDir, 'worktrees', forgeWorktreeSlug(loopName))
+  return join(forgeWorktreesRoot(dataDir), forgeWorktreeSlug(loopName))
 }
 
 /**
@@ -35,7 +39,7 @@ export function forgeWorktreeDir(dataDir: string, loopName: string): string {
  */
 export function isForgeWorktreeDir(dataDir: string, directory: string): boolean {
   if (!dataDir || !directory) return false
-  const rel = relative(join(dataDir, 'worktrees'), directory)
+  const rel = relative(forgeWorktreesRoot(dataDir), directory)
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 

@@ -2,10 +2,11 @@ import type { V2Event } from '@opencode/client'
 import type { ForgeEvent, Session } from '../client/port'
 
 export const V2_EVENT_TYPES = {
-  sessionIdle: 'session.idle',
-  sessionStatus: 'session.status',
+  sessionExecutionStarted: 'session.execution.started',
+  sessionExecutionSucceeded: 'session.execution.succeeded',
   sessionExecutionFailed: 'session.execution.failed',
   sessionExecutionInterrupted: 'session.execution.interrupted',
+  sessionRetryScheduled: 'session.retry.scheduled',
   sessionCreated: 'session.created',
   sessionDeleted: 'session.deleted',
   locationShutdown: 'location.shutdown',
@@ -38,37 +39,45 @@ export const FORGE_EVENT_TYPES = {
   messagePartUpdated: 'message.part.updated',
 } as const
 
-const V2_LOCATION_BOUND_EVENT_TYPES: ReadonlySet<string> = new Set([
-  V2_EVENT_TYPES.sessionTextStarted,
-  V2_EVENT_TYPES.sessionTextDelta,
-  V2_EVENT_TYPES.sessionTextEnded,
-  V2_EVENT_TYPES.sessionReasoningStarted,
-  V2_EVENT_TYPES.sessionReasoningDelta,
-  V2_EVENT_TYPES.sessionReasoningEnded,
-  V2_EVENT_TYPES.sessionToolInputStarted,
-  V2_EVENT_TYPES.sessionToolInputDelta,
-  V2_EVENT_TYPES.sessionToolInputEnded,
-  V2_EVENT_TYPES.sessionToolCalled,
-  V2_EVENT_TYPES.sessionToolProgress,
-  V2_EVENT_TYPES.sessionToolSuccess,
-  V2_EVENT_TYPES.sessionToolFailed,
-  V2_EVENT_TYPES.sessionStepStarted,
-  V2_EVENT_TYPES.sessionStepStreamed,
-  V2_EVENT_TYPES.sessionStepEnded,
-  V2_EVENT_TYPES.sessionStepFailed,
-])
+const V2_PART_EVENT_KINDS = {
+  [V2_EVENT_TYPES.sessionTextStarted]: 'text',
+  [V2_EVENT_TYPES.sessionTextDelta]: 'text',
+  [V2_EVENT_TYPES.sessionTextEnded]: 'text',
+  [V2_EVENT_TYPES.sessionReasoningStarted]: 'reasoning',
+  [V2_EVENT_TYPES.sessionReasoningDelta]: 'reasoning',
+  [V2_EVENT_TYPES.sessionReasoningEnded]: 'reasoning',
+  [V2_EVENT_TYPES.sessionToolInputStarted]: 'tool',
+  [V2_EVENT_TYPES.sessionToolInputDelta]: 'tool',
+  [V2_EVENT_TYPES.sessionToolInputEnded]: 'tool',
+  [V2_EVENT_TYPES.sessionToolCalled]: 'tool',
+  [V2_EVENT_TYPES.sessionToolProgress]: 'tool',
+  [V2_EVENT_TYPES.sessionToolSuccess]: 'tool',
+  [V2_EVENT_TYPES.sessionToolFailed]: 'tool',
+  [V2_EVENT_TYPES.sessionStepStarted]: 'step',
+  [V2_EVENT_TYPES.sessionStepStreamed]: 'step',
+  [V2_EVENT_TYPES.sessionStepEnded]: 'step',
+  [V2_EVENT_TYPES.sessionStepFailed]: 'step',
+} as const satisfies Partial<Record<V2Event['type'], 'text' | 'reasoning' | 'tool' | 'step'>>
 
-export function isV2LocationBoundEvent(event: V2Event): boolean {
-  return V2_LOCATION_BOUND_EVENT_TYPES.has(event.type)
+type V2PartEvent = Extract<V2Event, { type: keyof typeof V2_PART_EVENT_KINDS }>
+
+function isV2PartEvent(event: V2Event): event is V2PartEvent {
+  return event.type in V2_PART_EVENT_KINDS
+}
+
+function partEventText(event: V2PartEvent): string | undefined {
+  switch (event.type) {
+    case V2_EVENT_TYPES.sessionTextDelta:
+      return event.data.delta
+    case V2_EVENT_TYPES.sessionTextEnded:
+      return event.data.text
+    default:
+      return undefined
+  }
 }
 
 export function v2EventDirectory(event: V2Event): string | undefined {
   return event.location?.directory
-}
-
-export function v2EventSessionID(event: V2Event): string | undefined {
-  const data = event.data as { sessionID?: unknown }
-  return typeof data.sessionID === 'string' ? data.sessionID : undefined
 }
 
 export interface V2SessionInfoLike {
@@ -106,6 +115,16 @@ export function mapV2Error(error: { type: string; message: string; status?: numb
   }
 }
 
+function idleEvents(sessionID: string): ForgeEvent[] {
+  return [
+    {
+      type: FORGE_EVENT_TYPES.sessionStatus,
+      properties: { sessionID, status: { type: 'idle' } },
+    },
+    { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID } },
+  ]
+}
+
 function partEvent(
   sessionID: string,
   type: string,
@@ -127,32 +146,31 @@ function partEvent(
 }
 
 export function normalizeV2Event(event: V2Event): ForgeEvent[] {
-  const events = mapV2EventBody(event)
-  const directory = v2EventDirectory(event)
-  if (directory === undefined || !isV2LocationBoundEvent(event)) return events
-  return events.map((item) => ({
-    ...item,
-    properties: { ...item.properties, directory },
-  }))
-}
+  if (isV2PartEvent(event)) {
+    return [partEvent(event.data.sessionID, V2_PART_EVENT_KINDS[event.type], event.data.assistantMessageID, partEventText(event))]
+  }
 
-function mapV2EventBody(event: V2Event): ForgeEvent[] {
   switch (event.type) {
-    case V2_EVENT_TYPES.sessionIdle:
-      return [{ type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: event.data.sessionID } }]
-    case V2_EVENT_TYPES.sessionStatus:
+    case V2_EVENT_TYPES.sessionExecutionStarted:
       return [{
         type: FORGE_EVENT_TYPES.sessionStatus,
-        properties: { sessionID: event.data.sessionID, status: event.data.status },
+        properties: { sessionID: event.data.sessionID, status: { type: 'busy' } },
       }]
+    case V2_EVENT_TYPES.sessionExecutionSucceeded:
+      return idleEvents(event.data.sessionID)
     case V2_EVENT_TYPES.sessionExecutionFailed:
-      return [{
-        type: FORGE_EVENT_TYPES.sessionError,
-        properties: { sessionID: event.data.sessionID, error: mapV2Error(event.data.error) },
-      }]
+      return [
+        {
+          type: FORGE_EVENT_TYPES.sessionError,
+          properties: { sessionID: event.data.sessionID, error: mapV2Error(event.data.error) },
+        },
+        ...idleEvents(event.data.sessionID),
+      ]
     case V2_EVENT_TYPES.sessionExecutionInterrupted:
-      return event.data.reason === 'user'
-        ? [{
+      if (event.data.reason === 'shutdown') return []
+      if (event.data.reason === 'user') {
+        return [
+          {
             type: FORGE_EVENT_TYPES.sessionError,
             properties: {
               sessionID: event.data.sessionID,
@@ -161,8 +179,24 @@ function mapV2EventBody(event: V2Event): ForgeEvent[] {
                 data: { message: 'Session execution interrupted by user' },
               },
             },
-          }]
-        : []
+          },
+          ...idleEvents(event.data.sessionID),
+        ]
+      }
+      return idleEvents(event.data.sessionID)
+    case V2_EVENT_TYPES.sessionRetryScheduled:
+      return [{
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: {
+          sessionID: event.data.sessionID,
+          status: {
+            type: 'retry',
+            attempt: event.data.attempt,
+            message: event.data.error.message,
+            next: event.data.at,
+          },
+        },
+      }]
     case V2_EVENT_TYPES.sessionCreated:
       return [{
         type: FORGE_EVENT_TYPES.sessionCreated,
@@ -181,45 +215,6 @@ function mapV2EventBody(event: V2Event): ForgeEvent[] {
       }]
     case V2_EVENT_TYPES.sessionDeleted:
       return [{ type: FORGE_EVENT_TYPES.sessionDeleted, properties: { sessionID: event.data.sessionID } }]
-    case V2_EVENT_TYPES.locationShutdown:
-      return [{
-        type: FORGE_EVENT_TYPES.serverInstanceDisposed,
-        properties: { directory: event.location?.directory ?? '' },
-      }]
-    case V2_EVENT_TYPES.sessionTextStarted:
-      return [partEvent(event.data.sessionID, 'text', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionTextDelta:
-      return [partEvent(event.data.sessionID, 'text', event.data.assistantMessageID, event.data.delta)]
-    case V2_EVENT_TYPES.sessionTextEnded:
-      return [partEvent(event.data.sessionID, 'text', event.data.assistantMessageID, event.data.text)]
-    case V2_EVENT_TYPES.sessionReasoningStarted:
-      return [partEvent(event.data.sessionID, 'reasoning', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionReasoningDelta:
-      return [partEvent(event.data.sessionID, 'reasoning', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionReasoningEnded:
-      return [partEvent(event.data.sessionID, 'reasoning', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionToolInputStarted:
-      return [partEvent(event.data.sessionID, 'tool', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionToolInputDelta:
-      return [partEvent(event.data.sessionID, 'tool', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionToolInputEnded:
-      return [partEvent(event.data.sessionID, 'tool', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionToolCalled:
-      return [partEvent(event.data.sessionID, 'tool', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionToolProgress:
-      return [partEvent(event.data.sessionID, 'tool', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionToolSuccess:
-      return [partEvent(event.data.sessionID, 'tool', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionToolFailed:
-      return [partEvent(event.data.sessionID, 'tool', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionStepStarted:
-      return [partEvent(event.data.sessionID, 'step', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionStepStreamed:
-      return [partEvent(event.data.sessionID, 'step', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionStepEnded:
-      return [partEvent(event.data.sessionID, 'step', event.data.assistantMessageID)]
-    case V2_EVENT_TYPES.sessionStepFailed:
-      return [partEvent(event.data.sessionID, 'step', event.data.assistantMessageID)]
     default:
       return []
   }

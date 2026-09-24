@@ -1,17 +1,21 @@
-import { describe, it, expect, vi } from 'vitest'
-import type { V2Event } from '@opencode/client'
-import { createForgeClientFromV2, fromV2Ruleset, toV2Ruleset } from '../../src/client/v2-adapter'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { createForgeClientFromV2, fromV2Ruleset, resetV2SessionStatusCache, toV2Ruleset } from '../../src/client/v2-adapter'
+import type { ForgeToastInput } from '../../src/host/forge-rpc'
 import { ForgeClientError } from '../../src/client/port'
 import type { ForgeClient } from '../../src/client/port'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createFakeV2Context, type FakeV2ContextOptions } from '../helpers/fake-v2-context'
 
-function clientFor(options: FakeV2ContextOptions & { directory?: string } = {}) {
-  const { directory, ...contextOptions } = options
+function clientFor(options: FakeV2ContextOptions & {
+  directory?: string
+  publishToast?: (toast: ForgeToastInput) => void | Promise<void>
+} = {}) {
+  const { directory, publishToast, ...contextOptions } = options
   const { ctx, calls } = createFakeV2Context(contextOptions)
   const client = createForgeClientFromV2(ctx, {
     directory: directory ?? '/tmp/forge-project',
     workspace: createFakeForgeClient().client.workspace,
+    ...(publishToast ? { publishToast } : {}),
   })
   return { ctx, calls, client }
 }
@@ -19,28 +23,6 @@ function clientFor(options: FakeV2ContextOptions & { directory?: string } = {}) 
 function failure(error: unknown): ForgeClientError {
   expect(error).toBeInstanceOf(ForgeClientError)
   return error as ForgeClientError
-}
-
-function settlesWithin<T>(promise: Promise<T>, ms = 250): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`promise did not settle within ${ms}ms`)), ms)
-    }),
-  ])
-}
-
-function abortAwareFeed(signals: AbortSignal[]): (options: { signal: AbortSignal }) => AsyncGenerator<V2Event> {
-  return (options) => {
-    signals.push(options.signal)
-    const { signal } = options
-    return (async function* () {
-      await new Promise<void>((resolve) => {
-        if (signal.aborted) resolve()
-        else signal.addEventListener('abort', () => resolve(), { once: true })
-      })
-    })()
-  }
 }
 
 function sessionInfo(overrides: Record<string, unknown> = {}) {
@@ -89,6 +71,17 @@ describe('createForgeClientFromV2', () => {
       }])
       expect(created.id).toBe('ses_fake_1')
       expect(created.directory).toBe('/wt')
+    })
+
+    it('passes a loop title through unchanged', async () => {
+      const { client, calls } = clientFor()
+
+      await client.session.create({ title: 'Loop: foo · code #1', directory: '/wt' })
+
+      expect(calls).toEqual([{
+        method: 'session.create',
+        args: [{ title: 'Loop: foo · code #1', location: { directory: '/wt' } }],
+      }])
     })
 
     it('falls back to the plugin directory when the caller omits one', async () => {
@@ -313,9 +306,89 @@ describe('createForgeClientFromV2', () => {
         metadata: {},
       })
     })
+
+    it('prepends the cumulative usage remainder not present in visible messages', async () => {
+      const { client } = clientFor({
+        session: {
+          context: vi.fn().mockResolvedValue([assistantMessage()]),
+          get: vi.fn().mockResolvedValue(sessionInfo({
+            cost: 1.25,
+            tokens: { input: 30, output: 50, reasoning: 5, cache: { read: 10, write: 2 } },
+            model: { id: 'claude-sonnet-4', providerID: 'anthropic' },
+          })),
+        },
+      })
+
+      const messages = await client.session.messages({ sessionID: 'ses_1' })
+
+      expect(messages[0]).toEqual({
+        info: {
+          id: 'ses_1:usage-remainder',
+          role: 'assistant',
+          sessionID: 'ses_1',
+          time: { created: 1 },
+          cost: 0.75,
+          tokens: { input: 20, output: 30, reasoning: 5, cache: { read: 10, write: 2 } },
+          providerID: 'anthropic',
+          modelID: 'claude-sonnet-4',
+        },
+        parts: [],
+      })
+      expect(messages[1].info.id).toBe('msg_assistant')
+    })
+
+    it('omits the remainder when the cumulative totals equal the visible sum', async () => {
+      const { client } = clientFor({
+        session: {
+          context: vi.fn().mockResolvedValue([assistantMessage()]),
+          get: vi.fn().mockResolvedValue(sessionInfo({
+            cost: 0.5,
+            tokens: { input: 10, output: 20, reasoning: 0, cache: { read: 0, write: 0 } },
+          })),
+        },
+      })
+
+      const messages = await client.session.messages({ sessionID: 'ses_1' })
+
+      expect(messages.map((message) => message.info.id)).toEqual(['msg_assistant'])
+    })
+
+    it('maps only the last limit messages and skips the cumulative lookup', async () => {
+      const get = vi.fn().mockResolvedValue(sessionInfo({ cost: 9 }))
+      const { client } = clientFor({
+        session: {
+          context: vi.fn().mockResolvedValue([
+            { id: 'msg_1', type: 'user', time: { created: 1 }, text: 'one' },
+            { id: 'msg_2', type: 'user', time: { created: 2 }, text: 'two' },
+            { id: 'msg_3', type: 'user', time: { created: 3 }, text: 'three' },
+          ]),
+          get,
+        },
+      })
+
+      const messages = await client.session.messages({ sessionID: 'ses_1', limit: 2 })
+
+      expect(messages.map((message) => message.info.id)).toEqual(['msg_2', 'msg_3'])
+      expect(get).not.toHaveBeenCalled()
+    })
+
+    it('returns the visible messages when the cumulative lookup fails', async () => {
+      const { client } = clientFor({
+        session: {
+          context: vi.fn().mockResolvedValue([assistantMessage()]),
+          get: vi.fn().mockRejectedValue(new Error('Session not found')),
+        },
+      })
+
+      const messages = await client.session.messages({ sessionID: 'ses_1' })
+
+      expect(messages.map((message) => message.info.id)).toEqual(['msg_assistant'])
+    })
   })
 
   describe('session.status', () => {
+    beforeEach(() => resetV2SessionStatusCache())
+
     it('returns the recorded statuses for known sessions only', async () => {
       const { client } = clientFor()
 
@@ -326,6 +399,43 @@ describe('createForgeClientFromV2', () => {
       expect(await client.session.status()).toEqual({
         ses_1: { type: 'busy' },
         ses_2: { type: 'idle' },
+      })
+    })
+
+    it('shares recorded statuses across client instances', async () => {
+      const first = clientFor()
+      const second = clientFor()
+
+      await first.client.recordStatusEvent({
+        type: 'session.status',
+        properties: { sessionID: 'ses_shared', status: { type: 'busy' } },
+      })
+
+      expect(await second.client.session.status()).toEqual({ ses_shared: { type: 'busy' } })
+    })
+
+    it('evicts a session when it is deleted', async () => {
+      const { client } = clientFor()
+
+      await client.recordStatusEvent({ type: 'session.status', properties: { sessionID: 'ses_1', status: { type: 'busy' } } })
+      await client.recordStatusEvent({ type: 'session.deleted', properties: { sessionID: 'ses_1' } })
+
+      expect(await client.session.status()).toEqual({})
+    })
+
+    it('preserves retry status fields', async () => {
+      const { client } = clientFor()
+
+      await client.recordStatusEvent({
+        type: 'session.status',
+        properties: {
+          sessionID: 'ses_retry',
+          status: { type: 'retry', attempt: 2, message: 'rate limited', next: 123 },
+        },
+      })
+
+      expect(await client.session.status()).toEqual({
+        ses_retry: { type: 'retry', attempt: 2, message: 'rate limited', next: 123 },
       })
     })
   })
@@ -349,6 +459,55 @@ describe('createForgeClientFromV2', () => {
       const { client } = clientFor()
 
       expect(failure(await client.tui.selectSession({ sessionID: 'ses_1' }).catch((e: unknown) => e)).kind).toBe('unavailable')
+    })
+  })
+
+  describe('tui.publish', () => {
+    const toastBody = {
+      type: 'tui.toast.show',
+      properties: { title: 'T', message: 'M', variant: 'success', duration: 1234 },
+    } as const
+
+    it('emits the mapped toast payload when an emitter is configured', async () => {
+      const publishToast = vi.fn()
+      const { client } = clientFor({ publishToast })
+
+      await client.tui.publish({ directory: '/wt', body: toastBody })
+
+      expect(publishToast).toHaveBeenCalledWith({
+        title: 'T',
+        message: 'M',
+        variant: 'success',
+        duration: 1234,
+      })
+    })
+
+    it('ignores non-toast bodies', async () => {
+      const publishToast = vi.fn()
+      const { client } = clientFor({ publishToast })
+
+      await client.tui.publish({
+        directory: '/wt',
+        body: { type: 'tui.session.select', properties: { sessionID: 'ses_1' } },
+      })
+
+      expect(publishToast).not.toHaveBeenCalled()
+    })
+
+    it('resolves without an emitter', async () => {
+      const { client } = clientFor()
+
+      await expect(client.tui.publish({ directory: '/wt', body: toastBody })).resolves.toBeUndefined()
+    })
+
+    it('resolves and logs when the emitter rejects', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const publishToast = vi.fn().mockRejectedValue(new Error('emit failed'))
+      const { client } = clientFor({ publishToast })
+
+      await expect(client.tui.publish({ directory: '/wt', body: toastBody })).resolves.toBeUndefined()
+      expect(errorSpy).toHaveBeenCalledWith('[forge] failed to emit toast over RPC', expect.any(Error))
+      errorSpy.mockRestore()
     })
   })
 
@@ -432,88 +591,14 @@ describe('createForgeClientFromV2', () => {
   })
 
   describe('event.subscribe', () => {
-    it('yields normalized events and skips unmapped ones', async () => {
-      const events = [
-        { id: 'e1', created: 1, type: 'session.idle', location: { directory: '/wt' }, data: { sessionID: 'ses_1' } },
-        { id: 'e2', created: 2, type: 'session.unmapped', location: { directory: '/wt' }, data: {} },
-      ] as unknown as V2Event[]
-      const { client } = clientFor({
-        event: {
-          subscribe: () => (async function* () {
-            for (const event of events) yield event
-          })(),
-        },
-      })
+    it('rejects as unavailable without touching the host', async () => {
+      const { client, calls } = clientFor()
 
-      const subscription = await client.event.subscribe()
-      const received: unknown[] = []
-      for await (const event of subscription.stream) received.push(event)
+      const err = failure(await client.event.subscribe().catch((e: unknown) => e))
 
-      expect(received).toEqual([{ type: 'session.idle', properties: { sessionID: 'ses_1' } }])
-    })
-
-    it('aborts the host subscription when the consumer closes the stream', async () => {
-      const signals: AbortSignal[] = []
-      const { client } = clientFor({
-        event: {
-          subscribe: (options: { signal: AbortSignal }) => {
-            signals.push(options.signal)
-            return (async function* () {
-              yield { id: 'e1', created: 1, type: 'session.idle', location: { directory: '/wt' }, data: { sessionID: 'ses_1' } } as unknown as V2Event
-            })()
-          },
-        },
-      })
-
-      const subscription = await client.event.subscribe()
-      expect(signals).toHaveLength(1)
-      for await (const event of subscription.stream) {
-        expect(event.type).toBe('session.idle')
-        break
-      }
-      await subscription.stream.return(undefined)
-      expect(signals[0].aborted).toBe(true)
-    })
-
-    it('aborts the idle host feed and settles a pending next() when the consumer closes the stream', async () => {
-      const signals: AbortSignal[] = []
-      const { client } = clientFor({ event: { subscribe: abortAwareFeed(signals) } })
-
-      const subscription = await client.event.subscribe()
-      expect(subscription.stream[Symbol.asyncIterator]()).toBe(subscription.stream)
-      const pending = subscription.stream.next()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-
-      const closed = subscription.stream.return(undefined)
-
-      await expect(settlesWithin(closed)).resolves.toEqual({ done: true, value: undefined })
-      expect(signals[0].aborted).toBe(true)
-      await expect(settlesWithin(pending)).resolves.toEqual({ done: true, value: undefined })
-    })
-
-    it('aborts the idle host feed when the consumer closes before the first next()', async () => {
-      const signals: AbortSignal[] = []
-      const { client } = clientFor({ event: { subscribe: abortAwareFeed(signals) } })
-
-      const subscription = await client.event.subscribe()
-
-      await expect(settlesWithin(subscription.stream.return(undefined))).resolves.toEqual({ done: true, value: undefined })
-      expect(signals[0].aborted).toBe(true)
-    })
-
-    it('aborts the idle host feed when the consumer throws into the stream', async () => {
-      const signals: AbortSignal[] = []
-      const { client } = clientFor({ event: { subscribe: abortAwareFeed(signals) } })
-
-      const subscription = await client.event.subscribe()
-      const pending = subscription.stream.next()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-
-      const thrown = subscription.stream.throw(new Error('consumer failed'))
-
-      await expect(settlesWithin(thrown)).rejects.toThrow('consumer failed')
-      expect(signals[0].aborted).toBe(true)
-      await expect(settlesWithin(pending)).resolves.toEqual({ done: true, value: undefined })
+      expect(err.kind).toBe('unavailable')
+      expect(err.method).toBe('event.subscribe')
+      expect(calls).toEqual([])
     })
   })
 

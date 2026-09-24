@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { buildAgents } from '../../src/agents'
 import { buildArchitectReminder, createForgeCore, type ForgeCore } from '../../src/host/forge-core'
+import { closeDatabase, createLoopsRepo, initializeDatabase } from '../../src/storage'
 import { registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../../src/host/v2-hooks'
 import { createSessionHooks } from '../../src/hooks/session'
 import {
@@ -422,6 +423,7 @@ describe('generated shim', () => {
 describe('createForgeCore integration', () => {
   const tempDirs: string[] = []
   let core: ForgeCore | null = null
+  let coreDataDir: string | null = null
 
   afterEach(async () => {
     await core?.cleanup()
@@ -439,9 +441,11 @@ describe('createForgeCore integration', () => {
 
   async function buildCore(config: PluginConfig = {}): Promise<ForgeCore> {
     const directory = tempDir('forge-hooks-project-')
+    const dataDir = join(directory, 'memory')
+    coreDataDir = dataDir
     const { client } = createFakeForgeClient()
     core = await createForgeCore(
-      { dataDir: join(directory, 'memory'), ...config },
+      { dataDir, ...config },
       { directory, projectId: 'proj_hooks', projectRoot: directory, client },
     )
     return core
@@ -501,13 +505,19 @@ describe('createForgeCore integration', () => {
     const built = await buildCore({ sandbox: { enabled: true, image: 'forge-hooks-missing-image:latest' } })
     const worktree = tempDir('forge-hooks-worktree-')
 
-    built.loopsRepo.insert(runningSandboxLoopRow('proj_hooks', worktree), { lastAuditResult: null })
+    const db = initializeDatabase(coreDataDir!)
+    const loopsRepo = createLoopsRepo(db)
+    try {
+      loopsRepo.insert(runningSandboxLoopRow('proj_hooks', worktree), { lastAuditResult: null })
 
-    await expect(built.resolveSandboxForDirectory(worktree, { throwOnRestoreError: true })).rejects.toThrow()
-    await expect(built.resolveSandboxForDirectory(join(tmpdir(), 'forge-hooks-unrelated'))).resolves.toBeNull()
+      await expect(built.resolveSandboxForDirectory(worktree, { throwOnRestoreError: true })).rejects.toThrow()
+      await expect(built.resolveSandboxForDirectory(join(tmpdir(), 'forge-hooks-unrelated'))).resolves.toBeNull()
 
-    built.loopsRepo.setStatus('proj_hooks', 'hooks-loop', 'completed')
-    await expect(built.resolveSandboxForDirectory(worktree, { throwOnRestoreError: true })).resolves.toBeNull()
+      loopsRepo.setStatus('proj_hooks', 'hooks-loop', 'completed')
+      await expect(built.resolveSandboxForDirectory(worktree, { throwOnRestoreError: true })).resolves.toBeNull()
+    } finally {
+      closeDatabase(db)
+    }
   })
 
   test('bridges the real core compaction prompt into the V2 system parts', async () => {

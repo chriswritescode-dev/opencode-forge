@@ -24,7 +24,7 @@ import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolve
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
-import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast, deleteSessionBestEffort } from '../utils/loop-session'
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { resolveForgeDbPath } from '../utils/opencode-paths'
 import { existsSync } from 'fs'
@@ -919,9 +919,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       // Delete created session if requested
       if (command.lifecycle?.deleteSessionOnPromptFailure) {
-        await deps.client.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to delete failed session', err as Error)
-        })
+        await deleteSessionBestEffort(
+          deps.client,
+          { sessionID: sessionId, directory: ctx.directory },
+          deps.logger,
+          'handlePlanNewSession: failed to delete failed session',
+        )
       }
       
       return fail('prompt_failed', 502, 'Session created but failed to send plan')

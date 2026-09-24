@@ -73,7 +73,8 @@ Host-neutral core plus the thin adapters that map each OpenCode host onto it.
 |------|---------|
 | `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
 | `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
-| `v2-events.ts` | Normalizes V2 events into Forge's event shape |
+| `v2-events.ts` | Normalizes V2 events into Forge's event shape; busy, idle, and retry derive only from `session.execution.*` and `session.retry.scheduled` |
+| `forge-rpc.ts` | `FORGE_RPC` contract: the `toast` event the V2 server emits and the V2 TUI shows |
 | `v2-hooks.ts` | Registers the core handlers through V2's hook API |
 | `v2-tools.ts` | Registers the shared Forge tools on V2 |
 | `v2-config.ts` | Resolves and registers agents and commands on V2 |

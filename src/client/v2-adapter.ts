@@ -11,12 +11,10 @@ import type {
   SessionMessages,
   SessionStatus,
 } from './port'
-import {
-  FORGE_EVENT_TYPES,
-  mapV2Error,
-  mapV2SessionInfo,
-  normalizeV2Event,
-} from '../host/v2-events'
+import { FORGE_EVENT_TYPES, mapV2Error, mapV2SessionInfo } from '../host/v2-events'
+import type { ForgeToastInput } from '../host/forge-rpc'
+import { LRUCache } from '../utils/lru-cache'
+import { isRecord } from '../utils/is-record'
 
 type V2Session = Plugin.Context['session']
 type V2SessionInfo = Awaited<ReturnType<V2Session['get']>>
@@ -25,7 +23,7 @@ type V2UserMessage = Extract<V2Message, { type: 'user' }>
 type V2AssistantMessage = Extract<V2Message, { type: 'assistant' }>
 type V2AssistantContent = V2AssistantMessage['content'][number]
 type V2ToolState = Extract<V2AssistantContent, { type: 'tool' }>['state']
-type V2ToolContent = Extract<V2ToolState, { status: 'completed' }>['content'][number]
+type V2TokenUsage = NonNullable<V2AssistantMessage['tokens']>
 type V2ModelInfo = Awaited<ReturnType<Plugin.Context['model']['list']>>['data'][number]
 
 type V1PermissionRule = NonNullable<Session['permission']>[number]
@@ -33,8 +31,6 @@ export type V2PermissionRule = { action: string; resource: string; effect: 'allo
 
 export interface V2ClientLike {
   readonly session: V2Session
-  readonly permission: Plugin.Context['permission']
-  readonly event: Plugin.Context['event']
   readonly location: Plugin.Context['location']
   readonly provider: Plugin.Context['provider']
   readonly model: Plugin.Context['model']
@@ -43,28 +39,40 @@ export interface V2ClientLike {
 export interface V2ForgeClientOptions {
   directory: string
   workspace: ForgeClient['workspace']
+  publishToast?: (toast: ForgeToastInput) => void | Promise<void>
 }
 
 export interface V2ForgeClient extends ForgeClient {
   recordStatusEvent(event: ForgeEvent): void
 }
 
-const ACTION_RENAMES: Record<string, string> = {
+export const V1_TO_V2_TOOL_NAMES: Record<string, string> = {
   bash: 'shell',
   task: 'subagent',
+}
+
+const V1_TO_V2_ACTION_NAMES: Record<string, string> = {
+  ...V1_TO_V2_TOOL_NAMES,
   write: 'edit',
   patch: 'edit',
 }
 
-const ACTION_RESTORES: Record<string, string> = {
-  shell: 'bash',
-  subagent: 'task',
+export function invertRenameTable(renames: Record<string, string>): Record<string, string> {
+  const inverted: Record<string, string> = {}
+  for (const [from, to] of Object.entries(renames)) {
+    if (!(to in inverted)) inverted[to] = from
+  }
+  return inverted
+}
+
+const V2_TO_V1_ACTION_NAMES: Record<string, string> = {
+  ...invertRenameTable(V1_TO_V2_ACTION_NAMES),
   edit: 'write',
 }
 
 export function toV2Ruleset(ruleset: V1PermissionRule[]): V2PermissionRule[] {
   return ruleset.map((rule) => ({
-    action: ACTION_RENAMES[rule.permission] ?? rule.permission,
+    action: V1_TO_V2_ACTION_NAMES[rule.permission] ?? rule.permission,
     resource: rule.pattern,
     effect: rule.action,
   }))
@@ -72,7 +80,7 @@ export function toV2Ruleset(ruleset: V1PermissionRule[]): V2PermissionRule[] {
 
 export function fromV2Ruleset(ruleset: ReadonlyArray<V2PermissionRule>): V1PermissionRule[] {
   return ruleset.map((rule) => ({
-    permission: ACTION_RESTORES[rule.action] ?? rule.action,
+    permission: V2_TO_V1_ACTION_NAMES[rule.action] ?? rule.action,
     pattern: rule.resource,
     action: rule.effect,
   }))
@@ -83,16 +91,16 @@ function isV2Effect(value: unknown): value is V2PermissionRule['effect'] {
 }
 
 export function toV2PermissionMap(permission: unknown): V2PermissionRule[] {
-  if (!permission || typeof permission !== 'object' || Array.isArray(permission)) return []
+  if (!isRecord(permission)) return []
   const rules: V2PermissionRule[] = []
-  for (const [tool, value] of Object.entries(permission as Record<string, unknown>)) {
-    const action = ACTION_RENAMES[tool] ?? tool
+  for (const [tool, value] of Object.entries(permission)) {
+    const action = V1_TO_V2_ACTION_NAMES[tool] ?? tool
     if (isV2Effect(value)) {
       rules.push({ action, resource: '*', effect: value })
       continue
     }
-    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
-    for (const [resource, effect] of Object.entries(value as Record<string, unknown>)) {
+    if (!isRecord(value)) continue
+    for (const [resource, effect] of Object.entries(value)) {
       if (isV2Effect(effect)) rules.push({ action, resource, effect })
     }
   }
@@ -105,6 +113,14 @@ function isSessionStatus(value: unknown): value is SessionStatus[string] {
   return type === 'idle' || type === 'busy' || type === 'retry'
 }
 
+const SESSION_STATUS_CACHE_CAPACITY = 1000
+
+const sessionStatusCache = new LRUCache<SessionStatus[string]>(SESSION_STATUS_CACHE_CAPACITY)
+
+export function resetV2SessionStatusCache(): void {
+  sessionStatusCache.clear()
+}
+
 async function call<T>(method: string, run: () => Promise<T>): Promise<T> {
   try {
     return await run()
@@ -113,31 +129,21 @@ async function call<T>(method: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
-function toAbortableStream<T>(source: AsyncGenerator<T>, controller: AbortController): AsyncGenerator<T> {
-  const close = (value?: unknown): Promise<IteratorResult<T>> => {
-    controller.abort()
-    return source.return(value)
+export function contentToText(
+  content: string | ReadonlyArray<{ type: string; text?: string }> | undefined,
+): string {
+  if (typeof content === 'string') return content
+  if (!content) return ''
+  const lines: string[] = []
+  for (const part of content) {
+    if (part.type === 'text' && typeof part.text === 'string') lines.push(part.text)
   }
-  const stream: AsyncGenerator<T> = {
-    next: () => source.next(),
-    return: close,
-    throw: (error) => {
-      controller.abort()
-      return source.throw(error)
-    },
-    [Symbol.asyncIterator]: () => stream,
-    [Symbol.asyncDispose]: () => close().then(() => undefined),
-  }
-  return stream
-}
-
-function toolContentText(content: readonly V2ToolContent[]): string {
-  return content.map((item) => (item.type === 'text' ? item.text : '')).join('')
+  return lines.join('\n')
 }
 
 function toToolState(state: V2ToolState): Record<string, unknown> {
   if (state.status === 'completed') {
-    return { status: state.status, input: state.input, output: toolContentText(state.content), metadata: state.metadata ?? {} }
+    return { status: state.status, input: state.input, output: contentToText(state.content), metadata: state.metadata ?? {} }
   }
   if (state.status === 'error') {
     return { status: state.status, input: state.input, error: state.error.message, metadata: state.metadata ?? {} }
@@ -188,16 +194,97 @@ function toAssistantMessageParts(message: V2AssistantMessage, sessionID: string)
   })
 }
 
+function lastVisibleMessages(messages: V2Message[], limit: number): V2Message[] {
+  const selected: V2Message[] = []
+  for (let index = messages.length - 1; index >= 0 && selected.length < limit; index--) {
+    const message = messages[index]
+    if (message.type === 'user' || message.type === 'assistant') selected.push(message)
+  }
+  return selected.reverse()
+}
+
 function toSessionMessages(messages: V2Message[], sessionID: string, limit?: number): SessionMessages {
+  const visible = limit === undefined ? messages : lastVisibleMessages(messages, limit)
   const mapped: SessionMessages = []
-  for (const message of messages) {
+  for (const message of visible) {
     if (message.type === 'user') {
       mapped.push({ info: toSessionMessageInfo(message, sessionID), parts: toUserMessageParts(message, sessionID) })
     } else if (message.type === 'assistant') {
       mapped.push({ info: toSessionMessageInfo(message, sessionID), parts: toAssistantMessageParts(message, sessionID) })
     }
   }
-  return limit === undefined ? mapped : mapped.slice(Math.max(0, mapped.length - limit))
+  return mapped
+}
+
+function emptyTokenUsage(): V2TokenUsage {
+  return { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+}
+
+function addTokenUsage(total: V2TokenUsage, tokens: V2TokenUsage): void {
+  total.input += tokens.input
+  total.output += tokens.output
+  total.reasoning += tokens.reasoning
+  total.cache.read += tokens.cache.read
+  total.cache.write += tokens.cache.write
+}
+
+function visibleAssistantUsage(messages: SessionMessages): { cost: number; tokens: V2TokenUsage } {
+  const tokens = emptyTokenUsage()
+  let cost = 0
+  for (const message of messages) {
+    if (message.info.role !== 'assistant') continue
+    cost += message.info.cost ?? 0
+    if (message.info.tokens) addTokenUsage(tokens, message.info.tokens)
+  }
+  return { cost, tokens }
+}
+
+function usageRemainder(
+  info: V2SessionInfo,
+  used: { cost: number; tokens: V2TokenUsage },
+): { cost: number; tokens: V2TokenUsage } {
+  const tokens = info.tokens ?? emptyTokenUsage()
+  return {
+    cost: Math.max(0, (info.cost ?? 0) - used.cost),
+    tokens: {
+      input: Math.max(0, tokens.input - used.tokens.input),
+      output: Math.max(0, tokens.output - used.tokens.output),
+      reasoning: Math.max(0, tokens.reasoning - used.tokens.reasoning),
+      cache: {
+        read: Math.max(0, tokens.cache.read - used.tokens.cache.read),
+        write: Math.max(0, tokens.cache.write - used.tokens.cache.write),
+      },
+    },
+  }
+}
+
+function hasUsage(usage: { cost: number; tokens: V2TokenUsage }): boolean {
+  return usage.cost > 0
+    || usage.tokens.input > 0
+    || usage.tokens.output > 0
+    || usage.tokens.reasoning > 0
+    || usage.tokens.cache.read > 0
+    || usage.tokens.cache.write > 0
+}
+
+function usageRemainderMessage(
+  sessionID: string,
+  info: V2SessionInfo,
+  usage: { cost: number; tokens: V2TokenUsage },
+): SessionMessages[number] {
+  const model = info.model
+  return {
+    info: {
+      id: `${sessionID}:usage-remainder`,
+      role: 'assistant',
+      sessionID,
+      time: { created: info.time?.created ?? 0 },
+      cost: usage.cost,
+      tokens: usage.tokens,
+      ...(model ? { providerID: model.providerID, modelID: model.id } : {}),
+    },
+    parts: [],
+  }
 }
 
 function toPortSession(info: V2SessionInfo): Session {
@@ -221,18 +308,21 @@ function toProviderModelInfo(model: V2ModelInfo): ProviderList['all'][number]['m
 }
 
 export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClientOptions): V2ForgeClient {
-  const statuses = new Map<string, SessionStatus[string]>()
-
   function recordStatusEvent(event: ForgeEvent): void {
+    if (event.type === FORGE_EVENT_TYPES.sessionDeleted) {
+      const sessionID = event.properties.sessionID
+      if (typeof sessionID === 'string') sessionStatusCache.delete(sessionID)
+      return
+    }
     if (event.type === FORGE_EVENT_TYPES.sessionIdle) {
       const sessionID = event.properties.sessionID
-      if (typeof sessionID === 'string') statuses.set(sessionID, { type: 'idle' })
+      if (typeof sessionID === 'string') sessionStatusCache.set(sessionID, { type: 'idle' })
       return
     }
     if (event.type === FORGE_EVENT_TYPES.sessionStatus) {
       const sessionID = event.properties.sessionID
       const status = event.properties.status
-      if (typeof sessionID === 'string' && isSessionStatus(status)) statuses.set(sessionID, status)
+      if (typeof sessionID === 'string' && isSessionStatus(status)) sessionStatusCache.set(sessionID, status)
     }
   }
 
@@ -256,9 +346,25 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
         ...(params.permission !== undefined ? { permissions: toV2Ruleset(params.permission) } : {}),
       })
     }),
-    messages: (params) => call('session.messages', async () =>
-      toSessionMessages(await ctx.session.context({ sessionID: params.sessionID }), params.sessionID, params.limit)),
-    status: () => call('session.status', async () => Object.fromEntries(statuses)),
+    messages: (params) => call('session.messages', async () => {
+      const mapped = toSessionMessages(
+        await ctx.session.context({ sessionID: params.sessionID }),
+        params.sessionID,
+        params.limit,
+      )
+      if (params.limit !== undefined) return mapped
+      let info: V2SessionInfo
+      try {
+        info = await ctx.session.get({ sessionID: params.sessionID })
+      } catch {
+        return mapped
+      }
+      const remainder = usageRemainder(info, visibleAssistantUsage(mapped))
+      return hasUsage(remainder)
+        ? [usageRemainderMessage(params.sessionID, info, remainder), ...mapped]
+        : mapped
+    }),
+    status: () => call('session.status', async () => Object.fromEntries(sessionStatusCache.snapshot())),
     list: () => Promise.reject(unavailableError('session.list', 'session.list is not available on this host')),
     promptAsync: (params) => call('session.promptAsync', async () => {
       const parts = params.parts ?? []
@@ -317,7 +423,21 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
   }
 
   const tui: ForgeClient['tui'] = {
-    publish: async () => {},
+    publish: async (params) => {
+      if (params.body?.type !== 'tui.toast.show') return
+      if (!options.publishToast) return
+      const properties = params.body.properties
+      try {
+        await options.publishToast({
+          title: properties.title,
+          message: properties.message,
+          variant: properties.variant,
+          duration: properties.duration,
+        })
+      } catch (err) {
+        console.error('[forge] failed to emit toast over RPC', err)
+      }
+    },
     selectSession: () => Promise.reject(unavailableError('tui.selectSession', 'tui.selectSession is not available on this host')),
   }
 
@@ -326,20 +446,7 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
   }
 
   const event: ForgeClient['event'] = {
-    subscribe: () => call('event.subscribe', async () => {
-      const controller = new AbortController()
-      const source = ctx.event.subscribe({ signal: controller.signal })
-      const stream = (async function* () {
-        try {
-          for await (const event of source) {
-            for (const normalized of normalizeV2Event(event)) yield normalized
-          }
-        } finally {
-          controller.abort()
-        }
-      })()
-      return { stream: toAbortableStream(stream, controller) }
-    }),
+    subscribe: () => Promise.reject(unavailableError('event.subscribe', 'event.subscribe is not available on this host')),
   }
 
   return { session, workspace: options.workspace, project, provider, tui, sync, event, recordStatusEvent }

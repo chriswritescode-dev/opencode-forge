@@ -1,5 +1,4 @@
 import type { Plugin } from '@opencode/plugin'
-import type { V2Event } from '@opencode/client'
 import type { WorkspaceAdapter } from '@opencode-ai/plugin'
 import { createForgeClientFromV2 } from '../client/v2-adapter'
 import { createV2ForgeWorkspaces, type V2ForgeWorkspacesDeps } from '../client/v2-workspaces'
@@ -9,12 +8,11 @@ import { canonicalizePath } from '../sandbox/path'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { createForgeCore } from './forge-core'
+import { FORGE_RPC, type ForgeToastInput } from './forge-rpc'
 import {
   V2_EVENT_TYPES,
-  isV2LocationBoundEvent,
   normalizeV2Event,
   v2EventDirectory,
-  v2EventSessionID,
 } from './v2-events'
 import { registerForgeAgentsV2, registerForgeCommandsV2, resolveForgeConfigMaps } from './v2-config'
 import { registerForgeHooksV2 } from './v2-hooks'
@@ -60,6 +58,16 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
 
   let adapter: WorkspaceAdapter | null = null
 
+  let publishToast: ((toast: ForgeToastInput) => Promise<void>) | undefined
+  let disposeRpc: (() => Promise<void>) | null = null
+  try {
+    const registration = await ctx.rpc.register(FORGE_RPC, {})
+    publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })
+    disposeRpc = registration.dispose
+  } catch (err) {
+    console.error('[forge] failed to register toast RPC', err)
+  }
+
   const client = createForgeClientFromV2(ctx, {
     directory,
     workspace: createDeferredForgeWorkspaces({
@@ -69,6 +77,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       dataDir,
       sessionMove: ctx.session.move,
     }),
+    ...(publishToast ? { publishToast } : {}),
   })
 
   const core = await createForgeCore(config, {
@@ -94,29 +103,12 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     return canonicalizePath(candidate) === canonicalDirectory
   }
 
-  async function resolveSessionDirectory(sessionID: string): Promise<string | null> {
-    try {
-      const session = await ctx.session.get({ sessionID })
-      return canonicalizePath(session.location.directory)
-    } catch (err) {
-      console.error(`[forge] V2 session location lookup failed for session ${sessionID}`, err)
-      return null
-    }
-  }
-
-  async function admitsEvent(event: V2Event): Promise<boolean> {
-    if (!isV2LocationBoundEvent(event)) return true
-    const eventDirectory = v2EventDirectory(event)
-    if (eventDirectory !== undefined) return ownsDirectory(eventDirectory)
-    const sessionID = v2EventSessionID(event)
-    if (!sessionID) return false
-    const sessionDirectory = await resolveSessionDirectory(sessionID)
-    return sessionDirectory !== null && sessionDirectory === canonicalDirectory
-  }
-
   const dispose = async () => {
     controller.abort()
     await core.cleanup()
+    const rpcDispose = disposeRpc
+    disposeRpc = null
+    await rpcDispose?.()
   }
 
   void (async () => {
@@ -128,7 +120,6 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
           await dispose()
           return
         }
-        if (!(await admitsEvent(event))) continue
         for (const normalized of normalizeV2Event(event)) {
           try {
             client.recordStatusEvent(normalized)

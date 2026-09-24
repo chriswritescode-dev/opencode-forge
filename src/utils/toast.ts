@@ -1,7 +1,13 @@
 import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 
-export type ToastVariant = 'info' | 'success' | 'warning' | 'error'
+export const TOAST_VARIANTS = ['info', 'success', 'warning', 'error'] as const
+
+export type ToastVariant = typeof TOAST_VARIANTS[number]
+
+export function isToastVariant(value: unknown): value is ToastVariant {
+  return TOAST_VARIANTS.some((variant) => variant === value)
+}
 
 export interface PublishToastInput {
   client: ForgeClient

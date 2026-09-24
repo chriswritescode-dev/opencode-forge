@@ -2,6 +2,8 @@ import { describe, test, expect, vi } from 'vitest'
 import type { Plugin } from '@opencode/plugin/tui'
 import { resolveV2TuiProjectId, setupForgeTuiV2 } from '../../src/tui/v2'
 import tuiModule from '../../src/tui'
+import { formatForgeTitle, resolveTuiOptions } from '../../src/tui/options'
+import { VERSION } from '../../src/version'
 import { useTempConfigHome } from '../helpers/temp-config'
 
 interface RecordedCommand {
@@ -24,6 +26,12 @@ interface RecordedSlot {
   placement: string
   target: string
   render: (input: unknown) => unknown
+}
+
+interface RecordedRpcSubscription {
+  name: string
+  handler: (event: { data: Record<string, unknown> }) => void
+  signal?: AbortSignal
 }
 
 const SLOT_PLACEMENTS = ['prepend', 'append', 'before', 'after', 'replace'] as const
@@ -51,10 +59,28 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const layers: RecordedLayer[] = []
   const slots: RecordedSlot[] = []
   const toasts: Array<Record<string, unknown>> = []
+  const rpcDefinitions: unknown[] = []
+  const rpcSubscriptions: RecordedRpcSubscription[] = []
 
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
   )
+
+  const rpc = vi.fn((definition: unknown) => {
+    rpcDefinitions.push(definition)
+    return {
+      events: {
+        on: vi.fn((
+          name: string,
+          handler: (event: { data: Record<string, unknown> }) => void,
+          options?: { signal?: AbortSignal },
+        ) => {
+          rpcSubscriptions.push({ name, handler, signal: options?.signal })
+          return () => {}
+        }),
+      },
+    }
+  })
 
   const ctx = {
     options: fakeOptions.options ?? {},
@@ -67,7 +93,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
         },
       },
     },
-    client: { location: { get: locationGet } },
+    client: { location: { get: locationGet }, rpc },
     theme: { text: { base: '#ffffff', muted: '#888888' } },
     keymap: {
       layer: vi.fn((input: () => RecordedLayer) => {
@@ -87,7 +113,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     },
   } as unknown as Plugin.Context
 
-  return { ctx, layers, slots, toasts, locationGet }
+  return { ctx, layers, slots, toasts, locationGet, rpc, rpcDefinitions, rpcSubscriptions }
 }
 
 function findSlot(slots: RecordedSlot[], target: string): RecordedSlot {
@@ -140,6 +166,52 @@ describe('V2 TUI setup', () => {
     cleanup()
   })
 
+  test('shows an RPC toast emitted for the current project', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    expect(fake.rpcSubscriptions).toHaveLength(1)
+    expect(fake.rpcSubscriptions[0]?.name).toBe('toast')
+    fake.rpcSubscriptions[0]?.handler({
+      data: { projectId: 'proj-1', title: 'Loop done', message: 'All sections passed', variant: 'success', duration: 4000 },
+    })
+
+    await vi.waitFor(() => expect(fake.toasts).toEqual([{
+      title: 'Loop done',
+      message: 'All sections passed',
+      variant: 'success',
+      duration: 4000,
+    }]))
+    cleanup()
+  })
+
+  test('ignores an RPC toast emitted for another project', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    fake.rpcSubscriptions[0]?.handler({
+      data: { projectId: 'proj-2', message: 'Other project', variant: 'info' },
+    })
+    await vi.waitFor(() => expect(fake.locationGet).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fake.toasts).toEqual([])
+    cleanup()
+  })
+
+  test('cleanup aborts the RPC toast subscription', () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    const signal = fake.rpcSubscriptions[0]?.signal
+
+    expect(signal?.aborted).toBe(false)
+    cleanup()
+    expect(signal?.aborted).toBe(true)
+  })
+
   test('resolves the project id from the current location directory', async () => {
     const fake = createFakeV2TuiContext({
       location: { directory: '/work/project', workspaceID: 'ws-1' },
@@ -171,5 +243,58 @@ describe('V2 TUI setup', () => {
 
     await expect(resolveV2TuiProjectId(fake.ctx)).resolves.toBeNull()
     expect(fake.locationGet).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveTuiOptions', () => {
+  test('uses defaults when no layer supplies a value', () => {
+    expect(resolveTuiOptions(undefined)).toEqual({
+      sidebar: true,
+      showVersion: true,
+      keybinds: { executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '' },
+    })
+  })
+
+  test('applies the forge config layer alone', () => {
+    const opts = resolveTuiOptions({
+      sidebar: false,
+      showVersion: false,
+      keybinds: { dashboard: '<leader>d' },
+    })
+
+    expect(opts.sidebar).toBe(false)
+    expect(opts.showVersion).toBe(false)
+    expect(opts.keybinds.dashboard).toBe('<leader>d')
+    expect(opts.keybinds.executePlan).toBe('<leader>f')
+  })
+
+  test('applies the plugin options layer alone', () => {
+    const opts = resolveTuiOptions(undefined, { sidebar: false })
+
+    expect(opts.sidebar).toBe(false)
+    expect(opts.showVersion).toBe(true)
+    expect(opts.keybinds).toEqual({ executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '' })
+  })
+
+  test('later layers win and keybinds merge key by key', () => {
+    const opts = resolveTuiOptions(
+      { sidebar: true, showVersion: true, keybinds: { executePlan: '<leader>c', dashboard: '<leader>d' } },
+      { sidebar: false, showVersion: false, keybinds: { dashboard: '<leader>D' } },
+    )
+
+    expect(opts.sidebar).toBe(false)
+    expect(opts.showVersion).toBe(false)
+    expect(opts.keybinds).toEqual({
+      executePlan: '<leader>c',
+      dashboard: '<leader>D',
+      toggleHostSandbox: '',
+    })
+  })
+})
+
+describe('formatForgeTitle', () => {
+  test('includes the version only when requested', () => {
+    expect(formatForgeTitle(true)).toBe(`Forge v${VERSION}`)
+    expect(formatForgeTitle(false)).toBe('Forge')
   })
 })

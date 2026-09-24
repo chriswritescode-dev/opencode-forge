@@ -6,6 +6,7 @@ import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
 import { buildDashboardUrls, describeDashboardBinding, isLoopbackHost, resolveDashboardConfig, type DashboardUrls } from './config'
 import { createRequestHandler } from './server'
+import type { ToastVariant } from '../utils/toast'
 
 export interface DashboardServerHandle extends DashboardUrls {
   /** The host actually passed to `Bun.serve`. */
@@ -120,12 +121,10 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   throw new Error('Failed to start dashboard: exhausted port attempts.')
 }
 
-export type DashboardToastVariant = 'info' | 'success' | 'warning' | 'error'
-
 export interface DashboardToastInput {
   title?: string
   message: string
-  variant?: DashboardToastVariant
+  variant?: ToastVariant
   duration?: number
 }
 
@@ -202,7 +201,7 @@ export function createDashboardLauncher(options: DashboardLauncherOptions): Dash
  * Opens the given URL in the platform's default browser. Returns false when the
  * launch could not be initiated.
  */
-export function openInBrowser(url: string): boolean {
+function openInBrowser(url: string): boolean {
   const command =
     platform() === 'darwin' ? 'open' : platform() === 'win32' ? 'cmd' : 'xdg-open'
   const args = platform() === 'win32' ? ['/c', 'start', '', url] : [url]

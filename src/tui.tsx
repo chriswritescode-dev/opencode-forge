@@ -2,7 +2,6 @@
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
 import type { Plugin } from '@opencode/plugin/tui'
 import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
-import { VERSION } from './version'
 import { loadPluginConfig, resolveBundledContainerDir } from './setup'
 import { resolveForgeDbPath } from './storage'
 import { resolveForgeDataDir } from './utils/opencode-paths'
@@ -34,7 +33,8 @@ import { fetchLoopsList } from './utils/tui-loop-store'
 import { setupForgeTuiV2 } from './tui/v2'
 
 import type { TuiOptions } from './tui/options'
-import { resolveTuiOptions } from './tui/options'
+import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './tui/options'
+import { FORGE_PLUGIN_ID } from './constants/plugin'
 
 type ForgeConnectionStatus = 'connecting' | 'connected' | 'unavailable'
 
@@ -85,7 +85,7 @@ function ForgeSidebarStatus(props: {
   sessionId?: string
 }) {
   const theme = () => props.api.theme.current
-  const title = createMemo(() => props.opts.showVersion ? `Forge v${VERSION}` : 'Forge')
+  const title = createMemo(() => formatForgeTitle(props.opts.showVersion))
   const statusText = createMemo(() => props.status() === 'connecting' ? 'connecting' : 'RPC unavailable')
 
   return (
@@ -137,7 +137,7 @@ function Sidebar(props: {
   const theme = () => props.api.theme.current
 
   const title = createMemo(() => {
-    return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
+    return formatForgeTitle(props.opts.showVersion)
   })
 
   return (
@@ -222,7 +222,7 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
 }
 
 
-const id = 'oc-forge'
+const id = FORGE_PLUGIN_ID
 
 const tui: TuiPlugin = async (api) => {
 
@@ -495,10 +495,10 @@ const tui: TuiPlugin = async (api) => {
   api.keymap.registerLayer({
     commands: [
       {
-        name: 'forge.dashboard',
-        title: 'Open dashboard',
-        desc: 'Start the Forge dashboard server and open it in the browser',
-        category: 'Forge',
+        name: FORGE_DASHBOARD_COMMAND.id,
+        title: FORGE_DASHBOARD_COMMAND.title,
+        desc: FORGE_DASHBOARD_COMMAND.description,
+        category: FORGE_DASHBOARD_COMMAND.group,
         namespace: 'palette',
         run: () => { runOpenDashboard() },
       },
@@ -521,7 +521,7 @@ const tui: TuiPlugin = async (api) => {
     ],
     bindings: [
       ...(opts.keybinds.dashboard
-        ? [{ key: opts.keybinds.dashboard, cmd: 'forge.dashboard' as const }]
+        ? [{ key: opts.keybinds.dashboard, cmd: FORGE_DASHBOARD_COMMAND.id }]
         : []),
       ...(opts.keybinds.toggleHostSandbox
         ? [{ key: opts.keybinds.toggleHostSandbox, cmd: 'forge.sandbox.toggleHost' as const }]

@@ -23,7 +23,7 @@ import { join } from 'path'
 import { readFlagValue } from '../src/utils/cli-flags'
 import { defaultGitService } from '../src/utils/git-service'
 import { loadPluginConfig } from '../src/setup'
-import { resolveDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
+import { resolveForgeDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
 import { hasTable } from '../src/storage'
 
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
   const args = parseArgs()
   console.log(`Cleanup loop: ${args.loopName}${args.dryRun ? ' [DRY RUN]' : ''}\n`)
 
-  const dataDir = loadPluginConfig().dataDir || resolveDataDir()
+  const dataDir = resolveForgeDataDir(loadPluginConfig().dataDir)
   const worktreesRoot = join(dataDir, 'worktrees')
 
   const runtime = createMsbRuntime({ log: console.log, error: console.error, debug: () => {} })

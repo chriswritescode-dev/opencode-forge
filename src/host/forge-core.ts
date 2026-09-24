@@ -1,8 +1,6 @@
 import type { Hooks, WorkspaceAdapter } from '@opencode-ai/plugin'
-import { join } from 'path'
 import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
-import type { AgentDefinition, AgentRole } from '../agents'
 import { buildAgents } from '../agents'
 import { createConfigHandler } from '../config'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
@@ -15,10 +13,9 @@ import { createMsbRuntime, describeMsbUnavailable } from '../sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from '../sandbox/config-warnings'
 import { defaultGitService } from '../utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
-import { canonicalizePath } from '../sandbox/path'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
 import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
-import { isForgeWorktreeDir } from '../workspace/forge-naming'
+import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { emitLoopPermissionConfigWarnings } from '../utils/loop-permission-warnings'
@@ -45,6 +42,7 @@ import { createSandboxMessageHook } from '../hooks/sandbox-message'
 import { createGroupOrchestratorEventHook } from '../hooks/group-orchestrator'
 import { createGroupOrchestrator, mapLoopStateToOutcome, type GroupOrchestrator, type GroupEffects } from '../services/group-orchestrator'
 import { parseModelString } from '../utils/model-fallback'
+import { findLastIndex } from '../utils/array'
 import { parseFeatureList } from '../utils/feature-list-parser'
 import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils/architect-auto-output'
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
@@ -91,10 +89,6 @@ export interface ForgeCore {
   resolveSandboxForDirectory(directory: string, opts?: { throwOnRestoreError?: boolean }): Promise<SandboxContext | null>
   cleanup(): Promise<void>
   shellShimPath: string | null
-  agents: Record<AgentRole, AgentDefinition>
-  promptsDir: string
-  resolveSandboxForSession: ReturnType<typeof createUnifiedSandboxResolver>
-  loopsRepo: ReturnType<typeof createLoopsRepo>
 }
 
 export interface CreateParentSessionLookupOptions {
@@ -485,7 +479,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
       worktreeOpencodeConfig: config.loop?.worktreeOpencodeConfig,
     }))
-    logger.log(`Registered forge workspace adapter (worktrees under ${join(dataDir, 'worktrees')})`)
+    logger.log(`Registered forge workspace adapter (worktrees under ${forgeWorktreesRoot(dataDir)})`)
   }
 
   const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
@@ -543,7 +537,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const compactionConfig: CompactionConfig | undefined = config.compaction
   const messagesTransformConfig = config.messagesTransform
-  const sessionHooks = createSessionHooks(projectId, logger, undefined, compactionConfig)
+  const sessionHooks = createSessionHooks(projectId, logger, compactionConfig)
 
   let cleanupPromise: Promise<void> | null = null
 
@@ -960,10 +954,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     targetDirectory: string,
     opts?: { throwOnRestoreError?: boolean },
   ): Promise<SandboxContext | null> => {
-    const canonicalTarget = canonicalizePath(targetDirectory)
-    const state = loopHandler.loop.listActive().find(
-      (active) => !!active.worktreeDir && canonicalizePath(active.worktreeDir) === canonicalTarget,
-    )
+    const state = loopHandler.loop.service.findActiveByWorktreeDir(targetDirectory)
     if (!state) return null
     return resolveSandboxContextForLoop(sandboxManager, state, logger, opts)
   }
@@ -1063,15 +1054,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       output: { messages: Array<{ info: { role: string; agent?: string; id?: string }; parts: Array<Record<string, unknown>> }> }
     ) => {
       const messages = output.messages
-      let userMessage: typeof messages[number] | undefined
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].info.role === 'user') {
-          userMessage = messages[i]
-          break
-        }
-      }
-
-      if (!userMessage) return
+      const userIndex = findLastIndex(messages, (message) => message.info.role === 'user')
+      if (userIndex === -1) return
+      const userMessage = messages[userIndex]
 
       const reminder = architectReminderFor(userMessage.info.agent)
       if (!reminder) return
@@ -1086,9 +1071,5 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     resolveSandboxForDirectory,
     cleanup,
     shellShimPath,
-    agents,
-    promptsDir,
-    resolveSandboxForSession,
-    loopsRepo,
   }
 }

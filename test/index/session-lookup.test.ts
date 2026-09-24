@@ -9,7 +9,6 @@ vi.mock('bun:sqlite', () => ({
 
 vi.mock('../../src/storage', () => ({
   initializeDatabase: vi.fn().mockReturnValue({}),
-  resolveDataDir: vi.fn().mockReturnValue('/tmp/test'),
   closeDatabase: vi.fn(),
   createLoopsRepo: vi.fn().mockReturnValue({}),
   createPlansRepo: vi.fn().mockReturnValue({}),

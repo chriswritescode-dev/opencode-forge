@@ -1,6 +1,6 @@
 import type { Plugin } from '@opencode/plugin'
 import type { AgentConfig } from '../agents'
-import { DEFAULT_AGENT, REPLACED_BUILTIN_AGENTS, type PluginCommand } from '../config'
+import { DEFAULT_AGENT, type PluginCommand } from '../config'
 import { toV2PermissionMap } from '../client/v2-adapter'
 import { parseModelString } from '../utils/model-fallback'
 import type { ForgeCore } from './forge-core'
@@ -52,15 +52,29 @@ export function registerForgeAgentsV2(
     for (const [id, cfg] of Object.entries(cfgAgent)) {
       editor.update(id, (agent) => applyV2AgentConfig(agent, cfg))
     }
-    for (const id of REPLACED_BUILTIN_AGENTS) {
-      editor.remove(id)
-    }
     editor.default(DEFAULT_AGENT)
   })
 }
 
 function substituteArguments(template: string, input: string): string {
   return template.replaceAll('$ARGUMENTS', () => input)
+}
+
+async function restoreCommandAgent(
+  ctx: Pick<Plugin.Context, 'session'>,
+  sessionID: string,
+  commandAgent: string,
+  previous: string,
+): Promise<void> {
+  try {
+    await ctx.session.wait({ sessionID })
+    const info = await ctx.session.get({ sessionID })
+    if (info.agent === commandAgent) {
+      await ctx.session.switchAgent({ sessionID, agent: previous })
+    }
+  } catch (err) {
+    console.error('[forge] Failed to restore session agent after command', err)
+  }
 }
 
 export function registerForgeCommandsV2(
@@ -73,8 +87,17 @@ export function registerForgeCommandsV2(
         name,
         description: command.description,
         execute: async (input) => {
-          if (command.agent) {
-            await ctx.session.switchAgent({ sessionID: input.sessionID, agent: command.agent })
+          const commandAgent = command.agent
+          let previous: string | undefined
+          if (commandAgent) {
+            try {
+              previous = (await ctx.session.get({ sessionID: input.sessionID })).agent
+            } catch (err) {
+              console.error('[forge] Failed to read session agent before command', err)
+            }
+            if (previous !== commandAgent) {
+              await ctx.session.switchAgent({ sessionID: input.sessionID, agent: commandAgent })
+            }
           }
           await ctx.session.prompt({
             sessionID: input.sessionID,
@@ -82,6 +105,9 @@ export function registerForgeCommandsV2(
             files: input.prompt.files,
             delivery: input.delivery,
           })
+          if (commandAgent && previous !== undefined && previous !== commandAgent) {
+            void restoreCommandAgent(ctx, input.sessionID, commandAgent, previous)
+          }
         },
       })
     }

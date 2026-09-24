@@ -1,6 +1,6 @@
 import { ForgeClientError, type ForgeClientErrorKind } from './port'
 
-export function extractMessage(err: unknown): string {
+function extractMessage(err: unknown): string {
   if (err instanceof Error) return err.message
   if (typeof err === 'string') return err
   if (err && typeof err === 'object') {

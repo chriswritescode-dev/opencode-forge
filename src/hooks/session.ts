@@ -1,5 +1,4 @@
 import type { Logger, CompactionConfig } from '../types'
-import type { PluginInput } from '@opencode-ai/plugin'
 
 export interface SessionHooks {
   onMessage: (input: unknown, output: unknown) => Promise<void>
@@ -78,7 +77,6 @@ Preserve everything needed for seamless continuation.
 export function createSessionHooks(
   projectId: string,
   logger: Logger,
-  _ctx?: PluginInput,
   config?: CompactionConfig
 ): SessionHooks {
   const initializedSessions = new Set<string>()

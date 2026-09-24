@@ -8,8 +8,8 @@ type V2ToolEditor = Parameters<Parameters<Plugin.Context['tool']['transform']>[0
 type V2ToolInfo = Parameters<V2ToolEditor['add']>[0]
 type V2ToolContext = Parameters<V2ToolInfo['execute']>[1]
 
-function toJsonSchema(args: ToolDefinition['args']): Record<string, unknown> {
-  const json: Record<string, unknown> = z.toJSONSchema(z.object(args), { io: 'input' })
+function toJsonSchema(schema: ReturnType<typeof z.object>): Record<string, unknown> {
+  const json: Record<string, unknown> = z.toJSONSchema(schema, { io: 'input' })
   delete json.$schema
   return json
 }
@@ -41,7 +41,7 @@ export function registerForgeToolsV2(ctx: Plugin.Context, tools: Record<string, 
       editor.add({
         name,
         description: def.description,
-        input: toJsonSchema(def.args),
+        input: toJsonSchema(schema),
         options: { codemode: false },
         execute: async (input, context) => {
           const parsed = schema.safeParse(input)

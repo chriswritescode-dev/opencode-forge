@@ -18,6 +18,7 @@ import {
   writeForgeWorkspaceMetadata,
   type ForgeWorkspaceMetadata,
 } from '../workspace/forge-workspace-metadata'
+import { isRecord } from '../utils/is-record'
 
 const FORGE_WORKSPACE_TYPE = 'forge'
 
@@ -30,9 +31,7 @@ export interface V2ForgeWorkspacesDeps {
 }
 
 function toExtra(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
+  return isRecord(value) ? value : null
 }
 
 function toWorkspaceInfo(record: ForgeWorkspaceMetadata): WorkspaceInfo {

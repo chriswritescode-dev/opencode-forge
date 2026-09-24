@@ -157,7 +157,7 @@ Notes:
 
 The host-session sandbox applies only to sessions outside active loops and is OpenCode 1.x only. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. `bash`, `glob`, and `grep` route through the sandbox; file tools remain host-side. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
 
-`tui.keybinds.executePlan` and `tui.keybinds.toggleHostSandbox` apply to the OpenCode 1.x TUI only. The V2 TUI surface reads `tui.sidebar`, `tui.showVersion`, and `tui.keybinds.dashboard` — see [TUI → OpenCode 2.x](tui.md#opencode-2x).
+`tui.keybinds.executePlan` and `tui.keybinds.toggleHostSandbox` apply to the OpenCode 1.x TUI only. The V2 TUI surface reads `tui.sidebar`, `tui.showVersion`, and `tui.keybinds.dashboard` from this config; plugin options on the `cli.json` entry override them — see [TUI → OpenCode 2.x](tui.md#opencode-2x).
 
 ## Dashboard
 

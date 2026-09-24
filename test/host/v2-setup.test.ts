@@ -3,12 +3,15 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { FORGE_EVENT_TYPES, V2_EVENT_TYPES } from '../../src/host/v2-events'
+import { FORGE_RPC } from '../../src/host/forge-rpc'
+import type { ForgeClient } from '../../src/client/port'
 import { createFakeV2Context } from '../helpers/fake-v2-context'
 import { useTempConfigHome } from '../helpers/temp-config'
 import pluginModule from '../../src/index'
 
 const coreEvents = vi.hoisted(() => ({
   received: [] as Array<{ directory: string; event: { type: string; properties: Record<string, unknown> } }>,
+  clients: [] as unknown[],
 }))
 
 vi.mock('../../src/host/forge-core', async (importOriginal) => {
@@ -20,6 +23,7 @@ vi.mock('../../src/host/forge-core', async (importOriginal) => {
       host: Parameters<typeof actual.createForgeCore>[1],
     ) => {
       const core = await actual.createForgeCore(config, host)
+      coreEvents.clients.push(host.client)
       const onEvent = core.onEvent.bind(core)
       core.onEvent = async (input) => {
         coreEvents.received.push({ directory: host.directory, event: input.event })
@@ -43,6 +47,10 @@ function receivedFor(directory: string) {
   return coreEvents.received
     .filter((entry) => entry.directory === directory)
     .map((entry) => entry.event)
+}
+
+function lastClient(): ForgeClient {
+  return coreEvents.clients[coreEvents.clients.length - 1] as ForgeClient
 }
 
 interface V2EventStreamSubscriber {
@@ -105,6 +113,7 @@ describe('V2 server setup', () => {
 
   beforeEach(() => {
     coreEvents.received.length = 0
+    coreEvents.clients.length = 0
     const dataHome = mkdtempSync(join(tmpdir(), 'forge-v2-setup-data-'))
     dataHomes.push(dataHome)
     process.env['XDG_DATA_HOME'] = dataHome
@@ -149,7 +158,64 @@ describe('V2 server setup', () => {
     )
   })
 
-  test('the event pump forwards a session.idle event to the core', async () => {
+  test('registers FORGE_RPC once and bridges client toasts to the registration emitter', async () => {
+    const fake = createFakeV2Context()
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    const registerCalls = fake.calls.filter((call) => call.method === 'rpc.register')
+    expect(registerCalls).toHaveLength(1)
+    expect(registerCalls[0]?.args[0]).toBe(FORGE_RPC)
+
+    await lastClient().tui.publish({
+      directory: '/tmp/forge-project',
+      body: {
+        type: 'tui.toast.show',
+        properties: { title: 'Loop done', message: 'All sections passed', variant: 'success', duration: 4000 },
+      },
+    })
+
+    expect(fake.rpc.emitted).toEqual([{
+      event: 'toast',
+      data: {
+        projectId: 'proj_fake',
+        title: 'Loop done',
+        message: 'All sections passed',
+        variant: 'success',
+        duration: 4000,
+      },
+    }])
+  })
+
+  test('a registration failure does not reject setup and drops toasts', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fake = createFakeV2Context({
+      rpc: { register: vi.fn().mockRejectedValue(new Error('rpc unavailable')) },
+    })
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    expect(errorSpy).toHaveBeenCalledWith('[forge] failed to register toast RPC', expect.any(Error))
+    errorSpy.mockRestore()
+
+    await expect(lastClient().tui.publish({
+      directory: '/tmp/forge-project',
+      body: { type: 'tui.toast.show', properties: { message: 'Dropped', variant: 'warning' } },
+    })).resolves.toBeUndefined()
+    expect(fake.rpc.emitted).toEqual([])
+  })
+
+  test('cleanup disposes the RPC registration once', async () => {
+    const fake = createFakeV2Context()
+
+    const cleanup = await pluginModule.setup(fake.ctx)
+    await cleanup()
+    await cleanup()
+
+    expect(fake.rpc.disposed).toBe(1)
+  })
+
+  test('the event pump forwards a session.execution.succeeded as an idle session.status and idle', async () => {
     const stream = createV2EventStream()
     const fake = createFakeV2Context({
       location: { directory: '/project-a' },
@@ -157,109 +223,38 @@ describe('V2 server setup', () => {
     })
 
     cleanups.push(await pluginModule.setup(fake.ctx))
-    stream.push({ id: 'evt_idle', type: V2_EVENT_TYPES.sessionIdle, data: { sessionID: 'ses_idle' } })
-    await waitFor(() => receivedFor('/project-a').length > 0)
+    stream.push({ id: 'evt_succeeded', type: V2_EVENT_TYPES.sessionExecutionSucceeded, data: { sessionID: 'ses_succeeded' } })
+    await waitFor(() => receivedFor('/project-a').length >= 2)
 
-    expect(coreEvents.received).toContainEqual({
-      directory: '/project-a',
-      event: { type: V2_EVENT_TYPES.sessionIdle, properties: { sessionID: 'ses_idle' } },
-    })
+    expect(receivedFor('/project-a')).toEqual([
+      {
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 'ses_succeeded', status: { type: 'idle' } },
+      },
+      { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 'ses_succeeded' } },
+    ])
 
     expect(stream.signals[0]?.aborted).toBe(false)
     await cleanups.pop()!()
     expect(stream.signals[0]?.aborted).toBe(true)
   })
 
-  test('a located content event reaches only the core of that location', async () => {
+  test('the event pump forwards a session.execution.started as a busy session.status', async () => {
     const stream = createV2EventStream()
-    const a = createFakeV2Context({
-      location: { directory: '/project-a', project: { id: 'proj-a' } },
-      event: { subscribe: stream.subscribe },
-    })
-    const b = createFakeV2Context({
-      location: { directory: '/project-b', project: { id: 'proj-b' } },
-      event: { subscribe: stream.subscribe },
-    })
-    cleanups.push(await pluginModule.setup(a.ctx))
-    cleanups.push(await pluginModule.setup(b.ctx))
-
-    stream.push({
-      id: 'evt_text',
-      type: V2_EVENT_TYPES.sessionTextEnded,
+    const fake = createFakeV2Context({
       location: { directory: '/project-a' },
-      data: { sessionID: 'ses-a', assistantMessageID: 'msg-a', ordinal: 0, text: 'full text' },
+      event: { subscribe: stream.subscribe },
     })
-    stream.push({ id: 'evt_barrier', type: V2_EVENT_TYPES.sessionIdle, data: { sessionID: 'ses-barrier' } })
-    await waitFor(() => receivedFor('/project-b').length > 0)
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    stream.push({ id: 'evt_started', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_started' } })
+    await waitFor(() => receivedFor('/project-a').length > 0)
 
     expect(receivedFor('/project-a')).toEqual([
       {
-        type: FORGE_EVENT_TYPES.messagePartUpdated,
-        properties: {
-          sessionID: 'ses-a',
-          directory: '/project-a',
-          part: { sessionID: 'ses-a', messageID: 'msg-a', type: 'text', text: 'full text' },
-        },
+        type: FORGE_EVENT_TYPES.sessionStatus,
+        properties: { sessionID: 'ses_started', status: { type: 'busy' } },
       },
-      { type: V2_EVENT_TYPES.sessionIdle, properties: { sessionID: 'ses-barrier' } },
-    ])
-    expect(receivedFor('/project-b')).toEqual([
-      { type: V2_EVENT_TYPES.sessionIdle, properties: { sessionID: 'ses-barrier' } },
-    ])
-  })
-
-  test('a content event without a location is admitted by the session owner only', async () => {
-    const stream = createV2EventStream()
-    const owner = createFakeV2Context({
-      location: { directory: '/project-a' },
-      event: { subscribe: stream.subscribe },
-      session: {
-        get: async () => ({ location: { directory: '/project-a' } }),
-      },
-    })
-    const foreign = createFakeV2Context({
-      location: { directory: '/project-b' },
-      event: { subscribe: stream.subscribe },
-      session: {
-        get: async () => ({ location: { directory: '/project-a' } }),
-      },
-    })
-    const unresolvable = createFakeV2Context({
-      location: { directory: '/project-c' },
-      event: { subscribe: stream.subscribe },
-      session: {
-        get: async () => {
-          throw new Error('lookup failed')
-        },
-      },
-    })
-    cleanups.push(await pluginModule.setup(owner.ctx))
-    cleanups.push(await pluginModule.setup(foreign.ctx))
-    cleanups.push(await pluginModule.setup(unresolvable.ctx))
-
-    stream.push({
-      id: 'evt_text',
-      type: V2_EVENT_TYPES.sessionTextEnded,
-      data: { sessionID: 'ses-a', assistantMessageID: 'msg-a', ordinal: 0, text: 'full text' },
-    })
-    stream.push({ id: 'evt_barrier', type: V2_EVENT_TYPES.sessionIdle, data: { sessionID: 'ses-barrier' } })
-    await waitFor(() => receivedFor('/project-c').length > 0)
-
-    expect(receivedFor('/project-a')).toEqual([
-      {
-        type: FORGE_EVENT_TYPES.messagePartUpdated,
-        properties: {
-          sessionID: 'ses-a',
-          part: { sessionID: 'ses-a', messageID: 'msg-a', type: 'text', text: 'full text' },
-        },
-      },
-      { type: V2_EVENT_TYPES.sessionIdle, properties: { sessionID: 'ses-barrier' } },
-    ])
-    expect(receivedFor('/project-b')).toEqual([
-      { type: V2_EVENT_TYPES.sessionIdle, properties: { sessionID: 'ses-barrier' } },
-    ])
-    expect(receivedFor('/project-c')).toEqual([
-      { type: V2_EVENT_TYPES.sessionIdle, properties: { sessionID: 'ses-barrier' } },
     ])
   })
 
@@ -279,7 +274,7 @@ describe('V2 server setup', () => {
     expect(stream.signals[0]?.aborted).toBe(false)
     expect(stream.signals[1]?.aborted).toBe(true)
 
-    stream.push({ id: 'evt_after', type: V2_EVENT_TYPES.sessionIdle, data: { sessionID: 'ses-after' } })
+    stream.push({ id: 'evt_after', type: V2_EVENT_TYPES.sessionExecutionSucceeded, data: { sessionID: 'ses-after' } })
     await waitFor(() => receivedFor('/project-a').some((event) => event.properties.sessionID === 'ses-after'))
     expect(receivedFor('/project-b').some((event) => event.properties.sessionID === 'ses-after')).toBe(false)
 
@@ -309,7 +304,7 @@ describe('V2 server setup', () => {
     cleanups.push(await pluginModule.setup(fake.ctx))
 
     stream.push({ id: 'evt_shutdown', type: V2_EVENT_TYPES.locationShutdown, data: {} })
-    stream.push({ id: 'evt_barrier', type: V2_EVENT_TYPES.sessionIdle, data: { sessionID: 'ses-barrier' } })
+    stream.push({ id: 'evt_barrier', type: V2_EVENT_TYPES.sessionExecutionSucceeded, data: { sessionID: 'ses-barrier' } })
     await waitFor(() => receivedFor('/project-a').length > 0)
 
     expect(process.listenerCount('SIGINT')).toBe(baselineSigint + 1)

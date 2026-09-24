@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi } from 'vitest'
 import { buildAgents } from '../../src/agents'
 import { createConfigHandler } from '../../src/config'
 import { registerForgeAgentsV2, registerForgeCommandsV2, resolveForgeConfigMaps } from '../../src/host/v2-config'
@@ -102,14 +102,17 @@ describe('registerForgeAgentsV2', () => {
     )
   })
 
-  test('removes the replaced built-in agents and defaults to code', async () => {
+  test('keeps the replaced built-in agents hidden and defaults to code', async () => {
     const cfg = await configMaps()
     const { ctx, agents, defaultAgent } = createFakeV2Context()
 
     await registerForgeAgentsV2(ctx, cfg.agent)
 
-    const expected = Object.keys(cfg.agent).filter((id) => id !== 'build' && id !== 'plan')
-    expect(agents.map((agent) => agent.id)).toEqual(expected)
+    expect(agents.map((agent) => agent.id)).toEqual(Object.keys(cfg.agent))
+    for (const id of ['build', 'plan']) {
+      const agent = agents.find((entry) => entry.id === id)
+      expect(agent?.info.hidden).toBe(true)
+    }
     expect(defaultAgent.id).toBe('code')
   })
 })
@@ -177,5 +180,152 @@ describe('registerForgeCommandsV2', () => {
       files: [{ uri: 'file:///tmp/plan.md' }],
     })
     expect((prompt?.args[0] as { text: string }).text).toBe(template.split('$ARGUMENTS').join(input))
+  })
+
+  test('restores the previous agent after the command turn', async () => {
+    const cfg = await configMaps()
+    let getCount = 0
+    const { ctx, calls, commands } = createFakeV2Context({
+      session: {
+        get: async () => ({ agent: getCount++ === 0 ? 'code' : 'auditor' }),
+        wait: async () => {},
+      },
+    })
+
+    await registerForgeCommandsV2(ctx, cfg.command)
+
+    const review = commands.find((command) => command.name === 'review')
+    await review?.execute({
+      sessionID: 'ses_1',
+      prompt: { text: 'HEAD~1', files: [] },
+      delivery: 'queue',
+    })
+
+    await vi.waitFor(() => {
+      expect(calls.filter((call) => call.method.startsWith('session.')).map((call) => call.method)).toEqual([
+        'session.get',
+        'session.switchAgent',
+        'session.prompt',
+        'session.wait',
+        'session.get',
+        'session.switchAgent',
+      ])
+    })
+
+    const switches = calls.filter((call) => call.method === 'session.switchAgent')
+    expect(switches[0].args).toEqual([{ sessionID: 'ses_1', agent: 'auditor' }])
+    expect(switches[1].args).toEqual([{ sessionID: 'ses_1', agent: 'code' }])
+  })
+
+  test('does not restore when the user switched agents during the turn', async () => {
+    const cfg = await configMaps()
+    let getCount = 0
+    const { ctx, calls, commands } = createFakeV2Context({
+      session: {
+        get: async () => ({ agent: getCount++ === 0 ? 'code' : 'architect' }),
+        wait: async () => {},
+      },
+    })
+
+    await registerForgeCommandsV2(ctx, cfg.command)
+
+    const review = commands.find((command) => command.name === 'review')
+    await review?.execute({
+      sessionID: 'ses_1',
+      prompt: { text: 'HEAD~1', files: [] },
+      delivery: 'queue',
+    })
+
+    await vi.waitFor(() => {
+      expect(calls.filter((call) => call.method === 'session.get')).toHaveLength(2)
+    })
+
+    const switches = calls.filter((call) => call.method === 'session.switchAgent')
+    expect(switches).toHaveLength(1)
+    expect(switches[0].args).toEqual([{ sessionID: 'ses_1', agent: 'auditor' }])
+  })
+
+  test('does not switch or restore when already on the command agent', async () => {
+    const cfg = await configMaps()
+    const { ctx, calls, commands } = createFakeV2Context({
+      session: {
+        get: async () => ({ agent: 'auditor' }),
+        wait: async () => {},
+      },
+    })
+
+    await registerForgeCommandsV2(ctx, cfg.command)
+
+    const review = commands.find((command) => command.name === 'review')
+    await review?.execute({
+      sessionID: 'ses_1',
+      prompt: { text: 'HEAD~1', files: [] },
+      delivery: 'queue',
+    })
+
+    expect(calls.filter((call) => call.method.startsWith('session.')).map((call) => call.method)).toEqual([
+      'session.get',
+      'session.prompt',
+    ])
+  })
+
+  test('switches and prompts without restoring when reading the agent fails', async () => {
+    const cfg = await configMaps()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, calls, commands } = createFakeV2Context({
+      session: {
+        get: async () => {
+          throw new Error('get failed')
+        },
+        wait: async () => {},
+      },
+    })
+
+    await registerForgeCommandsV2(ctx, cfg.command)
+
+    const review = commands.find((command) => command.name === 'review')
+    await review?.execute({
+      sessionID: 'ses_1',
+      prompt: { text: 'HEAD~1', files: [] },
+      delivery: 'queue',
+    })
+
+    expect(calls.filter((call) => call.method.startsWith('session.')).map((call) => call.method)).toEqual([
+      'session.get',
+      'session.switchAgent',
+      'session.prompt',
+    ])
+    expect(errorSpy).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  test('resolves execute even when the restore fails', async () => {
+    const cfg = await configMaps()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, calls, commands } = createFakeV2Context({
+      session: {
+        get: async () => ({ agent: 'code' }),
+        wait: async () => {
+          throw new Error('wait failed')
+        },
+      },
+    })
+
+    await registerForgeCommandsV2(ctx, cfg.command)
+
+    const review = commands.find((command) => command.name === 'review')
+    await expect(
+      review?.execute({
+        sessionID: 'ses_1',
+        prompt: { text: 'HEAD~1', files: [] },
+        delivery: 'queue',
+      }),
+    ).resolves.toBeUndefined()
+
+    await vi.waitFor(() => {
+      expect(errorSpy).toHaveBeenCalled()
+    })
+    expect(calls.filter((call) => call.method === 'session.switchAgent')).toHaveLength(1)
+    errorSpy.mockRestore()
   })
 })

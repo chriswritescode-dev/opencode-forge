@@ -22,7 +22,7 @@ import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
 import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
-import { createLoopSessionWithWorkspace } from '../utils/loop-session'
+import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
@@ -939,9 +939,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         fallbackModel: oldest.fallbackModel,
       })
       
-      void client.session.delete({ sessionID: oldest.sessionId, directory: oldest.directory }).catch((err: unknown) => {
-        logger.error(`Loop: failed to delete trimmed session ${oldest.sessionId} (loop=${loopName})`, err)
-      })
+      void deleteSessionBestEffort(
+        client,
+        { sessionID: oldest.sessionId, directory: oldest.directory },
+        logger,
+        `Loop: failed to delete trimmed session ${oldest.sessionId} (loop=${loopName})`,
+      )
     }
   }
 
@@ -1009,9 +1012,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }).catch((err: unknown) => {
           logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
         })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
-          logger.error(`Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
-        })
+        void deleteSessionBestEffort(
+          client,
+          { sessionID: entry.sessionId, directory: entry.directory },
+          logger,
+          `Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`,
+        )
       }
       loopRetainedSessions.delete(loopName)
     }
@@ -2487,8 +2493,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: worktree failed: ${message}`)
       
       if (directory) {
-        const activeLoops = loopService.listActive()
-        const affectedLoop = activeLoops.find((s) => s.worktreeDir === directory)
+        const affectedLoop = loopService.findActiveByWorktreeDir(directory)
         if (affectedLoop?.loopName) {
           // Serialize with phase-rotation ticks (which also acquire the state
           // lock). Without this guard, a tick could rotate the phase (and
@@ -3026,7 +3031,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }).catch((err: unknown) => {
           logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, err)
         })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch(() => {})
+        void deleteSessionBestEffort(
+          client,
+          { sessionID: entry.sessionId, directory: entry.directory },
+          logger,
+          `Loop: failed to delete retained session ${entry.sessionId} on clear (loop=${loopName})`,
+        )
       }
       loopRetainedSessions.delete(loopName)
     }

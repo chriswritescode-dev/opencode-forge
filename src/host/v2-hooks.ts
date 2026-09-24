@@ -2,14 +2,13 @@ import type { Plugin } from '@opencode/plugin'
 import type { ForgeCore } from './forge-core'
 import { canonicalizePath } from '../sandbox/path'
 import { SHIM_ENV_CONTAINER } from '../sandbox/shell-shim'
+import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client/v2-adapter'
+import { findLastIndex } from '../utils/array'
 
-export const V2_TO_V1_TOOL_NAMES: Record<string, string> = {
-  shell: 'bash',
-  subagent: 'task',
-}
+const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
 
 export function toV1ToolName(name: string): string {
-  return V2_TO_V1_TOOL_NAMES[name] ?? name
+  return V2_TO_V1_TOOL_NAME_TABLE[name] ?? name
 }
 
 export type ForgeHooksV2Core = Pick<
@@ -23,16 +22,6 @@ export type ForgeHooksV2Core = Pick<
   | 'resolveSandboxForDirectory'
   | 'shellShimPath'
 >
-
-function contentText(content: string | ReadonlyArray<{ type: string; text?: string }> | undefined): string {
-  if (typeof content === 'string') return content
-  if (!content) return ''
-  const lines: string[] = []
-  for (const part of content) {
-    if (part.type === 'text' && typeof part.text === 'string') lines.push(part.text)
-  }
-  return lines.join('\n')
-}
 
 export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooksV2Core): Promise<void> {
   const locationDirectory = ctx.location.directory
@@ -51,7 +40,7 @@ export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooks
       await core.toolAfter(input, { title: '', output: event.error.message, metadata: {} })
       return
     }
-    const text = contentText(event.result.content)
+    const text = contentToText(event.result.content)
     const metadata = event.result.metadata ?? {}
     const output = { title: '', output: text, metadata }
     await core.toolAfter(input, output)
@@ -86,12 +75,10 @@ export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooks
 
     const reminder = core.architectReminderFor(event.agent)
     if (!reminder) return
-    for (let i = event.messages.length - 1; i >= 0; i--) {
-      const message = event.messages[i]
-      if (message.role !== 'user') continue
-      event.messages[i] = { ...message, content: [...message.content, { type: 'text', text: reminder }] }
-      break
-    }
+    const userIndex = findLastIndex(event.messages, (message) => message.role === 'user')
+    if (userIndex === -1) return
+    const message = event.messages[userIndex]
+    event.messages[userIndex] = { ...message, content: [...message.content, { type: 'text', text: reminder }] }
   })
 
   await ctx.session.hook('compaction', async (event) => {

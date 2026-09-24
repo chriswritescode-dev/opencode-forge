@@ -7,10 +7,15 @@ import { isSandboxConfigEnabled } from '../sandbox/context'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
 import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
 import { resolveForgeDbPath } from '../storage'
-import { resolveTuiOptions } from './options'
-import { fetchLoopsList } from '../utils/tui-loop-store'
-import type { LoopInfo } from '../utils/tui-models'
-import { VERSION } from '../version'
+import { FORGE_RPC, type ForgeToastEvent } from '../host/forge-rpc'
+import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
+import {
+  openLoopSidebarReader,
+  SIDEBAR_RECENT_TERMINAL_LIMIT,
+  type LoopSidebarReader,
+} from '../utils/tui-loop-store'
+import type { LoopSidebarRow } from '../storage/repos/loops-repo'
+import { isToastVariant } from '../utils/toast'
 
 /** Sidebar refresh cadence; loop rows are cheap local reads. */
 const LOOP_REFRESH_INTERVAL_MS = 2000
@@ -40,16 +45,37 @@ export async function resolveV2TuiProjectId(context: Plugin.Context): Promise<st
   }
 }
 
+function readForgeToast(data: Readonly<Record<string, unknown>>): ForgeToastEvent | null {
+  const { projectId, message, title, variant, duration } = data
+  if (typeof projectId !== 'string' || typeof message !== 'string') return null
+  return {
+    projectId,
+    message,
+    ...(typeof title === 'string' ? { title } : {}),
+    ...(isToastVariant(variant) ? { variant } : {}),
+    ...(typeof duration === 'number' ? { duration } : {}),
+  }
+}
+
 function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; showVersion: boolean }) {
-  const [loops, setLoops] = createSignal<LoopInfo[]>([])
+  const [loops, setLoops] = createSignal<LoopSidebarRow[]>([])
   let projectId: string | null = null
   let disposed = false
+  let reader: LoopSidebarReader | null = null
+  let signature = ''
 
   const load = async () => {
     projectId ??= await resolveV2TuiProjectId(props.context)
     if (disposed || !projectId) return
-    const next = fetchLoopsList(projectId, props.dbPath)
-    if (!disposed) setLoops(next)
+    reader ??= openLoopSidebarReader(projectId, props.dbPath, SIDEBAR_RECENT_TERMINAL_LIMIT)
+    const next = reader.read()
+    const nextSignature = next
+      .map((loop) => `${loop.loopName}|${loop.status}|${loop.iteration}|${loop.maxIterations}`)
+      .join('\n')
+    if (!disposed && nextSignature !== signature) {
+      signature = nextSignature
+      setLoops(next)
+    }
   }
 
   createEffect(() => {
@@ -58,6 +84,8 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
     onCleanup(() => {
       disposed = true
       clearInterval(timer)
+      reader?.close()
+      reader = null
     })
   })
 
@@ -66,13 +94,13 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
   return (
     <box flexDirection="column">
       <text fg={theme().text.base}>
-        <b>{props.showVersion ? `Forge v${VERSION}` : 'Forge'}</b>
+        <b>{formatForgeTitle(props.showVersion)}</b>
       </text>
       <Show when={loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
         <For each={loops()}>
           {(loop) => (
             <text fg={loop.status === 'running' ? theme().text.base : theme().text.muted}>
-              {`${loop.name} · ${loop.status} · ${loop.iteration}/${loop.maxIterations}`}
+              {`${loop.loopName} · ${loop.status} · ${loop.iteration}/${loop.maxIterations}`}
             </text>
           )}
         </For>
@@ -87,7 +115,7 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
  */
 export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const pluginConfig = loadPluginConfig()
-  const opts = resolveTuiOptions(context.options)
+  const opts = resolveTuiOptions(pluginConfig.tui, context.options)
   const forgeDbPath = resolveForgeDbPath(pluginConfig.dataDir)
 
   const buildContextDir = resolveBundledContainerDir()
@@ -115,10 +143,10 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
         mode: 'global',
         commands: [
           {
-            id: 'forge.dashboard',
-            title: 'Open dashboard',
-            description: 'Start the Forge dashboard server and open it in the browser',
-            group: 'Forge',
+            id: FORGE_DASHBOARD_COMMAND.id,
+            title: FORGE_DASHBOARD_COMMAND.title,
+            description: FORGE_DASHBOARD_COMMAND.description,
+            group: FORGE_DASHBOARD_COMMAND.group,
             palette: true,
             ...(opts.keybinds.dashboard ? { bind: opts.keybinds.dashboard } : {}),
             run: () => dashboard.open(),
@@ -138,5 +166,33 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     })
   }
 
-  return () => dashboard.dispose()
+  const toastController = new AbortController()
+  let toastProjectId: Promise<string | null> | null = null
+
+  try {
+    if (typeof context.client.rpc !== 'function') {
+      throw new Error('context.client.rpc is unavailable')
+    }
+    context.client.rpc(FORGE_RPC).events.on('toast', (event) => {
+      const toast = readForgeToast(event.data)
+      if (!toast) return
+      toastProjectId ??= resolveV2TuiProjectId(context)
+      void toastProjectId.then((projectId) => {
+        if (toastController.signal.aborted || !projectId || toast.projectId !== projectId) return
+        context.ui.toast.show({
+          title: toast.title,
+          message: toast.message,
+          variant: toast.variant,
+          duration: toast.duration,
+        })
+      })
+    }, { signal: toastController.signal })
+  } catch (err) {
+    console.error('[forge] failed to subscribe to toast RPC', err)
+  }
+
+  return () => {
+    toastController.abort()
+    dashboard.dispose()
+  }
 }

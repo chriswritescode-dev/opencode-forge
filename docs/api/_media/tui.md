@@ -8,9 +8,12 @@ See also: [Dashboard](dashboard.md), [Workflow](workflow.md), [Configuration →
 
 The V2 TUI surface is deliberately minimal:
 
-- the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project and refreshed every couple of seconds
+- the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing running loops plus the five most recent finished ones, and refreshed every couple of seconds
 - the `Open dashboard` palette command (and `tui.keybinds.dashboard`)
 - a warning toast when sandboxing is enabled but the bundled build context is missing
+- Forge's server toasts (loop completion, workspace, sandbox, and permission warnings), delivered from the server plugin over the V2 plugin RPC event bus and shown only for the current project
+
+Options come from forge-config `tui`; plugin options set on the `cli.json` entry override them, with keybinds merged per key.
 
 Not available on V2: the execution dialog, plan viewer and editing, loop details/restart, model and variant selection, `Toggle host sandbox`, and `Build sandbox template`. Use the `execute-plan` / `execute-goal` tools, `loop-status` with `restart`, and the [Sandbox](sandbox.md) build commands instead.
 

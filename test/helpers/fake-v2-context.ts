@@ -33,6 +33,22 @@ export interface RecordedCommand {
   execute: (input: any) => Promise<void>
 }
 
+export interface RecordedRpcRegistration {
+  definition: unknown
+  handlers: unknown
+}
+
+export interface RecordedRpcEvent {
+  event: string
+  data: unknown
+}
+
+export interface FakeV2Rpc {
+  registrations: RecordedRpcRegistration[]
+  emitted: RecordedRpcEvent[]
+  disposed: number
+}
+
 export interface FakeV2Context {
   ctx: Plugin.Context
   calls: V2ContextCall[]
@@ -41,6 +57,7 @@ export interface FakeV2Context {
   agents: RecordedAgent[]
   commands: RecordedCommand[]
   defaultAgent: { id: string | undefined }
+  rpc: FakeV2Rpc
 }
 
 export interface FakeV2ContextOptions {
@@ -62,6 +79,7 @@ export interface FakeV2ContextOptions {
   shell?: Record<string, AnyMethod>
   storage?: Record<string, AnyMethod>
   worktree?: Record<string, AnyMethod>
+  rpc?: Record<string, AnyMethod>
 }
 
 const DEFAULT_DIRECTORY = '/tmp/forge-project'
@@ -215,6 +233,24 @@ const WORKTREE_DEFAULTS: Record<string, AnyMethod> = {
   reload: async () => {},
 }
 
+function makeRpcDefaults(record: FakeV2Rpc): Record<string, AnyMethod> {
+  return {
+    register: async (definition: unknown, handlers: unknown) => {
+      record.registrations.push({ definition, handlers })
+      return {
+        events: {
+          emit: async (event: string, data: unknown) => {
+            record.emitted.push({ event, data })
+          },
+        },
+        dispose: async () => {
+          record.disposed += 1
+        },
+      }
+    },
+  }
+}
+
 function makeDomain(
   name: string,
   defaults: Record<string, AnyMethod>,
@@ -247,6 +283,7 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
   const agents: RecordedAgent[] = []
   const commands: RecordedCommand[] = []
   const defaultAgent: { id: string | undefined } = { id: undefined }
+  const rpc: FakeV2Rpc = { registrations: [], emitted: [], disposed: 0 }
   const directory = options.location?.directory ?? DEFAULT_DIRECTORY
   const project = {
     id: options.location?.project?.id ?? DEFAULT_PROJECT_ID,
@@ -273,7 +310,8 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     shell: makeDomain('shell', SHELL_DEFAULTS, options.shell, calls, hooks),
     storage: makeDomain('storage', STORAGE_DEFAULTS, options.storage, calls, hooks),
     worktree: makeDomain('worktree', WORKTREE_DEFAULTS, options.worktree, calls, hooks),
+    rpc: makeDomain('rpc', makeRpcDefaults(rpc), options.rpc, calls, hooks),
   } as unknown as Plugin.Context
 
-  return { ctx, calls, hooks, tools, agents, commands, defaultAgent }
+  return { ctx, calls, hooks, tools, agents, commands, defaultAgent, rpc }
 }

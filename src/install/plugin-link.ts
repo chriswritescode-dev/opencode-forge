@@ -59,11 +59,11 @@ export function buildShimSource(serverEntry: string): string {
  */
 export const VENDORED_SERVER_SPEC = './opencode-forge/dist/index.js'
 
-/** Relative specifier for `tui.json`, resolved by opencode against the config dir. */
-export const VENDORED_TUI_SPEC = './plugin/opencode-forge/dist/tui.js'
-
 /** Relative specifier for `cli.json`, resolved by opencode against the config dir. */
 export const VENDORED_CLI_SPEC = './plugin/opencode-forge/dist'
+
+/** Relative specifier for `tui.json`, resolved by opencode against the config dir. */
+export const VENDORED_TUI_SPEC = `${VENDORED_CLI_SPEC}/tui.js`
 
 /** First built server entry candidate that exists on disk, if any. */
 export function resolveServerEntry(): string | undefined {
@@ -88,17 +88,17 @@ export function resolvePackageRoot(): string | undefined {
  * so this is the spec written into that file for the external mode.
  */
 export function resolveTuiEntry(): string | undefined {
-  const root = resolvePackageRoot()
-  if (!root) return undefined
-  const entry = join(root, 'dist', 'tui.js')
+  const dir = resolveCliPluginDir()
+  if (!dir) return undefined
+  const entry = join(dir, 'tui.js')
   return existsSync(entry) ? entry : undefined
 }
 
 /**
- * Built `dist` directory of the package, or undefined when it is absent. opencode
- * V2 rejects a file target for a configured plugin and resolves a directory's
- * `server` and `tui` entrypoints, so this directory is the spec written into
- * `cli.json` for the external mode.
+ * Built `dist` directory of the package, or undefined when it is absent. `cli.json`
+ * lists opencode V2 TUI plugins by directory, and V2 resolves the configured
+ * directory's `tui` entry, so this directory is the spec written into `cli.json`
+ * for the external mode.
  */
 export function resolveCliPluginDir(): string | undefined {
   const root = resolvePackageRoot()
@@ -228,7 +228,7 @@ export function resolveTuiConfigTarget(): PluginConfigTarget {
   return { file: resolveTuiConfigPath(), key: 'plugin', schema: 'https://opencode.ai/tui.json' }
 }
 
-/** `cli.json` is opencode V2's plugin list for both the server and TUI surfaces. */
+/** `cli.json` is opencode V2's TUI plugin list. */
 export function resolveCliConfigTarget(): PluginConfigTarget {
   return { file: resolveCliConfigPath(), key: 'plugins', schema: 'https://opencode.ai/v2/cli.json' }
 }
@@ -247,9 +247,9 @@ function pluginConfigSource(spec: string, target: PluginConfigTarget): string {
 
 /**
  * Ensure the target config file lists the given plugin spec. opencode loads the
- * TUI surface only from the `plugin` array in `tui.json`, and V2 loads both
- * surfaces from the `plugins` array in `cli.json` — there is no directory scan —
- * so the entry must be written explicitly. The file is parsed and edited as JSONC
+ * TUI surface only from the `plugin` array in `tui.json` (V1) or the `plugins`
+ * array in `cli.json` (V2) — there is no directory scan — so the entry must be
+ * written explicitly. The file is parsed and edited as JSONC
  * so existing comments and trailing commas survive, and an already-present or
  * stale forge entry is handled without rewriting unrelated content.
  */
