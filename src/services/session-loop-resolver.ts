@@ -1,12 +1,10 @@
 import type { Logger } from '../types'
 import type { LoopService } from '../loop/service'
-import { resolve } from 'path'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 
 export interface SessionLoopResolverDeps {
   loop: {
-    service: Pick<LoopService, 'resolveLoopName' | 'getActiveState'>
-    listActive(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; worktree?: boolean; active: boolean; workspaceId?: string }>
+    service: Pick<LoopService, 'resolveLoopName' | 'getActiveState' | 'findActiveByWorktreeDir'>
   }
   getParentSessionId(sessionId: string): Promise<string | null>
   getSessionDirectory?(sessionId: string): Promise<string | null>
@@ -62,14 +60,11 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
       if (firstParentId && deps.getSessionDirectory) {
         const dir = await deps.getSessionDirectory(sessionId)
         if (dir) {
-          const normalized = resolve(dir)
-          for (const state of deps.loop.listActive()) {
-            if (!state.worktree) continue
-            if (resolve(state.worktreeDir) === normalized) {
-              deps.logger.log(`[session-resolver] session=${sessionId} resolved via directory match loop=${state.loopName}`)
-              const full = deps.loop.service.getActiveState(state.loopName)
-              if (full?.active) return full
-            }
+          const matched = deps.loop.service.findActiveByWorktreeDir(dir, { worktreeOnly: true })
+          if (matched) {
+            deps.logger.log(`[session-resolver] session=${sessionId} resolved via directory match loop=${matched.loopName}`)
+            const full = deps.loop.service.getActiveState(matched.loopName)
+            if (full?.active) return full
           }
         }
       }

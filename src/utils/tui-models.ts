@@ -2,19 +2,12 @@
  * TUI model selection helpers for fetching and managing available models.
  *
  * Recents/preferences derivation is driven entirely by data fetched from
- * the OpenCode server (sessions + workspaces + favorites/default in
- * `api.state`). There is intentionally no TUI-local SQLite store: that
+ * the OpenCode server (sessions, loops, and the default model). There is intentionally no TUI-local SQLite store: that
  * approach diverged silently when the TUI ran on a different host than
  * the server. See `deriveRecentModels` / `deriveRecentModelsFromWorkspaces`.
  */
 
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import type { ForgeClient, ProviderList } from '../client/port'
-
-interface ModelKey {
-  providerID: string
-  modelID: string
-}
+import type { ProviderList } from '../client/port'
 
 export interface ModelInfo {
   id: string
@@ -40,17 +33,6 @@ export interface ProviderInfo {
   id: string
   name: string
   models: ModelInfo[]
-}
-
-/**
- * Result of fetching available models, distinguishing success from failure.
- */
-export interface FetchModelsResult {
-  providers: ProviderInfo[]
-  connectedProviderIds: string[]
-  configuredProviderIds: string[]
-  favoriteModels: string[]
-  error?: string
 }
 
 export interface ModelSortOptions {
@@ -97,62 +79,6 @@ export interface ModelSortOptions {
 }
 
 /**
- * Converts a ModelKey to its full name representation.
- */
-function toFullModelName(key: ModelKey): string {
-  return `${key.providerID}/${key.modelID}`
-}
-
-/**
- * Normalizes an unknown input to a ModelKey if possible.
- * Returns null for malformed values.
- */
-function normalizeModelKey(input: unknown): ModelKey | null {
-  if (!input || typeof input !== 'object') return null
-  const obj = input as Record<string, unknown>
-  if (typeof obj.providerID !== 'string' || typeof obj.modelID !== 'string') return null
-  return { providerID: obj.providerID, modelID: obj.modelID }
-}
-
-/**
- * Reads favorite models from OpenCode TUI state if exposed.
- * Probes multiple possible state shapes defensively.
- * Returns full model names (provider/model).
- */
-export function readOpenCodeFavoriteModels(api: TuiPluginApi): string[] {
-  const state = api.state as Record<string, unknown>
-  
-  // Probe supported shapes in order
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stateAny = state as any
-  const candidates = [
-    stateAny?.local?.model?.favorite,
-    stateAny?.model?.favorite,
-    stateAny?.models?.favorite,
-  ]
-  
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      const normalized = candidate.map(normalizeModelKey).filter((k): k is ModelKey => k !== null)
-      return normalized.map(toFullModelName)
-    }
-    if (typeof candidate === 'function') {
-      try {
-        const result = candidate()
-        if (Array.isArray(result)) {
-          const normalized = result.map(normalizeModelKey).filter((k): k is ModelKey => k !== null)
-          return normalized.map(toFullModelName)
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
-  
-  return []
-}
-
-/**
  * Maps a raw `provider.list` payload to connected providers and their models.
  * Shared by the TUI model picker and the dashboard model controls so both see
  * the same catalogue.
@@ -195,31 +121,6 @@ export function providersFromProviderList(data: ProviderList): {
     })
   }
   return { providers, connectedProviderIds: connected }
-}
-
-/**
- * Fetches all available providers and their models from the OpenCode API.
- * Returns a structured result that distinguishes between:
- * - Successful fetch with providers (may be empty if no providers have models)
- * - Failed fetch with an error message
- */
-export async function fetchAvailableModels(api: TuiPluginApi, client: ForgeClient): Promise<FetchModelsResult> {
-  const directory = api.state.path.directory
-  const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
-  const favoriteModels = readOpenCodeFavoriteModels(api)
-  try {
-    const data = await client.provider.list({ directory })
-    const { providers, connectedProviderIds } = providersFromProviderList(data)
-    return { providers, connectedProviderIds, configuredProviderIds, favoriteModels }
-  } catch (err) {
-    return {
-      providers: [],
-      connectedProviderIds: [],
-      configuredProviderIds,
-      favoriteModels,
-      error: err instanceof Error ? err.message : 'Failed to fetch providers',
-    }
-  }
 }
 
 /**
@@ -304,14 +205,10 @@ export function getModelDisplayLabel(
 const RECENT_MODELS_MAX = 10
 
 /**
- * Loose shape used by {@link deriveRecentModelsFromWorkspaces}. Matches the
- * relevant subset of `Workspace` from `@opencode-ai/sdk/v2`, plus the Forge
- * `extra.forgeLoop.{executionModel,auditorModel}` envelope written by
- * `tui-client.ts` when starting a loop.
- *
- * Kept structural (not nominal) so the same helper can consume either:
- * - the raw response of `client.experimental.workspace.list()`, or
- * - a hand-crafted fixture in tests.
+ * Loose shape used by {@link deriveRecentModelsFromWorkspaces}: a Forge loop
+ * in workspace form, carrying the `extra.forgeLoop.{executionModel,auditorModel}`
+ * envelope. Kept structural so loops from the local store and hand-crafted test
+ * fixtures both fit.
  */
 export interface WorkspaceForRecents {
   type: string
@@ -390,8 +287,8 @@ export function deriveRecentModelsFromWorkspaces(
 }
 
 /**
- * Loose shape matching the subset of `GlobalSession` / `Session` (from
- * `@opencode-ai/sdk/v2`) needed by {@link deriveRecentModels}. Sessions
+ * Loose shape matching the subset of an OpenCode session needed by
+ * {@link deriveRecentModels}. Sessions
  * carry the model the user picked the last time they prompted in that
  * session, so the server-side session list is the canonical "recent models
  * for this user" source (it covers every mode, not just Forge loops).
@@ -417,11 +314,11 @@ export interface DeriveRecentModelsInputs {
   workspaces: ReadonlyArray<WorkspaceForRecents>
   /**
    * Model fullnames the user has explicitly favorited in OpenCode, if the
-   * TUI surfaces them. May be empty. See {@link readOpenCodeFavoriteModels}.
+   * TUI surfaces them. May be empty.
    */
   openCodeFavorites: ReadonlyArray<string>
   /**
-   * The user's configured global default model (`api.state.config?.model`).
+   * The user's configured default model.
    * Surfaced last so it's always selectable from the "Recent" group even if
    * the user hasn't used it in any session yet.
    */
@@ -443,9 +340,7 @@ export interface DeriveRecentModelsInputs {
  * (default `RECENT_MODELS_MAX`). Returns `[]` for `max <= 0`.
  *
  * This is the read replacement for the SQLite-backed `getRecentModels`.
- * All four inputs are remote-safe: sessions and workspaces come from the
- * server via the OpenCode SDK; favorites and default come from `api.state`
- * which the TUI plugin already has synced.
+ * All four inputs come from the OpenCode server or the local Forge store.
  */
 export function deriveRecentModels(
   projectId: string,

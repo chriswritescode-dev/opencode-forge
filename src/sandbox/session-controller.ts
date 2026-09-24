@@ -95,6 +95,8 @@ export interface ResolveSandboxSessionOpts {
 export interface SessionSandboxController {
   start(): Promise<void>
   resolveSandboxForSession(sessionId: string, opts?: ResolveSandboxSessionOpts): Promise<SandboxContext | null>
+  /** True when no session is bound to the host sandbox and no failed selection must be blocked. */
+  isIdle(): boolean
   getState(): SessionSandboxAppliedState | null
   dispose(): Promise<void>
 }
@@ -1054,6 +1056,10 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     },
 
     resolveSandboxForSession,
+
+    isIdle(): boolean {
+      return acknowledgedSessionId === null && failedSelection === null
+    },
 
     getState(): SessionSandboxAppliedState | null {
       return lastApplied

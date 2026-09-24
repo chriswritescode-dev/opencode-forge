@@ -2,10 +2,10 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { platform } from 'os'
 import { resolveForgeDbPath } from '../storage/database'
-import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
-import { buildDashboardUrls, isLoopbackHost, resolveDashboardConfig, type DashboardUrls } from './config'
+import { buildDashboardUrls, describeDashboardBinding, isLoopbackHost, resolveDashboardConfig, type DashboardUrls } from './config'
 import { createRequestHandler } from './server'
+import type { ToastVariant } from '../utils/toast'
 
 export interface DashboardServerHandle extends DashboardUrls {
   /** The host actually passed to `Bun.serve`. */
@@ -27,12 +27,6 @@ export interface StartDashboardOptions {
   maxAttempts?: number
   /** Loaded plugin config; supplies `dataDir` and `dashboard.host`/`dashboard.port`. */
   config?: PluginConfig
-  /**
-   * Live opencode client. Supplied by the TUI launch surface (which has an
-   * in-process client); absent for the standalone dashboard, which then serves
-   * the read-only views only.
-   */
-  client?: ForgeClient
 }
 
 const DEFAULT_MAX_ATTEMPTS = 10
@@ -79,7 +73,6 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   db.run('PRAGMA busy_timeout=5000')
   const handler = createRequestHandler({
     forgeDb: db,
-    client: options.client,
     allowSend: isLoopbackHost(host),
   })
 
@@ -120,11 +113,84 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   throw new Error('Failed to start dashboard: exhausted port attempts.')
 }
 
+export interface DashboardToastInput {
+  title?: string
+  message: string
+  variant?: ToastVariant
+  duration?: number
+}
+
+export interface DashboardLauncherOptions {
+  dbPath: string
+  config?: PluginConfig
+  toast: (input: DashboardToastInput) => void
+}
+
+export interface DashboardLauncher {
+  /** Starts the server on first use, then opens and reports the binding. */
+  open: () => void
+  /** Stops the server and releases its database connection. */
+  dispose: () => void
+}
+
+/**
+ * One dashboard launch path for every TUI surface: starts the server lazily,
+ * opens the browser, and reports the binding, its local URL, and every warning
+ * through the surface's toast. Both hosts call this so the started server, the
+ * notice, and the exposed-bind warning cannot drift apart.
+ */
+export function createDashboardLauncher(options: DashboardLauncherOptions): DashboardLauncher {
+  let server: DashboardServerHandle | null = null
+
+  return {
+    open: () => {
+      if (!server) {
+        try {
+          server = startDashboardServer({
+            dbPath: options.dbPath,
+            config: options.config,
+          })
+        } catch (err) {
+          options.toast({
+            message: err instanceof Error ? err.message : 'Failed to start dashboard',
+            variant: 'error',
+            duration: 5000,
+          })
+          return
+        }
+      }
+      const notice = describeDashboardBinding(server)
+      const opened = openInBrowser(server.localUrl)
+      const details = [
+        ...(notice.localUrl ? [`Local: ${notice.localUrl}`] : []),
+        ...server.warnings,
+        ...(notice.warning ? [notice.warning] : []),
+      ]
+      const alert = Boolean(notice.warning) || server.warnings.length > 0
+      options.toast({
+        title: `Forge dashboard: ${notice.url}`,
+        message: details.length > 0
+          ? details.join('\n')
+          : opened
+            ? 'Opened in your browser.'
+            : 'Could not open a browser automatically; open the URL manually.',
+        variant: alert ? 'warning' : 'info',
+        duration: alert ? 10_000 : 5000,
+      })
+    },
+    dispose: () => {
+      if (!server) return
+      server.stop()
+      server = null
+    },
+  }
+}
+
 /**
  * Opens the given URL in the platform's default browser. Returns false when the
  * launch could not be initiated.
  */
-export function openInBrowser(url: string): boolean {
+function openInBrowser(url: string): boolean {
   const command =
     platform() === 'darwin' ? 'open' : platform() === 'win32' ? 'cmd' : 'xdg-open'
   const args = platform() === 'win32' ? ['/c', 'start', '', url] : [url]

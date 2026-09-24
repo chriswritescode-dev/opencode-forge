@@ -1,0 +1,387 @@
+/** @jsxImportSource @opentui/solid */
+import type { Plugin } from '@opencode/plugin/tui'
+import { existsSync } from 'fs'
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor } from 'solid-js'
+import { createDashboardLauncher } from '../dashboard/launch'
+import { isSandboxConfigEnabled } from '../sandbox/context'
+import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
+import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
+import { resolveForgeDbPath } from '../storage'
+import { FORGE_RPC, type ForgeToastEvent } from '../host/forge-rpc'
+import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
+import {
+  openLoopSidebarReader,
+  type LoopSidebarReader,
+} from '../utils/tui-loop-store'
+import type { LoopSidebarRow } from '../storage/repos/loops-repo'
+import { isToastVariant } from '../utils/toast'
+import { resolveForgeDataDir } from '../utils/opencode-paths'
+import { isForgeWorktreeDir } from '../workspace/forge-naming'
+import type { ForgeProjectClient } from './project-client'
+import { createExecutionContextCache, type ExecutionContextCache } from '../utils/tui-execution-context-cache'
+import { createV2TuiHost } from './host'
+import { createForgePlanCommands } from './plan-commands'
+import { openSandboxBuildDialog } from './sandbox-build-dialog'
+import { attachV2LoopSessionFollower } from './session-follow'
+import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort } from './loop-session-cleanup'
+import { createV2ForgeProjectClient } from './v2-client'
+import { createHostSandboxToggle } from './host-sandbox'
+import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
+
+/** Sidebar refresh cadence; loop rows are cheap local reads. */
+const LOOP_REFRESH_INTERVAL_MS = 2000
+
+/** Current location directory, or null when neither the context nor its default resolves. */
+function resolveV2TuiDirectory(context: Plugin.Context): string | null {
+  try {
+    return context.location?.directory ?? context.data.location.default().directory
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Project id for the current location, resolved through the client. Returns null
+ * on any failure so callers render an empty sidebar instead of another project's
+ * loops.
+ */
+export async function resolveV2TuiProjectId(context: Plugin.Context): Promise<string | null> {
+  const directory = resolveV2TuiDirectory(context)
+  if (!directory) return null
+  try {
+    const info = await context.client.location.get({ location: { directory } })
+    return info.project.id
+  } catch {
+    return null
+  }
+}
+
+function readForgeToast(data: Readonly<Record<string, unknown>>): ForgeToastEvent | null {
+  const { projectId, message, title, variant, duration } = data
+  if (typeof projectId !== 'string' || typeof message !== 'string') return null
+  return {
+    projectId,
+    message,
+    ...(typeof title === 'string' ? { title } : {}),
+    ...(isToastVariant(variant) ? { variant } : {}),
+    ...(typeof duration === 'number' ? { duration } : {}),
+  }
+}
+
+const MSB_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+function SandboxStatusText(props: {
+  context: Plugin.Context
+  preference: Accessor<SessionSandboxPreference | null>
+  sessionId: Accessor<string | null>
+}) {
+  const theme = () => props.context.theme
+  const status = createMemo(() => deriveSessionSandboxDisplayStatus(props.preference(), props.sessionId() ?? undefined))
+  const [frame, setFrame] = createSignal(0)
+
+  createEffect(() => {
+    if (status() !== 'loading') return
+    const timer = setInterval(() => setFrame((current) => (current + 1) % MSB_SPINNER_FRAMES.length), 80)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const color = () => {
+    const current = status()
+    if (current === 'enabled') return theme().text.feedback.success.base
+    if (current === 'failed') return theme().text.feedback.error.base
+    return theme().text.muted
+  }
+
+  return (
+    <text fg={color()}>
+      {status() === 'loading' ? `· MSB ${MSB_SPINNER_FRAMES[frame()]}` : `· MSB ${status()}`}
+    </text>
+  )
+}
+
+function ForgeLoopsSidebar(props: {
+  context: Plugin.Context
+  dbPath: string
+  showVersion: boolean
+  sandboxPreference: Accessor<SessionSandboxPreference | null>
+  currentSessionId: () => string | null
+}) {
+  const [loops, setLoops] = createSignal<LoopSidebarRow[]>([])
+  const [sessionId, setSessionId] = createSignal<string | null>(null)
+  let projectId: string | null = null
+  let disposed = false
+  let reader: LoopSidebarReader | null = null
+  let signature = ''
+
+  const load = async () => {
+    setSessionId(props.currentSessionId())
+    projectId ??= await resolveV2TuiProjectId(props.context)
+    if (disposed || !projectId) return
+    reader ??= openLoopSidebarReader(projectId, props.dbPath)
+    const next = reader.read()
+    const nextSignature = next
+      .map((loop) => `${loop.loopName}|${loop.status}|${loop.iteration}|${loop.maxIterations}`)
+      .join('\n')
+    if (!disposed && nextSignature !== signature) {
+      signature = nextSignature
+      setLoops(next)
+    }
+  }
+
+  createEffect(() => {
+    void load()
+    const timer = setInterval(() => { void load() }, LOOP_REFRESH_INTERVAL_MS)
+    onCleanup(() => {
+      disposed = true
+      clearInterval(timer)
+      reader?.close()
+      reader = null
+    })
+  })
+
+  const theme = () => props.context.theme
+  const statusColor = (status: LoopSidebarRow['status']) => {
+    const { text } = theme()
+    if (status === 'running') return text.feedback.info.base
+    if (status === 'completed') return text.feedback.success.base
+    if (status === 'errored') return text.feedback.error.base
+    if (status === 'stalled') return text.feedback.warning.base
+    return text.muted
+  }
+
+  return (
+    <box flexDirection="column">
+      <box flexDirection="row" gap={1}>
+        <text fg={theme().text.base}>
+          <b>{formatForgeTitle(props.showVersion)}</b>
+        </text>
+        <Show when={props.sandboxPreference()}>
+          <SandboxStatusText context={props.context} preference={props.sandboxPreference} sessionId={sessionId} />
+        </Show>
+      </box>
+      <Show when={loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
+        <For each={loops()}>
+          {(loop) => (
+            <box flexDirection="row" gap={1}>
+              <text flexShrink={0} fg={statusColor(loop.status)}>•</text>
+              <text
+                flexGrow={1}
+                flexShrink={1}
+                wrapMode="none"
+                truncate
+                fg={loop.status === 'running' ? theme().text.base : theme().text.muted}
+              >
+                {loop.loopName}
+              </text>
+              <text flexShrink={0} fg={statusColor(loop.status)}>{loop.status}</text>
+              <text flexShrink={0} fg={theme().text.muted}>{`${loop.iteration}/${loop.maxIterations}`}</text>
+            </box>
+          )}
+        </For>
+      </Show>
+    </box>
+  )
+}
+
+/**
+ * V2 TUI surface: the dashboard, execute-plan, restart-loop, and sandbox-build
+ * commands, loop session auto-follow, a loop sidebar, and the missing-build-context
+ * toast. Returns the cleanup for all of them.
+ */
+export function setupForgeTuiV2(context: Plugin.Context): () => void {
+  const pluginConfig = loadPluginConfig()
+  const opts = resolveTuiOptions(pluginConfig.tui, context.options)
+  const forgeDbPath = resolveForgeDbPath(pluginConfig.dataDir)
+
+  const buildContextDir = resolveBundledContainerDir()
+  if (isSandboxConfigEnabled(pluginConfig) && !existsSync(buildContextDir)) {
+    context.ui.toast.show({
+      title: 'Sandbox build context missing',
+      message: `Sandboxing is enabled but the bundled build context is missing at ${buildContextDir}. Reinstall opencode-forge, then build the template: ${formatTemplateBuildCommands(buildContextDir, pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE)}`,
+      variant: 'warning',
+      duration: 10_000,
+    })
+  }
+
+  const dashboard = createDashboardLauncher({
+    dbPath: forgeDbPath,
+    config: pluginConfig,
+    toast: (input) => context.ui.toast.show(input),
+  })
+
+  const lifecycle = new AbortController()
+  let defaultModel = ''
+  const host = createV2TuiHost(context, () => defaultModel)
+  let projectClient: ForgeProjectClient | null = null
+  let executionContextCache: ExecutionContextCache | null = null
+
+  const ensureClient = async (): Promise<ForgeProjectClient | null> => {
+    if (projectClient) return projectClient
+    const directory = resolveV2TuiDirectory(context)
+    const projectId = await resolveV2TuiProjectId(context)
+    if (lifecycle.signal.aborted) return null
+    if (!directory || !projectId) {
+      host.toast({ message: 'Forge could not resolve the current project', variant: 'warning', duration: 5000 })
+      return null
+    }
+    const created = createV2ForgeProjectClient(context, {
+      projectId,
+      directory,
+      dbPath: forgeDbPath,
+      signal: lifecycle.signal,
+      onDefaultModel: (model) => { defaultModel = model },
+    })
+    projectClient ??= created
+    executionContextCache ??= createExecutionContextCache(projectId, pluginConfig, () => created.loadExecutionContext())
+    return projectClient
+  }
+
+  const currentSessionId = (): string | null => {
+    const route = context.ui.router.current()
+    return route.type === 'session' ? route.sessionID : null
+  }
+
+  const planCommands = createForgePlanCommands({
+    host,
+    pluginConfig,
+    dbPath: forgeDbPath,
+    currentSessionId,
+    ensureClient,
+    cache: () => executionContextCache,
+  })
+
+  const hostSandbox = createHostSandboxToggle({
+    pluginConfig,
+    dbPath: forgeDbPath,
+    resolveProjectId: () => resolveV2TuiProjectId(context),
+    currentSessionId,
+    toast: (input) => host.toast(input),
+  })
+
+  const dataDir = resolveForgeDataDir(pluginConfig.dataDir)
+  const detachSessionFollower = attachV2LoopSessionFollower(context, (directory) => isForgeWorktreeDir(dataDir, directory))
+
+  // A keymap layer needs a component owner, so the command is registered from
+  // the always-mounted app slot rather than from setup itself.
+  context.ui.slot({
+    append: 'app',
+    render: () => {
+      context.keymap.layer(() => ({
+        mode: 'global',
+        commands: [
+          {
+            id: FORGE_DASHBOARD_COMMAND.id,
+            title: FORGE_DASHBOARD_COMMAND.title,
+            description: FORGE_DASHBOARD_COMMAND.description,
+            group: FORGE_DASHBOARD_COMMAND.group,
+            palette: true,
+            ...(opts.keybinds.dashboard ? { bind: opts.keybinds.dashboard } : {}),
+            run: () => dashboard.open(),
+          },
+          {
+            id: 'forge.plan.execute',
+            title: 'Execute plan',
+            description: 'Open the execution dialog for the current session plan, or paste one if none is found',
+            group: 'Forge',
+            palette: true,
+            ...(opts.keybinds.executePlan ? { bind: opts.keybinds.executePlan } : {}),
+            run: () => { void planCommands.executePlan() },
+          },
+          {
+            id: 'forge.plan.executePasted',
+            title: 'Execute pasted plan',
+            description: 'Paste a marked or unmarked plan and open the execution dialog',
+            group: 'Forge',
+            palette: true,
+            run: () => { void planCommands.executePastedPlan() },
+          },
+          {
+            id: 'forge.loop.restart',
+            title: 'Restart loop',
+            description: 'Change the execution and auditor models and restart a running or stopped loop from persisted progress',
+            group: 'Forge',
+            palette: true,
+            run: () => { void planCommands.restartLoop() },
+          },
+          {
+            id: 'forge.sandbox.toggleHost',
+            title: 'Toggle host sandbox',
+            description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox, or back on the host',
+            group: 'Forge',
+            palette: true,
+            ...(opts.keybinds.toggleHostSandbox ? { bind: opts.keybinds.toggleHostSandbox } : {}),
+            run: () => { void hostSandbox.toggle() },
+          },
+          {
+            id: 'forge.sandbox.buildImage',
+            title: 'Build sandbox template',
+            description: 'Build the sandbox template image and load it into msb',
+            group: 'Forge',
+            palette: true,
+            run: () => openSandboxBuildDialog(host, pluginConfig),
+          },
+        ],
+      }))
+      return null
+    },
+  })
+
+  if (opts.sidebar) {
+    context.ui.slot({
+      append: 'sidebar.content',
+      render: () => (
+        <ForgeLoopsSidebar
+          context={context}
+          dbPath={forgeDbPath}
+          showVersion={opts.showVersion}
+          sandboxPreference={hostSandbox.preference}
+          currentSessionId={currentSessionId}
+        />
+      ),
+    })
+  }
+
+  const toastController = new AbortController()
+  let toastProjectId: Promise<string | null> | null = null
+
+  try {
+    if (typeof context.client.rpc !== 'function') {
+      throw new Error('context.client.rpc is unavailable')
+    }
+    context.client.rpc(FORGE_RPC).events.on('toast', (event) => {
+      const toast = readForgeToast(event.data)
+      if (!toast) return
+      toastProjectId ??= resolveV2TuiProjectId(context)
+      void toastProjectId.then((projectId) => {
+        if (toastController.signal.aborted || !projectId || toast.projectId !== projectId) return
+        context.ui.toast.show({
+          title: toast.title,
+          message: toast.message,
+          variant: toast.variant,
+          duration: toast.duration,
+        })
+      })
+    }, { signal: toastController.signal })
+    context.client.rpc(FORGE_RPC).events.on('sessionDelete', (event) => {
+      const sessionID = readForgeSessionDelete(event.data)
+      if (sessionID) void removeSessionBestEffort(context, sessionID)
+    }, { signal: toastController.signal })
+  } catch (err) {
+    console.error('[forge] failed to subscribe to Forge RPC events', err)
+  }
+
+  void resolveV2TuiProjectId(context).then(async (projectId) => {
+    if (!projectId || lifecycle.signal.aborted) return
+    await removeOrphanedLoopSessions(context, projectId, dataDir, lifecycle.signal)
+  }).catch((err: unknown) => {
+    console.error('[forge] failed to remove orphaned loop sessions', err)
+  })
+
+  return () => {
+    lifecycle.abort()
+    hostSandbox.dispose()
+    detachSessionFollower()
+    toastController.abort()
+    dashboard.dispose()
+  }
+}

@@ -71,12 +71,6 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'stall_timeout' } })
     })
 
-    it('terminates with worktree_failed and message', () => {
-      const state = makeState({ phase: 'coding' })
-      const transition = nextTransition(state, { type: 'worktree-failed', message: 'branch deleted' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'worktree_failed', message: 'branch deleted' } })
-    })
-
     it('terminates with error_max_retries', () => {
       const state = makeState({ phase: 'coding' })
       const transition = nextTransition(state, { type: 'error-max-retries', context: 'send prompt' })
@@ -277,12 +271,6 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'missing_worktree_dir' } })
     })
 
-    it('terminates with worktree_failed and message', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'worktree-failed', message: 'branch deleted' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'worktree_failed', message: 'branch deleted' } })
-    })
-
     it('terminates with error_max_retries', () => {
       const state = makeState({ phase: 'final_audit_fix' })
       const transition = nextTransition(state, { type: 'error-max-retries', context: 'send prompt' })
@@ -374,12 +362,6 @@ describe('nextTransition', () => {
     const phases = ['coding', 'auditing', 'final_auditing', 'post_action', 'final_audit_fix'] as const
 
     phases.forEach(phase => {
-      it(`handles worktree-failed in ${phase} phase`, () => {
-        const state = makeState({ phase })
-        const transition = nextTransition(state, { type: 'worktree-failed', message: 'test error' })
-        expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'worktree_failed', message: 'test error' } })
-      })
-
       it(`handles error-max-retries in ${phase} phase`, () => {
         const state = makeState({ phase })
         const transition = nextTransition(state, { type: 'error-max-retries', context: 'retry context' })

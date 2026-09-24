@@ -12,6 +12,8 @@ The stored plan is the source of truth for execution: `execute-plan`, the approv
 
 ## Execution
 
+The execution dialog is available from the TUI.
+
 After the architect presents a summary, the user chooses an execution mode from the execution dialog:
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
@@ -24,7 +26,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 | `Execute here` | When preserving current context matters |
 | `Loop` | Safer autonomous iteration |
 
-The dialog also lets you pick the execution model, auditor model, and their optional **variants** (provider-specific reasoning or thinking-effort levels such as `low`, `high`, `max`) at launch time. Selections are remembered as workspace-level preferences and pre-filled on later launches. Variant defaults can be set via `config.executionVariant` / `config.auditorVariant` in the plugin config. In-session changes in the dialog override all other sources and persist for the OpenCode instance lifetime only (not across restarts).
+The dialog also lets you pick the execution model, auditor model, and their optional **variants** (provider-specific reasoning or thinking-effort levels such as `low`, `high`, `max`) at launch time. Selections are persisted with the loop and pre-filled on later launches. Variant defaults can be set via `config.executionVariant` / `config.auditorVariant` in the plugin config. In-session changes in the dialog override all other sources and persist for the OpenCode instance lifetime only (not across restarts).
 
 For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode, the architect is instead instructed to launch the loop via the `execute-plan` tool.
 

@@ -1,5 +1,5 @@
 import { isAbsolute } from 'path'
-import type { Hooks } from '@opencode-ai/plugin'
+import type { ToolAfterHook, ToolBeforeHook } from './tool-hook-types'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
 import { executeSandboxGlob, executeSandboxGrep } from '../sandbox/exec-fs'
@@ -14,10 +14,10 @@ const pendingResults = new Map<string, { result: string; storedAt: number }>()
 
 const STALE_THRESHOLD_MS = 5 * 60 * 1000
 
-export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['tool.execute.before'] {
+export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): ToolBeforeHook {
   return async (
     input: { tool: string; sessionID: string; callID: string },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches upstream Hooks type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
     output: { args: any },
   ) => {
     // This hook only intercepts search tools. Return before any resolution so a fail-closed
@@ -89,11 +89,11 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
   }
 }
 
-export function createSandboxToolAfterHook(deps: SandboxToolHookDeps): Hooks['tool.execute.after'] {
+export function createSandboxToolAfterHook(deps: SandboxToolHookDeps): ToolAfterHook {
   return async (
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches upstream Hooks type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
     input: { tool: string; sessionID: string; callID: string; args: any },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches upstream Hooks type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
     output: { title: string; output: string; metadata: any },
   ) => {
     if (input.tool !== 'glob' && input.tool !== 'grep') return

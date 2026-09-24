@@ -9,7 +9,6 @@ import {
   resolveHostShell,
   SHELL_SHIM_FILENAME,
   SHIM_ENV_CONTAINER,
-  SHIM_ENV_HOST_SHELL,
 } from '../../src/sandbox/shell-shim'
 import type { Logger } from '../../src/types'
 
@@ -18,7 +17,6 @@ const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Lo
 function cleanEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env }
   delete env[SHIM_ENV_CONTAINER]
-  delete env[SHIM_ENV_HOST_SHELL]
   return env
 }
 
@@ -63,20 +61,6 @@ describe('shim behavior (executed via sh)', () => {
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('hello from /bin/sh')
-  })
-
-  test('passthrough: FORGE_HOST_SHELL overrides the baked default', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
-    const shim = join(dir, SHELL_SHIM_FILENAME)
-    writeFileSync(shim, buildShimScript('/nonexistent-shell'), { mode: 0o755 })
-
-    const result = spawnSync(shim, ['-c', 'echo ok'], {
-      env: { ...cleanEnv(), [SHIM_ENV_HOST_SHELL]: '/bin/sh' },
-      encoding: 'utf-8',
-    })
-
-    expect(result.status).toBe(0)
-    expect(result.stdout.trim()).toBe('ok')
   })
 
   test('fail-closed: when a container is set but msb is unavailable, the command never runs on the host', () => {
@@ -141,7 +125,7 @@ describe('shim content', () => {
     expect(script).not.toContain('sbx')
     expect(script).not.toContain('docker')
     expect(script).not.toContain('--user')
-    expect(script).toContain('exec "${FORGE_HOST_SHELL:-/bin/sh}" "$@"')
+    expect(script).toContain('exec "/bin/sh" "$@"')
   })
 })
 

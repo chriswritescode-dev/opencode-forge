@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -122,6 +122,7 @@ describe('Runtime transition logging', () => {
   afterEach(() => {
     db.close()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    vi.useRealTimers()
   })
 
   function tickIdle(loopInstance: ReturnType<typeof createLoop>, sessionId: string): Promise<void> {
@@ -747,99 +748,6 @@ describe('Runtime transition logging', () => {
     })
   })
 
-  describe('Bug 12: worktree.failed termination serialized with phase rotation', () => {
-    test('worktree.failed racing an audit-error rotation produces rotate row + terminal row using the authoritative phase', async () => {
-      // Pause the post-rotation prompt send inside the tick handler. The tick
-      // acquires the state lock for the duration of the auditing phase runner,
-      // records the audit-error → coding recovery row, then suspends awaiting
-      // `promptAsync`. While the lock is still held, fire `worktree.failed` —
-      // it queues behind `withStateLock` instead of running concurrently. On
-      // release, the tick finishes, the lock is released, worktree.failed
-      // acquires the lock, observes the authoritative post-rotation phase
-      // (`coding`), and records the terminal row with that fromPhase. Result:
-      // exactly one rotate row + one terminal row, with the terminal row's
-      // fromPhase matching the persisted phase and the rotate row preceding the
-      // terminal row chronologically (by id).
-      let releasePrompt: () => void = () => {}
-      const promptPaused = new Promise<void>((resolve) => {
-        releasePrompt = resolve
-      })
-
-      const state = buildInitialState({
-        phase: 'auditing',
-        iteration: 1,
-        maxIterations: 10,
-        totalSections: 0,
-        worktreeDir: '/tmp/wt-failed',
-      })
-
-      const loopInstance = buildLoop({
-        clientTweaks: {
-          session: {
-            // Assistant message carries a non-provider error so the audit-error
-            // branch fires `rotateAndSendContinuation` (auditing → coding).
-            messages: async () => [
-              {
-                info: { role: 'assistant', finish: 'stop', error: { name: 'RuntimeError', data: { message: 'boom while auditing' } } },
-                parts: [{ type: 'text', text: 'partial audit' }],
-              },
-            ],
-            // Hold the post-rotation prompt send so the tick's state lock is
-            // retained while worktree.failed queues behind it.
-            promptAsync: async () => { await promptPaused },
-            abort: async () => {},
-          },
-        },
-      })
-      loopInstance.start({ state })
-
-      // Kick off the auditing idle tick. It records the recovery row then
-      // suspends at the paused prompt send while still holding the state lock.
-      const tickPromise = tickIdle(loopInstance, 'audit-sess')
-
-      // Yield through the microtask chain so the tick handler has acquired the
-      // lock, runAuditingPhase has read the assistant message, rotated to
-      // coding (recording the recovery row), and is now awaiting promptAsync.
-      await new Promise((r) => setTimeout(r, 0))
-
-      // Fire worktree.failed while the tick is mid-flight. It queues behind the
-      // tick's lock; it cannot read state until the tick releases the lock.
-      const worktreeFailedPromise = loopInstance.tick({
-        type: 'worktree.failed',
-        properties: { message: 'branch deleted', directory: '/tmp/wt-failed' },
-      })
-
-      // Release the prompt send → tick finishes, releases the lock →
-      // worktree.failed acquires the lock, observes the authoritative
-      // post-rotation phase (`coding`), and records the terminal row.
-      releasePrompt()
-      await tickPromise
-      await worktreeFailedPromise
-
-      const rows = getRows()
-      expect(rows).toHaveLength(2)
-      // Chronological order: rotate row first, terminal row second.
-      expect(rows[0].eventType).toBe('audit-error')
-      expect(rows[0].transitionKind).toBe('error-recovery')
-      expect(rows[0].fromPhase).toBe('auditing')
-      expect(rows[0].toPhase).toBe('coding')
-      expect(rows[1].eventType).toBe('worktree_failed')
-      expect(rows[1].transitionKind).toBe('terminate')
-      expect(rows[1].toPhase).toBeNull()
-      // Authoritative post-rotation phase — coding, not the stale caller-
-      // supplied phase (`auditing`).
-      expect(rows[1].fromPhase).toBe('coding')
-      // The persisted loops row's phase is `coding` — terminal fromPhase
-      // matches it exactly.
-      const persisted = loopInstance.service.getAnyState(loopName)!
-      expect(persisted.active).toBe(false)
-      expect(persisted.phase).toBe('coding')
-      expect(rows[1].fromPhase).toBe(persisted.phase)
-      // Strict id ordering: rotate row precedes the terminal row chronologically.
-      expect(rows[0].id).toBeLessThan(rows[1].id)
-    })
-  })
-
   describe('Bug 11: Loop.setPhase records a transition row on change, none on no-op', () => {
     test('coding → auditing via Loop.setPhase records exactly one matching row', () => {
       const loopInstance = buildLoop({})
@@ -1088,15 +996,16 @@ describe('Runtime transition logging', () => {
       // (records the audit-error/error-recovery row) → continuation prompt
       // fails → handlePromptError schedules the 2-second retry timer
       // (errorCount 1 → 2 in DB).
+      vi.useFakeTimers()
       await tickIdle(loopInstance, 'audit-sess')
 
-      // Wait for the retry timer to fire (~2s). Its body wraps in
+      // Advance to the 2-second retry. Its body wraps in
       // withStateLock and pauses on `retryPaused`, holding the lock.
-      await new Promise((r) => setTimeout(r, 2200))
+      await vi.advanceTimersByTimeAsync(2000)
       // Yield through microtasks so the retry body has acquired the lock,
       // read fresh state, called retryFn → defaultSend → and is now
       // suspended on `retryPaused`.
-      await new Promise((r) => setTimeout(r, 0))
+      await vi.advanceTimersByTimeAsync(0)
 
       // Fire terminateAll while the retry body holds the lock. terminateAll's
       // contended-loop pass detects stateLocks.has(loopName) === true (set by

@@ -299,6 +299,66 @@ describe('LoopsRepo', () => {
     })
   })
 
+  describe('listSidebarRows', () => {
+    const insertLoop = (loopName: string, status: LoopRow['status'], startedAt: number, projectId = testRow.projectId) => {
+      repo.insert(
+        {
+          ...testRow,
+          projectId,
+          loopName,
+          status,
+          currentSessionId: `session-${projectId}-${loopName}`,
+          startedAt,
+          completedAt: status === 'running' ? null : startedAt + 1,
+        },
+        testLarge,
+      )
+    }
+
+    test('returns running loops first, then the most recent terminal loops, up to the limit', () => {
+      insertLoop('running-old', 'running', 100)
+      insertLoop('running-new', 'running', 200)
+      for (let i = 1; i <= 7; i++) {
+        insertLoop(`terminal-${i}`, 'completed', i * 1000)
+      }
+
+      const rows = repo.listSidebarRows(testRow.projectId, 3)
+
+      expect(rows.map((row) => row.loopName)).toEqual(['running-new', 'running-old', 'terminal-7'])
+    })
+
+    test('caps running loops at the limit', () => {
+      for (let i = 1; i <= 4; i++) {
+        insertLoop(`running-${i}`, 'running', i * 10)
+      }
+
+      const rows = repo.listSidebarRows(testRow.projectId, 3)
+
+      expect(rows.map((row) => row.loopName)).toEqual(['running-4', 'running-3', 'running-2'])
+    })
+
+    test('projects only the sidebar columns', () => {
+      insertLoop('running-1', 'running', 100)
+      insertLoop('terminal-1', 'completed', 50)
+
+      const rows = repo.listSidebarRows(testRow.projectId, 5)
+
+      expect(rows).toHaveLength(2)
+      for (const row of rows) {
+        expect(Object.keys(row).sort()).toEqual(['iteration', 'loopName', 'maxIterations', 'status'])
+      }
+    })
+
+    test('scopes rows to the requested project', () => {
+      insertLoop('this-project-running', 'running', 100)
+      insertLoop('other-project-running', 'running', 500, 'other-project')
+
+      const rows = repo.listSidebarRows(testRow.projectId, 5)
+
+      expect(rows.map((row) => row.loopName)).toEqual(['this-project-running'])
+    })
+  })
+
   describe('atomic increment methods', () => {
     test('incrementError should atomically increment error count', async () => {
       repo.insert(testRow, testLarge)

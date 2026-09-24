@@ -132,69 +132,12 @@ async function readRecentMessages(
 }
 
 /**
- * Completion-scoped capture. Persists a marked plan only when the selected
- * message (or split-message end marker) is the assistant message currently
- * completing. A marker-free completion must never replay an older marked
- * response over a newer tool-authored row, so this path skips the write when
- * the inspected plan belongs to a different message.
- *
- * Reads recent messages through `client.session.messages` (best effort) and
- * delegates selection to `inspectLatestMarkedPlan`, then filters by id.
- */
-export async function capturePlanForCompletedMessage(
-  deps: CaptureLatestPlanDeps,
-  sessionID: string,
-  completingMessageId: string
-): Promise<CaptureLatestPlanResult> {
-  // Snapshot the session row before awaiting message retrieval. A concurrent
-  // `plan-write`, `plan-edit`, or completion hook can store a newer revision
-  // while `session.messages` is pending; storage is the plan of record, so the
-  // stale marked message must never overwrite it.
-  const snapshot = deps.plansRepo.getForSession(deps.projectId, sessionID)
-
-  const read = await readRecentMessages(deps, sessionID)
-  if (read.status === 'read-failed') return read
-  if (read.status === 'missing') {
-    deps.logger.log(`plan-capture: no messages found for session ${sessionID}`)
-    return { status: 'not-found' }
-  }
-
-  // Revalidate storage after the await: if a row appeared or changed during
-  // message retrieval, preserve it and report the stored plan as current.
-  // Compare both content and `updatedAt`: a concurrent `plan-write`/`plan-edit`
-  // revision can produce the same content as the snapshot at a newer timestamp
-  // (e.g. an A→B→A edit), and a same-millisecond write can produce different
-  // content at the same timestamp. Either field differing means storage moved
-  // while messages were being read, so the stale marked message must not
-  // overwrite it.
-  const current = deps.plansRepo.getForSession(deps.projectId, sessionID)
-  if (current && (!snapshot || current.content !== snapshot.content || current.updatedAt !== snapshot.updatedAt)) {
-    deps.logger.log(
-      `plan-capture: session row changed during message read for ${sessionID}; preserving stored plan`,
-    )
-    return { status: 'already-current', planText: current.content }
-  }
-
-  const inspection = inspectLatestMarkedPlan(read.messages)
-  const selectedMessageId = inspection.status === 'missing' ? undefined : inspection.messageId
-
-  if (selectedMessageId !== completingMessageId) {
-    deps.logger.log(
-      `plan-capture: completing message ${completingMessageId} has no marked plan for session ${sessionID}`,
-    )
-    return { status: 'not-found' }
-  }
-
-  return resultForInspection(deps, sessionID, inspection)
-}
-
-/**
  * Legacy latest-message capture. Scans recent assistant messages for the
  * newest marked plan and persists it regardless of which message currently
  * completing. Used only when no session-scoped `plans` row exists yet (e.g.
  * `execute-plan` with no inline plan and no prior `plan-write`, or the group
  * orchestrator capturing an architect's freshly emitted plan). Storage is the
- * plan of record; new writes go through `capturePlanForCompletedMessage` or
+ * plan of record; new writes go through marked-plan streaming capture or
  * `plan-write` so this path must not be invoked after a row exists.
  */
 export async function captureLatestPlanForSession(

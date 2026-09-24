@@ -20,12 +20,7 @@ export interface GitService {
   revParseGitCommonDir(cwd: string): GitResult
   revParseGitPath(cwd: string, path: string): GitResult
   revParseHead(cwd: string): GitResult
-  /** Resolve any ref (branch, tag, SHA) to a full commit SHA. */
-  revParseRef(cwd: string, ref: string): GitResult
-  commitExists(cwd: string, sha: string): boolean
-  push(cwd: string, remote: string, refspec: string, force: boolean): GitResult
-  fetchRef(cwd: string, remote: string, ref: string): GitResult
-  worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult
+  worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult
   worktreeList(cwd: string): GitResult
   worktreeRemove(cwd: string, directory: string): GitResult
   worktreePrune(cwd: string): GitResult
@@ -99,27 +94,7 @@ export function createGitService(): GitService {
       return runGit(['rev-parse', 'HEAD'], cwd)
     },
 
-    revParseRef(cwd: string, ref: string): GitResult {
-      return runGit(['rev-parse', '--verify', `${ref}^{commit}`], cwd)
-    },
-
-    commitExists(cwd: string, sha: string): boolean {
-      return runGit(['cat-file', '-e', `${sha}^{commit}`], cwd).ok
-    },
-
-    push(cwd: string, remote: string, refspec: string, force: boolean): GitResult {
-      const args = force ? ['push', '--force', remote, refspec] : ['push', remote, refspec]
-      return runGit(args, cwd)
-    },
-
-    fetchRef(cwd: string, remote: string, ref: string): GitResult {
-      return runGit(['fetch', remote, ref], cwd)
-    },
-
-    worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult {
-      if (createBranch && startPoint) {
-        return runGit(['worktree', 'add', directory, '-b', branch, startPoint], cwd)
-      }
+    worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult {
       return runGit(createBranch ? ['worktree', 'add', directory, '-b', branch] : ['worktree', 'add', directory, branch], cwd)
     },
 

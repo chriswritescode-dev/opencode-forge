@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest'
-import { createLoopSessionWithWorkspace } from '../../src/utils/loop-session'
+import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../../src/utils/loop-session'
 import type { Logger } from '../../src/types'
 import { buildLoopPermissionRuleset } from '../../src/constants/loop'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -166,58 +166,6 @@ test('Returns null when session.create fails', async () => {
   expect(result).toBeNull()
 })
 
-test('WorkspaceStatusRegistry primeFromSnapshot is called during bind', async () => {
-  const primeFromSnapshotCalls: Array<Array<{ workspaceID: string; status: string }>> = []
-  const mockStatusRegistry = {
-    recordEvent: () => {},
-    getStatus: () => undefined,
-    awaitConnected: () => Promise.resolve({ connected: true, elapsedMs: 0, source: 'cached' }),
-    primeFromSnapshot: (snapshot: Array<{ workspaceID: string; status: string }>) => {
-      primeFromSnapshotCalls.push(snapshot)
-    },
-  }
-
-  const mockStatusData = [
-    { workspaceID: 'ws-1', status: 'connected' },
-  ]
-
-  const mockListResult = [{ id: 'ws-1' }]
-
-  const { client } = createFakeForgeClient({
-    session: {
-      create: async () => ({ id: 'session-123' }),
-    },
-    workspace: {
-      list: async () => mockListResult,
-      status: async () => mockStatusData,
-    },
-  })
-
-  const logger: Logger | Console = {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-
-  const result = await createLoopSessionWithWorkspace({
-    client,
-    title: 'Test Session',
-    directory: '/test/dir',
-    permission: buildLoopPermissionRuleset(),
-    workspaceId: 'ws-1',
-    logPrefix: 'test',
-    logger,
-    workspaceStatusRegistry: mockStatusRegistry as unknown as import('../../src/utils/workspace-status-registry').WorkspaceStatusRegistry,
-  })
-
-  expect(result).toBeDefined()
-  expect(result?.sessionId).toBe('session-123')
-  expect(primeFromSnapshotCalls.length).toBeGreaterThan(0)
-  expect(primeFromSnapshotCalls[0]).toEqual([
-    { workspaceID: 'ws-1', status: 'connected' },
-  ])
-})
-
 test('createLoopSessionWithWorkspace does not emit [perm-diag] log entries', async () => {
   const logEntries: string[] = []
   const errorEntries: string[] = []
@@ -245,4 +193,67 @@ test('createLoopSessionWithWorkspace does not emit [perm-diag] log entries', asy
   const allEntries = [...logEntries, ...errorEntries]
   expect(allEntries.some((e) => e.includes('[perm-diag]'))).toBe(false)
   expect(allEntries.some((e) => e.includes('DRIFT'))).toBe(false)
+})
+
+test('deleteSessionBestEffort logs an unavailable delete at debug only', async () => {
+  const debugEntries: unknown[][] = []
+  const errorEntries: unknown[][] = []
+  const logger: Logger = {
+    log: () => {},
+    debug: (...args: unknown[]) => { debugEntries.push(args) },
+    error: (...args: unknown[]) => { errorEntries.push(args) },
+  }
+  const { client } = createFakeForgeClient({
+    session: {
+      delete: async () => {
+        throw new ForgeClientError({ kind: 'unavailable', method: 'session.delete', message: 'not supported' })
+      },
+    },
+  })
+
+  await deleteSessionBestEffort(client, { sessionID: 's1', directory: '/d' }, logger, 'delete failed')
+
+  expect(debugEntries).toHaveLength(1)
+  expect(debugEntries[0]?.[0]).toBe('delete failed')
+  expect(errorEntries).toHaveLength(0)
+})
+
+test('deleteSessionBestEffort logs other failures at error', async () => {
+  const debugEntries: unknown[][] = []
+  const errorEntries: unknown[][] = []
+  const logger: Logger = {
+    log: () => {},
+    debug: (...args: unknown[]) => { debugEntries.push(args) },
+    error: (...args: unknown[]) => { errorEntries.push(args) },
+  }
+  const { client } = createFakeForgeClient({
+    session: {
+      delete: async () => {
+        throw new ForgeClientError({ kind: 'request', method: 'session.delete', message: 'boom' })
+      },
+    },
+  })
+
+  await deleteSessionBestEffort(client, { sessionID: 's1', directory: '/d' }, logger, 'delete failed')
+
+  expect(errorEntries).toHaveLength(1)
+  expect(errorEntries[0]?.[0]).toBe('delete failed')
+  expect(debugEntries).toHaveLength(0)
+})
+
+test('deleteSessionBestEffort logs nothing on success', async () => {
+  const debugEntries: unknown[][] = []
+  const errorEntries: unknown[][] = []
+  const logger: Logger = {
+    log: () => {},
+    debug: (...args: unknown[]) => { debugEntries.push(args) },
+    error: (...args: unknown[]) => { errorEntries.push(args) },
+  }
+  const { client, calls } = createFakeForgeClient()
+
+  await deleteSessionBestEffort(client, { sessionID: 's1', directory: '/d' }, logger, 'delete failed')
+
+  expect(debugEntries).toHaveLength(0)
+  expect(errorEntries).toHaveLength(0)
+  expect(calls.some((call) => call.method === 'session.delete')).toBe(true)
 })

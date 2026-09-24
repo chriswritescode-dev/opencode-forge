@@ -86,6 +86,16 @@ describe('LRUCache', () => {
     expect(cache.has('a')).toBe(false)
   })
 
+  test('snapshot() returns entries oldest first without promoting them', () => {
+    const cache = new LRUCache<number>(3)
+    cache.set('a', 1)
+    cache.set('b', 2)
+    expect(cache.snapshot()).toEqual([['a', 1], ['b', 2]])
+    cache.set('c', 3)
+    cache.set('d', 4)
+    expect(cache.snapshot()).toEqual([['b', 2], ['c', 3], ['d', 4]])
+  })
+
   test('rejects non-positive maxSize', () => {
     expect(() => new LRUCache(0)).toThrow()
     expect(() => new LRUCache(-1)).toThrow()

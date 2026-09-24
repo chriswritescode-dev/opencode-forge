@@ -1,5 +1,5 @@
 import type { ToolContext } from '../tools/types'
-import type { Hooks } from '@opencode-ai/plugin'
+import type { ToolAfterHook, ToolBeforeHook } from './tool-hook-types'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
@@ -129,7 +129,7 @@ function isPlanApprovalQuestionArgs(args: unknown): boolean {
   return PLAN_EXECUTION_LABELS.every((l) => labels.includes(l.toLowerCase()))
 }
 
-export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.before'] {
+export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): ToolBeforeHook {
   const loop = ctx.loop
   const { logger } = ctx
 
@@ -151,7 +151,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBloc
   }
 }
 
-export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.after'] {
+export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): ToolAfterHook {
   const loop = ctx.loop
   const { logger, config } = ctx
 
@@ -263,7 +263,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             loop,
             sandboxManager: ctx.sandboxManager,
             sectionPlansRepo: ctx.sectionPlansRepo,
-            workspaceStatusRegistry: ctx.workspaceStatusRegistry,
             pendingTeardowns: ctx.pendingTeardowns,
           })
           
@@ -277,8 +276,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
                 title,
                 executionModel: config.executionModel,
                 lifecycle: {
-                  selectSession: true,
-                  selectSessionTiming: 'after-prompt',
                   abortSourceSession: false,
                   deleteSessionOnPromptFailure: false,
                 },

@@ -1,19 +1,15 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import type { SelectRenderable } from '@opentui/core'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { claimFocusOnMount } from './focus'
+import type { ForgeTuiHost } from './host'
 import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type LoopInfo, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
-import { type ForgeProjectClient } from '../utils/tui-client'
+import type { ForgeProjectClient } from './project-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import { withBusyGuard } from '../utils/busy-guard'
-import { listRemoteNames, isModeAllowedForTarget } from '../utils/remote-config'
-import { executeRemoteLoop } from '../utils/tui-remote-launch'
-import { createLogger } from '../utils/logger'
-import { resolveLogPath } from '../storage'
 import type { PluginConfig } from '../types'
 
 /** Selection state reported back to the wrapper dialog after every picker round-trip. */
@@ -23,11 +19,10 @@ export interface ExecutionSelection {
   executionVariant: string
   auditorVariant: string
   loopName: string
-  target: string
 }
 
 export interface ExecutePlanPanelProps {
-  api: TuiPluginApi
+  host: ForgeTuiHost
   client: ForgeProjectClient
   cache: ExecutionContextCache | null
   pluginConfig: PluginConfig
@@ -38,8 +33,6 @@ export interface ExecutePlanPanelProps {
   initialExecutionVariant?: string
   initialAuditorVariant?: string
   initialLoopName?: string
-  initialTarget?: string
-  projectDirectory?: string
   onBack: () => void
   onExecuted?: () => void | Promise<void>
   onSelectionChanged: (args: ExecutionSelection) => void
@@ -52,16 +45,9 @@ export interface ExecutePlanPanelProps {
 export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const cache = untrack(() => props.cache)
   const pluginConfig = untrack(() => props.pluginConfig)
-  const theme = () => props.api.theme.current
+  const colors = () => props.host.colors()
 
-  // Shared plugin log file so remote-launch traces land alongside plugin logs.
-  const logger = untrack(() => createLogger({
-    enabled: pluginConfig.logging?.enabled ?? false,
-    file: pluginConfig.logging?.file || resolveLogPath(),
-    debug: pluginConfig.logging?.debug ?? false,
-  }))
-
-  const openCodeDefaultModel = () => props.api.state.config?.model ?? ''
+  const openCodeDefaultModel = () => props.host.defaultModel()
 
   const initialSnapshot = cache?.snapshot() ?? null
   const initialDefaults = initialSnapshot?.defaults
@@ -92,13 +78,8 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const [loopName] = createSignal(
     props.initialLoopName ?? extractPlanExecutionMetadata(untrack(() => props.planContent)).executionName,
   )
-  const [target] = createSignal(props.initialTarget ?? 'local')
-  const remoteNames = listRemoteNames(pluginConfig)
-  const hasRemotes = remoteNames.length > 0
   const isRestart = () => props.restart !== undefined
   const selectedLoop = () => props.restart?.loops.find(loop => loop.name === loopName())
-
-  const targetLabel = () => target() === 'local' ? 'Local' : `Remote (${target()})`
 
   /** Current picker selections, with per-dialog overrides layered on top. */
   const currentSelection = (overrides: Partial<ExecutionSelection> = {}): ExecutionSelection => ({
@@ -107,7 +88,6 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     executionVariant: executionVariant(),
     auditorVariant: auditorVariant(),
     loopName: loopName(),
-    target: target(),
     ...overrides,
   })
 
@@ -170,160 +150,90 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     }
   })
 
-  const openModelDialog = (which: 'execution' | 'auditor') => {
+  const reopenWith = (overrides: Partial<ExecutionSelection> | undefined) => {
+    props.onSelectionChanged(currentSelection(overrides ?? {}))
+  }
+
+  const openModelDialog = async (which: 'execution' | 'auditor') => {
     if (!modelsLoaded()) return
 
     const currentModels = models()
     if (modelsError() || currentModels.length === 0) {
-      props.api.ui.dialog.setSize('large')
-      props.api.ui.toast({ message: modelsError() || 'No models available', variant: 'error', duration: 3000 })
+      props.host.toast({ message: modelsError() || 'No models available', variant: 'error', duration: 3000 })
       return
     }
 
-    const options = buildDialogSelectOptions(currentModels, recents())
-    const title = which === 'execution' ? 'Execution Model' : 'Auditor Model'
-    const currentValue = which === 'execution' ? executionModel() : auditorModel()
-
-    props.api.ui.dialog.setSize('large')
-    props.api.ui.dialog.replace(() => (
-      <props.api.ui.DialogSelect
-        title={title}
-        options={options}
-        current={currentValue || ''}
-        onSelect={(opt) => {
-          const selectedModel = typeof opt.value === 'string' ? opt.value : ''
-          // Resolve the effective model for variant normalization:
-          // if selected model is empty (use default), resolve against OpenCode default
-          const effectiveModelName = selectedModel || openCodeDefaultModel()
-          const effectiveModelInfo = models().find(m => m.fullName === effectiveModelName) ?? null
-          // Normalize variant against newly selected model
-          const normalizedVariant = normalizeVariantForModel(
-            which === 'execution' ? executionVariant() : auditorVariant(),
-            effectiveModelInfo,
-          )
-          props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged(currentSelection(
-            which === 'execution'
-              ? { executionModel: selectedModel, executionVariant: normalizedVariant }
-              : { auditorModel: selectedModel, auditorVariant: normalizedVariant },
-          ))
-        }}
-      />
-    ))
+    const selectedModel = await props.host.select({
+      title: which === 'execution' ? 'Execution Model' : 'Auditor Model',
+      options: buildDialogSelectOptions(currentModels, recents()),
+      current: (which === 'execution' ? executionModel() : auditorModel()) || '',
+    })
+    if (selectedModel === undefined) {
+      reopenWith(undefined)
+      return
+    }
+    const effectiveModelName = selectedModel || openCodeDefaultModel()
+    const effectiveModelInfo = models().find(m => m.fullName === effectiveModelName) ?? null
+    const normalizedVariant = normalizeVariantForModel(
+      which === 'execution' ? executionVariant() : auditorVariant(),
+      effectiveModelInfo,
+    )
+    reopenWith(which === 'execution'
+      ? { executionModel: selectedModel, executionVariant: normalizedVariant }
+      : { auditorModel: selectedModel, auditorVariant: normalizedVariant })
   }
 
-  const openVariantDialog = (which: 'execution' | 'auditor') => {
+  const openVariantDialog = async (which: 'execution' | 'auditor') => {
     if (!modelsLoaded()) return
 
-    const model = selectedModelInfo(which)
-    if (!model) {
-      props.api.ui.toast({ message: 'No variants available for this model', variant: 'info', duration: 3000 })
-      return
-    }
-
-    const availableVariants = getAvailableModelVariants(model)
+    const availableVariants = getAvailableModelVariants(selectedModelInfo(which))
     if (availableVariants.length === 0) {
-      props.api.ui.toast({ message: 'No variants available for this model', variant: 'info', duration: 3000 })
+      props.host.toast({ message: 'No variants available for this model', variant: 'info', duration: 3000 })
       return
     }
 
-    const currentValue = which === 'execution' ? executionVariant() : auditorVariant()
-    const options = [
-      { title: 'Use default', value: '', description: 'Use OpenCode/model default variant' },
-      ...availableVariants.map(v => ({
-        title: v.label,
-        value: v.id,
-        description: v.description,
-      })),
-    ]
-
-    const title = which === 'execution' ? 'Execution Variant' : 'Auditor Variant'
-
-    props.api.ui.dialog.setSize('large')
-    props.api.ui.dialog.replace(() => (
-      <props.api.ui.DialogSelect
-        title={title}
-        options={options}
-        current={currentValue || ''}
-        onSelect={(opt) => {
-          const selectedVariant = typeof opt.value === 'string' ? opt.value : ''
-          props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged(currentSelection(
-            which === 'execution'
-              ? { executionVariant: selectedVariant }
-              : { auditorVariant: selectedVariant },
-          ))
-        }}
-      />
-    ))
-  }
-
-  const openLoopNameDialog = () => {
-    if (props.restart) {
-      props.api.ui.dialog.setSize('large')
-      props.api.ui.dialog.replace(() => (
-        <props.api.ui.DialogSelect
-          title="Loop"
-          options={props.restart!.loops.filter(loop => loop.restartable).map(loop => ({
-            title: loop.name,
-            value: loop.name,
-            description: `${loop.status} · ${loop.phase} · iteration ${loop.iteration}/${loop.maxIterations}`,
-          }))}
-          current={loopName()}
-          onSelect={(option) => {
-            const selected = props.restart!.loops.find(loop => loop.name === option.value)
-            if (!selected) return
-            props.api.ui.dialog.setSize('xlarge')
-            props.onSelectionChanged(currentSelection({
-              loopName: selected.name,
-              executionModel: selected.executionModel ?? executionModel(),
-              executionVariant: selected.executionModel ? selected.executionVariant ?? '' : executionVariant(),
-              auditorModel: selected.auditorModel ?? auditorModel(),
-              auditorVariant: selected.auditorModel ? selected.auditorVariant ?? '' : auditorVariant(),
-            }))
-          }}
-        />
-      ))
+    const selectedVariant = await props.host.select({
+      title: which === 'execution' ? 'Execution Variant' : 'Auditor Variant',
+      options: [
+        { title: 'Use default', value: '', description: 'Use OpenCode/model default variant' },
+        ...availableVariants.map(v => ({ title: v.label, value: v.id, description: v.description })),
+      ],
+      current: (which === 'execution' ? executionVariant() : auditorVariant()) || '',
+    })
+    if (selectedVariant === undefined) {
+      reopenWith(undefined)
       return
     }
-    props.api.ui.dialog.setSize('large')
-    props.api.ui.dialog.replace(() => (
-      <props.api.ui.DialogPrompt
-        title="Loop name"
-        placeholder="my-feature-loop"
-        value={loopName()}
-        onConfirm={(name) => {
-          const trimmed = name.trim()
-          props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged(currentSelection(trimmed ? { loopName: trimmed } : {}))
-        }}
-        onCancel={() => {
-          props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged(currentSelection())
-        }}
-      />
-    ))
+    reopenWith(which === 'execution' ? { executionVariant: selectedVariant } : { auditorVariant: selectedVariant })
   }
 
-  const openTargetDialog = () => {
-    const options = [
-      { title: 'Local', value: 'local' },
-      ...remoteNames.map(n => ({ title: `Remote: ${n}`, value: n })),
-    ]
-
-    props.api.ui.dialog.setSize('large')
-    props.api.ui.dialog.replace(() => (
-      <props.api.ui.DialogSelect
-        title="Target"
-        options={options}
-        current={target()}
-        onSelect={(opt) => {
-          const selected = typeof opt.value === 'string' ? opt.value : 'local'
-          props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged(currentSelection({ target: selected }))
-        }}
-      />
-    ))
+  const openLoopNameDialog = async () => {
+    const restart = props.restart
+    if (restart) {
+      const name = await props.host.select({
+        title: 'Loop',
+        options: restart.loops.filter(loop => loop.restartable).map(loop => ({
+          title: loop.name,
+          value: loop.name,
+          description: `${loop.status} · ${loop.phase} · iteration ${loop.iteration}/${loop.maxIterations}`,
+        })),
+        current: loopName(),
+      })
+      const selected = restart.loops.find(loop => loop.name === name)
+      reopenWith(selected
+        ? {
+            loopName: selected.name,
+            executionModel: selected.executionModel ?? executionModel(),
+            executionVariant: selected.executionModel ? selected.executionVariant ?? '' : executionVariant(),
+            auditorModel: selected.auditorModel ?? auditorModel(),
+            auditorVariant: selected.auditorModel ? selected.auditorVariant ?? '' : auditorVariant(),
+          }
+        : undefined)
+      return
+    }
+    const name = await props.host.prompt({ title: 'Loop name', placeholder: 'my-feature-loop', value: loopName() })
+    const trimmed = name?.trim()
+    reopenWith(trimmed ? { loopName: trimmed } : undefined)
   }
 
   function getModeDescription(label: string): string {
@@ -340,7 +250,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   }
 
   /**
-   * Shared tail for local and remote launches: surface errors, record recent
+   * Shared launch tail: surface errors, record recent
    * models, toast success, and notify the host. Returns false on error so
    * callers can stop.
    */
@@ -350,12 +260,12 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     auditModel?: string,
   ): Promise<boolean> {
     if ('error' in outcome) {
-      props.api.ui.toast({ message: outcome.error, variant: 'error', duration: 10000 })
+      props.host.toast({ message: outcome.error, variant: 'error', duration: 10000 })
       return false
     }
     cache?.recordRecent(execModel || '')
     cache?.recordRecent(auditModel || '')
-    props.api.ui.toast({ message: outcome.message, variant: 'success', duration: 5000 })
+    props.host.toast({ message: outcome.message, variant: 'success', duration: 5000 })
     await props.onExecuted?.()
     return true
   }
@@ -369,54 +279,14 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       label => normalizedMode === label.toLowerCase() || normalizedMode.startsWith(label.toLowerCase())
     ) ?? null
 
-    // Remote target: only Loop is allowed
-    if (target() !== 'local') {
-      if (!isModeAllowedForTarget(target(), matchedLabel ?? '')) {
-        props.api.ui.toast({ message: 'Remote target supports Loop only', variant: 'error', duration: 5000 })
-        return
-      }
-
-      props.api.ui.dialog.clear()
-      props.api.ui.toast({ message: 'Launching remote loop...', variant: 'info', duration: 5000 })
-      const result = await executeRemoteLoop({
-        remoteName: target(),
-        localDirectory: props.projectDirectory ?? '',
-        localProjectId: props.client.projectId,
-        title,
-        loopName: loopName(),
-        plan: planText,
-        executionModel: execModel,
-        auditorModel: auditModel,
-        executionVariant: execVariant,
-        auditorVariant: auditVariant,
-      }, {
-        config: pluginConfig,
-        onWarning: (m) => props.api.ui.toast({ message: m, variant: 'info', duration: 5000 }),
-        debug: (m) => logger.log(m),
-      })
-      if ('error' in result) {
-        logger.error(`remote-launch: failed on "${target()}": ${result.error}`)
-      }
-
-      await completeLaunch(
-        'error' in result
-          ? result
-          : { message: `Remote loop started: ${result.loopName} on ${result.remoteName}` },
-        execModel,
-        auditModel,
-      )
-      return
-    }
-
-    // Local target: existing behavior
-    const apiMode: import('../utils/tui-client').ApiExecutionMode = matchedLabel === 'Execute here'
+    const apiMode: import('../host/forge-rpc').ForgeExecutionMode = matchedLabel === 'Execute here'
       ? 'execute-here'
       : matchedLabel === 'Loop'
         ? 'loop'
         : 'new-session'
 
-    props.api.ui.dialog.clear()
-    props.api.ui.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
+    props.host.clearDialog()
+    props.host.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
     const result = await props.client.plan.execute(props.sessionId, {
       mode: apiMode,
       title,
@@ -430,7 +300,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     })
 
     if (!result) {
-      props.api.ui.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
+      props.host.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
       return
     }
 
@@ -444,9 +314,8 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       execModel,
       auditModel,
     )
-    props.client.workspaces.list().catch(() => {})
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop')) {
-      await props.client.selectSession(result.sessionId, result.workspaceId)
+      await props.client.selectSession(result.sessionId)
     }
   }
 
@@ -454,7 +323,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const handleExecuteMode = withBusyGuard(runExecuteMode, {
     isBusy: busy,
     setBusy,
-    onBusy: () => props.api.ui.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
+    onBusy: () => props.host.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
   })
 
   const runRestart = async () => {
@@ -469,10 +338,10 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       })
       cache?.recordRecent(auditorModel())
       cache?.recordRecent(executionModel())
-      props.api.ui.toast({ message: `Loop restarted: ${loopName()}`, variant: 'success', duration: 5000 })
-      props.api.ui.dialog.clear()
+      props.host.toast({ message: `Loop restarted: ${loopName()}`, variant: 'success', duration: 5000 })
+      props.host.clearDialog()
     } catch (err) {
-      props.api.ui.toast({ message: err instanceof Error ? err.message : 'Failed to restart loop', variant: 'error', duration: 5000 })
+      props.host.toast({ message: err instanceof Error ? err.message : 'Failed to restart loop', variant: 'error', duration: 5000 })
     }
   }
 
@@ -537,11 +406,6 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
           description: 'Press enter to edit the loop name used when launching',
           value: 'loop-name',
         },
-        ...(hasRemotes ? [{
-          name: `Target: ${targetLabel()}`,
-          description: 'Press enter to choose where the loop runs',
-          value: 'target',
-        }] : []),
         ...PLAN_EXECUTION_LABELS.map(label => ({
           name: label,
           description: getModeDescription(label),
@@ -552,7 +416,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   return (
     <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">
       <box paddingBottom={1}>
-        <text fg={theme().text}><b>{isRestart() ? 'Configure and Restart Loop' : 'Configure and Run Plan'}</b></text>
+        <text fg={colors().text}><b>{isRestart() ? 'Configure and Restart Loop' : 'Configure and Run Plan'}</b></text>
       </box>
       <select
         ref={(el) => { selectRef = el }}
@@ -562,27 +426,23 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         onSelect={(_, option) => {
           if (option?.value) {
             if (option.value === 'model:execution') {
-              openModelDialog('execution')
+              void openModelDialog('execution')
               return
             }
             if (option.value === 'model:auditor') {
-              openModelDialog('auditor')
+              void openModelDialog('auditor')
               return
             }
             if (option.value === 'variant:execution') {
-              openVariantDialog('execution')
+              void openVariantDialog('execution')
               return
             }
             if (option.value === 'variant:auditor') {
-              openVariantDialog('auditor')
+              void openVariantDialog('auditor')
               return
             }
             if (option.value === 'loop-name') {
-              openLoopNameDialog()
-              return
-            }
-            if (option.value === 'target') {
-              openTargetDialog()
+              void openLoopNameDialog()
               return
             }
             if (typeof option.value === 'string' && option.value.startsWith('mode:')) {
@@ -593,7 +453,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
               void withBusyGuard(runRestart, {
                 isBusy: busy,
                 setBusy,
-                onBusy: () => props.api.ui.toast({ message: 'Loop restart already in progress...', variant: 'info', duration: 2000 }),
+                onBusy: () => props.host.toast({ message: 'Loop restart already in progress...', variant: 'info', duration: 2000 }),
               })()
             }
           }
@@ -601,13 +461,58 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         showDescription={true}
         itemSpacing={1}
         wrapSelection={true}
-        textColor={theme().text}
-        focusedTextColor={theme().text}
-        selectedTextColor="#ffffff"
-        selectedBackgroundColor={theme().borderActive}
+        textColor={colors().text}
+        focusedTextColor={colors().text}
+        selectedTextColor={colors().selectedText}
+        selectedBackgroundColor={colors().selectedBackground}
         minHeight={16}
         flexGrow={1}
       />
     </box>
   )
+}
+
+export type ExecutionDialogOptions = Omit<ExecutePlanPanelProps, 'onBack' | 'onExecuted' | 'onSelectionChanged'>
+
+function ExecutionDialog(props: { options: ExecutionDialogOptions; onSelectionChanged: (selection: ExecutionSelection) => void }) {
+  const colors = () => props.options.host.colors()
+  const close = () => props.options.host.clearDialog()
+
+  return (
+    <box flexDirection="column" paddingX={2}>
+      <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
+        <text fg={colors().text}>
+          <b>{props.options.restart ? 'Restart loop' : 'Execute plan'}</b>
+        </text>
+      </box>
+
+      <ExecutePlanPanel {...props.options} onBack={close} onSelectionChanged={props.onSelectionChanged} />
+
+      <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
+        <text fg={colors().textMuted} onMouseUp={close}>Close (esc)</text>
+      </box>
+    </box>
+  )
+}
+
+export function openExecutionDialog(options: ExecutionDialogOptions): void {
+  const reopen = (selection: ExecutionSelection) => {
+    if (!options.restart) {
+      options.cache?.setSelectionOverride({
+        executionModel: selection.executionModel,
+        auditorModel: selection.auditorModel,
+        executionVariant: selection.executionVariant,
+        auditorVariant: selection.auditorVariant,
+      })
+    }
+    openExecutionDialog({
+      ...options,
+      initialExecutionModel: selection.executionModel,
+      initialAuditorModel: selection.auditorModel,
+      initialExecutionVariant: selection.executionVariant,
+      initialAuditorVariant: selection.auditorVariant,
+      initialLoopName: selection.loopName,
+    })
+  }
+  options.host.showDialog('xlarge', () => <ExecutionDialog options={options} onSelectionChanged={reopen} />)
 }

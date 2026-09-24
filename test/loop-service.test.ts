@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
@@ -146,6 +146,66 @@ describe('Loop', () => {
       const warningFindings = loop.service.getOutstandingFindings('b2', 'warning')
       expect(warningFindings.length).toBe(1)
       expect(warningFindings[0].severity).toBe('warning')
+    })
+  })
+
+  describe('findActiveByWorktreeDir', () => {
+    function insertLoop(loopName: string, overrides: Record<string, any> = {}) {
+      const defaults = {
+        project_id: projectId,
+        loop_name: loopName,
+        status: 'running',
+        current_session_id: `sess-${loopName}`,
+        worktree: 1,
+        worktree_dir: '/tmp/wt',
+        project_dir: '/tmp/proj',
+        max_iterations: 10,
+        iteration: 1,
+        audit_count: 0,
+        error_count: 0,
+        phase: 'coding',
+        started_at: Date.now(),
+        current_section_index: 0,
+        total_sections: 0,
+        final_audit_done: 0,
+        loop_kind: 'plan',
+        executor_session_id: null as string | null,
+      }
+      const values = { ...defaults, ...overrides }
+      db.run(
+        `INSERT INTO loops (${Object.keys(values).join(',')}) VALUES (${Object.keys(values).map(() => '?').join(',')})`,
+        Object.values(values)
+      )
+      db.run(
+        `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
+        [values.project_id, values.loop_name, null]
+      )
+    }
+
+    test('matches a worktree dir through a symlink', () => {
+      const realDir = mkdtempSync(join(tempDir, 'real-'))
+      const linkParent = mkdtempSync(join(tempDir, 'link-'))
+      const linkDir = join(linkParent, 'linked')
+      symlinkSync(realDir, linkDir)
+
+      insertLoop('loop-sym', { worktree_dir: realDir })
+
+      expect(loop.service.findActiveByWorktreeDir(linkDir)?.loopName).toBe('loop-sym')
+    })
+
+    test('worktreeOnly skips loops without a worktree', () => {
+      insertLoop('loop-no-worktree', { worktree: 0, worktree_dir: '/tmp/wt-a' })
+      insertLoop('loop-worktree', { worktree: 1, worktree_dir: '/tmp/wt-b' })
+
+      expect(loop.service.findActiveByWorktreeDir('/tmp/wt-a')?.loopName).toBe('loop-no-worktree')
+      expect(loop.service.findActiveByWorktreeDir('/tmp/wt-a', { worktreeOnly: true })).toBeNull()
+      expect(loop.service.findActiveByWorktreeDir('/tmp/wt-b', { worktreeOnly: true })?.loopName).toBe('loop-worktree')
+    })
+
+    test('returns null when no active loop matches', () => {
+      insertLoop('loop-other', { worktree_dir: '/tmp/wt-other' })
+
+      expect(loop.service.findActiveByWorktreeDir('/tmp/no-such-dir')).toBeNull()
     })
   })
 

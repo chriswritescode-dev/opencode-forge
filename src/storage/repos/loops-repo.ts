@@ -46,6 +46,13 @@ export interface LoopLargeFields {
   goal?: string | null
 }
 
+export interface LoopSidebarRow {
+  loopName: string
+  status: LoopRow['status']
+  iteration: number
+  maxIterations: number
+}
+
 export interface LoopsRepo {
   insert(row: LoopRow, large: LoopLargeFields): boolean
   /** In-place row restore (UPDATE; falls back to INSERT when row is missing). Preserves child rows (loop_transitions, section_plans) that would be cascade-deleted by `deleteState` + `insert`. */
@@ -55,6 +62,7 @@ export interface LoopsRepo {
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
   listAll(projectId: string): LoopRow[]
+  listSidebarRows(projectId: string, limit: number): LoopSidebarRow[]
   updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
@@ -267,6 +275,14 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     FROM loops
     WHERE project_id = ? AND status IN
   `
+
+  const listSidebarRowsStmt = db.prepare(`
+    SELECT loop_name, status, iteration, max_iterations
+    FROM loops
+    WHERE project_id = ?
+    ORDER BY status = 'running' DESC, started_at DESC
+    LIMIT ?
+  `)
 
   const updatePhaseStmt = db.prepare(`
     UPDATE loops SET phase = ? WHERE project_id = ? AND loop_name = ?
@@ -549,6 +565,21 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     listAll(projectId: string): LoopRow[] {
       const allStatuses: LoopRow['status'][] = ['running', 'completed', 'cancelled', 'errored', 'stalled']
       return this.listByStatus(projectId, allStatuses)
+    },
+
+    listSidebarRows(projectId: string, limit: number): LoopSidebarRow[] {
+      const rows = listSidebarRowsStmt.all(projectId, limit) as Array<{
+        loop_name: string
+        status: string
+        iteration: number
+        max_iterations: number
+      }>
+      return rows.map((row) => ({
+        loopName: row.loop_name,
+        status: row.status as LoopRow['status'],
+        iteration: row.iteration,
+        maxIterations: row.max_iterations,
+      }))
     },
 
     updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void {

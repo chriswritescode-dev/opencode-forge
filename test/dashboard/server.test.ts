@@ -1,9 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
 import { createRequestHandler, type DashboardDeps } from '../../src/dashboard/server'
 import { createLoopsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createPlansRepo, createFeatureGroupsRepo, type LoopRow, type LoopTransitionRow, type PlanAmendmentRow } from '../../src/storage'
-import type { ForgeClient } from '../../src/client/port'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -69,6 +68,7 @@ describe('createRequestHandler', () => {
 
   afterEach(() => {
     closeDb()
+    vi.useRealTimers()
   })
 
   // ─── Cycle 1: root route returns HTML ─────────────────────────────────
@@ -615,54 +615,6 @@ describe('createRequestHandler', () => {
     expect(b.loop.completionSummary).toBeNull()
   })
 
-  // ─── Cycle 10: live session routes ────────────────────────────────────
-
-  interface FakeClientCalls {
-    messages: Array<{ sessionID: string; directory?: string }>
-    prompts: Array<{ sessionID: string; directory?: string; workspace?: string; parts: unknown }>
-    subscribeParams: Array<{ directory?: string; workspace?: string } | undefined>
-    subscribed: number
-    returned: number
-  }
-
-  /**
-   * Minimal ForgeClient stand-in: a transcript snapshot plus a hand-fed event
-   * stream, so the SSE route can be exercised without an opencode server.
-   */
-  function makeFakeClient(events: unknown[] = []): { client: ForgeClient; calls: FakeClientCalls } {
-    const calls: FakeClientCalls = { messages: [], prompts: [], subscribeParams: [], subscribed: 0, returned: 0 }
-    const client = {
-      session: {
-        messages: async (params: { sessionID: string; directory?: string }) => {
-          calls.messages.push(params)
-          return [{ info: { id: 'm1', role: 'assistant' }, parts: [] }]
-        },
-        promptAsync: async (params: { sessionID: string; directory?: string; workspace?: string; parts: unknown }) => {
-          calls.prompts.push(params)
-        },
-      },
-      event: {
-        subscribe: async (params?: { directory?: string; workspace?: string }) => {
-          calls.subscribed += 1
-          calls.subscribeParams.push(params)
-          async function* stream() {
-            try {
-              for (const event of events) yield event
-            } finally {
-              calls.returned += 1
-            }
-          }
-          return { stream: stream() }
-        },
-      },
-    } as unknown as ForgeClient
-    return { client, calls }
-  }
-
-  async function readSse(res: Response): Promise<string> {
-    return await res.text()
-  }
-
   function seedRunningLoop(): void {
     createLoopsRepo(db!).insert(
       makeLoopRow({ projectId: 'p1', loopName: 'loop-a', currentSessionId: 'sess-live', worktreeDir: '/tmp/wt', workspaceId: 'wrk-1' }),
@@ -670,130 +622,14 @@ describe('createRequestHandler', () => {
     )
   }
 
-  test('GET /api/loop/stream subscribes with the workspace, not just the directory', async () => {
-    // Loop sessions are workspace-bound and the host's event bus is scoped per
-    // workspace: a directory-only subscription silently receives no events.
-    seedRunningLoop()
-    const { client, calls } = makeFakeClient()
-    const handler = createRequestHandler({ forgeDb: db!, client })
-
-    const res = await handler(new Request('http://localhost/api/loop/stream?project=p1&loop=loop-a'))
-    await res.text()
-
-    expect(calls.subscribeParams).toEqual([{ directory: '/tmp/wt', workspace: 'wrk-1' }])
-  })
-
-  test('GET /api/loop/stream omits the workspace for a loop that has none', async () => {
-    createLoopsRepo(db!).insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'no-ws', currentSessionId: 'sess-x', worktreeDir: '/tmp/wt2', workspaceId: null }),
-      { lastAuditResult: null },
-    )
-    const { client, calls } = makeFakeClient()
-    const handler = createRequestHandler({ forgeDb: db!, client })
-
-    const res = await handler(new Request('http://localhost/api/loop/stream?project=p1&loop=no-ws'))
-    await res.text()
-
-    expect(calls.subscribeParams).toEqual([{ directory: '/tmp/wt2' }])
-  })
-
-  test('GET /api/loop/stream sends a snapshot then forwards events for that session only', async () => {
-    seedRunningLoop()
-    const { client, calls } = makeFakeClient([
-      { type: 'message.part.updated', properties: { sessionID: 'sess-live', part: { id: 'p1', messageID: 'm1', type: 'text', text: 'hi' } } },
-      { type: 'message.part.updated', properties: { sessionID: 'other-session', part: { id: 'p2', messageID: 'm2', type: 'text', text: 'nope' } } },
-      { type: 'file.edited', properties: { file: 'a.ts' } },
-      { type: 'session.idle', properties: { sessionID: 'sess-live' } },
-    ])
-    const handler = createRequestHandler({ forgeDb: db!, client })
-
-    const res = await handler(new Request('http://localhost/api/loop/stream?project=p1&loop=loop-a'))
-    expect(res.status).toBe(200)
-    expect(res.headers.get('content-type')).toMatch(/text\/event-stream/)
-
-    const body = await readSse(res)
-    expect(body).toContain('event: snapshot')
-    expect(body).toContain('sess-live')
-    // Only the target session's events are forwarded, and only live types.
-    expect(body).toContain('"text":"hi"')
-    expect(body).not.toContain('other-session')
-    expect(body).not.toContain('file.edited')
-    expect(body).toContain('session.idle')
-
-    expect(calls.messages).toEqual([{ sessionID: 'sess-live', directory: '/tmp/wt' }])
-    expect(calls.subscribed).toBe(1)
-  })
-
-  test('GET /api/loop/stream returns 503 without a client and 404 for an unknown loop', async () => {
-    seedRunningLoop()
-    const noClient = createRequestHandler(makeDeps(db!))
-    expect((await noClient(new Request('http://localhost/api/loop/stream?project=p1&loop=loop-a'))).status).toBe(503)
-
-    const { client } = makeFakeClient()
-    const withClient = createRequestHandler({ forgeDb: db!, client })
-    expect((await withClient(new Request('http://localhost/api/loop/stream?project=p1&loop=ghost'))).status).toBe(404)
-    expect((await withClient(new Request('http://localhost/api/loop/stream'))).status).toBe(404)
-  })
-
-  test('POST /api/loop/message prompts the loop\'s current session', async () => {
-    seedRunningLoop()
-    const { client, calls } = makeFakeClient()
-    const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
-
-    const res = await handler(new Request('http://localhost/api/loop/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', host: 'localhost' },
-      body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: '  focus on tests  ' }),
-    }))
-
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, sessionId: 'sess-live' })
-    expect(calls.prompts).toHaveLength(1)
-    expect(calls.prompts[0].sessionID).toBe('sess-live')
-    expect(calls.prompts[0].directory).toBe('/tmp/wt')
-    expect(calls.prompts[0].parts).toEqual([{ type: 'text', text: 'focus on tests' }])
-  })
-
-  test('POST /api/loop/message is refused on a non-loopback bind', async () => {
-    seedRunningLoop()
-    const { client, calls } = makeFakeClient()
-    const handler = createRequestHandler({ forgeDb: db!, client, allowSend: false })
-
-    const res = await handler(new Request('http://localhost/api/loop/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
-    }))
-
-    expect(res.status).toBe(403)
-    expect(calls.prompts).toHaveLength(0)
-  })
-
-  test('POST /api/loop/message validates the body and the loop', async () => {
-    seedRunningLoop()
-    const { client } = makeFakeClient()
-    const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
-    const post = (body: string) => handler(new Request('http://localhost/api/loop/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', host: 'localhost' },
-      body,
-    }))
-
-    expect((await post('not-json')).status).toBe(400)
-    expect((await post(JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: '   ' }))).status).toBe(400)
-    expect((await post(JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'x'.repeat(10001) }))).status).toBe(400)
-    expect((await post(JSON.stringify({ projectId: 'p1', loopName: 'ghost', text: 'hi' }))).status).toBe(404)
-  })
-
   test('mutating routes reject content types a cross-origin form could send', async () => {
     seedRunningLoop()
-    const { client } = makeFakeClient()
-    const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
+    const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
     // A `text/plain` form body can be shaped into valid JSON and is sent
     // cross-origin without a preflight, so it must never reach the parser.
     const formBody = JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' })
 
-    for (const pathname of ['/api/loop/message', '/api/loop/models', '/api/plan/delete']) {
+    for (const pathname of ['/api/loop/models', '/api/plan/delete']) {
       expect((await handler(new Request('http://localhost' + pathname, {
         method: 'POST',
         headers: { 'content-type': 'text/plain;charset=UTF-8', host: 'localhost' },
@@ -807,136 +643,12 @@ describe('createRequestHandler', () => {
     }
   })
 
-  test('POST /api/loop/message reports a host failure as 502', async () => {
-    seedRunningLoop()
-    const client = {
-      session: {
-        messages: async () => [],
-        promptAsync: async () => { throw new Error('session is busy') },
-      },
-      event: { subscribe: async () => ({ stream: (async function* () {})() }) },
-    } as unknown as ForgeClient
-    const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
-
-    const res = await handler(new Request('http://localhost/api/loop/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', host: 'localhost' },
-      body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
-    }))
-
-    expect(res.status).toBe(502)
-    expect(await res.text()).toContain('session is busy')
-  })
-
-  test('GET /api/loop/stream re-reads the transcript when the event bus is silent', async () => {
-    // A loop driven by a different opencode process emits no events here, but
-    // its transcript (shared storage) still advances. The stream must notice.
-    seedRunningLoop()
-    let reads = 0
-    const client = {
-      session: {
-        messages: async () => {
-          reads += 1
-          return reads === 1
-            ? [{ info: { id: 'm1', role: 'assistant' }, parts: [{ id: 'p1', messageID: 'm1', type: 'text', text: 'first' }] }]
-            : [{ info: { id: 'm1', role: 'assistant' }, parts: [{ id: 'p1', messageID: 'm1', type: 'text', text: 'first' }, { id: 'p2', messageID: 'm1', type: 'text', text: 'second' }] }]
-        },
-        promptAsync: async () => {},
-      },
-      // A bus that stays open but never yields, like the wrong process.
-      event: {
-        subscribe: async () => ({
-          stream: (async function* () {
-            await new Promise(resolve => setTimeout(resolve, 12000))
-          })(),
-        }),
-      },
-    } as unknown as ForgeClient
-    const handler = createRequestHandler({ forgeDb: db!, client })
-
-    const controller = new AbortController()
-    const res = await handler(new Request('http://localhost/api/loop/stream?project=p1&loop=loop-a', {
-      signal: controller.signal,
-    }))
-
-    // Read frames until the polled snapshot arrives (or the read budget ends).
-    const reader = res.body!.getReader()
-    const decoder = new TextDecoder()
-    let body = ''
-    const deadline = Date.now() + 9000
-    while (Date.now() < deadline && !body.includes('"reason":"poll"')) {
-      const { value, done } = await reader.read()
-      if (done) break
-      body += decoder.decode(value, { stream: true })
-    }
-    controller.abort()
-    await reader.cancel().catch(() => {})
-
-    expect(body).toContain('"reason":"initial"')
-    expect(body).toContain('"reason":"poll"')
-    expect(body).toContain('second')
-    expect(reads).toBeGreaterThan(1)
-  }, 15000)
-
-  test('live routes reject the wrong method', async () => {
-    const { client } = makeFakeClient()
-    const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
-    expect((await handler(new Request('http://localhost/api/loop/stream', { method: 'POST' }))).status).toBe(404)
-    expect((await handler(new Request('http://localhost/api/loop/message'))).status).toBe(404)
-    expect((await handler(new Request('http://localhost/api/models', { method: 'POST' }))).status).toBe(404)
-    expect((await handler(new Request('http://localhost/api/loop/models'))).status).toBe(404)
-  })
-
-  // ─── Cycle 11: model controls ─────────────────────────────────────────
-
-  function makeModelClient(): ForgeClient {
-    return {
-      provider: {
-        list: async () => ({
-          connected: ['anthropic'],
-          all: [
-            {
-              id: 'anthropic',
-              name: 'Anthropic',
-              models: {
-                opus: { id: 'opus', name: 'Opus', variants: { 'thinking-max': { name: 'Thinking Max' }, off: { disabled: true } } },
-              },
-            },
-            { id: 'unconnected', name: 'Nope', models: { x: { id: 'x', name: 'X' } } },
-          ],
-        }),
-      },
-    } as unknown as ForgeClient
-  }
-
-  test('GET /api/models lists connected providers with their variants', async () => {
-    seedRunningLoop()
-    const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient() })
-
-    const res = await handler(new Request('http://localhost/api/models?project=p1&loop=loop-a'))
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.models).toEqual([
-      {
-        id: 'anthropic/opus',
-        name: 'Opus',
-        provider: 'Anthropic',
-        variants: [{ id: 'thinking-max', label: 'Thinking Max' }],
-      },
-    ])
-  })
-
-  test('GET /api/models returns 503 without a client', async () => {
-    const handler = createRequestHandler(makeDeps(db!))
-    expect((await handler(new Request('http://localhost/api/models'))).status).toBe(503)
-  })
-
   test('POST /api/loop/models re-points the loop and reports the stored values', async () => {
     seedRunningLoop()
     const loopsRepo = createLoopsRepo(db!)
     loopsRepo.setModelFailed('p1', 'loop-a', true)
     loopsRepo.advanceAuditorFallbackIndex('p1', 'loop-a', 0, 1)
-    const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+    const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
 
     const res = await handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
@@ -967,7 +679,7 @@ describe('createRequestHandler', () => {
 
   test('POST /api/loop/models validates model strings and the loop', async () => {
     seedRunningLoop()
-    const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+    const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
     const post = (body: unknown) => handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
       headers: { 'content-type': 'application/json', host: 'localhost' },
@@ -986,7 +698,7 @@ describe('createRequestHandler', () => {
   test('POST /api/loop/models is refused on a non-loopback bind', async () => {
     seedRunningLoop()
     const before = createLoopsRepo(db!).get('p1', 'loop-a')!.executionModel
-    const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: false })
+    const handler = createRequestHandler({ forgeDb: db!, allowSend: false })
 
     const res = await handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
@@ -1002,7 +714,7 @@ describe('createRequestHandler', () => {
     seedRunningLoop()
     const loopsRepo = createLoopsRepo(db!)
     loopsRepo.setModels('p1', 'loop-a', { executionModel: 'anthropic/opus' })
-    const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+    const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
 
     const res = await handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
@@ -1024,7 +736,7 @@ describe('createRequestHandler', () => {
         SELECT RAISE(ABORT, 'model updates blocked by trigger');
       END
     `)
-    const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+    const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
 
     const res = await handler(new Request('http://localhost/api/loop/models', {
       method: 'POST',
@@ -1043,24 +755,9 @@ describe('createRequestHandler', () => {
   describe('mutating POST routes require a loopback Host header', () => {
     const loopbackHosts = ['localhost', 'LOCALHOST:4747', '127.0.0.1', '127.0.0.1:4747', '[::1]', '[::1]:4747']
 
-    test.each(loopbackHosts)('POST /api/loop/message accepts Host %s', async (host) => {
-      seedRunningLoop()
-      const { client, calls } = makeFakeClient()
-      const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
-
-      const res = await handler(new Request('http://localhost/api/loop/message', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', host },
-        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
-      }))
-
-      expect(res.status).toBe(200)
-      expect(calls.prompts).toHaveLength(1)
-    })
-
     test.each(loopbackHosts)('POST /api/loop/models accepts Host %s', async (host) => {
       seedRunningLoop()
-      const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
 
       const res = await handler(new Request('http://localhost/api/loop/models', {
         method: 'POST',
@@ -1085,24 +782,9 @@ describe('createRequestHandler', () => {
       'localhost:0',
     ]
 
-    test.each(rejectedHosts)('POST /api/loop/message rejects Host %s', async (host) => {
-      seedRunningLoop()
-      const { client, calls } = makeFakeClient()
-      const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
-
-      const res = await handler(new Request('http://localhost/api/loop/message', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', host },
-        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
-      }))
-
-      expect(res.status).toBe(403)
-      expect(calls.prompts).toHaveLength(0)
-    })
-
     test.each(rejectedHosts)('POST /api/loop/models rejects Host %s', async (host) => {
       seedRunningLoop()
-      const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
 
       const res = await handler(new Request('http://localhost/api/loop/models', {
         method: 'POST',
@@ -1114,24 +796,9 @@ describe('createRequestHandler', () => {
       expect(createLoopsRepo(db!).get('p1', 'loop-a')!.executionModel).not.toBe('anthropic/opus')
     })
 
-    test('POST /api/loop/message rejects a request with no Host header', async () => {
-      seedRunningLoop()
-      const { client, calls } = makeFakeClient()
-      const handler = createRequestHandler({ forgeDb: db!, client, allowSend: true })
-
-      const res = await handler(new Request('http://localhost/api/loop/message', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId: 'p1', loopName: 'loop-a', text: 'hi' }),
-      }))
-
-      expect(res.status).toBe(403)
-      expect(calls.prompts).toHaveLength(0)
-    })
-
     test('POST /api/loop/models rejects a request with no Host header', async () => {
       seedRunningLoop()
-      const handler = createRequestHandler({ forgeDb: db!, client: makeModelClient(), allowSend: true })
+      const handler = createRequestHandler({ forgeDb: db!, allowSend: true })
 
       const res = await handler(new Request('http://localhost/api/loop/models', {
         method: 'POST',

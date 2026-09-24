@@ -13,7 +13,7 @@ export function buildCodeAgent(promptsDir?: string): AgentDefinition {
       question: 'allow',
     },
     tools: {
-      exclude: [...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS, 'plan', 'plan_enter', 'plan_exit', ...PLAN_AUTHORING_TOOL_NAMES]
+      exclude: [...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...PLAN_AUTHORING_TOOL_NAMES]
     },
     systemPrompt: loadPrompt(['agents', 'code.md'], promptsDir),
   }

@@ -49,7 +49,7 @@ export interface CreateFakeForgeClientResult {
   client: ForgeClient
   /**
    * Every method invocation, in call order, across all namespaces. Useful for
-   * sequencing assertions that span `session`, `workspace`, `tui`, and `sync`.
+   * sequencing assertions that span `session`, `workspace`, and `toast`.
    */
   calls: RecordedCall[]
 }
@@ -116,11 +116,6 @@ export function createFakeForgeClient(
         async (_p: Record<string, unknown>) => ({}),
         overrides?.session?.status,
       ),
-      list: makeMethod(
-        'session.list',
-        async (_p: Record<string, unknown>) => [],
-        overrides?.session?.list,
-      ),
       promptAsync: makeMethod(
         'session.promptAsync',
         async (_p: Record<string, unknown>) => {},
@@ -152,16 +147,6 @@ export function createFakeForgeClient(
         async (_p: Record<string, unknown>) => [],
         overrides?.workspace?.list,
       ),
-      status: makeMethod(
-        'workspace.status',
-        async (_p: Record<string, unknown>) => ({}),
-        overrides?.workspace?.status,
-      ),
-      syncList: makeMethod(
-        'workspace.syncList',
-        async (_p: Record<string, unknown>) => {},
-        overrides?.workspace?.syncList,
-      ),
       remove: makeMethod(
         'workspace.remove',
         async (_p: Record<string, unknown>) => {},
@@ -173,44 +158,11 @@ export function createFakeForgeClient(
         overrides?.workspace?.warp,
       ),
     },
-    project: {
-      list: makeMethod(
-        'project.list',
-        async (_p: Record<string, unknown>) => [],
-        overrides?.project?.list,
-      ),
-      current: makeMethod(
-        'project.current',
-        async (_p: Record<string, unknown>) => undefined,
-        overrides?.project?.current,
-      ),
-    },
-    provider: {
-      list: makeMethod(
-        'provider.list',
-        async (_p: Record<string, unknown>) => ({ all: [], connected: [] }),
-        overrides?.provider?.list,
-      ),
-    },
-    tui: {
-      publish: makeMethod(
-        'tui.publish',
-        async (_p: Record<string, unknown>) => {},
-        overrides?.tui?.publish,
-      ),
-      selectSession: makeMethod(
-        'tui.selectSession',
-        async (_p: Record<string, unknown>) => {},
-        overrides?.tui?.selectSession,
-      ),
-    },
-    sync: {
-      start: makeMethod(
-        'sync.start',
-        async (_p: Record<string, unknown>) => {},
-        overrides?.sync?.start,
-      ),
-    },
+    toast: makeMethod(
+      'toast',
+      async (_p: Record<string, unknown>) => {},
+      overrides?.toast,
+    ),
   }
 
   return { client, calls }

@@ -6,12 +6,12 @@ import { execSync } from 'child_process'
 import { createForgeWorkspaceAdapter } from '../../src/workspace/forge-adapter'
 
 describe('forge workspace adapter e2e', () => {
-  it('full lifecycle: configure -> create -> target -> remove', async () => {
+  it('full lifecycle: configure -> create -> remove', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-e2e-repo-'))
     const tmpDataDir = mkdtempSync(join(tmpdir(), 'forge-e2e-data-'))
 
     try {
-      execSync('git init && git commit --allow-empty -m "init"', {
+      execSync('git init && git -c user.name="Forge Test" -c user.email="forge-test@example.invalid" commit --allow-empty -m "init"', {
         cwd: tmpRepo,
         encoding: 'utf-8',
       })
@@ -56,9 +56,6 @@ describe('forge workspace adapter e2e', () => {
       }).trim()
       expect(headBranch).toBe('forge/e2e-loop')
 
-      const target = adapter.target(configured)
-      expect(target).toEqual({ type: 'local', directory: worktreeDir })
-
       await adapter.remove(configured)
       expect(existsSync(worktreeDir)).toBe(false)
 
@@ -77,7 +74,7 @@ describe('forge workspace adapter e2e', () => {
     const tmpDataDir = mkdtempSync(join(tmpdir(), 'forge-e2e-data-'))
 
     try {
-      execSync('git init && git commit --allow-empty -m "init"', {
+      execSync('git init && git -c user.name="Forge Test" -c user.email="forge-test@example.invalid" commit --allow-empty -m "init"', {
         cwd: tmpRepo,
         encoding: 'utf-8',
       })

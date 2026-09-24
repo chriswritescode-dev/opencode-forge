@@ -16,7 +16,6 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
 | `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`/`final_auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
-| `remotes` | unset | Remote opencode servers available as loop launch targets in the TUI execution dialog. See [Remotes](#remotes). |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
 
 ## Logging
@@ -81,11 +80,11 @@ Configured rules are layered into the ruleset in this order:
 
 Because configured rules sit between the external-directory allows and Forge's structural denies, they can deny user tools but can never override a structural deny.
 
-**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan`, `plan_enter`, `plan_exit`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`, `review-write`, `review-delete`, `edit`, `write`, `multiedit`, and `apply_patch`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`group-*` would let a loop recurse into itself or manage other loops.
+**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`, `review-write`, `review-delete`, `edit`, and `write`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`group-*` would let a loop recurse into itself or manage other loops.
 
 **Blanket denies of Forge-required permissions are rejected too**: `review-read`, `plan-read`, `section-read`, `plan-adjust`, `bash`, and `read` may not be denied outright. A loop that cannot read its findings, section plan, or plan-of-record — or cannot run `bash` or `read` at all — cannot do its job and would silently burn iterations to `maxIterations` with nothing pointing at the config. Only the blanket form (a bare tool name, or pattern `*`) is rejected; a scoped deny such as `{ "permission": "bash", "pattern": "git push *" }` is honoured.
 
-The block applies to loop, audit, and post-action sessions. Remote loop launches receive the configured rules but not `loop.allowExternalDirectories` (host-specific configured paths are not portable to a remote server).
+The block applies to loop, audit, and post-action sessions.
 
 ### Worktree Logging
 
@@ -155,11 +154,13 @@ Notes:
 | `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
 | `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle host sandbox`, which enables or disables the project host-session sandbox for the current session. Empty registers the command without a default binding. Requires `sandbox.enabled`. |
 
-The host-session sandbox applies only to sessions outside active loops. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. `bash`, `glob`, and `grep` route through the sandbox; file tools remain host-side. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
+The host-session sandbox applies only to sessions outside active loops. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. Shell, `glob`, and `grep` calls route through the sandbox; file tools remain host-side. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
+
+The TUI surface reads `tui.sidebar`, `tui.showVersion`, and the `tui.keybinds` entries from this config; plugin options on the `cli.json` entry override them, with keybinds merged per key — see [TUI](tui.md).
 
 ## Dashboard
 
-`dashboard` controls the bind address of the observability dashboard, served by both `pnpm dashboard` and the TUI `Open dashboard` command. The default binds loopback only. On a loopback bind the dashboard can send messages to the live loop session and edit the loop's persisted model columns; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only.
+`dashboard` controls the bind address of the observability dashboard, served by both `pnpm dashboard` and the TUI `Open dashboard` command. The default binds loopback only. On a loopback bind the dashboard can edit the loop's persisted model columns and delete unexecuted session-scoped plans; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only.
 
 | Option | Default | Description |
 |---|---:|---|
@@ -195,49 +196,6 @@ Example:
 }
 ```
 
-## Remotes
-
-`remotes` registers remote opencode servers as loop launch targets. When at least one remote is configured, the TUI execution dialog shows a `Target` picker; selecting a remote launches the loop on that server instead of locally. Remote targets support **Loop mode only** — `New session` and `Execute here` remain local.
-
-| Option | Default | Description |
-|---|---:|---|
-| `remotes[].name` | required | Unique display name shown in the TUI target picker. |
-| `remotes[].url` | required | Base URL of the remote opencode server, e.g. `http://192.168.1.20:4096`. |
-| `remotes[].password` | unset | Basic-auth password (`OPENCODE_SERVER_PASSWORD` on the remote). Omit when the remote runs without auth. Stored in plaintext in this config file. |
-| `remotes[].username` | `"opencode"` | Basic-auth username (`OPENCODE_SERVER_USERNAME` default). |
-| `remotes[].gitRemote` | `"origin"` | Git remote name, configured on **both** machines' clones, used for code sync. |
-| `remotes[].sandbox` | `true` | Whether the remote loop runs sandboxed. Must mirror the remote server's actual `sandbox.enabled`/msb capability — see below. |
-
-Example:
-
-```jsonc
-{
-  "remotes": [
-    {
-      "name": "my-server",
-      "url": "http://192.168.1.20:4096",
-      "password": "",
-      "username": "opencode",
-      "gitRemote": "origin",
-      "sandbox": true
-    }
-  ]
-}
-```
-
-### How remote launch works
-
-1. The local machine resolves the remote project by matching the local repo's **OpenCode project id** (normalized git-origin hash, else the first root commit) against the remote server's project ids. This is location-independent, so the local checkout path and the remote worktree path (e.g. a container workspace) do not need to match.
-2. Local `HEAD` is force-pushed to `refs/forge/<loopName>` on the shared `gitRemote` (uncommitted changes are not included; a warning is shown).
-3. The remote server creates the loop worktree pinned to that exact SHA, fetching the sync ref when the commit is not yet in its clone.
-4. On final loop teardown, the remote deletes the sync ref from the shared git remote (restart-preserving teardowns keep it). If a loop is deleted outside normal teardown, remove leftovers manually with `git push <gitRemote> --delete refs/forge/<loopName>`.
-
-### Caveats
-
-- **Version skew**: the remote server must run a forge version with SHA-pin support (`startRef`/`syncRef` handling — the same release that introduced `remotes`, or newer). An older remote silently ignores the pin and runs the loop from its clone's current `HEAD` with no error on either side.
-- **Sandbox mirroring**: `remotes[].sandbox` is a local assertion about the remote's capability. The launch bakes the session's shell permission ruleset from it; if it does not match the remote's real sandbox state, loop shell commands can be denied.
-- **Observability**: remote loops run entirely on the remote server. They do not appear in the local sidebar, `loop-status`, or dashboard. Results land on the `forge/<loopName>` branch in the remote machine's clone; fetch or push that branch from the remote to retrieve them.
-
 ## Sandbox
 
 See [Sandbox](sandbox.md) for detailed behavior and security notes.
@@ -253,6 +211,7 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.resources.cacheDisk` | `"16g"` | Size of the dedicated block device backing the sandbox's tool/package cache directory (`/opt/forge/cache` — the pnpm store, npm, uv, pip, uv-managed Pythons, cargo/rustup, go modules; `--mount-named ...:kind=disk,size=<size>`). Sparse like `dockerDisk`, and it keeps unbounded caches off the small root filesystem. Reclaim it with `forge-cache-prune` inside the sandbox, which clears caches while preserving installed toolchains. |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
+| `sandbox.autoApprovePermissions` | `true` | Approve permission prompts automatically in sessions whose shell runs in a sandbox, including a session sandboxed with `Toggle host sandbox`. Configured `deny` rules still apply. Set `false` to keep prompting. See [Sandbox](sandbox.md#permission-auto-approval). |
 | `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. Restriction is opt-in: an empty list, or a list containing the `*`/`**` allow-all wildcard, passes no network flags and msb's default allows all public egress; configuring any concrete host flips the sandbox to deny-by-default (`--net-default deny`) with one `--net-rule allow@<host>` per validated host. |
 | `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
 | `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. The named variable must be exported in the environment that launches opencode — a bound secret with a missing variable breaks every sandboxed shell command. |
@@ -329,27 +288,27 @@ Without a flag the installer is interactive: for each conflicting file it offers
 
 ### Plugin-directory install
 
-The installer can also write the plugin itself into opencode's plugin directory, instead of hand-editing the `plugin` arrays:
+The installer can also register the plugin in opencode's config directory, instead of hand-editing the `plugins` array:
 
 | Flag | Behavior |
 |---|---|
-| `--link` | Writes `<configDir>/plugin/opencode-forge.js`, a one-line re-export shim whose target is the absolute path of the current build's `dist/index.js`. Because the shim re-exports the live build, a rebuild is picked up on the next opencode start with no reinstall. The shim is tied to that checkout path, so it is not portable to another machine. |
-| `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6.5 MB) and writes the shim with the relative target `./opencode-forge/dist/index.js`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
-| `--unlink` | Removes the shim, the vendored directory, and the `tui.json` entry. |
+| `--link` | Writes the server shim `<configDir>/plugin/opencode-forge.js`, re-exporting the absolute path of the current build's `dist/index.js`, and the `plugins` entry in `<configDir>/cli.json` pointing at the build's `dist` directory. Because both point at the live build, a rebuild is picked up on the next opencode start with no reinstall. The entry is tied to that checkout path, so it is not portable to another machine. |
+| `--vendor` | Copies `package.json`, `forge-config.jsonc`, `dist/`, `container/`, and `skills/` into `<configDir>/plugin/opencode-forge/` (~6.5 MB), writes the server shim re-exporting `./opencode-forge/dist/index.js`, and registers the relative spec `./plugin/opencode-forge/dist` in `cli.json`. The whole config folder becomes self-contained and can be version-controlled and moved to another machine. Requires re-running after an upgrade. |
+| `--unlink` | Removes the server shim, the vendored directory, and the `cli.json` entry. |
 
 From a source checkout the same flags are `pnpm run setup --link`, `pnpm run setup --vendor`, and `pnpm run setup --unlink` (the `run` is required — `setup` is a built-in pnpm command). In a non-interactive shell, `--link` and `--vendor` still require one of `-y`, `-f`, or `-k`, matching every other non-interactive use of the installer.
 
-Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loading](#server-vs-tui-loading)).
+Both modes write the server shim and the `cli.json` entry (see [Plugin loading](#plugin-loading)).
 
 #### Resolved layout
 
-`--link` leaves only the shim in the config dir:
+`--link` writes the shim and the `cli.json` entry:
 
 ```text
 <configDir>/
 ├── plugin/
-│   └── opencode-forge.js          # export { default } from "/abs/path/to/dist/index.js"
-└── tui.json                       # plugin: ["/abs/path/to/dist/tui.js"]
+│   └── opencode-forge.js           # export { default } from "/abs/path/to/dist/index.js"
+└── cli.json                        # plugins: ["/abs/path/to/dist"]
 ```
 
 `--vendor` copies the whole package:
@@ -357,7 +316,7 @@ Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loa
 ```text
 <configDir>/
 ├── plugin/
-│   ├── opencode-forge.js          # export { default } from "./opencode-forge/dist/index.js"
+│   ├── opencode-forge.js           # export { default } from "./opencode-forge/dist/index.js"
 │   └── opencode-forge/
 │       ├── package.json
 │       ├── forge-config.jsonc
@@ -366,21 +325,22 @@ Both modes also write the `plugin` entry into `tui.json` (see [Server vs TUI loa
 │       │   └── tui.js
 │       ├── container/
 │       └── skills/
-└── tui.json                       # plugin: ["./plugin/opencode-forge/dist/tui.js"]
+└── cli.json                        # plugins: ["./plugin/opencode-forge/dist"]
 ```
 
 The vendored copy mirrors the npm package layout rather than being "just dist": forge resolves its bundled assets as siblings of its package root (`container/`, `skills/`, `forge-config.jsonc`), so the sandbox template and the bundled skill sync resolve inside the vendored copy.
 
-#### Server vs TUI loading
+#### Plugin loading
 
-opencode auto-loads server plugins from the config dir by globbing `{plugin,plugins}/*.{ts,js}`. Both the singular `plugin/` and plural `plugins/` directory names work. The scan is not recursive and does not match `.mjs`, which is why the installer uses a top-level shim file and keeps the vendored payload in a subdirectory — the payload itself is never scanned.
+OpenCode 2.x (verified on 2.0.15) loads the two surfaces from different places:
 
-That scan serves the server plugin surface only. The TUI surface is loaded exclusively from the `plugin` array in `tui.json`; there is no TUI directory scan. This is why both modes write a `tui.json` entry, and why the plugin directory alone cannot enable the sidebar and execution dialog. Path specs in a config file resolve relative to that config file's own directory, which is what makes the vendored `./plugin/opencode-forge/dist/tui.js` entry portable.
+- **Server** — the `plugins` array in `opencode.json`/`opencode.jsonc`, or any `*.js` file directly in `<configDir>/plugin/`. The installer uses the second: `opencode-forge.js` is a one-line re-export of the server entry. Package directories under `plugin/`, such as the vendored copy, are not loaded on their own.
+- **TUI** — the `plugins` array in `cli.json`, which resolves a directory spec's package entrypoints rather than accepting a file target. That is why the installer points `cli.json` at the built `dist` directory. Path specs resolve relative to the config file's own directory, which makes the vendored `./plugin/opencode-forge/dist` entry portable.
 
-#### Double-loading
+A `cli.json` entry alone loads only the TUI: the sidebar appears but Forge's agents, tools, and hooks do not.
 
-Local (`file://`) plugin specs dedup by exact file URL, while npm specs dedup by package name. So keeping a `plugin` array entry for forge AND installing the shim makes opencode initialize forge twice under the same id `oc-forge`. The installer detects an existing forge entry in the global `opencode.json`/`opencode.jsonc`; when run interactively it offers to comment the entry out, and in non-interactive mode it warns and changes nothing.
+The installer rewrites the shim and updates an existing forge entry in `cli.json` in place, so re-running it is safe. It does not inspect `opencode.json` — if you list forge there and also install it into the config directory, the server loads twice; remove one of them by hand.
 
 #### Verification
 
-`opencode debug config` prints the resolved config. Its `plugin` array should list the shim's `file://` URL exactly once, with no duplicate forge entry.
+`opencode debug config` prints the resolved config. Its `plugins` array should list the forge entry exactly once. `opencode plugin list` should show the shim (`oc-forge`, from `plugin/opencode-forge.js`) and the `cli.json` dist entry.

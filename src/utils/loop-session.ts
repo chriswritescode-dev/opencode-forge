@@ -1,9 +1,25 @@
-import type { ForgeClient } from '../client/port'
+import { ForgeClientError, type ForgeClient } from '../client/port'
 import type { Logger } from '../types'
-import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { publishToast } from './toast'
+
+export async function deleteSessionBestEffort(
+  client: ForgeClient,
+  params: { sessionID: string; directory: string },
+  logger: Logger,
+  failureMessage: string,
+): Promise<void> {
+  try {
+    await client.session.delete(params)
+  } catch (err) {
+    if (err instanceof ForgeClientError && err.kind === 'unavailable') {
+      logger.debug(failureMessage, err)
+    } else {
+      logger.error(failureMessage, err)
+    }
+  }
+}
 
 interface CreateLoopSessionInput {
   client: ForgeClient
@@ -14,7 +30,6 @@ interface CreateLoopSessionInput {
   loopName?: string
   logPrefix: string
   logger: Logger | Console
-  workspaceStatusRegistry?: WorkspaceStatusRegistry
 }
 
 interface CreateLoopSessionResult {
@@ -64,7 +79,7 @@ export async function createLoopSessionWithWorkspace(
     const _bindStart = Date.now()
     try {
       input.logger.log(`[warp] bind.start loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId}`)
-      await bindSessionToWorkspace(client, input.workspaceId, result.sessionId, input.logger, { loopName: input.loopName }, input.workspaceStatusRegistry)
+      await bindSessionToWorkspace(client, input.workspaceId, result.sessionId, input.logger, { loopName: input.loopName })
       result.boundWorkspaceId = input.workspaceId
       input.logger.log(`${input.logPrefix}: workspace ${input.workspaceId} bound to session ${result.sessionId}`)
       input.logger.log(`[warp] bind.complete loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId} elapsedMs=${Date.now() - _bindStart}`)

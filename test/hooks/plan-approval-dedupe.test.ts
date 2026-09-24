@@ -38,22 +38,13 @@ function buildToolContext(opts: {
   projectId: string
   directory: string
   plansRepo: PlansRepo
-  abortMock: ReturnType<typeof vi.fn>
-  publishMock?: ReturnType<typeof vi.fn>
 }): ToolContext {
-  const v2 = {
-    session: {
-      abort: opts.abortMock,
-    },
-    tui: opts.publishMock ? { publish: opts.publishMock } : undefined,
-  }
   return {
     projectId: opts.projectId,
     directory: opts.directory,
     config: { executionModel: 'prov/exec', auditorModel: 'prov/aud' },
     logger: { log: () => {}, error: () => {}, debug: () => {} },
     plansRepo: opts.plansRepo,
-    v2,
     input: {},
     // Fields not exercised on the question/"Execute here" path:
     db: undefined,
@@ -94,9 +85,7 @@ describe('plan-approval afterHook dedupes by plan content regardless of updatedA
       [`${projectId}::${sessionID}`, { content: planContent, updatedAt: 1000 }],
     ])
     const plansRepo = createStubPlansRepo(initial)
-    const abortMock = vi.fn().mockResolvedValue({})
-
-    const ctx = buildToolContext({ projectId, directory, plansRepo, abortMock })
+    const ctx = buildToolContext({ projectId, directory, plansRepo })
     const hook = createToolExecuteAfterHook(ctx)
     if (!hook) throw new Error('hook not registered')
 
@@ -133,9 +122,7 @@ describe('plan-approval afterHook dedupes by plan content regardless of updatedA
       [`${projectId}::${sessionID}`, { content: '# Plan A', updatedAt: 1000 }],
     ])
     const plansRepo = createStubPlansRepo(initial)
-    const abortMock = vi.fn().mockResolvedValue({})
-
-    const ctx = buildToolContext({ projectId, directory, plansRepo, abortMock })
+    const ctx = buildToolContext({ projectId, directory, plansRepo })
     const hook = createToolExecuteAfterHook(ctx)
     if (!hook) throw new Error('hook not registered')
     const args = planApprovalQuestionArgs()

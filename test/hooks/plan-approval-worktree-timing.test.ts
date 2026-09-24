@@ -93,7 +93,6 @@ function buildToolContext(opts: {
     reviewFindingsRepo: {},
     loopsRepo: {},
     sectionPlansRepo: {},
-    workspaceStatusRegistry: { awaitConnected: () => Promise.resolve(), recordEvent: () => {} },
   } as unknown as ToolContext
 }
 

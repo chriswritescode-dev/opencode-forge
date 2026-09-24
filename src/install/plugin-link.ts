@@ -1,39 +1,19 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
-import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from 'path'
+import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'path'
 import { fileURLToPath } from 'url'
 import { applyEdits, findNodeAtLocation, modify, parseTree } from 'jsonc-parser/lib/esm/main.js'
 import type { Node } from 'jsonc-parser/lib/esm/main.js'
 import {
+  resolveCliConfigPath,
   resolveConfigDir,
-  resolveOpencodeConfigCandidates,
   resolvePluginShimPath,
   resolveServerEntryCandidates,
-  resolveTuiConfigPath,
   resolveVendorDir,
   VENDORED_ASSETS,
 } from './paths'
 
-/** Current on-disk state of the installed plugin shim. */
-export interface PluginShimState {
-  path: string
-  present: boolean
-  /** Entry specifier the installed shim currently re-exports, when parseable — an absolute path or a relative specifier. */
-  target?: string
-}
-
-/** How the installed shim locates forge's server entry. */
 export type ShimMode = 'external' | 'vendored'
-
-/** A `plugin` array entry in the global opencode config that declares forge. */
-export interface ConfigRegistration {
-  /** Absolute path of the global opencode config that declares forge. */
-  file: string
-  /** Raw specifier text as written in the plugin array. */
-  spec: string
-  /** 1-based line number of the entry. */
-  line: number
-}
 
 export interface LinkResult {
   action: 'created' | 'updated' | 'unchanged' | 'missing-entry'
@@ -46,23 +26,22 @@ export interface UnlinkResult {
   shimPath: string
 }
 
-/** Render the one-line server re-export shim installed into opencode's config dir. */
+/**
+ * Source of the `<configDir>/plugin/opencode-forge.js` re-export shim. OpenCode 2.x loads the
+ * server plugin from `*.js` files in that directory; the `cli.json` entry loads only the TUI.
+ */
 export function buildShimSource(serverEntry: string): string {
   return `export { default } from ${JSON.stringify(serverEntry)}\n`
 }
 
-/**
- * Relative specifier a vendored shim re-exports. opencode resolves it against
- * the shim's own directory (`<configDir>/plugin/`), so the folder stays
- * portable to another machine.
- */
+/** Shim re-export target for the vendored copy, relative to the shim's own directory. */
 export const VENDORED_SERVER_SPEC = './opencode-forge/dist/index.js'
 
-/** Relative specifier for `tui.json`, resolved by opencode against the config dir. */
-export const VENDORED_TUI_SPEC = './plugin/opencode-forge/dist/tui.js'
+/** Relative specifier for `cli.json`, resolved by opencode against the config dir. */
+export const VENDORED_CLI_SPEC = './plugin/opencode-forge/dist'
 
 /** First built server entry candidate that exists on disk, if any. */
-export function resolveServerEntry(): string | undefined {
+function resolveServerEntry(): string | undefined {
   return resolveServerEntryCandidates().find((candidate) => existsSync(candidate))
 }
 
@@ -71,7 +50,7 @@ export function resolveServerEntry(): string | undefined {
  * the entry's parent when the module layout has no `dist` — or undefined when
  * no built entry exists on disk.
  */
-export function resolvePackageRoot(): string | undefined {
+function resolvePackageRoot(): string | undefined {
   const entry = resolveServerEntry()
   if (!entry) return undefined
   const entryDir = dirname(entry)
@@ -79,55 +58,30 @@ export function resolvePackageRoot(): string | undefined {
 }
 
 /**
- * Built TUI entry of the package (`dist/tui.js`), or undefined when the build
- * output is not present on disk. The TUI surface is loaded only from `tui.json`,
- * so this is the spec written into that file for the external mode.
+ * Built `dist` directory of the package, or undefined when it is absent. `cli.json`
+ * lists opencode V2 plugins by directory, and V2 resolves the configured
+ * directory's package entrypoints, so this directory is the spec written into
+ * `cli.json` for the external mode.
  */
-export function resolveTuiEntry(): string | undefined {
+export function resolveCliPluginDir(): string | undefined {
   const root = resolvePackageRoot()
   if (!root) return undefined
-  const entry = join(root, 'dist', 'tui.js')
-  return existsSync(entry) ? entry : undefined
+  const dir = join(root, 'dist')
+  return existsSync(dir) ? dir : undefined
 }
 
-/** Read the installed shim, extracting its re-export target when parseable. */
-export function readPluginShimState(): PluginShimState {
-  const path = resolvePluginShimPath()
-  let content: string
-  try {
-    content = readFileSync(path, 'utf-8')
-  } catch {
-    return { path, present: false }
-  }
-  const match = content.match(/^export \{ default \} from ([^\n]*)\n?$/)
-  if (!match) {
-    return { path, present: true }
-  }
-  try {
-    return { path, present: true, target: JSON.parse(match[1].trimEnd()) as string }
-  } catch {
-    return { path, present: true }
-  }
-}
-
-/** True when the installed shim targets the vendored relative specifier. */
-export function isVendoredShim(state: PluginShimState): boolean {
-  return state.target === VENDORED_SERVER_SPEC
-}
-
-/** Install the server re-export shim into opencode's global plugin directory. */
-export function linkPlugin(options: { dryRun: boolean; mode?: ShimMode }): LinkResult {
+/**
+ * Write the server re-export shim: the absolute built entry for the external mode, or the
+ * vendored copy's entry for the vendored mode.
+ */
+export function linkPlugin(options: { dryRun: boolean; mode: ShimMode }): LinkResult {
   const shimPath = resolvePluginShimPath()
   const entry = resolveServerEntry()
-  if (!entry) {
-    return { action: 'missing-entry', shimPath }
-  }
+  if (!entry) return { action: 'missing-entry', shimPath }
   const target = options.mode === 'vendored' ? VENDORED_SERVER_SPEC : entry
   const source = buildShimSource(target)
-  const existing = safeReadText(shimPath)
-  if (existing === source) {
-    return { action: 'unchanged', shimPath, target }
-  }
+  const existing = existsSync(shimPath) ? readFileSync(shimPath, 'utf-8') : undefined
+  if (existing === source) return { action: 'unchanged', shimPath, target }
   if (!options.dryRun) {
     mkdirSync(dirname(shimPath), { recursive: true })
     writeFileSync(shimPath, source)
@@ -135,7 +89,7 @@ export function linkPlugin(options: { dryRun: boolean; mode?: ShimMode }): LinkR
   return { action: existing === undefined ? 'created' : 'updated', shimPath, target }
 }
 
-/** Remove the installed shim from opencode's global plugin directory. */
+/** Remove the server re-export shim from opencode's plugin directory. */
 export function unlinkPlugin(options: { dryRun: boolean }): UnlinkResult {
   const shimPath = resolvePluginShimPath()
   if (!existsSync(shimPath)) {
@@ -200,27 +154,42 @@ export function unvendorPlugin(options: { dryRun: boolean }): 'removed' | 'absen
   return 'removed'
 }
 
-export interface TuiRegistrationResult {
+export interface PluginConfigTarget {
+  file: string
+  key: string
+  schema: string
+}
+
+/** `cli.json` is opencode V2's plugin list. */
+export function resolveCliConfigTarget(): PluginConfigTarget {
+  return { file: resolveCliConfigPath(), key: 'plugins', schema: 'https://opencode.ai/v2/cli.json' }
+}
+
+export interface PluginRegistrationResult {
   action: 'created' | 'added' | 'updated' | 'present' | 'failed'
   file: string
   spec: string
 }
 
-const TUI_MODIFY_OPTIONS = { formattingOptions: { insertSpaces: true, tabSize: 2 } } as const
+const PLUGIN_MODIFY_OPTIONS = { formattingOptions: { insertSpaces: true, tabSize: 2 } } as const
 
-function tuiConfigSource(spec: string): string {
-  return `{\n  "$schema": "https://opencode.ai/tui.json",\n  "plugin": [${JSON.stringify(spec)}]\n}\n`
+function pluginConfigSource(spec: string, target: PluginConfigTarget): string {
+  return `{\n  "$schema": ${JSON.stringify(target.schema)},\n  ${JSON.stringify(target.key)}: [${JSON.stringify(spec)}]\n}\n`
 }
 
 /**
- * Ensure `tui.json` lists the given plugin spec. opencode loads the TUI surface
- * only from the `plugin` array in this file — there is no directory scan — so
- * the entry must be written explicitly. The file is parsed and edited as JSONC
- * so existing comments and trailing commas survive, and an already-present or
+ * Ensure the target config file lists the given plugin spec. opencode V2 loads
+ * plugins only from the `plugins` array in `cli.json` — there is no directory
+ * scan — so the entry must be written explicitly. The file is parsed and edited as
+ * JSONC so existing comments and trailing commas survive, and an already-present or
  * stale forge entry is handled without rewriting unrelated content.
  */
-export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }): TuiRegistrationResult {
-  const file = resolveTuiConfigPath()
+export function ensurePluginRegistration(options: {
+  dryRun: boolean
+  spec: string
+  target: PluginConfigTarget
+}): PluginRegistrationResult {
+  const { file, key } = options.target
   const report = { file, spec: options.spec }
   let text: string
   try {
@@ -229,7 +198,7 @@ export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }
     if (!options.dryRun) {
       try {
         mkdirSync(dirname(file), { recursive: true })
-        writeFileSync(file, tuiConfigSource(options.spec))
+        writeFileSync(file, pluginConfigSource(options.spec, options.target))
         return { action: 'created', ...report }
       } catch {
         return { action: 'failed', ...report }
@@ -238,21 +207,21 @@ export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }
     return { action: 'created', ...report }
   }
   try {
-    const { plugin, entries } = scanPluginArray(text, resolveConfigDir())
+    const { plugin, entries } = scanPluginArray(text, key, resolveConfigDir())
     let next = text
     let action: 'added' | 'updated' | 'present'
     if (plugin) {
       if (entries.some((entry) => entry.spec === options.spec)) {
         action = 'present'
       } else if (entries.length > 0) {
-        next = applyEdits(next, modify(next, ['plugin', entries[0].index], options.spec, TUI_MODIFY_OPTIONS))
+        next = applyEdits(next, modify(next, [key, entries[0].index], options.spec, PLUGIN_MODIFY_OPTIONS))
         action = 'updated'
       } else {
-        next = applyEdits(next, modify(next, ['plugin', -1], options.spec, TUI_MODIFY_OPTIONS))
+        next = applyEdits(next, modify(next, [key, -1], options.spec, PLUGIN_MODIFY_OPTIONS))
         action = 'added'
       }
     } else {
-      next = applyEdits(next, modify(next, ['plugin'], [options.spec], TUI_MODIFY_OPTIONS))
+      next = applyEdits(next, modify(next, [key], [options.spec], PLUGIN_MODIFY_OPTIONS))
       action = 'added'
     }
     if (!options.dryRun) {
@@ -265,12 +234,15 @@ export function ensureTuiRegistration(options: { dryRun: boolean; spec: string }
 }
 
 /**
- * Remove every forge entry from the `tui.json` `plugin` array, highest index
- * first so earlier indices stay valid. Returns `'absent'` when the file or any
- * forge entry does not exist.
+ * Remove every forge entry from the target config file's plugin array, highest
+ * index first so earlier indices stay valid. Returns `'absent'` when the file or
+ * any forge entry does not exist.
  */
-export function removeTuiRegistration(options: { dryRun: boolean }): 'removed' | 'absent' | 'failed' {
-  const file = resolveTuiConfigPath()
+export function removePluginRegistration(options: {
+  dryRun: boolean
+  target: PluginConfigTarget
+}): 'removed' | 'absent' | 'failed' {
+  const { file, key } = options.target
   let text: string
   try {
     text = readFileSync(file, 'utf-8')
@@ -278,11 +250,11 @@ export function removeTuiRegistration(options: { dryRun: boolean }): 'removed' |
     return 'absent'
   }
   try {
-    const { entries } = scanPluginArray(text, resolveConfigDir())
+    const { entries } = scanPluginArray(text, key, resolveConfigDir())
     if (entries.length === 0) return 'absent'
     let next = text
     for (const { index } of [...entries].sort((a, b) => b.index - a.index)) {
-      next = applyEdits(next, modify(next, ['plugin', index], undefined, TUI_MODIFY_OPTIONS))
+      next = applyEdits(next, modify(next, [key, index], undefined, PLUGIN_MODIFY_OPTIONS))
     }
     if (!options.dryRun) {
       writeFileSync(file, next)
@@ -290,75 +262,6 @@ export function removeTuiRegistration(options: { dryRun: boolean }): 'removed' |
     return 'removed'
   } catch {
     return 'failed'
-  }
-}
-
-/**
- * Every `plugin` array entry in the global opencode config that refers to forge,
- * either by npm package name (`opencode-forge[@version][/subpath]`) or by a
- * filesystem path whose normalized form ends in a forge `dist` layout.
- */
-export function findConfigRegistrations(): ConfigRegistration[] {
-  const regs: ConfigRegistration[] = []
-  for (const file of resolveOpencodeConfigCandidates()) {
-    try {
-      const text = readFileSync(file, 'utf-8')
-      for (const { node, spec } of scanPluginArray(text, dirname(file)).entries) {
-        regs.push({ file, spec, line: lineOf(text, node.offset) })
-      }
-    } catch {
-      continue
-    }
-  }
-  return regs
-}
-
-/**
- * Disable a config-array registration so opencode stops double-loading forge.
- * `.jsonc` entries that sit alone on their line(s) are commented out in place so
- * the user's value stays recoverable; everything else is removed structurally
- * with jsonc-parser, keeping `.json` files valid for strict readers.
- */
-export function disableConfigRegistration(
-  reg: ConfigRegistration,
-  options: { dryRun: boolean },
-): 'commented' | 'removed' | 'failed' {
-  try {
-    const text = readFileSync(reg.file, 'utf-8')
-    const root = parseTree(text, undefined, { allowTrailingComma: true })
-    if (!root) return 'failed'
-    const pluginNode = findNodeAtLocation(root, ['plugin'])
-    if (!pluginNode || pluginNode.type !== 'array' || !pluginNode.children) return 'failed'
-    const index = pluginNode.children.findIndex(
-      (child) => entrySpec(child) === reg.spec && lineOf(text, child.offset) === reg.line,
-    )
-    if (index === -1) return 'failed'
-    const node = pluginNode.children[index]
-
-    if (extname(reg.file) === '.jsonc' && isAloneOnLines(text, node)) {
-      if (!options.dryRun) {
-        writeFileSync(reg.file, commentOut(text, node))
-      }
-      return 'commented'
-    }
-
-    const edits = modify(text, ['plugin', index], undefined, {
-      formattingOptions: { insertSpaces: true, tabSize: 2 },
-    })
-    if (!options.dryRun) {
-      writeFileSync(reg.file, applyEdits(text, edits))
-    }
-    return 'removed'
-  } catch {
-    return 'failed'
-  }
-}
-
-function safeReadText(path: string): string | undefined {
-  try {
-    return readFileSync(path, 'utf-8')
-  } catch {
-    return undefined
   }
 }
 
@@ -372,18 +275,17 @@ function entrySpec(node: Node): string | undefined {
 interface ForgeEntry {
   index: number
   spec: string
-  node: Node
 }
 
-function scanPluginArray(text: string, baseDir: string): { plugin?: Node; entries: ForgeEntry[] } {
+function scanPluginArray(text: string, key: string, baseDir: string): { plugin?: Node; entries: ForgeEntry[] } {
   const root = parseTree(text, undefined, { allowTrailingComma: true })
   if (!root) return { entries: [] }
-  const plugin = findNodeAtLocation(root, ['plugin'])
+  const plugin = findNodeAtLocation(root, [key])
   if (!plugin || plugin.type !== 'array' || !plugin.children) return { plugin, entries: [] }
   const entries: ForgeEntry[] = []
   plugin.children.forEach((child, index) => {
     const spec = entrySpec(child)
-    if (spec && isForgeRef(spec, baseDir)) entries.push({ index, spec, node: child })
+    if (spec && isForgeRef(spec, baseDir)) entries.push({ index, spec })
   })
   return { plugin, entries }
 }
@@ -433,28 +335,4 @@ function readPackageName(dir: string): string | undefined {
   }
 }
 
-function lineOf(text: string, offset: number): number {
-  return text.slice(0, offset).split('\n').length
-}
 
-function spannedLines(text: string, offset: number, length: number): { start: number; end: number } {
-  const start = text.lastIndexOf('\n', Math.max(0, offset - 1)) + 1
-  const newline = text.indexOf('\n', offset + length)
-  return { start, end: newline === -1 ? text.length : newline }
-}
-
-function isAloneOnLines(text: string, node: Node): boolean {
-  const { start, end } = spannedLines(text, node.offset, node.length)
-  const rest = text.slice(start, end).replace(text.slice(node.offset, node.offset + node.length), '')
-  return rest.trim() === '' || rest.trim() === ','
-}
-
-function commentOut(text: string, node: Node): string {
-  const { start, end } = spannedLines(text, node.offset, node.length)
-  const commented = text
-    .slice(start, end)
-    .split('\n')
-    .map((line) => line.replace(/^(\s*)/, '$1// '))
-    .join('\n')
-  return text.slice(0, start) + commented + text.slice(end)
-}

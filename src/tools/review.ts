@@ -1,4 +1,4 @@
-import { tool } from '@opencode-ai/plugin'
+import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 import { formatFindingDetails } from '../utils/review-format'
 import { auditScope } from '../loop/state'
@@ -7,7 +7,7 @@ const z = tool.schema
 
 const ATTEMPT_PAGE_LIMIT_DEFAULT = 20
 
-export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
+export function createReviewTools(ctx: ToolContext): Record<string, ToolDefinition> {
   const { reviewFindingsRepo, projectId, logger } = ctx
   const loop = ctx.loop
 

@@ -48,6 +48,10 @@ export class LRUCache<V> {
     this.entries.clear()
   }
 
+  snapshot(): Array<[string, V]> {
+    return Array.from(this.entries)
+  }
+
   get size(): number {
     return this.entries.size
   }

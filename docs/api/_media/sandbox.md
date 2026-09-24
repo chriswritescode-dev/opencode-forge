@@ -51,21 +51,38 @@ The read-only project mount is dropped whenever it would nest over the writable 
 
 ## Shell Routing
 
-Sandbox loops use opencode's native `bash` tool — streaming output, truncation with spill-to-file, timeouts, and abort all behave exactly as in a normal session. Routing happens underneath the tool:
+Sandbox loops use opencode's native `shell` tool — streaming output, truncation with spill-to-file, timeouts, and abort all behave exactly as in a normal session. Routing happens underneath the tool:
 
-> Requires opencode >= 1.15.5 (the session-aware `shell.env` plugin hook). Enforced via the `engines.opencode` field in Forge's package.json: older opencode versions refuse to load the plugin instead of silently running sandbox loop commands on the host.
+1. Forge wraps the built-in `shell` tool. For a call from a session that should be sandboxed, the wrapper prefixes the command with a one-off `forge-sandbox-required-<uuid> && ` marker and remembers the sandbox for that marker.
+2. The `shell` `create.before` hook has no session ID. It recognizes the marker, strips it, points `event.shell` at the generated shim (`<dataDir>/forge-shell`), and sets `FORGE_SANDBOX_CONTAINER`. Without a marker it routes by location instead: a shell spawn in a loop worktree location resolves to that loop's sandbox.
+3. The shim runs the command via `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
+4. Shell calls from sessions with no expected sandbox are left alone: the shim is not used and OpenCode's own shell runs the command. Active loop routing always takes precedence over host-session preference. When no loop is active and no host sandbox is on, the wrapper performs no session lookups.
 
-1. Forge points opencode's `shell` config at a generated shim (`<dataDir>/forge-shell`).
-2. On every bash tool call, Forge's `shell.env` hook resolves the session. Sessions belonging to an active sandbox loop, or to the acknowledged host-session selection, get `FORGE_SANDBOX_CONTAINER` injected; descendants such as Task-tool subagents inherit the same routing. The shim then runs the command via `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
-3. Sessions with no expected sandbox get no container env, and the shim execs the host shell unchanged (respecting a user-configured `shell` via `FORGE_HOST_SHELL`). Active loop routing always takes precedence over host-session preference.
+The marker makes the routing fail closed: if it is not stripped, the command fails with "command not found" rather than running on the host. The shim itself also fails closed — if the sandbox is expected but `msb exec` fails (or the loop sandbox cannot be restored), the command errors and never silently runs on the host. `msb exec` propagates the guest command's exit code verbatim, so the shell tool keeps seeing real exit statuses.
 
-The shim fails closed: if the sandbox is expected but `msb exec` fails (or the loop sandbox cannot be restored), the command errors — it never silently runs on the host. `msb exec` propagates the guest command's exit code verbatim, so the bash tool keeps seeing real exit statuses.
+Commands the user runs directly — `!` commands and terminals — do not pass through the tool wrapper and stay on the host.
+
+## Permission Auto-Approval
+
+When the host sandbox is toggled on for a session (`Toggle host sandbox` in the TUI), Forge approves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask becomes allow. This applies only while the session's shell calls actually route into a running sandbox. If the sandbox is off, still starting, or failed to start, prompts are shown as usual.
+
+Configured `deny` rules still apply: OpenCode settles them before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
+
+File tools (`read`, `write`, `edit`) run on the host, not in the sandbox, so auto-approval also covers host file edits, including in external directories. To keep prompting while sandboxed, disable it:
+
+```jsonc
+{
+  "sandbox": {
+    "autoApprovePermissions": false
+  }
+}
+```
 
 ## Tool Behavior
 
 | Tool category | Behavior in a sandboxed session |
 |---|---|
-| Shell | Native `bash` tool, executed inside the loop sandbox via the shell shim. |
+| Shell | Native `shell` tool, executed inside the loop sandbox via the shell shim. |
 | Search tools | `glob` and `grep` route through the `msb exec` execution hooks. |
 | File tools | `read`, `write`, and `edit` operate on the host filesystem. |
 | Git operations managed by Forge | Worktree commits, cleanup, and branch management are handled on the host. |
@@ -224,7 +241,7 @@ msb sandboxes are reusable: `msb exec` resolves a stopped or crashed sandbox by 
 
 ## Large Command Output
 
-Shell output truncation is handled by opencode's native bash tool: when output exceeds the tool limit, the full output is spilled to opencode's tool-output directory on the host (readable from loop sessions, see below). The worktree `.forge/` scratch directory is added to git exclude so forge-written files are not committed.
+Shell output truncation is handled by opencode's native shell tool: when output exceeds the tool limit, the full output is spilled to opencode's tool-output directory on the host (readable from loop sessions, see below). The worktree `.forge/` scratch directory is added to git exclude so forge-written files are not committed.
 
 ## Tool-Output Access
 

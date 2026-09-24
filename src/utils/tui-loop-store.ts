@@ -9,7 +9,7 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { randomUUID } from 'node:crypto'
 import { resolveForgeDbPath } from '../storage'
-import { createLoopsRepo } from '../storage/repos/loops-repo'
+import { createLoopsRepo, type LoopSidebarRow, type LoopsRepo } from '../storage/repos/loops-repo'
 import { createPlansRepo } from '../storage/repos/plans-repo'
 import { createSectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopInfo } from './tui-models'
@@ -22,14 +22,24 @@ import { loopBranchExists } from '../workspace/forge-naming'
  * handle. Returns `fallback` when the file is missing or any step throws: the
  * TUI renders whatever it can rather than surfacing a database error.
  */
+function openReadOnlyForgeDb(dbPath: string): Database {
+  const db = new Database(dbPath, { readonly: true })
+  try {
+    db.run('PRAGMA busy_timeout=5000')
+  } catch (err) {
+    try { db.close() } catch {}
+    throw err
+  }
+  return db
+}
+
 function withReadOnlyForgeDb<T>(dbPathOverride: string | undefined, fallback: T, read: (db: Database) => T): T {
   const dbPath = dbPathOverride || resolveForgeDbPath()
   if (!existsSync(dbPath)) return fallback
 
   let db: Database | null = null
   try {
-    db = new Database(dbPath, { readonly: true })
-    db.run('PRAGMA busy_timeout=5000')
+    db = openReadOnlyForgeDb(dbPath)
     return read(db)
   } catch {
     return fallback
@@ -123,6 +133,58 @@ export function fetchStoredSessionPlan(projectId: string, sessionId: string, dbP
   return withReadOnlyForgeDb(dbPathOverride, null, (db) =>
     createPlansRepo(db).getForSession(projectId, sessionId)?.content ?? null
   )
+}
+
+const SIDEBAR_LOOP_LIMIT = 3
+
+export interface LoopSidebarReader {
+  read(): LoopSidebarRow[]
+  close(): void
+}
+
+export function openLoopSidebarReader(
+  projectId: string,
+  dbPathOverride?: string,
+  limit: number = SIDEBAR_LOOP_LIMIT,
+): LoopSidebarReader {
+  const dbPath = dbPathOverride || resolveForgeDbPath()
+  let db: Database | null = null
+  let repo: LoopsRepo | null = null
+  let closed = false
+
+  const open = (): boolean => {
+    if (db && repo) return true
+    if (!existsSync(dbPath)) return false
+    let next: Database | null = null
+    try {
+      next = openReadOnlyForgeDb(dbPath)
+      repo = createLoopsRepo(next)
+      db = next
+      return true
+    } catch {
+      try { next?.close() } catch {}
+      db = null
+      repo = null
+      return false
+    }
+  }
+
+  return {
+    read(): LoopSidebarRow[] {
+      if (closed || !open() || !repo) return []
+      try {
+        return repo.listSidebarRows(projectId, limit)
+      } catch {
+        return []
+      }
+    },
+    close(): void {
+      closed = true
+      try { db?.close() } catch {}
+      db = null
+      repo = null
+    },
+  }
 }
 
 function openWritableForgeDb(dbPathOverride?: string): Database {

@@ -22,7 +22,7 @@ import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
 import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
-import { createLoopSessionWithWorkspace } from '../utils/loop-session'
+import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
@@ -40,7 +40,6 @@ import { createUsageCapture } from './runtime-usage'
 import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
-import { selectSessionBestEffort } from '../utils/tui-navigation'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
@@ -505,11 +504,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // pre-rotation session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(oldSessionId, loopName)
 
-    await selectSessionBestEffort(client, state.projectDir ?? state.worktreeDir, logger, {
-      sessionID: newSessionId,
-      workspace: ensured.workspaceId ?? state.workspaceId,
-    })
-
     watchdog.stop(loopName)
     watchdog.start(loopName)
 
@@ -939,9 +933,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         fallbackModel: oldest.fallbackModel,
       })
       
-      void client.session.delete({ sessionID: oldest.sessionId, directory: oldest.directory }).catch((err: unknown) => {
-        logger.error(`Loop: failed to delete trimmed session ${oldest.sessionId} (loop=${loopName})`, err)
-      })
+      void deleteSessionBestEffort(
+        client,
+        { sessionID: oldest.sessionId, directory: oldest.directory },
+        logger,
+        `Loop: failed to delete trimmed session ${oldest.sessionId} (loop=${loopName})`,
+      )
     }
   }
 
@@ -1009,9 +1006,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }).catch((err: unknown) => {
           logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
         })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
-          logger.error(`Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
-        })
+        void deleteSessionBestEffort(
+          client,
+          { sessionID: entry.sessionId, directory: entry.directory },
+          logger,
+          `Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`,
+        )
       }
       loopRetainedSessions.delete(loopName)
     }
@@ -2481,35 +2481,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    if (event.type === 'worktree.failed') {
-      const message = event.properties?.message as string
-      const directory = event.properties?.directory as string
-      logger.error(`Loop: worktree failed: ${message}`)
-      
-      if (directory) {
-        const activeLoops = loopService.listActive()
-        const affectedLoop = activeLoops.find((s) => s.worktreeDir === directory)
-        if (affectedLoop?.loopName) {
-          // Serialize with phase-rotation ticks (which also acquire the state
-          // lock). Without this guard, a tick could rotate the phase (and
-          // commit its row) between the time we read the affectedLoop snapshot
-          // and the time terminateLoop records the terminal row from that stale
-          // snapshot — yielding a phase-transition row AFTER the terminal row
-          // and a stale terminal fromPhase. Holding the lock for the duration
-          // of terminateLoop guarantees the authoritative under-lock state
-          // observed inside terminateLoop is the persisted phase at termination
-          // time, so the terminal row's fromPhase matches the persisted phase
-          // exactly and no rotation row lands after the terminal row.
-          await withStateLock(affectedLoop.loopName, async () => {
-            const state = loopService.getActiveState(affectedLoop.loopName!)
-            if (!state?.active) return
-            await terminateLoop(affectedLoop.loopName!, state, { kind: 'worktree_failed', message })
-          })
-        }
-      }
-      return
-    }
-
     if (event.type === 'session.error') {
       const errorProps = event.properties as { sessionID?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
       const eventSessionId = errorProps?.sessionID
@@ -3026,7 +2997,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }).catch((err: unknown) => {
           logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, err)
         })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch(() => {})
+        void deleteSessionBestEffort(
+          client,
+          { sessionID: entry.sessionId, directory: entry.directory },
+          logger,
+          `Loop: failed to delete retained session ${entry.sessionId} on clear (loop=${loopName})`,
+        )
       }
       loopRetainedSessions.delete(loopName)
     }

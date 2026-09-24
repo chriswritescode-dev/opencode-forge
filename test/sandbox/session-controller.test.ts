@@ -150,6 +150,19 @@ describe('SessionSandboxController', () => {
     await controller.dispose()
   })
 
+  test('isIdle is true only while no session is bound to the host sandbox', async () => {
+    const off = createController()
+    await off.start()
+    expect(off.isIdle()).toBe(true)
+    await off.dispose()
+
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-idle-on' }))
+    const on = createController()
+    await on.start()
+    expect(on.isIdle()).toBe(false)
+    await on.dispose()
+  })
+
   test('desired OFF stops the host and writes applied OFF without error', async () => {
     repo.setDesired(PROJECT, makeDesired({ revision: 'r-off', enabled: false }))
     const controller = createController()

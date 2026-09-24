@@ -27,6 +27,7 @@ import { terminationStatusFor, terminationReasonToString, type TerminationReason
 import { generateUniqueName } from './name-uniqueness'
 import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { canonicalizePath } from '../sandbox/path'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -61,6 +62,7 @@ export interface LoopService {
    * loop" check must go through here instead of testing loop-row existence.
    */
   resolveActiveLoopForSession(sessionId: string): LoopState | null
+  findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null
   buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
@@ -265,6 +267,16 @@ export function createLoopService(
     const loopName = resolveLoopName(sessionId)
     const state = loopName ? getActiveState(loopName) : null
     return state?.sessionId === sessionId ? state : null
+  }
+
+  function findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null {
+    const canonical = canonicalizePath(directory)
+    for (const state of listActive()) {
+      if (!state.worktreeDir) continue
+      if (options?.worktreeOnly && !state.worktree) continue
+      if (canonicalizePath(state.worktreeDir) === canonical) return state
+    }
+    return null
   }
 
   function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void {
@@ -1006,6 +1018,7 @@ export function createLoopService(
     registerLoopSession,
     resolveLoopName,
     resolveActiveLoopForSession,
+    findActiveByWorktreeDir,
     setStatus,
     buildContinuationPrompt,
     buildAuditPrompt,

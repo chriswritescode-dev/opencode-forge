@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
 import { ParentLookupUndeterminedError } from '../src/utils/session-ancestry'
 
@@ -278,14 +278,17 @@ describe('createSessionLoopResolver', () => {
   describe('directory-fallback', () => {
     it('resolves child session when directory matches an active loop worktreeDir', async () => {
       const getParentSessionId = async (sessionId: string) => sessionId === 'session-subagent' ? 'parent-session' : null
+      const findActiveByWorktreeDir = vi.fn(() =>
+        ({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' }),
+      )
 
       const loop = {
         service: {
           resolveLoopName: () => null,
           getActiveState: (name: string) =>
             name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+          findActiveByWorktreeDir,
         },
-        listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
@@ -299,18 +302,22 @@ describe('createSessionLoopResolver', () => {
 
       const result = await resolver.resolveActiveLoopForSession('session-subagent')
       expect(result).toEqual({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' })
+      expect(findActiveByWorktreeDir).toHaveBeenCalledWith('/worktree', { worktreeOnly: true })
     })
 
     it('does not resolve a top-level new session by directory alone', async () => {
       const getParentSessionId = async () => null
+      const findActiveByWorktreeDir = vi.fn(() =>
+        ({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' }),
+      )
 
       const loop = {
         service: {
           resolveLoopName: () => null,
           getActiveState: (name: string) =>
             name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+          findActiveByWorktreeDir,
         },
-        listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
@@ -324,18 +331,20 @@ describe('createSessionLoopResolver', () => {
 
       const result = await resolver.resolveActiveLoopForSession('session-new')
       expect(result).toBeNull()
+      expect(findActiveByWorktreeDir).not.toHaveBeenCalled()
     })
 
     it('directory-fallback: directory does not match any active loop returns null', async () => {
       const getParentSessionId = async () => null
+      const findActiveByWorktreeDir = vi.fn(() => null)
 
       const loop = {
         service: {
           resolveLoopName: () => null,
           getActiveState: (name: string) =>
             name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+          findActiveByWorktreeDir,
         },
-        listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/some-other-dir'
@@ -360,7 +369,6 @@ describe('createSessionLoopResolver', () => {
           getActiveState: (name: string) =>
             name === 'loop-1' ? { loopName: 'loop-1', active: false, sandbox: true } : null,
         },
-        listActive: () => [{ loopName: 'loop-1', worktreeDir: '/worktree', sandbox: true, active: false }],
       }
 
       const resolver = createSessionLoopResolver({
@@ -373,16 +381,19 @@ describe('createSessionLoopResolver', () => {
       expect(result).toBeNull()
     })
 
-    it('resolves via directory with path normalization', async () => {
+    it('forwards the session directory to findActiveByWorktreeDir', async () => {
       const getParentSessionId = async (sessionId: string) => sessionId === 'session-subagent' ? 'parent-session' : null
+      const findActiveByWorktreeDir = vi.fn(() =>
+        ({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' }),
+      )
 
       const loop = {
         service: {
           resolveLoopName: () => null,
           getActiveState: (name: string) =>
             name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+          findActiveByWorktreeDir,
         },
-        listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree/', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
@@ -394,8 +405,8 @@ describe('createSessionLoopResolver', () => {
         logger: mockLogger,
       })
 
-      const result = await resolver.resolveActiveLoopForSession('session-subagent')
-      expect(result).toEqual({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' })
+      await resolver.resolveActiveLoopForSession('session-subagent')
+      expect(findActiveByWorktreeDir).toHaveBeenCalledWith('/worktree', { worktreeOnly: true })
     })
   })
 })

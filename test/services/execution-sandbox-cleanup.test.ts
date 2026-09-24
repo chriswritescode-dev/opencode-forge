@@ -95,12 +95,6 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
         clearLoopTimers: noopFn,
       },
       sandboxManager,
-      workspaceStatusRegistry: {
-        recordEvent: vi.fn(),
-        getStatus: vi.fn().mockReturnValue('connected' as const),
-        awaitConnected: vi.fn().mockResolvedValue({ connected: true, elapsedMs: 0, source: 'cached' as const }),
-        primeFromSnapshot: vi.fn(),
-      },
     }
 
     return { deps, loopService, sandboxManager, unregisterSessionReverseIndex, logger }
@@ -121,8 +115,6 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
         maxIterations: 50,
         sandboxEnabled: true,
         planText: 'NEW_PLAN',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
         sendInitialPrompt,
       },

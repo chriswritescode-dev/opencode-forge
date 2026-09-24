@@ -51,13 +51,13 @@
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
   "engines": {
-    "opencode": ">=1.15.5"
+    "opencode": ">=2.0.14"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.15.5",
-    "@opencode-ai/sdk": "1.15.5",
+    "@opencode/plugin": "2.0.14",
     "jsonc-parser": "^3.3.1",
-    "web-tree-sitter": "0.25.10"
+    "web-tree-sitter": "0.25.10",
+    "zod": "4.1.8"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.1.105",
@@ -74,6 +74,7 @@
   "devDependencies": {
     "@esbuild/linux-arm64": "^0.21.5",
     "@eslint/js": "^10.0.1",
+    "@opencode/client": "2.0.14",
     "@opentui/core": "0.1.105",
     "@opentui/solid": "0.1.105",
     "@rollup/rollup-linux-arm64-gnu": "^4.60.3",

@@ -86,17 +86,6 @@ describe('createFakeForgeClient', () => {
     expect(result).toEqual([])
   })
 
-  test('workspace.status returns empty object', async () => {
-    const { client } = createFakeForgeClient()
-    const result = await client.workspace.status()
-    expect(result).toEqual({})
-  })
-
-  test('workspace.syncList resolves to undefined', async () => {
-    const { client } = createFakeForgeClient()
-    await expect(client.workspace.syncList()).resolves.toBeUndefined()
-  })
-
   test('workspace.remove resolves to undefined', async () => {
     const { client } = createFakeForgeClient()
     await expect(client.workspace.remove({ id: 's1', directory: '/tmp' })).resolves.toBeUndefined()
@@ -107,37 +96,9 @@ describe('createFakeForgeClient', () => {
     await expect(client.workspace.warp({ id: 'ws-1', sessionID: 's1' })).resolves.toBeUndefined()
   })
 
-  test('tui.publish resolves to undefined', async () => {
+  test('toast resolves to undefined', async () => {
     const { client } = createFakeForgeClient()
-    await expect(client.tui.publish({ directory: '/tmp' })).resolves.toBeUndefined()
-  })
-
-  test('tui.selectSession resolves to undefined', async () => {
-    const { client } = createFakeForgeClient()
-    await expect(client.tui.selectSession({ sessionID: 's1' })).resolves.toBeUndefined()
-  })
-
-  test('sync.start resolves to undefined', async () => {
-    const { client } = createFakeForgeClient()
-    await expect(client.sync.start({ directory: '/tmp' })).resolves.toBeUndefined()
-  })
-
-  test('session.list returns empty array', async () => {
-    const { client } = createFakeForgeClient()
-    const result = await client.session.list({ directory: '/tmp' })
-    expect(result).toEqual([])
-  })
-
-  test('project.list returns empty array', async () => {
-    const { client } = createFakeForgeClient()
-    const result = await client.project.list({ directory: '/tmp' })
-    expect(result).toEqual([])
-  })
-
-  test('provider.list returns empty all/connected', async () => {
-    const { client } = createFakeForgeClient()
-    const result = await client.provider.list({ directory: '/tmp' })
-    expect(result).toEqual({ all: [], connected: [] })
+    await expect(client.toast({ directory: '/tmp', message: 'hi' })).resolves.toBeUndefined()
   })
 
   // ── Overrides ─────────────────────────────────────────────────────────
@@ -190,13 +151,13 @@ describe('createFakeForgeClient', () => {
     await client.session.create({ directory: '/a' })
     await client.workspace.create({ directory: '/b' })
     await client.session.messages({ sessionID: 'a', directory: '/tmp', limit: 5 })
-    await client.tui.publish({ directory: '/tmp' })
+    await client.toast({ directory: '/tmp', message: 'hi' })
 
     expect(calls).toHaveLength(4)
     expect(calls[0]).toEqual<RecordedCall>({ method: 'session.create', params: { directory: '/a' } })
     expect(calls[1]).toEqual<RecordedCall>({ method: 'workspace.create', params: { directory: '/b' } })
     expect(calls[2]).toEqual<RecordedCall>({ method: 'session.messages', params: { sessionID: 'a', directory: '/tmp', limit: 5 } })
-    expect(calls[3]).toEqual<RecordedCall>({ method: 'tui.publish', params: { directory: '/tmp' } })
+    expect(calls[3]).toEqual<RecordedCall>({ method: 'toast', params: { directory: '/tmp', message: 'hi' } })
   })
 
   test('override invocations are still recorded', async () => {

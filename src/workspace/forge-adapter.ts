@@ -1,17 +1,29 @@
-import { join } from 'path'
 import { mkdir } from 'fs/promises'
 import { existsSync, readFileSync, appendFileSync } from 'fs'
-import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
-import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug } from './forge-naming'
+import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
-import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
 import { commitWorktreeChanges } from './worktree-commit'
 import { sandboxContainerName } from '../sandbox/msb'
 
+export interface ForgeWorkspaceInfo {
+  id: string
+  type: string
+  name: string
+  branch: string | null
+  directory: string | null
+  extra: unknown | null
+  projectID: string
+}
+
+export interface ForgeWorkspaceAdapter {
+  configure(info: ForgeWorkspaceInfo): ForgeWorkspaceInfo
+  create(info: ForgeWorkspaceInfo): Promise<void>
+  remove(info: ForgeWorkspaceInfo): Promise<void>
+}
 
 /**
  * Runtime context for a forge workspace teardown. Populated by the caller
@@ -53,18 +65,18 @@ const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
   doRemoveWorktree: true,
 }
 
-export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAdapter {
+export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorkspaceAdapter {
   const { dataDir, logger, sandboxManager, getTeardownContext, gitService: gitServiceOpt, worktreeOpencodeConfig } = deps
   const git = gitServiceOpt ?? defaultGitService
 
-  function deriveLoopName(info: WorkspaceInfo): string {
+  function deriveLoopName(info: ForgeWorkspaceInfo): string {
     const extra = (info.extra ?? {}) as { loopName?: unknown }
     const raw = typeof extra.loopName === 'string' ? extra.loopName : ''
     if (!raw) throw new Error('forge workspace adapter: extra.loopName is required')
     return forgeWorktreeSlug(raw)
   }
 
-  function deriveProjectDirectory(info: WorkspaceInfo): string {
+  function deriveProjectDirectory(info: ForgeWorkspaceInfo): string {
     const extra = (info.extra ?? {}) as { projectDirectory?: unknown }
     const dir = typeof extra.projectDirectory === 'string' ? extra.projectDirectory : ''
     if (!dir) throw new Error('forge workspace adapter: extra.projectDirectory is required')
@@ -73,11 +85,10 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
 
   /**
    * Whether this workspace's loop explicitly opted out of the sandbox
-   * (`extra.forgeLoop.sandboxEnabled === false`), e.g. a remote launch with
-   * `remotes[].sandbox: false`. Provisioning must honor the per-loop flag even
-   * when this server's own config has the sandbox enabled.
+   * (`extra.forgeLoop.sandboxEnabled === false`). Provisioning must honor the
+   * per-loop flag even when the config has the sandbox enabled.
    */
-  function isLoopSandboxOptedOut(info: WorkspaceInfo): boolean {
+  function isLoopSandboxOptedOut(info: ForgeWorkspaceInfo): boolean {
     const forgeLoop = ((info.extra ?? {}) as { forgeLoop?: unknown }).forgeLoop
     if (typeof forgeLoop !== 'object' || forgeLoop === null) return false
     return (forgeLoop as { sandboxEnabled?: unknown }).sandboxEnabled === false
@@ -101,7 +112,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     }
   }
 
-  function resolveLoopName(info: WorkspaceInfo): string {
+  function resolveLoopName(info: ForgeWorkspaceInfo): string {
     try {
       return deriveLoopName(info)
     } catch {
@@ -138,15 +149,9 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
   }
 
   /**
-   * Re-stamp launcher-provided attach timestamps with this server's clock.
-   *
-   * Remote launches stamp `workspaceCreatedAt` and
-   * `forgeLoop.pendingAttachStartedAt` on the launching machine, but the
-   * attach/pending-start grace windows are evaluated against this server's
-   * clock (classify-stale.ts). Clock skew between the two machines beyond the
-   * grace window would otherwise expire a fresh workspace immediately.
-   * `configure` runs exactly once at creation on the owning server, so it is
-   * the single normalization point.
+   * Stamps the attach timestamps with the creation time. `configure` runs
+   * exactly once at creation, so it is the single normalization point for the
+   * attach/pending-start grace windows evaluated in classify-stale.ts.
    */
   function restampAttachTimestamps(extra: unknown): unknown {
     if (typeof extra !== 'object' || extra === null) return extra
@@ -164,15 +169,6 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     return result
   }
 
-  function deriveSyncPin(info: WorkspaceInfo, loopName: string): { startRef: string; syncRef: string; gitRemote: string } | null {
-    const extra = (info.extra ?? {}) as Record<string, unknown>
-    const startRef = typeof extra.startRef === 'string' && extra.startRef.length > 0 ? extra.startRef : null
-    if (!startRef) return null
-    const syncRef = typeof extra.syncRef === 'string' ? extra.syncRef : forgeSyncRef(loopName)
-    const gitRemote = typeof extra.gitRemote === 'string' ? extra.gitRemote : DEFAULT_GIT_REMOTE
-    return { startRef, syncRef, gitRemote }
-  }
-
   async function stepRemoveWorktree(worktreeDir: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doRemoveWorktree) return
 
@@ -187,35 +183,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     }
   }
 
-  /**
-   * Best-effort deletion of the remote-launch sync ref (`refs/forge/<loop>`)
-   * on the shared git remote so refs do not accumulate there. Runs only on
-   * final teardown (worktree removed): the loop branch pins the fetched
-   * commit locally, so the shared ref is no longer needed. Restart-preserving
-   * teardowns keep the ref in place.
-   */
-  function stepDeleteSyncRef(info: WorkspaceInfo, loopName: string, ctx: TeardownContext): void {
-    if (!ctx.doRemoveWorktree) return
-    const pin = deriveSyncPin(info, loopName)
-    if (!pin) return
-    try {
-      const projectDir = deriveProjectDirectory(info)
-      const res = git.push(projectDir, pin.gitRemote, `:${pin.syncRef}`, false)
-      if (res.ok) {
-        logger.log(`forge-adapter: deleted sync ref ${pin.syncRef} on ${pin.gitRemote}`)
-      } else {
-        logger.log(`forge-adapter: could not delete sync ref ${pin.syncRef} on ${pin.gitRemote}: ${res.stderr.trim() || 'unknown error'}`)
-      }
-    } catch (err) {
-      logger.log(`forge-adapter: sync ref cleanup skipped: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
-
-
   return {
-    name: 'Forge Worktree',
-    description: 'Named git worktree under the forge data directory',
     configure(info) {
       const loopName = deriveLoopName(info)
       return {
@@ -231,52 +199,19 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
         throw new Error('forge workspace adapter: configure must set directory and branch')
       }
       const projectDir = deriveProjectDirectory(info)
-      await mkdir(join(dataDir, 'worktrees'), { recursive: true })
+      await mkdir(forgeWorktreesRoot(dataDir), { recursive: true })
 
       if (!git.isInsideWorkTree(projectDir)) {
         throw new Error(`forge workspace adapter: projectDirectory ${projectDir} is not a git work tree`)
       }
 
-      // Resolve SHA pin before checking branch existence so the fetch (if needed)
-      // happens before any worktree operation.
-      const loopName = deriveLoopName(info)
-      const pin = deriveSyncPin(info, loopName)
-      if (pin && !git.commitExists(projectDir, pin.startRef)) {
-        logger.log(`forge-adapter: fetching ${pin.syncRef} from ${pin.gitRemote} to resolve pinned SHA ${pin.startRef}`)
-        git.fetchRef(projectDir, pin.gitRemote, pin.syncRef)
-        if (!git.commitExists(projectDir, pin.startRef)) {
-          throw new Error(
-            `forge workspace adapter: startRef ${pin.startRef} not found after fetching ${pin.syncRef} from ${pin.gitRemote}`,
-          )
-        }
-      }
-
       // Detect orphan state from a prior failed run: branch may exist without a live worktree.
       const branchExists = git.branchExists(projectDir, info.branch)
-
-      // A pinned launch must run exactly the pushed SHA. Reusing a leftover
-      // same-named branch at a different tip would silently run old code, so
-      // fail with an actionable error instead.
-      if (pin && branchExists) {
-        const tipRes = git.revParseRef(projectDir, `refs/heads/${info.branch}`)
-        const tip = tipRes.ok ? tipRes.stdout.trim() : ''
-        const pinnedRes = git.revParseRef(projectDir, pin.startRef)
-        const pinned = pinnedRes.ok ? pinnedRes.stdout.trim() : pin.startRef
-        if (tip !== pinned) {
-          throw new Error(
-            `forge workspace adapter: branch ${info.branch} already exists at ${tip ? tip.substring(0, 7) : 'unknown'} ` +
-            `but this launch pinned ${pinned.substring(0, 7)}; delete the stale branch or use a different loop name`,
-          )
-        }
-      }
-
-      // Only pass startPoint when creating a new branch; existing branches always win.
-      const startPoint = pin && !branchExists ? pin.startRef : undefined
 
       // Prune dead worktree records first so `git worktree add` can re-use an orphaned branch.
       git.worktreePrune(projectDir)
 
-      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists, startPoint)
+      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
       let reusedOrphan = false
       if (!res.ok) {
         const stderr = res.stderr.trim() || 'unknown error'
@@ -298,7 +233,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
               logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
               throw new Error(`git worktree add failed: ${stderr}`)
             }
-            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists, startPoint)
+            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
             if (!res.ok) {
               const retryStderr = res.stderr.trim() || 'unknown error'
               logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
@@ -368,13 +303,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // Skip on error/stall/abort so restart can reuse it.
       await stepRemoveWorktree(info.directory, ctx)
 
-      // Remote-launched loops: drop the sync ref from the shared git remote.
-      stepDeleteSyncRef(info, loopName, ctx)
-
       // Branches are never deleted — `forge/*` scratch branches stay in place for potential restart.
-    },
-    target(info) {
-      return { type: 'local', directory: info.directory! }
     },
   }
 }

@@ -25,7 +25,6 @@ export type TransitionEvent =
   | { type: 'stall-timeout' }
   | { type: 'error-max-retries'; context?: string }
   | { type: 'missing-worktree-dir' }
-  | { type: 'worktree-failed'; message: string }
   | { type: 'session-creation-failed' }
   | { type: 'audit-retry-exhausted' }
   | { type: 'final-audit-retry-exhausted' }
@@ -75,8 +74,6 @@ function handleCodingEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'shutdown' } }
     case 'stall-timeout':
       return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
-    case 'worktree-failed':
-      return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:
@@ -109,8 +106,6 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
     case 'audit-retry-exhausted':
       return { kind: 'terminate', reason: { kind: 'audit_retry_exhausted' } }
-    case 'worktree-failed':
-      return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:
@@ -136,8 +131,6 @@ function handleFinalAuditEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
     case 'missing-worktree-dir':
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
-    case 'worktree-failed':
-      return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:
@@ -159,8 +152,6 @@ function handlePostActionEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
     case 'missing-worktree-dir':
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
-    case 'worktree-failed':
-      return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:

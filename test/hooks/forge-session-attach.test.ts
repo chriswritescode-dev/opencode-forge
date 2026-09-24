@@ -30,9 +30,7 @@ describe('createForgeSessionAttachHook', () => {
         list: overrides?.workspaceList ?? (async () => []),
         remove: overrides?.workspaceRemove ?? (async () => {}),
       },
-      tui: {
-        publish: overrides?.tuiPublish ?? (async () => {}),
-      },
+      toast: overrides?.tuiPublish ?? (async () => {}),
       session: {
         get: overrides?.sessionGet ?? (async () => { throw Object.assign(new Error('not found'), { kind: 'not-found' }) }),
       },
@@ -114,7 +112,6 @@ describe('createForgeSessionAttachHook', () => {
     expect(input.loopName).toBe('my-feature')
     expect(input.displayName).toBe('My Feature')
     expect(input.planText).toBe('# Plan\n\nDo stuff.')
-    expect(input.selectSession).toBe(true)
     expect(input.startWatchdog).toBe(true)
 
     // Verify plan source was resolved from stored plan
@@ -162,7 +159,6 @@ describe('createForgeSessionAttachHook', () => {
     expect(input.loopName).toBe('inline-loop')
     expect(input.planText).toBe('# Inline Plan\n\nInline stuff.')
     expect(input.sendInitialPrompt).toBe(false)
-    expect(input.selectSession).toBe(false)
     expect(input.startWatchdog).toBe(true)
   })
 
@@ -301,11 +297,7 @@ describe('createForgeSessionAttachHook', () => {
       expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
     )
     expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.objectContaining({
-        properties: expect.objectContaining({
-          message: expect.stringContaining('attach window expired'),
-        }),
-      }),
+      message: expect.stringContaining('attach window expired'),
     }))
   })
 
@@ -438,11 +430,7 @@ describe('createForgeSessionAttachHook', () => {
       expect.objectContaining({ doRemoveWorktree: false }),
     )
     expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.objectContaining({
-        properties: expect.objectContaining({
-          message: expect.stringContaining('terminal status'),
-        }),
-      }),
+      message: expect.stringContaining('terminal status'),
     }))
   })
 
@@ -703,13 +691,8 @@ describe('createForgeSessionAttachHook', () => {
     expect(tuiPublish).toHaveBeenCalledWith(
       expect.objectContaining({
         directory: '/tmp/wt/stored',
-        body: expect.objectContaining({
-          type: 'tui.toast.show',
-          properties: expect.objectContaining({
-            variant: 'error',
-            title: expect.stringContaining('stored-loop'),
-          }),
-        }),
+        variant: 'error',
+        title: expect.stringContaining('stored-loop'),
       }),
     )
   })
@@ -841,12 +824,8 @@ describe('createForgeSessionAttachHook', () => {
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_fail' })
     expect(tuiPublish).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: expect.objectContaining({
-          properties: expect.objectContaining({
-            message: expect.stringContaining('prompt blew up'),
-            variant: 'error',
-          }),
-        }),
+        message: expect.stringContaining('prompt blew up'),
+        variant: 'error',
       }),
     )
   })
@@ -1013,13 +992,9 @@ describe('createForgeSessionAttachHook', () => {
       ? 'Loop already completed. Run a new plan to start fresh.'
       : 'in terminal status. Use Loop-status restart to resume.'
     expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.objectContaining({
-        properties: expect.objectContaining({
-          title: expect.stringContaining('restart-loop'),
-          message: expect.stringContaining(expectedMessage),
-          variant: 'error',
-        }),
-      }),
+      title: expect.stringContaining('restart-loop'),
+      message: expect.stringContaining(expectedMessage),
+      variant: 'error',
     }))
   }
 
@@ -1280,12 +1255,7 @@ describe('createForgeSessionAttachHook', () => {
     expect(tuiPublish).toHaveBeenCalledWith(
       expect.objectContaining({
         directory: '/tmp/cross-proj',
-        body: expect.objectContaining({
-          type: 'tui.toast.show',
-          properties: expect.objectContaining({
-            variant: 'error',
-          }),
-        }),
+        variant: 'error',
       }),
     )
     expect(mockAttachLoop).not.toHaveBeenCalled()

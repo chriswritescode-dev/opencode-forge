@@ -17,7 +17,6 @@ import Database from 'better-sqlite3'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
-import { createNoWaitWorkspaceStatusRegistry } from './helpers/workspace-status-registry'
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()
 
@@ -98,7 +97,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -173,7 +171,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -215,11 +212,8 @@ describe('loop-status tool restart path', () => {
       workspace: {
         warp: async () => { throw new Error('workspace gone') },
       },
-      tui: {
-        publish: async (opts: any) => {
-          const props = opts?.body?.properties ?? {}
-          toastCalls.push({ variant: props.variant, message: props.message })
-        },
+      toast: async (opts: any) => {
+        toastCalls.push({ variant: opts?.variant, message: opts?.message })
       },
     })
     const logger = createLogger({ enabled: false, file: '' })
@@ -244,7 +238,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -309,7 +302,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -392,7 +384,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -467,7 +458,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -561,7 +551,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -655,7 +644,6 @@ describe('loop-status tool restart path', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: { auditorFallbackModels: ['prov/fb'] },
@@ -758,7 +746,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -843,7 +830,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -945,7 +931,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1036,7 +1021,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1147,7 +1131,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1227,7 +1210,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1321,7 +1303,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1405,7 +1386,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1515,7 +1495,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1594,7 +1573,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1670,7 +1648,6 @@ describe('loop-status cumulative usage', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1760,7 +1737,6 @@ describe('loop-status restartability display', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1824,7 +1800,6 @@ describe('loop-status restartability display', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1888,7 +1863,6 @@ describe('loop-status restartability display', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -1952,7 +1926,6 @@ describe('loop-status restartability display', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -2016,7 +1989,6 @@ describe('loop-status restartability display', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -2078,7 +2050,6 @@ describe('loop-status restartability display', () => {
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},

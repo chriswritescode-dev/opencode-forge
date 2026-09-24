@@ -19,7 +19,7 @@ Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.
 
 ## Architect restrictions
 
-The architect agents cannot use `apply_patch`, `edit`, `write`, `multiedit`, `patch`, or `task`. They retain direct read/search tools, Bash for read-only inspection and project checks, and `plan-read`, `plan-write`, and `plan-edit`; only the interactive architect can call `question` and `execute-plan`. The autonomous architect cannot invoke execution, loop, or group tools directly.
+The architect agents cannot use `edit`, `write`, `patch`, or `task`. They retain direct read/search tools, Bash for read-only inspection and project checks, and `plan-read`, `plan-write`, and `plan-edit`; only the interactive architect can call `question` and `execute-plan`. The autonomous architect cannot invoke execution, loop, or group tools directly.
 
 ## Auditor restrictions
 
@@ -27,12 +27,8 @@ The auditor agents are read-only. They cannot use file-modifying tools or loop-m
 
 Excluded tools:
 
-- `apply_patch`
 - `edit`
 - `write`
-- `multiedit`
-- `plan`
-- `plan_exit`
 - `plan-write`
 - `plan-edit`
 - `execute-plan`
@@ -53,5 +49,7 @@ Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 | `/loop-status` | Check status of all active loops. | `code` | no |
 | `/loop-cancel` | Cancel the active loop. | `code` | no |
 | `/launch-group` | Decompose a PRD or feature list into features and launch them as parallel planning + development loops. | `code` | no |
+
+`/review` and `/review-plan` are declared as subtask commands but run inline in the invoking session, because a plugin command cannot create a child session. Every Forge command switches the session to the command's agent for that one turn and, once the turn finishes, switches it back to the previous agent unless you selected a different agent in the meantime.
 
 Source: [`buildPluginCommands()`](../src/config.ts).

@@ -42,18 +42,10 @@ function createMockForgeClient(): ForgeClient {
     workspace: {
       create: async () => ({ id: '', directory: '/tmp/wt', branch: 'b' }) as any,
       list: async () => [],
-      status: async () => ({}) as any,
-      syncList: async () => {},
       remove: async () => {},
       warp: async () => {},
     },
-    tui: {
-      publish: async () => {},
-      selectSession: async () => {},
-    },
-    sync: {
-      start: async () => {},
-    },
+    toast: async () => {},
   }
 }
 

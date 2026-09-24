@@ -72,10 +72,6 @@ describe('handleLoopRestart from stall_timeout', () => {
   let loopAttemptsRepo: LoopAttemptsRepo
   let loopService: LoopService
 
-  const mockWorkspaceStatusRegistry = {
-    awaitConnected: async () => ({ connected: true }),
-  }
-
   const mockPendingTeardowns = {
     register: () => {},
     unregister: () => {},
@@ -267,7 +263,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -302,7 +298,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -437,7 +432,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -472,7 +467,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -563,7 +557,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -598,7 +592,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -666,10 +659,8 @@ describe('handleLoopRestart from stall_timeout', () => {
         list: async () => [],
         remove: async () => {},
         warp: async () => {},
-        syncList: async () => {},
       },
-      tui: { publish: async () => {}, selectSession: async () => {} },
-      sync: { start: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -699,7 +690,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -784,10 +774,8 @@ describe('handleLoopRestart from stall_timeout', () => {
         ],
         remove: async () => {},
         warp: async () => {},
-        syncList: async () => {},
       },
-      tui: { publish: async () => {}, selectSession: async () => {} },
-      sync: { start: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -818,7 +806,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -837,6 +824,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       expect.objectContaining({
         extra: {
           permissionRules: [portableRule],
+          startRef: 'abc123',
+          syncRef: 'refs/forge/portable-loop',
+          gitRemote: 'origin',
           loopName: 'portable-loop',
           projectDirectory: '/tmp',
           workspaceCreatedAt: expect.any(Number),
@@ -906,7 +896,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -941,7 +931,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1041,7 +1030,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -1076,7 +1065,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1169,7 +1157,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -1204,7 +1192,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1281,7 +1268,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -1316,7 +1303,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1365,7 +1351,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopService: Partial<LoopService> = {
@@ -1430,7 +1416,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1476,7 +1461,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     let capturedResolvedNew: string | null | undefined
@@ -1539,7 +1524,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1641,7 +1625,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     let capturedPreLockPhase: string | undefined
@@ -1686,7 +1670,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1806,7 +1789,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     let capturedPreLockPhase: string | undefined
@@ -1851,7 +1834,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -1946,7 +1928,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -1982,7 +1964,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -2047,7 +2028,7 @@ describe('handleLoopRestart from stall_timeout', () => {
         status: async () => ({}),
       },
       workspace: { list: async () => [], remove: async () => {} },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -2080,7 +2061,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
@@ -2547,9 +2527,8 @@ describe('handleLoopRestart restartability rules', () => {
         list: async () => [],
         remove: async () => {},
         warp: async () => {},
-        syncList: async () => {},
       },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -2584,10 +2563,6 @@ describe('handleLoopRestart restartability rules', () => {
         ...(choice.model ? { model: choice.model } : {}),
       })
       return true
-    }
-
-    const mockWorkspaceStatusRegistry = {
-      awaitConnected: async () => ({ connected: true }),
     }
 
     const mockPendingTeardowns = {
@@ -2636,7 +2611,6 @@ describe('handleLoopRestart restartability rules', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       pendingTeardowns: mockPendingTeardowns as any,
       client,
       sandboxManager: opts?.sandboxManager as any,
@@ -2814,11 +2788,6 @@ describe('handleLoopRestart restartability rules', () => {
     // Restart proceeded: a fresh worktree workspace was requested and a new code session created.
     expect(client.workspace.create).toHaveBeenCalled()
     expect(client.session.create).toHaveBeenCalled()
-
-    // TUI was navigated to the recreated workspace+session so it connects/focuses.
-    expect(client.tui.selectSession).toHaveBeenCalledWith(
-      expect.objectContaining({ workspace: 'ws-new' }),
-    )
 
     const newState = loopService.getActiveState(loopName)
     expect(newState?.active).toBe(true)
@@ -3107,7 +3076,7 @@ describe('handleLoopRestart restartability rules', () => {
 
     // Record toast publications instead of the default no-op.
     const toastPublish = vi.fn(async () => {})
-    ;(client.tui.publish as any).mockImplementation(toastPublish)
+    ;(client.toast as any).mockImplementation(toastPublish)
 
     // The restarted final-audit prompt is directly rejected on a provider limit;
     // the fallback re-dispatch on prov/fb succeeds and absorbs the limit.
@@ -3134,7 +3103,7 @@ describe('handleLoopRestart restartability rules', () => {
     // surface the workspace-detached toast.
     expect(toastPublish).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: expect.objectContaining({ type: 'tui.toast.show' }),
+        message: expect.stringContaining('Workspace attachment lost'),
       }),
     )
   })
@@ -3774,9 +3743,8 @@ describe('handleLoopRestart restartability rules', () => {
         list: async () => [],
         remove: async () => {},
         warp: async () => {},
-        syncList: async () => {},
       },
-      tui: { publish: async () => {}, selectSession: async () => {} },
+      toast: async () => {},
     })
 
     const mockLoopHandler = {
@@ -3788,9 +3756,6 @@ describe('handleLoopRestart restartability rules', () => {
       clearLoopTimers: noopFn,
     }
 
-    const mockWorkspaceStatusRegistryInline = {
-      awaitConnected: async () => ({ connected: true }),
-    }
     const mockPendingTeardownsInline = {
       register: noopFn,
       unregister: noopFn,
@@ -3822,7 +3787,6 @@ describe('handleLoopRestart restartability rules', () => {
       } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistryInline as any,
       pendingTeardowns: mockPendingTeardownsInline as any,
       client,
     })

@@ -1,10 +1,10 @@
-import { tool } from '@opencode-ai/plugin'
+import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 
 const z = tool.schema
 
-export function createGroupTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
+export function createGroupTools(ctx: ToolContext): Record<string, ToolDefinition> {
   const { groupOrchestrator, featureGroupsRepo, projectId } = ctx
 
   return {

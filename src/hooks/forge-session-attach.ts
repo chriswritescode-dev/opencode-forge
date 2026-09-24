@@ -6,6 +6,7 @@ import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/conte
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
 import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
+import { publishToast } from '../utils/toast'
 
 export interface ForgeSessionAttachHookDeps {
   client: ForgeClient
@@ -40,7 +41,6 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
       sessionDirectory,
       sessionProjectId,
       sendInitialPrompt: true,
-      selectSession: true,
     })
   }
 }
@@ -63,7 +63,6 @@ export function createForgeSessionMessageAttachHook(deps: ForgeSessionAttachHook
       sessionDirectory: sessionInfo?.directory as string | undefined,
       sessionProjectId: (sessionInfo?.projectID as string | undefined) ?? deps.projectId,
       sendInitialPrompt: false,
-      selectSession: false,
     })
   }
 }
@@ -76,10 +75,9 @@ async function attachForgeSession(
     sessionDirectory?: string
     sessionProjectId: string
     sendInitialPrompt: boolean
-    selectSession: boolean
   },
 ): Promise<void> {
-    const { sessionId, workspaceId, sessionDirectory, sessionProjectId, sendInitialPrompt, selectSession } = input
+    const { sessionId, workspaceId, sessionDirectory, sessionProjectId, sendInitialPrompt } = input
     let ws = await findWorkspaceById(deps, workspaceId, sessionDirectory)
     if (!ws) {
       await new Promise<void>((r) => setTimeout(r, 100))
@@ -285,8 +283,6 @@ async function attachForgeSession(
           sandboxEnabled: sandbox.enabled,
           sandboxContainer: sandbox.containerName,
           planText,
-          selectSession,
-          selectSessionTiming: 'after-prompt',
           startWatchdog: true,
           sendInitialPrompt,
         },
@@ -367,14 +363,15 @@ function publishAttachFailureToast(
   title: string,
   message: string,
 ): void {
-  deps.client.tui.publish({
+  publishToast({
+    client: deps.client,
     directory,
-    body: {
-      type: 'tui.toast.show',
-      properties: { title, message, variant: 'error', duration: 6000 },
-    },
-  }).catch((err: unknown) => {
-    deps.logger.error('[forge-session-attach] failed to publish toast', err)
+    logger: deps.logger,
+    title,
+    message,
+    variant: 'error',
+    duration: 6000,
+    logPrefix: '[forge-session-attach] failed to publish toast',
   })
 }
 

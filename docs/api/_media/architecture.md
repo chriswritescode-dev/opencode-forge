@@ -6,7 +6,7 @@ See also: [Loop System](loop-system.md), [Modules](modules.md), [API Reference](
 
 ## Plugin Architecture
 
-OpenCode Forge is a dual-plugin: it exports both a server plugin (`src/index.ts`) and a TUI plugin (`src/tui.tsx`). The package declares both surfaces via the `oc-plugin` field in `package.json`.
+OpenCode Forge is a plugin package: it exports a server plugin (`src/index.ts`) and a TUI plugin (`src/tui.tsx`). The package declares both surfaces via the `oc-plugin` field in `package.json`.
 
 ```json
 {
@@ -17,7 +17,20 @@ OpenCode Forge is a dual-plugin: it exports both a server plugin (`src/index.ts`
 | Export Path | Source File | Role |
 |---|---|---|
 | `.` / `./server` | `src/index.ts` | Server-side plugin: hooks, tools, agents, config |
-| `./tui` | `src/tui.tsx` | TUI plugin: sidebar, plan viewer, execution panel |
+| `./tui` | `src/tui.tsx` | TUI plugin: sidebar, execution dialog, loop restart dialog |
+
+### Entry points
+
+`src/index.ts` default-exports the OpenCode 2.x module (`id` + `setup`) built with `define` from `@opencode/plugin/promise/plugin`; `src/tui.tsx` exports `{ id, setup }` for the V2 TUI surface in `src/tui/v2.tsx`. The server and TUI surfaces stay in separate entry files because OpenCode reads each export separately.
+
+Both are thin adapters over one host-neutral core (`src/host/forge-core.ts`), so the loop runtime, storage, sandbox, and tools stay single-sourced:
+
+| Surface | Adapter files | Role |
+|---|---|---|
+| Server | `src/host/v2.ts` | Runs `setup(ctx)`, registers tools/agents/commands/hooks, and pumps normalized events into the core |
+| TUI | `src/tui/v2.tsx` | Registers the sidebar, execution dialog, loop restart, sandbox build, and host-sandbox toggle |
+
+The server side is split by concern: `src/client/v2-adapter.ts` implements the `ForgeClient` port over the V2 context, `src/client/v2-workspaces.ts` adapts V2 worktrees and locations, `src/host/v2-events.ts` normalizes V2 events into Forge's event shape, and `src/host/v2-config.ts`, `src/host/v2-tools.ts`, and `src/host/v2-hooks.ts` handle agent/command registration, tool registration, and hooks.
 
 ### Server Plugin (`src/index.ts`)
 
@@ -25,13 +38,14 @@ The server plugin is the core of the plugin. It:
 
 1. Initializes services (database, loop runtime, sandbox manager)
 2. Registers tools for OpenCode to use
-3. Registers hooks for session management and event handling
-4. Manages the lifecycle of loops and sandbox containers
+3. Registers agents and commands
+4. Registers hooks for session management and event handling
+5. Manages the lifecycle of loops and sandbox containers
 
 Plugin boot does not reconcile, recover, cancel, or restart any persisted loops. See [No boot-time loop recovery](#no-boot-time-loop-recovery) and the [Loop Lifecycle Rules](loop-system.md#loop-lifecycle-rules) for details.
 
 Key exports:
-- `createForgePlugin(config: PluginConfig): Plugin` - Factory function
+- `setupForgeV2(ctx: Plugin.Context)` - OpenCode 2.x `setup` entry
 - `createParentSessionLookup(options)` - Resolves parent sessions across worktrees
 - `createSessionDirectoryLookup(options)` - Resolves session directory across worktrees
 - `PluginConfig`, `CompactionConfig` - Configuration types
@@ -39,40 +53,41 @@ Key exports:
 
 ### Multi-client / multi-project
 
-Each `opencode attach --dir <worktree>` invokes `createForgePlugin` once for that project, even when clients share the same `opencode serve` process.
+Each `opencode attach --dir <worktree>` invokes `setupForgeV2` once for that project, even when clients share the same `opencode serve` process.
 
 - Storage remains project-keyed (SQLite rows include `projectId`), so no schema changes are required for multi-project isolation.
 - Sandbox orphan cleanup is aware of all active worktrees before container cleanup.
 
 ### TUI Plugin (`src/tui.tsx`)
 
-The TUI plugin provides a sidebar widget that displays:
+The TUI plugin provides:
 
-- Active and recent loops
-- Plan viewer with inline editing (view/edit/execute/export tabs)
-- Execution dialog with mode, model, and variant selection
-- Loop details dialog with session statistics
-- Command palette integration (`Show loops`, `View plan`, `Execute plan`)
-- Model selection dialog with recent model tracking
+- A sidebar listing the project's loops (up to three: running first, then most recent finished)
+- The current session's msb state next to the Forge title when sandboxing is configured
+- An execution dialog with mode, model, and variant selection, also used to restart a loop
+- Command palette integration (`Execute plan`, `Execute pasted plan`, `Restart loop`, `Open dashboard`, `Build sandbox template`, `Toggle host sandbox`)
+- Model selection with recent-model tracking
 
-The TUI communicates with the server via RPC over the opencode bus using `tui.command.execute` events.
+The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches, plus a `toast`/`sessionDelete` event bus for server-pushed notifications.
 
 ## Module Layout
 
 The codebase is organized into these module groups under `src/`:
 
 | Module | Purpose | Key Files |
-|--------|---------|-----------|
+|--------|-----------|-----------|
+| `host/` | Host-neutral core plus the V2 adapter | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts`, `forge-rpc.ts` |
+| `client/` | `ForgeClient` port and the V2 adapter | `port.ts`, `v2-adapter.ts`, `v2-workspaces.ts`, `errors.ts` |
 | `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
-| `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts` |
+| `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects, group orchestrator) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `group-orchestrator.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
-| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `plan-capture.ts`, `worktree-log.ts` |
-| `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
+| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `group-orchestrator.ts`, `group-scheduler.ts`, `tui-loop-restart-controller.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
+| `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
-| `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `section-read.ts` |
-| `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `pending-teardown.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
-| `utils/` | Shared utility modules (~25 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, etc. |
-| `tui/` | TUI-specific components | `execute-plan-panel.tsx` |
+| `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `plan-adjust.ts`, `section-read.ts`, `group.ts`, `tool.ts` |
+| `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `forge-naming.ts`, `forge-workspace-metadata.ts`, `pending-teardown.ts`, `worktree-commit.ts`, `worktree-opencode-config.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
+| `utils/` | Shared utility modules (~40 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, `git-service.ts`, `toast.ts`, etc. |
+| `tui/` | TUI-specific components | `v2.tsx`, `host.tsx`, `execute-plan-panel.tsx`, `plan-commands.ts`, `host-sandbox.ts`, `session-sandbox-store.ts`, `sandbox-build-dialog.tsx`, `session-follow.ts`, `project-client.ts`, `v2-client.ts`, `options.ts` |
 
 All external consumers import through barrel files (`index.ts`) where available. See [Modules](modules.md) for full details.
 
@@ -104,14 +119,15 @@ Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with dr
 - **SandboxManager** (`sandbox/manager.ts`) - Sandbox lifecycle management
 - **SandboxContext** (`sandbox/context.ts`) - Tool call redirection
 - **SandboxTools** (`hooks/sandbox-tools.ts`) - Hooks for sandbox integration
-- **Shell shim** (`sandbox/shell-shim.ts`) - Generated shim routing the native `bash` tool through `msb exec`
-- **Shell env hook** (`hooks/shell-env.ts`) - Injects the sandbox container into each shell spawn
+- **SandboxMessage** (`hooks/sandbox-message.ts`) - Tells the agent its tool calls run in a container
+- **SessionSandboxController** (`sandbox/session-controller.ts`) - Host-session sandbox selection and reconciliation
+- **Shell shim** (`sandbox/shell-shim.ts`) - Generated shim routing the native `shell` tool through `msb exec`
 
 ### How It Works
 
 1. When a sandbox loop starts, an `msb` sandbox is created
 2. The worktree directory is mounted at its identical host path inside the sandbox
-3. Shell commands and search tools run inside the sandbox: `bash` through the generated shell shim, `glob` and `grep` through the sandbox tool hooks — both backed by `msb exec`
+3. Shell commands and search tools run inside the sandbox: `shell` through the generated shell shim, `glob` and `grep` through the sandbox tool hooks — both backed by `msb exec`
 4. File operations (`read`, `write`, `edit`) operate on the host directly
 5. On loop completion, the sandbox is stopped and removed
 
@@ -121,31 +137,43 @@ The sandbox state model has five states. `running` and `stopped` are both usable
 
 ### Tool Redirection
 
-`bash` and the search tools reach the sandbox through two different mechanisms:
+`shell` and the search tools reach the sandbox through two different mechanisms:
 
-- **`bash`** is redirected out of band, not through a tool hook. The `config` hook points
-  `cfg.shell` at the `forge-shell` shim (`sandbox/shell-shim.ts`) and the `shell.env` hook
-  injects `FORGE_SANDBOX_CONTAINER`. The shim `exec`s `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
-  Tool arguments are never rewritten.
-- **`glob` and `grep`** use output replacement. `tool.execute.before` runs the equivalent
-  `rg` command inside the container and stores the result by `callID`; `tool.execute.after`
-  overwrites `output.output` with it. Because `tool.execute.before` cannot cancel a tool call,
+- **`shell`** is redirected out of band, not through a tool hook. For a sandboxed session
+  the tool wrapper prefixes the command with a one-off `forge-sandbox-required-<uuid> && ` marker;
+  the `shell.hook('create.before')` strips the marker, points `event.shell` at the
+  `forge-shell` shim (`sandbox/shell-shim.ts`), and sets `FORGE_SANDBOX_CONTAINER`. The shim
+  `exec`s `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
+  Tool arguments are never rewritten, and an unstripped marker fails with "command not found".
+- **`glob` and `grep`** use output replacement. `tool.hook('execute.before')` runs the equivalent
+  `rg` command inside the container and stores the result by `callID`; `tool.hook('execute.after')`
+  overwrites `output.output` with it. Because the before-hook cannot cancel a tool call,
   the native host search still executes and its result is discarded. The before-hook rejects
   absolute paths outside the sandbox mounts, so that host execution stays confined to the
   mounted worktree.
 
 ## Hook System
 
-OpenCode Forge integrates with OpenCode through several hook points. The plugin returns a standard `Hooks` object.
+OpenCode Forge integrates with OpenCode through several hook points. `setup(ctx)` registers the core handlers through V2's hook API.
+
+### Hooks (`src/host/v2-hooks.ts`)
+
+The V2 adapter registers the shared core handlers through V2's hook API:
+
+- `tool.hook('execute.before')` / `tool.hook('execute.after')` — sandbox tool redirection and logging, with V2 tool names (`shell`, `subagent`) mapped back to Forge's names (`bash`, `task`)
+- `shell.hook('create.before')` — sandbox shell routing, keyed by the loop worktree location or the one-off sandbox marker
+- `session.hook('prompt')` — plan capture from submitted prompts
+- `session.hook('context')` — system context injection and the architect reminder
+- `session.hook('compaction')` — compaction instructions
 
 ### Session Hooks (`src/hooks/session.ts`)
 
-- `chat.message` - Inject memory into context, handle session events
-- `experimental.session.compacting` - Custom compaction behavior for session continuity
+- `session.hook('prompt')` - Inject memory into context, handle session events
+- `session.hook('compaction')` - Custom compaction behavior for session continuity
 
-### Message Transform Hooks (`src/index.ts`)
+### Architect Reminder (`session.hook('context')`)
 
-- `experimental.chat.messages.transform` - Appends a compact `<system-reminder>` to the last user message in interactive architect sessions, reinforcing stored-plan completion, warning-free structure, and canonical approval dispatch. Agent permissions separately deny filesystem mutation tools and `task` while retaining Bash for read-only inspection plus `plan-read`, `plan-write`, and `plan-edit`; the autonomous architect also cannot invoke execution, loop, or group tools.
+`src/host/v2-hooks.ts` appends a compact `<system-reminder>` to the last user message in interactive architect sessions, reinforcing stored-plan completion, warning-free structure, and canonical approval dispatch. Agent permissions separately deny filesystem mutation tools and `subagent` while retaining the shell tool for read-only inspection plus `plan-read`, `plan-write`, and `plan-edit`; the autonomous architect also cannot invoke execution, loop, or group tools.
 
 ### Tool Execution Hooks
 
@@ -154,24 +182,26 @@ OpenCode Forge integrates with OpenCode through several hook points. The plugin 
 
 ### Loop Permission Patching (`src/hooks/loop-permission.ts`)
 
-Loops are autonomous and cannot answer permission prompts, but OpenCode's default subagent ruleset falls back to `ask` for most tools. To prevent deadlocks, `createLoopPermissionRejectHook` listens for `session.created` events. When the new session resolves to an active loop, the hook calls `v2.session.update()` to overwrite the child session's `permission` ruleset:
+Loops are autonomous and cannot answer permission prompts, but OpenCode's default subagent ruleset falls back to `ask` for most tools. To prevent deadlocks, `createLoopPermissionPatcher` listens for `session.created` events. When the new session resolves to an active loop, the hook calls `v2.session.update()` to overwrite the child session's `permission` ruleset:
 
 - If the parent session has an allow-all ruleset (e.g. an auditor subagent), the parent's ruleset is inherited so the child stays under the same constraints.
-- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit structural denies for `external_directory`, `review-write`, `review-delete`, `plan`, `plan_enter`, `plan_exit`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`. User-configured `loop.permissions` rules are layered in after the external-directory allows and before these structural denies (via `resolveLoopPermissionOptions`), so they can tailor user tools without overriding a structural deny.
+- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit structural denies for `external_directory`, `review-write`, `review-delete`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`. User-configured `loop.permissions` rules are layered in after the external-directory allows and before these structural denies (via `resolveLoopPermissionOptions`), so they can tailor user tools without overriding a structural deny.
 
-A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stricter `buildAuditSessionPermissionRuleset()` (blanket allow-all with structural denies for the direct mutation tools `edit`/`write`/`multiedit`/`apply_patch`, plus the shared plan/loop structural denies).
+A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stricter `buildAuditSessionPermissionRuleset()` (blanket allow-all with structural denies for the direct mutation tools `edit`/`write`, plus the shared plan/loop structural denies).
 
 ### Event Hooks
 
-- `event` - Handle server lifecycle events (e.g., `server.instance.disposed`)
+- `onEvent` - Handle normalized events (session execution, session creation, session deletion)
+- `location.shutdown` - Run cleanup when the location shuts down
 - Plan approval events via `createPlanApprovalEventHook`
-- Plan capture from streaming message parts and on assistant message completion via `createPlanCaptureEventHook`
+- Plan capture from streaming message parts via `createPlanCaptureEventHook`
 
 ### Additional Hooks
 
-- **Plan Capture** (`src/hooks/plan-capture.ts`) - Captures the session plan of record. The primary authoring path is the `plan-write` / `plan-edit` tools, which write directly to the session-scoped `plans` row. Marker capture of `<!-- forge-plan:start -->...end-->` from assistant messages is the fallback path and runs both on streaming `message.part.updated` events and on assistant message completion (`message.updated`).
+- **Plan Capture** (`src/hooks/plan-capture.ts`) - Captures the session plan of record. The primary authoring path is the `plan-write` / `plan-edit` tools, which write directly to the session-scoped `plans` row. Marker capture of `<!-- forge-plan:start -->...end-->` from assistant messages is the fallback path and runs on streaming `message.part.updated` events.
 - **Forge Session Attach** (`src/hooks/forge-session-attach.ts`) - Automatically attaches loops when new sessions are created
 - **Watchdog** (`src/hooks/watchdog.ts`) - Stall detection and recovery for loops
+- **Group Orchestrator** (`src/hooks/group-orchestrator.ts`) - Advances queued features when a group loop terminates
 
 ## Storage Architecture
 
@@ -197,7 +227,10 @@ All data access goes through typed repository interfaces created via factory fun
 | `LoopTransitionsRepo` | Append-only loop phase-transition log | `LoopTransitionRow` |
 | `PlanAmendmentsRepo` | Append-only audit trail of mid-loop plan amendments | `PlanAmendmentRow` |
 | `LoopSessionUsageRepo` | Per-session token/cost usage across rotated loop sessions | `LoopSessionUsageRow`, `LoopUsageAggregate` |
-| `TuiPrefsRepo` | TUI preferences persistence | `TuiPrefsRepo` |
+| `FeatureGroupsRepo` | Feature-group state for grouped execution | `FeatureGroupsRepo` |
+| `LoopAttemptsRepo` | Durable audit-attempt history | `LoopAttemptsRepo` |
+| `SessionSandboxPreferencesRepo` | Desired/applied host-session sandbox state | `SessionSandboxPreferencesRepo` |
+| `TuiLoopRestartRepo` | TUI loop-restart request/acknowledgement handoff | `TuiLoopRestartRepo` |
 
 Each repository is project-scoped via `projectId` parameter.
 
@@ -207,17 +240,17 @@ Plugin configuration is stored at `~/.config/opencode/forge-config.jsonc` (JSONC
 
 ## Service Initialization Order
 
-The plugin follows this initialization sequence within `createForgePlugin()`:
+The plugin follows this initialization sequence within `createForgeCore()`:
 
 1. **Logger** - Always first (`createLogger()`)
-2. **v2 Client** - Create OpenCode v2 SDK client for API calls
-3. **Sandbox Manager** - msb sandbox management (optional, fails gracefully)
-4. **Pending Teardown Registry** - Track worktree teardown contexts
-5. **Workspace Status Registry** - Track workspace connected/disconnected state
-6. **Workspace Adapter** - Register forge workspace adapter if experimental workspace API available
-7. **Database** - Initialize SQLite storage (`initializeDatabase()`)
-8. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage)
-9. **Loop Event Handler** - Connect loop runtime to events and state management
+2. **Sandbox Manager** - msb sandbox management (optional; initialization fails the plugin when sandboxing is enabled)
+3. **Pending Teardown Registry** - Track worktree teardown contexts
+4. **Workspace Adapter** - Register the forge workspace adapter
+5. **Database** - Initialize SQLite storage (`initializeDatabase()`)
+6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, featureGroups, transitions, planAmendments, attempts, sessionSandboxPreferences, tuiLoopRestart)
+7. **Loop Event Handler** - Connect loop runtime to events and state management
+8. **Session Sandbox Controller** - Reconcile the host-session sandbox selection
+9. **Group Orchestrator** - Manage grouped execution
 10. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
 11. **Hooks** - Final registration of all hook points
 
@@ -227,10 +260,10 @@ Plugin initialization does not recover, cancel, or restart loops. Boot initializ
 
 ## Cleanup
 
-On plugin shutdown (`server.instance.disposed` event):
+On plugin shutdown (`location.shutdown` event):
 
-1. Stop all active sandboxes
-2. Terminate all active loops
+1. Release the shared session-sandbox controller
+2. Stop all active sandboxes
 3. Clear retry timeouts
 4. Close database connections
 
@@ -238,10 +271,13 @@ On plugin shutdown (`server.instance.disposed` event):
 
 ```mermaid
 graph TD
-    TUI["TUI Plugin (tui.tsx)"] --> RPC["RPC Bus"]
-    RPC --> Server["Server Plugin (index.ts)"]
+    TUI["TUI Plugin (tui/v2.tsx)"] --> RPC["V2 Plugin RPC"]
+    RPC --> Server["Server Plugin (host/v2.ts)"]
+    Server --> Core["Forge Core (host/forge-core.ts)"]
+    Server --> V2Client["V2 ForgeClient (client/v2-adapter.ts)"]
+    V2Client --> Core
 
-    subgraph Server
+    subgraph Core
         Hooks["Hook System"] --> LoopHandler["Loop Event Handler"]
         Hooks --> SessionHooks["Session Hooks"]
         Hooks --> ToolHooks["Tool Execution Hooks"]

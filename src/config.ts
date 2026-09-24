@@ -1,9 +1,11 @@
 import type { AgentRole, AgentDefinition, AgentConfig } from './agents'
 import { loadPrompt } from './prompts/loader'
 
-interface PluginCommand { template: string; description: string; agent: string; subtask: boolean }
+export interface PluginCommand { template: string; description: string; agent: string; subtask: boolean }
 
-const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
+export const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
+
+export const DEFAULT_AGENT = 'code'
 
 function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand> {
   return {
@@ -88,7 +90,7 @@ export function createConfigHandler(
     }
 
     config.agent = mergedAgents
-    config.default_agent = 'code'
+    config.default_agent = DEFAULT_AGENT
 
     const userCommands = config.command as Record<string, unknown> | undefined
     const mergedCommands: Record<string, unknown> = { ...pluginCommands }

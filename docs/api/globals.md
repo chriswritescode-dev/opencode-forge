@@ -19,6 +19,6 @@
 
 ## Functions
 
-- [createForgePlugin](functions/createForgePlugin.md)
 - [createParentSessionLookup](functions/createParentSessionLookup.md)
 - [createSessionDirectoryLookup](functions/createSessionDirectoryLookup.md)
+- [setupForgeV2](functions/setupForgeV2.md)

@@ -132,13 +132,15 @@ afterEach(() => {
   container.remove()
   window.location.hash = ''
   vi.unstubAllGlobals()
+  vi.useRealTimers()
   delete (globalThis as any).marked
   delete (globalThis as any).fetch
 })
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 8; i++) await Promise.resolve()
-  await new Promise((r) => setTimeout(r, 0))
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0)
+  else await new Promise((r) => setTimeout(r, 0))
   for (let i = 0; i < 4; i++) await Promise.resolve()
 }
 
@@ -2077,11 +2079,12 @@ describe('dashboard App status filters and search', () => {
 
     // Search for a substring matching neither loop name, branch, nor label.
     let input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'nomatch-xyz'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
-    // Wait past the 250ms debounce trailing edge, then settle effects.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance past the 250ms debounce trailing edge, then settle effects.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
 
     // The hash carries the query and we stay at level 1.
@@ -2101,8 +2104,9 @@ describe('dashboard App status filters and search', () => {
     input = container.querySelector('#loop-search') as HTMLInputElement
     input.value = ''
     input.dispatchEvent(new Event('input', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 350))
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     expect(location.hash).toBe('#p1')
     expect(container.querySelectorAll('tr.lt-row').length).toBe(2)
@@ -2142,6 +2146,7 @@ describe('dashboard App status filters and search', () => {
     await flush()
 
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'loop-running'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2160,9 +2165,10 @@ describe('dashboard App status filters and search', () => {
     // The input retains the typed text despite the count update.
     expect((container.querySelector('#loop-search') as HTMLInputElement).value).toBe('loop-running')
 
-    // Wait past the 250ms debounce trailing edge, then settle effects.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance past the 250ms debounce trailing edge, then settle effects.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     // The pending query reached the hash despite the intervening poll.
     expect(location.hash).toBe('#p1?q=loop-running')
@@ -2180,6 +2186,7 @@ describe('dashboard App status filters and search', () => {
     expect(container.querySelectorAll('tr.lt-row').length).toBe(2)
 
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'loop-running'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2192,9 +2199,10 @@ describe('dashboard App status filters and search', () => {
     // The input retains the typed text — no reset from the status update.
     expect((container.querySelector('#loop-search') as HTMLInputElement).value).toBe('loop-running')
 
-    // Wait past the 250ms debounce trailing edge, then settle effects.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance past the 250ms debounce trailing edge, then settle effects.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     // The typed query reaches the hash despite the intervening status toggle.
     expect(location.hash).toBe('#p1?status=running&q=loop-running')
@@ -2211,6 +2219,7 @@ describe('dashboard App status filters and search', () => {
 
     // Type a query — schedules the debounce timer but does not navigate yet.
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'nomatch-xyz'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2221,9 +2230,10 @@ describe('dashboard App status filters and search', () => {
     // Navigated to the loop route; no query yet.
     expect(location.hash).toBe('#p1/loop/loop-running')
 
-    // Wait well past the debounce trailing edge.
-    await new Promise((r) => setTimeout(r, 350))
+    // Advance well past the debounce trailing edge.
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     // The stale timer was cancelled on disposal — the discarded query never
     // landed in the hash.
@@ -2238,6 +2248,7 @@ describe('dashboard App status filters and search', () => {
     await flush()
 
     const input = container.querySelector('#loop-search') as HTMLInputElement
+    vi.useFakeTimers()
     input.value = 'stale-query'
     input.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -2248,8 +2259,9 @@ describe('dashboard App status filters and search', () => {
     expect(location.hash).toBe('#p1?status=running')
     expect((container.querySelector('#loop-search') as HTMLInputElement).value).toBe('')
 
-    await new Promise((r) => setTimeout(r, 350))
+    await vi.advanceTimersByTimeAsync(250)
     await flush()
+    vi.useRealTimers()
 
     expect(location.hash).toBe('#p1?status=running')
     expect(location.hash).not.toContain('q=stale-query')
@@ -2262,44 +2274,6 @@ describe('dashboard App loop detail tabs', () => {
     expect(item).toBeTruthy()
     item.click()
     await flush()
-  }
-
-  const opened: FakeEventSource[] = []
-
-  class FakeEventSource {
-    static CONNECTING = 0
-    static CLOSED = 2
-    url: string
-    readyState = 1
-    closed = false
-    onerror: null | (() => void) = null
-    listeners = new Map<string, (e: { data: string }) => void>()
-    constructor(url: string) {
-      this.url = url
-      opened.push(this)
-    }
-    addEventListener(type: string, cb: (e: { data: string }) => void): void {
-      this.listeners.set(type, cb)
-    }
-    removeEventListener(): void {}
-    close(): void {
-      this.closed = true
-      this.readyState = 2
-    }
-    emit(type: string, data: string): void {
-      this.listeners.get(type)?.({ data })
-    }
-  }
-
-  async function openLiveStream(): Promise<FakeEventSource> {
-    opened.length = 0
-    window.location.hash = '#p1/loop/loop-a'
-    payload = makePayload({ loop: { currentSessionId: 'ses_1' } })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-    await clickTab('live')
-    expect(opened.length).toBe(1)
-    return opened[0]
   }
 
   function planLoopFixture(): any {
@@ -2337,164 +2311,6 @@ describe('dashboard App loop detail tabs', () => {
       },
     })
   }
-
-  test('the live stream is open only while its tab is on screen', async () => {
-    // Tab bodies are never torn down once built, so the connection has to be
-    // driven by visibility — otherwise a hidden Live tab keeps an SSE
-    // connection (and the server-side transcript poll) running for nothing.
-    opened.length = 0
-    const prior = (globalThis as any).EventSource
-    ;(globalThis as any).EventSource = FakeEventSource
-    const priorVisibility = Object.getOwnPropertyDescriptor(document, 'visibilityState')
-
-    try {
-      window.location.hash = '#p1/loop/loop-a'
-      payload = makePayload({ loop: { currentSessionId: 'ses_1' } })
-      dispose = render(() => App() as unknown as Element, container)
-      await flush()
-
-      // Never opened the Live tab: no connection at all.
-      expect(opened.length).toBe(0)
-
-      await clickTab('live')
-      expect(opened.length).toBe(1)
-      expect(opened[0].url).toContain('/api/loop/stream?project=p1&loop=loop-a')
-      expect(opened[0].closed).toBe(false)
-
-      // Switching away closes it even though the tab body stays mounted.
-      await clickTab('timeline')
-      expect(opened[0].closed).toBe(true)
-      expect(opened.length).toBe(1)
-
-      // Returning opens a fresh one.
-      await clickTab('live')
-      expect(opened.length).toBe(2)
-      expect(opened[1].closed).toBe(false)
-
-      // Backgrounding the browser tab closes it too.
-      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
-      document.dispatchEvent(new Event('visibilitychange'))
-      await flush()
-      expect(opened[1].closed).toBe(true)
-
-      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
-      document.dispatchEvent(new Event('visibilitychange'))
-      await flush()
-      expect(opened.length).toBe(3)
-      expect(opened[2].closed).toBe(false)
-    } finally {
-      ;(globalThis as any).EventSource = prior
-      if (priorVisibility) Object.defineProperty(document, 'visibilityState', priorVisibility)
-      else Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
-    }
-  })
-
-  test('a terminal failed frame shows the server message and closes the stream', async () => {
-    const prior = (globalThis as any).EventSource
-    ;(globalThis as any).EventSource = FakeEventSource
-    try {
-      const source = await openLiveStream()
-      expect(source.closed).toBe(false)
-
-      source.emit('failed', JSON.stringify({ message: 'Live stream ended: boom' }))
-      await flush()
-
-      expect(source.closed).toBe(true)
-      expect(container.querySelector('.live-failure')?.textContent).toContain('Live stream ended: boom')
-      expect(container.querySelector('.live-status')?.textContent).toBe('disconnected')
-    } finally {
-      ;(globalThis as any).EventSource = prior
-    }
-  })
-
-  test('a malformed failed frame falls back to the default message and still closes the stream', async () => {
-    const prior = (globalThis as any).EventSource
-    ;(globalThis as any).EventSource = FakeEventSource
-    try {
-      const source = await openLiveStream()
-
-      source.emit('failed', '{not json')
-      await flush()
-
-      expect(source.closed).toBe(true)
-      expect(container.querySelector('.live-failure')?.textContent).toBe('Live stream ended.')
-      expect(container.querySelector('.live-status')?.textContent).toBe('disconnected')
-    } finally {
-      ;(globalThis as any).EventSource = prior
-    }
-  })
-
-  test('an ordinary transport error while connecting leaves the stream open to reconnect', async () => {
-    const prior = (globalThis as any).EventSource
-    ;(globalThis as any).EventSource = FakeEventSource
-    try {
-      const source = await openLiveStream()
-
-      source.readyState = FakeEventSource.CONNECTING
-      source.onerror?.()
-      await flush()
-
-      expect(source.closed).toBe(false)
-      expect(container.querySelector('.live-failure')).toBeNull()
-      expect(container.querySelector('.live-status')?.textContent).toBe('connecting')
-    } finally {
-      ;(globalThis as any).EventSource = prior
-    }
-  })
-
-  test('tool heads are buttons: disabled without output, aria-expanded toggles expandable output', async () => {
-    const prior = (globalThis as any).EventSource
-    ;(globalThis as any).EventSource = FakeEventSource
-    try {
-      const source = await openLiveStream()
-      source.emit('snapshot', JSON.stringify({
-        messages: [
-          {
-            info: { id: 'm1', role: 'assistant' },
-            parts: [
-              { id: 'p1', messageID: 'm1', type: 'tool', tool: 'bash', state: { status: 'completed', title: 'ls -la', output: 'file.txt' } },
-              { id: 'p2', messageID: 'm1', type: 'tool', tool: 'read', state: { status: 'running', title: 'a.ts' } },
-            ],
-          },
-        ],
-      }))
-      await flush()
-
-      const heads = Array.from(container.querySelectorAll('.live-tool-head')) as HTMLButtonElement[]
-      expect(heads).toHaveLength(2)
-      expect(heads.every(h => h.tagName === 'BUTTON')).toBe(true)
-      expect(heads.every(h => h.getAttribute('type') === 'button')).toBe(true)
-
-      const withOutput = heads[0]
-      const withoutOutput = heads[1]
-
-      expect(withOutput.disabled).toBe(false)
-      expect(withOutput.classList.contains('live-tool-head-clickable')).toBe(true)
-      expect(withOutput.getAttribute('aria-expanded')).toBe('false')
-      expect(container.querySelector('.live-tool-output')).toBeNull()
-
-      expect(withoutOutput.disabled).toBe(true)
-      expect(withoutOutput.getAttribute('aria-expanded')).toBeNull()
-      expect(withoutOutput.classList.contains('live-tool-head-clickable')).toBe(false)
-
-      withoutOutput.click()
-      await flush()
-      expect(container.querySelector('.live-tool-output')).toBeNull()
-
-      withOutput.click()
-      await flush()
-      expect(withOutput.getAttribute('aria-expanded')).toBe('true')
-      expect(container.querySelector('.live-tool-output')?.textContent).toBe('file.txt')
-
-      withOutput.click()
-      await flush()
-      expect(withOutput.getAttribute('aria-expanded')).toBe('false')
-      expect(container.querySelector('.live-tool-output')).toBeNull()
-    } finally {
-      ;(globalThis as any).EventSource = prior
-    }
-  })
-
   test('opening a plan loop builds only the active tab body and builds Usage on first activation', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = planLoopFixture()
@@ -2502,8 +2318,8 @@ describe('dashboard App loop detail tabs', () => {
     await flush()
 
     const items = Array.from(container.querySelectorAll('.tab-item')) as HTMLElement[]
-    expect(items.length).toBe(7)
-    expect(items.map(i => i.dataset.tab)).toEqual(['overview', 'live', 'timeline', 'sections', 'findings', 'plan', 'usage'])
+    expect(items.length).toBe(6)
+    expect(items.map(i => i.dataset.tab)).toEqual(['overview', 'timeline', 'sections', 'findings', 'plan', 'usage'])
 
     // Every tab-body host exists on first paint with the active tab visible
     // and the rest hidden. Only the active (Overview) host has been populated;
@@ -3104,164 +2920,6 @@ describe('dashboard App scoped poll', () => {
     expect(fetchCalls().length).toBe(beforeCount + 1)
     expect(fetchCalls()[fetchCalls().length - 1]).toBe('/api/data?project=p2&loop=loop-b')
     expect(fetchCalls()).not.toContain('/api/data?project=p2&loop=loop-a')
-  })
-})
-
-describe('dashboard App live model controls', () => {
-  const CATALOG = {
-    models: [
-      { id: 'model-a', name: 'Model A', provider: 'prov', variants: [] },
-      { id: 'model-b', name: 'Model B', provider: 'prov', variants: [] },
-      { id: 'model-c', name: 'Model C', provider: 'prov', variants: [] },
-    ],
-  }
-
-  let applyResponse: any
-
-  async function openLiveModels(loopOver: Record<string, any> = {}): Promise<() => void> {
-    window.location.hash = '#p1/loop/loop-a'
-    payload = makePayload({ loop: { executionModel: 'model-a', ...loopOver } })
-    const fetchMock = globalThis.fetch as any
-    fetchMock.mockImplementation(async (url: string) => {
-      const u = String(url)
-      if (u.startsWith('/api/models')) {
-        return { ok: true, status: 200, json: async () => CATALOG, text: async () => '' }
-      }
-      if (u.startsWith('/api/loop/models')) {
-        return applyResponse
-      }
-      return { ok: true, status: 200, json: async () => payload, text: async () => '' }
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-    const dataPoll = intervalFn!
-    ;(container.querySelector('.tab-item[data-tab="live"]') as HTMLElement).click()
-    await flush()
-    ;(container.querySelector('.live-models-toggle') as HTMLElement).click()
-    await flush()
-    return dataPoll
-  }
-
-  async function pollData(dataPoll: () => void, next: any): Promise<void> {
-    payload = next
-    dataPoll()
-    await flush()
-  }
-
-  function execSelect(): HTMLSelectElement {
-    return container.querySelectorAll('.live-model-row')[0].querySelector('.live-model-select') as HTMLSelectElement
-  }
-
-  function changeExecModel(value: string): void {
-    const select = execSelect()
-    select.value = value
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-  }
-
-  test('apply success adopts the response and does not snap to stale loop values', async () => {
-    applyResponse = {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        ok: true,
-        executionModel: 'model-b',
-        executionVariant: null,
-        auditorModel: null,
-        auditorVariant: null,
-      }),
-      text: async () => '',
-    }
-    const dataPoll = await openLiveModels()
-    expect(execSelect().value).toBe('model-a')
-
-    changeExecModel('model-b')
-    await flush()
-    expect(execSelect().value).toBe('model-b')
-
-    ;(container.querySelector('.live-send') as HTMLButtonElement).click()
-    await flush()
-
-    expect(execSelect().value).toBe('model-b')
-    expect(container.querySelector('.live-models-ok')?.textContent).toContain('Models updated.')
-
-    const modelsCall = (globalThis.fetch as any).mock.calls.find((c: any[]) => String(c[0]) === '/api/loop/models')
-    expect(modelsCall).toBeTruthy()
-    expect(modelsCall[1].method).toBe('POST')
-    expect(JSON.parse(modelsCall[1].body)).toEqual({
-      projectId: 'p1',
-      loopName: 'loop-a',
-      executionModel: 'model-b',
-      executionVariant: null,
-      auditorModel: null,
-      auditorVariant: null,
-    })
-
-    await pollData(dataPoll, makePayload({ loop: { executionModel: 'model-b', iteration: 2 } }))
-    expect(execSelect().value).toBe('model-b')
-  })
-
-  test('an external poll does not overwrite an edited draft', async () => {
-    applyResponse = {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        ok: true,
-        executionModel: 'model-a',
-        executionVariant: null,
-        auditorModel: null,
-        auditorVariant: null,
-      }),
-      text: async () => '',
-    }
-    const dataPoll = await openLiveModels()
-    expect(execSelect().value).toBe('model-a')
-
-    changeExecModel('model-b')
-    await flush()
-    expect(execSelect().value).toBe('model-b')
-
-    await pollData(dataPoll, makePayload({ loop: { executionModel: 'model-c' } }))
-    expect(execSelect().value).toBe('model-b')
-  })
-
-  test('untouched controls adopt externally applied model values', async () => {
-    applyResponse = {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        ok: true,
-        executionModel: 'model-a',
-        executionVariant: null,
-        auditorModel: null,
-        auditorVariant: null,
-      }),
-      text: async () => '',
-    }
-    const dataPoll = await openLiveModels()
-    expect(execSelect().value).toBe('model-a')
-
-    await pollData(dataPoll, makePayload({ loop: { executionModel: 'model-c' } }))
-    expect(execSelect().value).toBe('model-c')
-  })
-
-  test('a failed apply keeps the draft and shows an error', async () => {
-    applyResponse = {
-      ok: false,
-      status: 500,
-      json: async () => ({}),
-      text: async () => 'backend rejected',
-    }
-    await openLiveModels()
-    expect(execSelect().value).toBe('model-a')
-
-    changeExecModel('model-b')
-    await flush()
-    ;(container.querySelector('.live-send') as HTMLButtonElement).click()
-    await flush()
-
-    expect(execSelect().value).toBe('model-b')
-    expect(container.querySelector('.live-models-error')?.textContent).toContain('backend rejected')
-    expect(container.querySelector('.live-models-ok')).toBeFalsy()
   })
 })
 

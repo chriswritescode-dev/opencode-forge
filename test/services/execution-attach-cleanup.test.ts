@@ -81,12 +81,6 @@ describe('attachLoopToSession', () => {
         clearLoopTimers: noopFn,
       },
       sandboxManager: null,
-      workspaceStatusRegistry: {
-        recordEvent: vi.fn(),
-        getStatus: vi.fn().mockReturnValue('connected' as const),
-        awaitConnected: vi.fn().mockResolvedValue({ connected: true, elapsedMs: 0, source: 'cached' as const }),
-        primeFromSnapshot: vi.fn(),
-      },
     }
 
     return { deps, loopsRepo, plansRepo, sectionPlansRepo, reviewFindingsRepo, loopService }
@@ -146,8 +140,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 50,
         sandboxEnabled: false,
         planText: 'NEW_PLAN',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )

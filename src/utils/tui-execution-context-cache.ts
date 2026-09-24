@@ -17,7 +17,7 @@ import type { PluginConfig } from '../types'
 import type { ModelInfo } from './tui-models'
 import { deriveRecentModels, flattenProviders, sortModelsByPriority } from './tui-models'
 import { resolveExecutionDialogDefaults } from './tui-execution-preferences'
-import type { ExecutionContext } from './tui-client'
+import type { ExecutionContext } from '../tui/project-client'
 
 export interface ExecutionContextSnapshot {
   preferences: ExecutionPreferences | null

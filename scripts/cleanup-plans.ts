@@ -21,7 +21,7 @@ import Database from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { readFlagValue } from '../src/utils/cli-flags'
 import { loadPluginConfig } from '../src/setup'
-import { resolveDataDir, resolveForgeDbPath } from '../src/utils/opencode-paths'
+import { resolveForgeDataDir, resolveForgeDbPath } from '../src/utils/opencode-paths'
 
 interface Args {
   olderThanMs: number
@@ -90,7 +90,7 @@ function logRows(label: string, rows: Array<{ project_id: string; name: string; 
 
 function main(): void {
   const args = parseArgs()
-  const dataDir = loadPluginConfig().dataDir || resolveDataDir()
+  const dataDir = resolveForgeDataDir(loadPluginConfig().dataDir)
   const dbPath = resolveForgeDbPath(dataDir)
   if (!existsSync(dbPath)) {
     console.log(`forge.db not found at ${dbPath} — skipping`)

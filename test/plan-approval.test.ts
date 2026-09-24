@@ -338,17 +338,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -420,17 +411,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -502,17 +484,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -583,17 +556,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -666,17 +630,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -748,17 +703,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -828,17 +774,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -909,17 +846,8 @@ describe('Plan Approval Tool Interception', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo,
@@ -1102,17 +1030,8 @@ describe('Execute here bypass', () => {
       workspace: {
         create: async () => ({ id: 'mock-ws', directory: '', branch: '' }),
         list: async () => [],
-        status: async () => [],
-        syncList: async () => {},
         remove: async () => {},
         warp: async () => {},
-      },
-      tui: {
-        publish: async () => {},
-        selectSession: async () => {},
-      },
-      sync: {
-        start: async () => {},
       },
     }
 
@@ -1161,17 +1080,8 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     })
@@ -1224,17 +1134,8 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
@@ -1306,17 +1207,8 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     })
@@ -1398,17 +1290,8 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     })
@@ -1465,17 +1348,8 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     } as unknown as ToolContext
@@ -1564,17 +1438,8 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     } as unknown as ToolContext
@@ -1649,17 +1514,8 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: 'ws-loop-test', directory: `${TEST_DIR}/loop-workspace`, branch: 'opencode/loop' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       db,
@@ -1744,18 +1600,10 @@ describe('Execute here bypass', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
         },
-        tui: {
-          publish: tuiPublishSpy,
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
-        },
+        toast: tuiPublishSpy,
       },
       db,
       dataDir: TEST_DIR,
@@ -1866,17 +1714,8 @@ describe('Fire-and-forget dispatch behavior', () => {
       workspace: {
         create: async () => ({ id: '', directory: '', branch: '' }),
         list: async () => [],
-        status: async () => [],
-        syncList: async () => {},
         remove: async () => {},
         warp: async () => {},
-      },
-      tui: {
-        publish: async () => {},
-        selectSession: async () => {},
-      },
-      sync: {
-        start: async () => {},
       },
     }
 
@@ -1942,17 +1781,8 @@ describe('Fire-and-forget dispatch behavior', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     })
@@ -2031,17 +1861,8 @@ describe('Fire-and-forget dispatch behavior', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
@@ -2116,17 +1937,8 @@ describe('Fire-and-forget dispatch behavior', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     })
@@ -2198,17 +2010,8 @@ describe('Fire-and-forget dispatch behavior', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     })
@@ -2304,17 +2107,8 @@ describe('Fire-and-forget dispatch behavior', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
     })
@@ -2385,17 +2179,8 @@ describe('Fire-and-forget dispatch behavior', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo: testPlansRepo,
@@ -2475,17 +2260,8 @@ describe('Fire-and-forget dispatch behavior', () => {
         workspace: {
           create: async () => ({ id: '', directory: '', branch: '' }),
           list: async () => [],
-          status: async () => [],
-          syncList: async () => {},
           remove: async () => {},
           warp: async () => {},
-        },
-        tui: {
-          publish: async () => {},
-          selectSession: async () => {},
-        },
-        sync: {
-          start: async () => {},
         },
       },
       plansRepo: testPlansRepo,

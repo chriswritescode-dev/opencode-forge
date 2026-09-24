@@ -151,13 +151,14 @@ describe('SandboxManager custom mounts', () => {
   })
 
   test('custom mount coexists with the project mount', async () => {
+    const tmpProject = createTempDir()
     const tmpCustom = createTempDir()
 
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      sourceProjectDir: '/tmp',
+      sourceProjectDir: tmpProject,
       customMounts: [{ host: tmpCustom, readonly: false }],
     }
 
@@ -167,11 +168,11 @@ describe('SandboxManager custom mounts', () => {
     const active = manager.getActive('test')
     expect(active?.mounts).toHaveLength(3)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
-    expect(active?.mounts[1]).toEqual({ hostDir: '/tmp', containerDir: '/tmp', readOnly: true })
+    expect(active?.mounts[1]).toEqual({ hostDir: resolve(tmpProject), containerDir: resolve(tmpProject), readOnly: true })
     expect(active?.mounts[2]).toEqual({ hostDir: resolve(tmpCustom), containerDir: resolve(tmpCustom), readOnly: false })
 
     const workspaces = runtime.getCreateSandboxCalls()[0][1]
-    expect(workspaces).toContainEqual({ hostDir: realpathSync('/tmp'), containerDir: '/tmp', readOnly: true })
+    expect(workspaces).toContainEqual({ hostDir: realpathSync(resolve(tmpProject)), containerDir: resolve(tmpProject), readOnly: true })
     expect(workspaces).toContainEqual({ hostDir: realpathSync(resolve(tmpCustom)), containerDir: resolve(tmpCustom), readOnly: false })
   })
 })

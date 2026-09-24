@@ -40,13 +40,6 @@ describe('execution in-flight guard', () => {
     debug: () => {},
   }
 
-  const mockWorkspaceStatusRegistry = {
-    recordEvent: () => {},
-    getStatus: () => 'connected' as const,
-    awaitConnected: async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const }),
-    primeFromSnapshot: () => {},
-  }
-
   const mockPendingTeardowns = {
     set: () => {},
     get: () => undefined,
@@ -152,7 +145,6 @@ describe('execution in-flight guard', () => {
         } as any,
         loopHandler: mockLoopHandler as any,
         sectionPlansRepo,
-        workspaceStatusRegistry: mockWorkspaceStatusRegistry,
         pendingTeardowns: mockPendingTeardowns,
         client,
       })
@@ -274,7 +266,6 @@ describe('execution in-flight guard', () => {
         } as any,
         loopHandler: mockLoopHandler as any,
         sectionPlansRepo,
-        workspaceStatusRegistry: mockWorkspaceStatusRegistry,
         pendingTeardowns: mockPendingTeardowns,
         client,
       })
@@ -380,7 +371,6 @@ describe('execution in-flight guard', () => {
         } as any,
         loopHandler: mockLoopHandler as any,
         sectionPlansRepo,
-        workspaceStatusRegistry: mockWorkspaceStatusRegistry,
         pendingTeardowns: mockPendingTeardowns,
         client,
       })
