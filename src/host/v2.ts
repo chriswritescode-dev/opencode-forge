@@ -61,6 +61,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
 
   let core: ForgeCore | null = null
   let publishToast: ((toast: ForgeToastInput) => Promise<void>) | undefined
+  let requestSessionDelete: ((sessionID: string) => Promise<void>) | undefined
   let disposeRpc: (() => Promise<void>) | null = null
   try {
     const registration = await ctx.rpc.register(FORGE_RPC, {
@@ -69,6 +70,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
         : { error: 'Forge is still starting; retry in a moment' },
     })
     publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })
+    requestSessionDelete = (sessionID) => registration.events.emit('sessionDelete', { sessionID })
     disposeRpc = registration.dispose
   } catch (err) {
     console.error('[forge] failed to register toast RPC', err)
@@ -84,6 +86,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       sessionMove: ctx.session.move,
     }),
     ...(publishToast ? { publishToast } : {}),
+    ...(requestSessionDelete ? { requestSessionDelete } : {}),
   })
 
   core = await createForgeCore(config, {

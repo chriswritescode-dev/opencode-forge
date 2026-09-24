@@ -24,6 +24,7 @@ import { createV2TuiHost } from './host'
 import { createForgePlanCommands } from './plan-commands'
 import { openSandboxBuildDialog } from './sandbox-build-dialog'
 import { attachV2LoopSessionFollower } from './session-follow'
+import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort } from './loop-session-cleanup'
 import { createV2ForgeProjectClient } from './v2-client'
 
 /** Sidebar refresh cadence; loop rows are cheap local reads. */
@@ -275,9 +276,20 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
         })
       })
     }, { signal: toastController.signal })
+    context.client.rpc(FORGE_RPC).events.on('sessionDelete', (event) => {
+      const sessionID = readForgeSessionDelete(event.data)
+      if (sessionID) void removeSessionBestEffort(context, sessionID)
+    }, { signal: toastController.signal })
   } catch (err) {
-    console.error('[forge] failed to subscribe to toast RPC', err)
+    console.error('[forge] failed to subscribe to Forge RPC events', err)
   }
+
+  void resolveV2TuiProjectId(context).then(async (projectId) => {
+    if (!projectId || lifecycle.signal.aborted) return
+    await removeOrphanedLoopSessions(context, projectId, dataDir, lifecycle.signal)
+  }).catch((err: unknown) => {
+    console.error('[forge] failed to remove orphaned loop sessions', err)
+  })
 
   return () => {
     lifecycle.abort()

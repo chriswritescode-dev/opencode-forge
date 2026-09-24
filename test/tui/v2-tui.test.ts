@@ -73,6 +73,9 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const prompts: Array<Record<string, unknown>> = []
   let route = fakeOptions.route ?? { type: 'home' as const }
 
+  const sessionRemove = vi.fn(async (_input: { sessionID: string }) => {})
+  const sessionList = vi.fn(async () => ({ data: [], cursor: {} }))
+
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
   )
@@ -114,7 +117,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
         get: (sessionID: string) => fakeOptions.sessions?.find((session) => session.id === sessionID),
       },
     },
-    client: { location: { get: locationGet }, rpc },
+    client: { location: { get: locationGet }, rpc, session: { list: sessionList, remove: sessionRemove } },
     theme: { text: { base: '#ffffff', muted: '#888888' } },
     keymap: {
       layer: vi.fn((input: () => RecordedLayer) => {
@@ -155,7 +158,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     for (const handler of dataHandlers.get(type) ?? []) handler({ data })
   }
 
-  return { ctx, layers, slots, toasts, locationGet, rpc, rpcDefinitions, rpcSubscriptions, navigations, prompts, emit, dataHandlers }
+  return { ctx, layers, slots, toasts, locationGet, sessionRemove, sessionList, rpc, rpcDefinitions, rpcSubscriptions, navigations, prompts, emit, dataHandlers }
 }
 
 function findCommand(fake: ReturnType<typeof createFakeV2TuiContext>, id: string): RecordedCommand {
@@ -220,8 +223,7 @@ describe('V2 TUI setup', () => {
 
     const cleanup = setupForgeTuiV2(fake.ctx)
 
-    expect(fake.rpcSubscriptions).toHaveLength(1)
-    expect(fake.rpcSubscriptions[0]?.name).toBe('toast')
+    expect(fake.rpcSubscriptions.map((subscription) => subscription.name)).toEqual(['toast', 'sessionDelete'])
     fake.rpcSubscriptions[0]?.handler({
       data: { projectId: 'proj-1', title: 'Loop done', message: 'All sections passed', variant: 'success', duration: 4000 },
     })
@@ -247,6 +249,19 @@ describe('V2 TUI setup', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(fake.toasts).toEqual([])
+    cleanup()
+  })
+
+  test('deletes the session named by a sessionDelete RPC event', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    const subscription = fake.rpcSubscriptions.find((candidate) => candidate.name === 'sessionDelete')
+    subscription?.handler({ data: { sessionID: 'ses_retired' } })
+    subscription?.handler({ data: {} })
+
+    await vi.waitFor(() => expect(fake.sessionRemove).toHaveBeenCalledWith({ sessionID: 'ses_retired' }))
+    expect(fake.sessionRemove).toHaveBeenCalledTimes(1)
     cleanup()
   })
 

@@ -31,19 +31,21 @@ function buildCtx(overrides?: {
   tuiPublish?: ReturnType<typeof vi.fn>
   tuiSelectSession?: ReturnType<typeof vi.fn>
   workspaceRemove?: ReturnType<typeof vi.fn>
+  sessionDelete?: ReturnType<typeof vi.fn>
   log?: ReturnType<typeof vi.fn>
   error?: ReturnType<typeof vi.fn>
 }) {
   const tuiPublish = overrides?.tuiPublish ?? vi.fn().mockResolvedValue(undefined)
   const tuiSelectSession = overrides?.tuiSelectSession ?? vi.fn().mockResolvedValue(undefined)
   const workspaceRemove = overrides?.workspaceRemove ?? vi.fn().mockResolvedValue(undefined)
+  const sessionDelete = overrides?.sessionDelete ?? vi.fn().mockResolvedValue(undefined)
   const log = overrides?.log ?? vi.fn()
   const error = overrides?.error ?? vi.fn()
 
   return {
     ctx: {
       client: {
-        session: {} as any,
+        session: { delete: sessionDelete } as any,
         workspace: {
           create: async () => ({ id: '' }) as any,
           list: async () => [],
@@ -66,6 +68,7 @@ function buildCtx(overrides?: {
     tuiPublish,
     tuiSelectSession,
     workspaceRemove,
+    sessionDelete,
     log,
     error,
   }
@@ -174,6 +177,22 @@ describe('performTerminationSideEffects unwarp', () => {
       sessionID: 'sess_host',
       workspace: 'ws_abc',
     })
+  })
+
+  test('completed teardown deletes the final loop session after the worktree is removed', async () => {
+    const { ctx, sessionDelete } = buildCtx()
+
+    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
+
+    expect(sessionDelete).toHaveBeenCalledWith({ sessionID: 'sess_worktree', directory: '/tmp/wt/feat-x' })
+  })
+
+  test('restartable teardown keeps the final loop session', async () => {
+    const { ctx, sessionDelete } = buildCtx()
+
+    await performTerminationSideEffects(buildState(), maxIterations, 'sess_worktree', ctx)
+
+    expect(sessionDelete).not.toHaveBeenCalled()
   })
 
   test('sweep removes sibling completed forge workspace during teardown', async () => {

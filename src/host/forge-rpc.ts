@@ -82,6 +82,16 @@ export const FORGE_RPC = {
         additionalProperties: false,
       },
     },
+    sessionDelete: {
+      schema: {
+        type: 'object',
+        properties: {
+          sessionID: { type: 'string' },
+        },
+        required: ['sessionID'],
+        additionalProperties: false,
+      },
+    },
   },
 } as const satisfies Rpc.PortableDefinition
 

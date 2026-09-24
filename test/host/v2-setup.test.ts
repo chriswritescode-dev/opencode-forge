@@ -187,6 +187,16 @@ describe('V2 server setup', () => {
     }])
   })
 
+  test('bridges client session deletes to the sessionDelete RPC event', async () => {
+    const fake = createFakeV2Context()
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    await lastClient().session.delete({ sessionID: 'ses_retired', directory: '/tmp/forge-project' })
+
+    expect(fake.rpc.emitted).toEqual([{ event: 'sessionDelete', data: { sessionID: 'ses_retired' } }])
+  })
+
   test('the executePlan RPC runs execute-here and new-session through the execution service', async () => {
     const fake = createFakeV2Context()
     cleanups.push(await pluginModule.setup(fake.ctx))

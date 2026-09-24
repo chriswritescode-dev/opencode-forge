@@ -40,6 +40,7 @@ export interface V2ForgeClientOptions {
   directory: string
   workspace: ForgeClient['workspace']
   publishToast?: (toast: ForgeToastInput) => void | Promise<void>
+  requestSessionDelete?: (sessionID: string) => Promise<void>
 }
 
 export interface V2ForgeClient extends ForgeClient {
@@ -413,7 +414,13 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     abort: (params) => call('session.abort', async () => {
       await ctx.session.interrupt({ sessionID: params.sessionID, resume: false })
     }),
-    delete: () => Promise.reject(unavailableError('session.delete', 'session.delete is not available on this host')),
+    delete: (params) => {
+      const requestSessionDelete = options.requestSessionDelete
+      if (!requestSessionDelete) {
+        return Promise.reject(unavailableError('session.delete', 'session.delete is not available on this host'))
+      }
+      return call('session.delete', () => requestSessionDelete(params.sessionID))
+    },
   }
 
   const project: ForgeClient['project'] = {

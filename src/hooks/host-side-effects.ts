@@ -12,6 +12,7 @@ import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
 import { selectSessionBestEffort } from '../utils/tui-navigation'
 import type { ToastVariant } from '../utils/toast'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
+import { deleteSessionBestEffort } from '../utils/loop-session'
 
 export interface TerminationSideEffectsContext {
   client: ForgeClient
@@ -251,6 +252,14 @@ async function teardownWorktree(
       logPrefix: 'Loop: post-workspace-remove',
       logger: ctx.logger,
     })
+    if (state.sessionId && state.sessionId !== state.hostSessionId) {
+      await deleteSessionBestEffort(
+        ctx.client,
+        { sessionID: state.sessionId, directory: state.worktreeDir },
+        ctx.logger,
+        `Loop: failed to delete final session ${state.sessionId} after worktree removal (loop=${state.loopName})`,
+      )
+    }
   }
 
   // Opportunistic sweep of stale sibling workspaces (port required)

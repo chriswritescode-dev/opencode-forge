@@ -455,6 +455,20 @@ describe('createForgeClientFromV2', () => {
       expect(err.method).toBe('session.delete')
     })
 
+    it('session.delete forwards to requestSessionDelete when the host provides it', async () => {
+      const { ctx } = createFakeV2Context()
+      const requestSessionDelete = vi.fn().mockResolvedValue(undefined)
+      const client = createForgeClientFromV2(ctx, {
+        directory: '/tmp/forge-project',
+        workspace: createFakeForgeClient().client.workspace,
+        requestSessionDelete,
+      })
+
+      await client.session.delete({ sessionID: 'ses_1', directory: '/wt' })
+
+      expect(requestSessionDelete).toHaveBeenCalledWith('ses_1')
+    })
+
     it('tui.selectSession rejects as unavailable', async () => {
       const { client } = clientFor()
 
