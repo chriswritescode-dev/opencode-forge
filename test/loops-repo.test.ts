@@ -315,24 +315,26 @@ describe('LoopsRepo', () => {
       )
     }
 
-    test('returns all running loops first, then the most recent terminal loops', () => {
+    test('returns running loops first, then the most recent terminal loops, up to the limit', () => {
       insertLoop('running-old', 'running', 100)
       insertLoop('running-new', 'running', 200)
       for (let i = 1; i <= 7; i++) {
-        insertLoop(`terminal-${i}`, 'completed', i * 10)
+        insertLoop(`terminal-${i}`, 'completed', i * 1000)
       }
 
-      const rows = repo.listSidebarRows(testRow.projectId, 5)
+      const rows = repo.listSidebarRows(testRow.projectId, 3)
 
-      expect(rows.map((row) => row.loopName)).toEqual([
-        'running-new',
-        'running-old',
-        'terminal-7',
-        'terminal-6',
-        'terminal-5',
-        'terminal-4',
-        'terminal-3',
-      ])
+      expect(rows.map((row) => row.loopName)).toEqual(['running-new', 'running-old', 'terminal-7'])
+    })
+
+    test('caps running loops at the limit', () => {
+      for (let i = 1; i <= 4; i++) {
+        insertLoop(`running-${i}`, 'running', i * 10)
+      }
+
+      const rows = repo.listSidebarRows(testRow.projectId, 3)
+
+      expect(rows.map((row) => row.loopName)).toEqual(['running-4', 'running-3', 'running-2'])
     })
 
     test('projects only the sidebar columns', () => {

@@ -135,7 +135,7 @@ export function fetchStoredSessionPlan(projectId: string, sessionId: string, dbP
   )
 }
 
-export const SIDEBAR_RECENT_TERMINAL_LIMIT = 5
+export const SIDEBAR_LOOP_LIMIT = 3
 
 export interface LoopSidebarReader {
   read(): LoopSidebarRow[]
@@ -145,7 +145,7 @@ export interface LoopSidebarReader {
 export function openLoopSidebarReader(
   projectId: string,
   dbPathOverride?: string,
-  recentTerminalLimit: number = SIDEBAR_RECENT_TERMINAL_LIMIT,
+  limit: number = SIDEBAR_LOOP_LIMIT,
 ): LoopSidebarReader {
   const dbPath = dbPathOverride || resolveForgeDbPath()
   let db: Database | null = null
@@ -173,7 +173,7 @@ export function openLoopSidebarReader(
     read(): LoopSidebarRow[] {
       if (closed || !open() || !repo) return []
       try {
-        return repo.listSidebarRows(projectId, recentTerminalLimit)
+        return repo.listSidebarRows(projectId, limit)
       } catch {
         return []
       }

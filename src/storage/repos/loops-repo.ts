@@ -62,7 +62,7 @@ export interface LoopsRepo {
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
   listAll(projectId: string): LoopRow[]
-  listSidebarRows(projectId: string, recentTerminalLimit: number): LoopSidebarRow[]
+  listSidebarRows(projectId: string, limit: number): LoopSidebarRow[]
   updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
@@ -278,21 +278,10 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const listSidebarRowsStmt = db.prepare(`
     SELECT loop_name, status, iteration, max_iterations
-    FROM (
-      SELECT loop_name, status, iteration, max_iterations, 0 AS rank_group, started_at
-      FROM loops
-      WHERE project_id = ? AND status = 'running'
-      UNION ALL
-      SELECT loop_name, status, iteration, max_iterations, 1 AS rank_group, started_at
-      FROM (
-        SELECT loop_name, status, iteration, max_iterations, started_at
-        FROM loops
-        WHERE project_id = ? AND status != 'running'
-        ORDER BY started_at DESC
-        LIMIT ?
-      )
-    )
-    ORDER BY rank_group ASC, started_at DESC
+    FROM loops
+    WHERE project_id = ?
+    ORDER BY status = 'running' DESC, started_at DESC
+    LIMIT ?
   `)
 
   const updatePhaseStmt = db.prepare(`
@@ -578,8 +567,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       return this.listByStatus(projectId, allStatuses)
     },
 
-    listSidebarRows(projectId: string, recentTerminalLimit: number): LoopSidebarRow[] {
-      const rows = listSidebarRowsStmt.all(projectId, projectId, recentTerminalLimit) as Array<{
+    listSidebarRows(projectId: string, limit: number): LoopSidebarRow[] {
+      const rows = listSidebarRowsStmt.all(projectId, limit) as Array<{
         loop_name: string
         status: string
         iteration: number

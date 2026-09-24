@@ -11,7 +11,6 @@ import { FORGE_RPC, type ForgeToastEvent } from '../host/forge-rpc'
 import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
 import {
   openLoopSidebarReader,
-  SIDEBAR_RECENT_TERMINAL_LIMIT,
   type LoopSidebarReader,
 } from '../utils/tui-loop-store'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
@@ -77,7 +76,7 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
   const load = async () => {
     projectId ??= await resolveV2TuiProjectId(props.context)
     if (disposed || !projectId) return
-    reader ??= openLoopSidebarReader(projectId, props.dbPath, SIDEBAR_RECENT_TERMINAL_LIMIT)
+    reader ??= openLoopSidebarReader(projectId, props.dbPath)
     const next = reader.read()
     const nextSignature = next
       .map((loop) => `${loop.loopName}|${loop.status}|${loop.iteration}|${loop.maxIterations}`)
@@ -100,6 +99,14 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
   })
 
   const theme = () => props.context.theme
+  const statusColor = (status: LoopSidebarRow['status']) => {
+    const { text } = theme()
+    if (status === 'running') return text.feedback.info.base
+    if (status === 'completed') return text.feedback.success.base
+    if (status === 'errored') return text.feedback.error.base
+    if (status === 'stalled') return text.feedback.warning.base
+    return text.muted
+  }
 
   return (
     <box flexDirection="column">
@@ -109,9 +116,20 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
       <Show when={loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
         <For each={loops()}>
           {(loop) => (
-            <text fg={loop.status === 'running' ? theme().text.base : theme().text.muted}>
-              {`${loop.loopName} · ${loop.status} · ${loop.iteration}/${loop.maxIterations}`}
-            </text>
+            <box flexDirection="row" gap={1}>
+              <text flexShrink={0} fg={statusColor(loop.status)}>•</text>
+              <text
+                flexGrow={1}
+                flexShrink={1}
+                wrapMode="none"
+                truncate
+                fg={loop.status === 'running' ? theme().text.base : theme().text.muted}
+              >
+                {loop.loopName}
+              </text>
+              <text flexShrink={0} fg={statusColor(loop.status)}>{loop.status}</text>
+              <text flexShrink={0} fg={theme().text.muted}>{`${loop.iteration}/${loop.maxIterations}`}</text>
+            </box>
           )}
         </For>
       </Show>
