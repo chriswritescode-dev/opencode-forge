@@ -17,19 +17,11 @@ import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-rep
 import type { LoopService } from '../../src/loop/service'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { ForgeClientError } from '../../src/client/port'
 
 const mockLogger: Logger = {
   log: () => {},
   error: () => {},
   debug: () => {},
-}
-
-const mockWorkspaceStatusRegistry = {
-  recordEvent: vi.fn(),
-  getStatus: vi.fn().mockReturnValue('connected' as const),
-  awaitConnected: vi.fn().mockResolvedValue({ connected: true, elapsedMs: 0, source: 'cached' as const }),
-  primeFromSnapshot: vi.fn(),
 }
 
 const mockPendingTeardowns = {
@@ -90,9 +82,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
         create: async () => ({ id: 'session_test' }),
         get: async () => ({}),
       },
-      tui: {
-        selectSession: async () => {},
-      },
     })
 
     const mockLoopHandler = {
@@ -139,7 +128,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       sandboxManager: mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -149,7 +137,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-        lifecycle: { selectSession: true },
       },
     )
 
@@ -177,10 +164,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     // Assert: warp was called
     expect(client.workspace.warp).toHaveBeenCalledTimes(1)
-    expect(client.tui.selectSession).toHaveBeenCalledWith({ directory: '/tmp/test', sessionID: 'session_test', workspace: 'ws_test' })
-    expect((client.workspace.warp as any).mock.invocationCallOrder[0]).toBeLessThan(
-      (client.tui.selectSession as any).mock.invocationCallOrder[0],
-    )
 
     // Assert: loops state has workspace info
     if (!result.ok) return
@@ -249,7 +232,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       // No sandboxManager passed — simulates Docker not available
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -259,7 +241,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-        lifecycle: { selectSession: true },
       },
     )
 
@@ -337,7 +318,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       sandboxManager: mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -349,7 +329,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
         {
           type: 'loop.start' as const,
           source: { kind: 'inline', planText: '# Test Plan\n\nTest.' },
-          lifecycle: { selectSession: false },
         },
       )
       expect(client.session.create).toHaveBeenCalledWith(
@@ -425,7 +404,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       sandboxManager: mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -435,7 +413,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nTest.' },
-        lifecycle: { selectSession: false },
       },
     )
 
@@ -508,7 +485,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       sandboxManager: mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -518,7 +494,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-        lifecycle: { selectSession: true },
       },
     )
 
@@ -575,7 +550,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -585,7 +559,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nMissing flag test.' },
-        lifecycle: { selectSession: true },
       },
     )
 
@@ -620,9 +593,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       session: {
         create: async () => ({ id: `session_test_${++sessionCounter}` }),
         get: async () => ({}),
-      },
-      tui: {
-        selectSession: async () => {},
       },
     })
 
@@ -677,7 +647,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
           handleAuditorProviderLimit: async () => false,
         } as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client: mocks.client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -687,7 +656,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Dedupe Plan\n\nTest plan for dedupe.' },
       
-      lifecycle: { selectSession: true },
       hostSessionId: 'host-1',
     }
 
@@ -741,7 +709,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
           handleAuditorProviderLimit: async () => false,
         } as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client: mocks.client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -751,14 +718,12 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Plan Alpha\n\nDifferent plan A.' },
       
-      lifecycle: { selectSession: true },
       hostSessionId: 'host-A',
     }
     const cmd2 = {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Plan Beta\n\nDifferent plan B.' },
       
-      lifecycle: { selectSession: true },
       hostSessionId: 'host-B',
     }
 
@@ -805,7 +770,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
           handleAuditorProviderLimit: async () => false,
         } as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client: mocks.client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -815,7 +779,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Sequential Plan\n\nSequential test.' },
       
-      lifecycle: { selectSession: true },
       hostSessionId: 'host-seq',
     }
 
@@ -826,470 +789,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
     expect(mocks.client.workspace.create).toHaveBeenCalledTimes(2)
     expect(mocks.client.session.create).toHaveBeenCalledTimes(2)
     expect(second.ok).toBe(true)
-
-    db.close()
-  })
-})
-
-describe('handleStartLoop select-session ordering', () => {
-  const noopFn = () => {}
-
-  function buildOrderingMocks() {
-    // Deferred pattern: control when selectSession resolves or rejects
-    let resolveSelect!: (value?: unknown) => void
-    let rejectSelect!: (reason?: unknown) => void
-    const selectPromise = new Promise<void>((resolve, reject) => {
-      resolveSelect = () => { resolve(); }
-      rejectSelect = (reason) => { reject(reason); }
-    })
-
-    const { client } = createFakeForgeClient({
-      workspace: {
-        create: async () => ({
-          id: 'ws_test', directory: '/tmp/wt/abc', branch: 'opencode/abc',
-        }),
-        warp: async () => {},
-      },
-      session: {
-        create: async () => ({ id: 'session_test' }),
-        get: async () => ({}),
-      },
-      tui: {
-        selectSession: async () => selectPromise,
-      },
-    })
-
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn, clearLoopTimers: noopFn,
-    }
-
-    const mockSandboxManager = {
-      docker: {} as any,
-      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
-      stop: vi.fn().mockResolvedValue(undefined),
-      getActive: vi.fn().mockReturnValue(null), isActive: vi.fn().mockReturnValue(false),
-      isLive: vi.fn().mockResolvedValue(false),
-      cleanupOrphans: vi.fn().mockResolvedValue(0), restore: vi.fn().mockResolvedValue(undefined),
-      provisionDependencies: vi.fn().mockResolvedValue(undefined),
-    }
-
-    return { client, mockLoopHandler, mockSandboxManager, resolveSelect, rejectSelect, selectPromise }
-  }
-
-  test('onStarted fires only after selectSessionBestEffort resolves', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-resolve-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-
-    const mocks = buildOrderingMocks()
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger, dataDir: '/tmp',
-      plansRepo, loopsRepo, loop: {
-          service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mocks.mockLoopHandler as any,
-      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
-      client: mocks.client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
-
-    let onStartedTs: number | null = null
-    const resultPromise = service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.start' as const,
-        source: { kind: 'inline' as const, planText: '# Order Plan\n\nTest ordering.' },
-        
-        lifecycle: {
-          selectSession: true,
-          onStarted: (info) => { onStartedTs = Date.now() },
-        },
-      },
-    )
-
-    // Allow session creation to proceed but don't resolve selectSession yet
-    await new Promise(r => setTimeout(r, 100))
-
-    // At this point, with the fix in place, onStarted should NOT have fired yet
-    // because selectSession hasn't resolved
-    const beforeResolveTs = Date.now()
-
-    // Now resolve the deferred selectSession
-    mocks.resolveSelect!()
-    const selectResolvedTs = Date.now()
-
-    await resultPromise
-
-    expect(onStartedTs).not.toBeNull()
-    expect(onStartedTs!).toBeGreaterThanOrEqual(selectResolvedTs - 5)
-
-    db.close()
-  })
-
-  test('onStarted still fires if selectSession rejects', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-reject-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-
-    const mocks = buildOrderingMocks()
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger, dataDir: '/tmp',
-      plansRepo, loopsRepo, loop: {
-          service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mocks.mockLoopHandler as any,
-      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
-      client: mocks.client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
-
-    let onStartedCalled = false
-    const resultPromise = service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.start' as const,
-        source: { kind: 'inline' as const, planText: '# Reject Plan\n\nTest rejection.' },
-        
-        lifecycle: {
-          selectSession: true,
-          onStarted: () => { onStartedCalled = true },
-        },
-      },
-    )
-
-    // Wait a bit then reject the selectSession promise
-    await new Promise(r => setTimeout(r, 50))
-    mocks.rejectSelect!(new Error('TUI connection lost'))
-    
-    const result = await resultPromise
-
-    expect(result.ok).toBe(true)
-    expect(onStartedCalled).toBe(true)
-
-    db.close()
-  })
-
-  test('onStarted fires after a bounded timeout if selectSession hangs', async () => {
-    // Shorten the select timeout for this test to keep it fast
-    const prevEnv = process.env.FORGE_SELECT_TIMEOUT_MS
-    process.env.FORGE_SELECT_TIMEOUT_MS = '50'
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-timeout-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-
-    const mocks = buildOrderingMocks()
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger, dataDir: '/tmp',
-      plansRepo, loopsRepo, loop: {
-          service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mocks.mockLoopHandler as any,
-      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
-      client: mocks.client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
-
-    let onStartedCalled = false
-    const resultPromise = service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.start' as const,
-        source: { kind: 'inline' as const, planText: '# Timeout Plan\n\nTest timeout.' },
-        
-        lifecycle: {
-          selectSession: true,
-          onStarted: () => { onStartedCalled = true },
-        },
-      },
-    )
-
-    // The selectSession mock never resolves — it hangs forever.
-    // After the fix, a bounded timeout will kick in (SELECT_TIMEOUT_MS).
-    // We wait long enough to see if onStarted fires within that window.
-    const elapsed = Date.now()
-    const result = await resultPromise
-    const totalElapsed = Date.now() - elapsed
-
-    expect(result.ok).toBe(true)
-    expect(onStartedCalled).toBe(true)
-
-    // Should have completed reasonably quickly (within timeout budget + some margin)
-    expect(totalElapsed).toBeLessThan(5000)
-
-    db.close()
-    if (prevEnv === undefined) delete process.env.FORGE_SELECT_TIMEOUT_MS
-    else process.env.FORGE_SELECT_TIMEOUT_MS = prevEnv
-  })
-})
-
-describe('handleStartLoop selectSessionBestEffort retry on connection errors', () => {
-  const noopFn = () => {}
-  const PROJECT_ID = 'test-project'
-
-  test('retries selectSession on connection kind errors, loop starts successfully without publish fallback', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-conn-retry-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-
-    let selectCallCount = 0
-    let publishCalled = false
-
-    // selectSessionBestEffort is called at two call sites during handleStartLoop
-    // (doSelectInitialWorktreeSession and attachLoopToSession). Each calls
-    // selectSession up to 3 times. Our mock fails the first 2 attempts of each
-    // group of 3 (count % 3 != 0) and succeeds on the 3rd (count % 3 == 0).
-    const { client } = createFakeForgeClient({
-      workspace: {
-        create: async () => ({
-          id: 'ws_test',
-          directory: '/tmp/wt/abc',
-          branch: 'opencode/abc',
-        }),
-      },
-      tui: {
-        selectSession: async () => {
-          selectCallCount++
-          if (selectCallCount % 3 !== 0) {
-            throw new ForgeClientError({
-              kind: 'connection',
-              method: 'tui.selectSession',
-              message: 'fetch failed',
-            })
-          }
-        },
-        publish: async () => {
-          publishCalled = true
-        },
-      },
-    })
-
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
-    const mockSandboxManager = {
-      docker: {} as any,
-      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
-      stop: vi.fn().mockResolvedValue(undefined),
-      getActive: vi.fn().mockReturnValue(null),
-      isActive: vi.fn().mockReturnValue(false),
-      isLive: vi.fn().mockResolvedValue(false),
-      cleanupOrphans: vi.fn().mockResolvedValue(0),
-      restore: vi.fn().mockResolvedValue(undefined),
-      provisionDependencies: vi.fn().mockResolvedValue(undefined),
-    }
-
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      sandboxManager: mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
-
-    const result = await service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.start' as const,
-        source: { kind: 'inline', planText: '# Test Plan\n\nRetry on connection errors.' },
-        lifecycle: { selectSession: true },
-      },
-    )
-
-    // The loop should start successfully despite connection retries
-    expect(result.ok).toBe(true)
-
-    // The first selectSessionBestEffort call (blocking, in doSelectInitialWorktreeSession)
-    // tries 3 times: 2 connection failures then success. The second call
-    // (fire-and-forget, in attachLoopToSession) may only make 1 attempt before
-    // the test checks counts. Verify at least the blocking group's 3 calls happened.
-    expect(selectCallCount).toBeGreaterThanOrEqual(3)
-
-    // publish should NOT have been called because the blocking group's 3rd
-    // attempt succeeded (fire-and-forget group hasn't exhausted retries yet)
-    expect(publishCalled).toBe(false)
-
-    db.close()
-  })
-
-  test('exhausts all retries then falls back to publish when selectSession always throws connection', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-conn-exhaust-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-
-    let selectCallCount = 0
-    let publishCallCount = 0
-
-    const { client } = createFakeForgeClient({
-      workspace: {
-        create: async () => ({
-          id: 'ws_test',
-          directory: '/tmp/wt/abc',
-          branch: 'opencode/abc',
-        }),
-      },
-      tui: {
-        selectSession: async () => {
-          selectCallCount++
-          throw new ForgeClientError({
-            kind: 'connection',
-            method: 'tui.selectSession',
-            message: 'persistent fetch failed',
-          })
-        },
-        publish: async () => {
-          publishCallCount++
-        },
-      },
-    })
-
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
-    const mockSandboxManager = {
-      docker: {} as any,
-      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
-      stop: vi.fn().mockResolvedValue(undefined),
-      getActive: vi.fn().mockReturnValue(null),
-      isActive: vi.fn().mockReturnValue(false),
-      isLive: vi.fn().mockResolvedValue(false),
-      cleanupOrphans: vi.fn().mockResolvedValue(0),
-      restore: vi.fn().mockResolvedValue(undefined),
-      provisionDependencies: vi.fn().mockResolvedValue(undefined),
-    }
-
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      sandboxManager: mockSandboxManager as any,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
-
-    const result = await service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.start' as const,
-        source: { kind: 'inline', planText: '# Test Plan\n\nExhaust connection retries.' },
-        lifecycle: { selectSession: true },
-      },
-    )
-
-    // The loop should still start successfully (select is best-effort, not fatal)
-    expect(result.ok).toBe(true)
-
-    // The first selectSessionBestEffort call (blocking, in doSelectInitialWorktreeSession)
-    // tries 3 times (all fail). The second call (fire-and-forget, in
-    // attachLoopToSession) may only make 1 attempt before the test checks
-    // counts. Verify at least the blocking group's 3 calls happened.
-    expect(selectCallCount).toBeGreaterThanOrEqual(3)
-
-    // publish should have been called at least from the blocking group's fallback
-    expect(publishCallCount).toBeGreaterThanOrEqual(1)
 
     db.close()
   })
@@ -1320,9 +819,6 @@ describe('handleStartLoop variant config fallback', () => {
         create: async () => ({ id: 'session_test' }),
         get: async () => ({}),
       },
-      tui: {
-        selectSession: async () => {},
-      },
     })
 
     const mockLoopHandler = {
@@ -1352,7 +848,6 @@ describe('handleStartLoop variant config fallback', () => {
           handleAuditorProviderLimit: async () => false,
         } as any, loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -1362,7 +857,6 @@ describe('handleStartLoop variant config fallback', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nVariant fallback test.' },
-        lifecycle: { selectSession: true },
       },
     )
 
@@ -1398,9 +892,6 @@ describe('handleStartLoop variant config fallback', () => {
         create: async () => ({ id: 'session_test' }),
         get: async () => ({}),
       },
-      tui: {
-        selectSession: async () => {},
-      },
     })
 
     const mockLoopHandler = {
@@ -1430,7 +921,6 @@ describe('handleStartLoop variant config fallback', () => {
           handleAuditorProviderLimit: async () => false,
         } as any, loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -1440,7 +930,6 @@ describe('handleStartLoop variant config fallback', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nExplicit empty variant test.' },
-        lifecycle: { selectSession: true },
         executionVariant: '',
         auditorVariant: '',
       },
@@ -1497,9 +986,6 @@ describe('handleStartGoal creates dedicated code session', () => {
         create: async () => ({ id: 'new-goal-session' }),
         promptAsync: async () => {},
       },
-      tui: {
-        selectSession: async () => {},
-      },
       ...overrides,
     })
   }
@@ -1539,7 +1025,6 @@ describe('handleStartGoal creates dedicated code session', () => {
       } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       sandboxManager,
       pendingTeardowns: mockPendingTeardowns,
@@ -1577,11 +1062,6 @@ describe('handleStartGoal creates dedicated code session', () => {
     // The new session ID is returned in the result
     const newSessionId = 'new-goal-session'
     expect(result.data.sessionId).toBe(newSessionId)
-
-    // ---- TUI select receives the new session and workspace ----
-    expect(client.tui.selectSession).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionID: newSessionId, workspace: 'ws_goal' }),
-    )
 
     // ---- Initial prompt contains original goal, uses worktree directory, workspace, and code model ----
     expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
@@ -1786,9 +1266,6 @@ describe('handleStartGoal creates dedicated code session', () => {
         create: async () => ({ id: 'goal-session-to-abort' }),
         promptAsync: async () => { throw new Error('prompt failed') },
       },
-      tui: {
-        selectSession: async () => {},
-      },
     })
     const { service, loopService } = await buildService(client)
 
@@ -1868,11 +1345,10 @@ describe('handleStartGoal creates dedicated code session', () => {
     expect(client.session.create).not.toHaveBeenCalled()
 
     // Error toast published to the TUI
-    expect(client.tui.publish).toHaveBeenCalledTimes(1)
-    const toast = (client.tui.publish as any).mock.calls[0][0]
-    expect(toast.body.type).toBe('tui.toast.show')
-    expect(toast.body.properties.variant).toBe('error')
-    expect(toast.body.properties.message).toContain('restart opencode')
+    expect(client.toast).toHaveBeenCalledTimes(1)
+    const toast = (client.toast as any).mock.calls[0][0]
+    expect(toast.variant).toBe('error')
+    expect(toast.message).toContain('restart opencode')
 
     db.close()
   })
@@ -1898,14 +1374,11 @@ describe('handlePlanNewSession workspace forwarding', () => {
     sectionPlansRepo = createSectionPlansRepo(db)
   })
 
-  test('forwards the created session workspaceID to tui.selectSession and promptAsync', async () => {
+  test('forwards the created session workspaceID to promptAsync', async () => {
     const { client } = createFakeForgeClient({
       session: {
         create: async () => ({ id: 'new-session-id', workspaceID: 'ws_test' }),
         promptAsync: async () => {},
-      },
-      tui: {
-        selectSession: async () => {},
       },
     })
 
@@ -1951,7 +1424,6 @@ describe('handlePlanNewSession workspace forwarding', () => {
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
-      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
       pendingTeardowns: mockPendingTeardowns,
     })
@@ -1961,12 +1433,10 @@ describe('handlePlanNewSession workspace forwarding', () => {
       {
         type: 'plan.execute.newSession' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-        lifecycle: { selectSession: true, selectSessionTiming: 'after-prompt' },
       },
     )
 
     expect(result.ok).toBe(true)
-    expect(client.tui.selectSession).toHaveBeenCalledWith({ directory: '/tmp/test', sessionID: 'new-session-id', workspace: 'ws_test' })
     expect(client.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({ sessionID: 'new-session-id', workspace: 'ws_test' }),
     )

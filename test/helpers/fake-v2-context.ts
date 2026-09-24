@@ -54,6 +54,7 @@ export interface FakeV2Context {
   calls: V2ContextCall[]
   hooks: V2HookRegistration[]
   tools: RecordedTool[]
+  builtinTools: Record<string, FakeBuiltinTool>
   agents: RecordedAgent[]
   commands: RecordedCommand[]
   defaultAgent: { id: string | undefined }
@@ -141,10 +142,23 @@ const TOOL_DEFAULTS: Record<string, AnyMethod> = {
   hook: async () => ({ dispose: async () => {} }),
 }
 
-function makeToolDefaults(recorded: RecordedTool[]): Record<string, AnyMethod> {
+export interface FakeBuiltinTool {
+  execute: (input: unknown, context: Record<string, unknown>) => Promise<unknown>
+}
+
+function makeToolDefaults(recorded: RecordedTool[], builtins: Record<string, FakeBuiltinTool>): Record<string, AnyMethod> {
   return {
-    transform: async (callback: (editor: { add: (tool: RecordedTool) => void }) => void) => {
-      callback({ add: (tool) => recorded.push(tool) })
+    transform: async (callback: (editor: {
+      add: (tool: RecordedTool) => void
+      update: (id: string, update: (tool: FakeBuiltinTool) => void) => void
+    }) => void) => {
+      callback({
+        add: (tool) => recorded.push(tool),
+        update: (id, update) => {
+          const builtin = builtins[id]
+          if (builtin) update(builtin)
+        },
+      })
       return { dispose: async () => {} }
     },
     ...TOOL_DEFAULTS,
@@ -280,6 +294,9 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
   const calls: V2ContextCall[] = []
   const hooks: V2HookRegistration[] = []
   const tools: RecordedTool[] = []
+  const builtinTools: Record<string, FakeBuiltinTool> = {
+    shell: { execute: async (input) => ({ content: [{ type: 'text', text: JSON.stringify(input) }] }) },
+  }
   const agents: RecordedAgent[] = []
   const commands: RecordedCommand[] = []
   const defaultAgent: { id: string | undefined } = { id: undefined }
@@ -304,7 +321,7 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     event: makeDomain('event', EVENT_DEFAULTS, options.event, calls, hooks),
     provider: makeDomain('provider', PROVIDER_DEFAULTS, options.provider, calls, hooks),
     model: makeDomain('model', MODEL_DEFAULTS, options.model, calls, hooks),
-    tool: makeDomain('tool', makeToolDefaults(tools), options.tool, calls, hooks),
+    tool: makeDomain('tool', makeToolDefaults(tools, builtinTools), options.tool, calls, hooks),
     agent: makeDomain('agent', makeAgentDefaults(agents, defaultAgent), options.agent, calls, hooks),
     command: makeDomain('command', makeCommandDefaults(commands), options.command, calls, hooks),
     shell: makeDomain('shell', SHELL_DEFAULTS, options.shell, calls, hooks),
@@ -313,5 +330,5 @@ export function createFakeV2Context(options: FakeV2ContextOptions = {}): FakeV2C
     rpc: makeDomain('rpc', makeRpcDefaults(rpc), options.rpc, calls, hooks),
   } as unknown as Plugin.Context
 
-  return { ctx, calls, hooks, tools, agents, commands, defaultAgent, rpc }
+  return { ctx, calls, hooks, tools, builtinTools, agents, commands, defaultAgent, rpc }
 }

@@ -6,7 +6,7 @@ import { execSync } from 'child_process'
 import { createForgeWorkspaceAdapter } from '../../src/workspace/forge-adapter'
 
 describe('forge workspace adapter e2e', () => {
-  it('full lifecycle: configure -> create -> target -> remove', async () => {
+  it('full lifecycle: configure -> create -> remove', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-e2e-repo-'))
     const tmpDataDir = mkdtempSync(join(tmpdir(), 'forge-e2e-data-'))
 
@@ -55,9 +55,6 @@ describe('forge workspace adapter e2e', () => {
         encoding: 'utf-8',
       }).trim()
       expect(headBranch).toBe('forge/e2e-loop')
-
-      const target = adapter.target(configured)
-      expect(target).toEqual({ type: 'local', directory: worktreeDir })
 
       await adapter.remove(configured)
       expect(existsSync(worktreeDir)).toBe(false)

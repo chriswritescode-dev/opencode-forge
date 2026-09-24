@@ -479,16 +479,6 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  it('target returns local directory', () => {
-    const adapter = createForgeWorkspaceAdapter({
-      dataDir: tmpDataDir,
-      logger,
-    })
-    const configured = adapter.configure(makeInfo('target-loop'))
-    const target = adapter.target(configured)
-    expect(target).toEqual({ type: 'local', directory: configured.directory })
-  })
-
   it('create writes opencode.jsonc and adds it to git exclude', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-opencode-'))
     try {

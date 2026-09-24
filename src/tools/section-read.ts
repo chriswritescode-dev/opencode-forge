@@ -1,9 +1,9 @@
-import { tool } from '@opencode-ai/plugin'
+import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 
 const z = tool.schema
 
-export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool> {
+export function createSectionReadTool(ctx: ToolContext): ToolDefinition {
   const loop = ctx.loop
 
   return tool({

@@ -8,16 +8,16 @@ See also: [Architecture](architecture.md), [Loop System](loop-system.md), [API R
 
 ```
 src/
-├── index.ts                 # Server plugin entry point (V1 server + V2 setup)
-├── tui.tsx                  # TUI plugin entry point (V1 tui + V2 setup)
+├── index.ts                 # Server plugin entry point (V2 setup)
+├── tui.tsx                  # TUI plugin entry point (V2 setup)
 ├── config.ts                # Agent/command configuration handler
 ├── setup.ts                 # Config loading, skill installation
 ├── types.ts                 # Core type definitions (PluginConfig, etc.)
 ├── version.ts               # VERSION constant generated from package.json
 │
 ├── agents/                  # AI agent definitions
-├── client/                  # ForgeClient port + V1/V2 host adapters
-├── host/                    # Host-neutral core + V1/V2 composition adapters
+├── client/                  # ForgeClient port + V2 host adapter
+├── host/                    # Host-neutral core + V2 composition adapter
 ├── hooks/                   # Plugin event/lifecycle hooks
 ├── loop/                    # Core loop state machine & runtime
 ├── services/                # Business logic services
@@ -25,7 +25,7 @@ src/
 ├── storage/                 # SQLite persistence layer
 ├── tools/                   # Plugin tools callable by AI agents
 ├── tui/                     # TUI-specific components
-├── utils/                   # Shared utility modules (~25 files)
+├── utils/                   # Shared utility modules (~40 files)
 └── workspace/               # Git worktree / workspace management
 ```
 
@@ -35,13 +35,12 @@ src/
 
 ### `src/index.ts` — Server Plugin Entry
 
-The main server plugin factory function that initializes all services and returns the `Hooks` object. The default export carries both hosts: the 1.x plugin function as `server` and the 2.x module (`id` + `setup`) built with `define`.
+The server plugin entry. The default export is the OpenCode 2.x module (`id` + `setup`) built with `define`.
 
 **Public API** (`src/index.ts`):
 
 | Export | Type | Description |
 |--------|------|-------------|
-| `createForgePlugin(config)` | Function | Factory returning an OpenCode 1.x `Plugin` |
 | `setupForgeV2(ctx)` | Function | OpenCode 2.x `setup` entry, exported for the module and tests |
 | `createParentSessionLookup(options)` | Function | Resolves parent sessions across worktrees |
 | `createSessionDirectoryLookup(options)` | Function | Resolves session directory across worktrees |
@@ -53,19 +52,19 @@ Source: [src/index.ts](../src/index.ts)
 
 ### `src/tui.tsx` — TUI Plugin Entry
 
-The TUI plugin providing sidebar widget and dialog system. Communicates with the server plugin via RPC over the opencode bus.
+The TUI plugin entry, providing the sidebar widget and dialog system. It talks to the server plugin through the V2 plugin RPC port.
 
-- Exports `{ id: 'oc-forge', tui, setup }`: the 1.x `tui` object plus the 2.x `setup`
-- On 1.x, registers commands: `forge.plan.view`, `forge.plan.load`, and provides the plan viewer, execution dialog, loop details, model and variant selection
-- On 2.x, provides the loop sidebar, the `Open dashboard` command, and the missing-build-context toast
+- Exports `{ id: 'oc-forge', setup: setupForgeTuiV2 }`
+- Registers commands: `Execute plan`, `Execute pasted plan`, `Restart loop`, `Open dashboard`, `Build sandbox template`, and `Toggle host sandbox`
+- Provides the loop sidebar, session-rotation following, and the missing-build-context toast
 
-Source: [src/tui.tsx](../src/tui.tsx)
+Source: [src/tui.tsx](../src/tui.tsx), [src/tui/v2.tsx](../src/tui/v2.tsx)
 
 ---
 
-## `host/` — Dual-host Composition
+## `host/` — Core and V2 Composition
 
-Host-neutral core plus the thin adapters that map each OpenCode host onto it.
+Host-neutral core plus the thin adapter that maps the OpenCode V2 plugin context onto it.
 
 ### Files
 
@@ -93,17 +92,16 @@ Source: [src/host/forge-core.ts](../src/host/forge-core.ts), [src/host/v2.ts](..
 
 ---
 
-## `client/` — ForgeClient Port and Adapters
+## `client/` — ForgeClient Port and Adapter
 
-The port every Forge service depends on, plus one adapter per host.
+The port every Forge service depends on, plus the V2 adapter.
 
 ### Files
 
 | File | Purpose |
 |------|---------|
-| `port.ts` | `ForgeClient` interface (V1-derived types) |
-| `sdk-adapter.ts` | 1.x adapter over `PluginInput` and the V1 SDK client |
-| `v2-adapter.ts` | 2.x adapter over the V2 plugin context |
+| `port.ts` | `ForgeClient` interface |
+| `v2-adapter.ts` | Adapter over the V2 plugin context |
 | `v2-workspaces.ts` | V2 worktree/location workspace implementation |
 | `errors.ts` | Shared error classification and `unavailableError()` |
 
@@ -139,7 +137,7 @@ Source: [src/agents/index.ts](../src/agents/index.ts)
 
 ## `hooks/` — Plugin Event Hooks
 
-Translates OpenCode host events into loop actions and manages lifecycle side-effects.
+Translates OpenCode events into loop actions and manages lifecycle side-effects.
 
 ### Files
 
@@ -151,10 +149,13 @@ Translates OpenCode host events into loop actions and manages lifecycle side-eff
 | `host-side-effects.ts` | Termination side-effects (teardown, toast, log) |
 | `watchdog.ts` | Stall detection and recovery |
 | `plan-approval.ts` | Plan approval dedup/event gating + tool execute before/after hooks |
-| `plan-capture.ts` | Marked-plan capture from streaming assistant message parts and on message completion |
+| `plan-capture.ts` | Marked-plan capture from streaming assistant message parts |
 | `forge-session-attach.ts` | Auto-attach loops on `session.created` and `chat.message` events |
 | `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
+| `sandbox-message.ts` | Tells the agent its tool calls run in a container |
+| `group-orchestrator.ts` | Advances queued features when a group loop terminates |
+| `tool-hook-types.ts` | Shared tool before/after hook types |
 
 ### Public API (barrel exports from `hooks/index.ts`)
 
@@ -168,9 +169,11 @@ createPlanApprovalEventHook()              // Plan approval event hook (plan-app
 
 Additional hooks available via direct imports (not re-exported by the barrel):
 - `createSandboxToolBeforeHook()` / `createSandboxToolAfterHook()` — sandbox tool redirection (`sandbox-tools.ts`)
+- `createSandboxMessageHook()` — container note injection (`sandbox-message.ts`)
 - `createForgeSessionAttachHook()` / `createForgeSessionMessageAttachHook()` — auto-attach loops on session events (`forge-session-attach.ts`)
-- `createLoopPermissionRejectHook()` — patch subagent permissions on `session.created` (`loop-permission.ts`)
-- `createPlanCaptureEventHook()` — plan marker extraction from streaming parts and on `message.updated` for completed assistant messages (`plan-capture.ts`)
+- `createLoopPermissionPatcher()` — patch subagent permissions on `session.created` (`loop-permission.ts`)
+- `createPlanCaptureEventHook()` — plan marker extraction from streaming parts (`plan-capture.ts`)
+- `createGroupOrchestratorEventHook()` — group scheduling on loop termination (`group-orchestrator.ts`)
 
 Source: [src/hooks/index.ts](../src/hooks/index.ts)
 
@@ -273,7 +276,7 @@ isAwaitingBusyExpired(sessionId): boolean
 generateUniqueName(existingNames[]): string
 
 // Session output
-fetchSessionOutput(v2, sessionId): LoopSessionOutput
+fetchSessionOutput(client, sessionId, directory, logger?, options?): LoopSessionOutput | null
 ```
 
 All external consumers import through the barrel: `src/loop/index.ts`
@@ -292,8 +295,13 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 |------|---------|
 | `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`) |
 | `session-loop-resolver.ts` | Resolve which loop owns a given session |
+| `unified-sandbox-resolver.ts` | Loop-first sandbox resolution shared by the shell wrapper and tool hooks |
 | `deterministic-decomposer.ts` | Slice a plan into milestones (`section_plans` rows) deterministically — called once at loop start by `execution.ts`, not a runtime loop phase |
+| `section-bootstrap.ts` | Build the initial milestone rows for a loop |
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
+| `group-orchestrator.ts` | Feature-group scheduling and per-feature loop launch |
+| `group-scheduler.ts` | Ordering and concurrency cap for a group's features |
+| `tui-loop-restart-controller.ts` | Applies TUI loop-restart requests and writes the acknowledgement |
 | `worktree-log.ts` | Log worktree completions |
 
 ### Key Interfaces
@@ -336,8 +344,9 @@ Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 | `context.ts` | `SandboxContext`, `isSandboxEnabled()` |
 | `path.ts` | Sandbox path utilities |
 | `exec-fs.ts` | Filesystem operations through `msb exec` |
-| `shell-shim.ts` | Generated shim routing the native `bash` tool through `msb exec` |
-| `session-controller.ts` | Per-session host sandbox selection and ownership |
+| `shell-shim.ts` | Generated shim routing the native `shell` tool through `msb exec` |
+| `session-controller.ts` | Per-project host sandbox selection and ownership |
+| `env-probe.ts` | Bounded environment probe for the container note |
 
 ### SandboxRuntime Interface
 
@@ -404,7 +413,10 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `LoopTransitionsRepo` | `loop_transitions` | `LoopTransitionRow` — append-only phase-transition log per loop |
 | `PlanAmendmentsRepo` | `plan_amendments` | `PlanAmendmentRow` — append-only plan-amendment audit trail |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
-| `TuiPrefsRepo` | `tui_preferences` | N/A |
+| `FeatureGroupsRepo` | `feature_groups` | `FeatureGroupsRepo` — grouped-execution state |
+| `LoopAttemptsRepo` | `loop_attempts` | `LoopAttemptsRepo` — durable audit-attempt history |
+| `SessionSandboxPreferencesRepo` | `session_sandbox_preferences` | `SessionSandboxPreferencesRepo` — host-session sandbox desired/applied state |
+| `TuiLoopRestartRepo` | `tui_loop_restart` | `TuiLoopRestartRepo` — TUI loop-restart request/acknowledgement handoff |
 
 ### Migrations
 
@@ -437,6 +449,8 @@ Implements tools callable by AI agents during conversations.
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
 | `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
 
+`tool.ts` is the local `tool()` helper every definition uses; its `schema` is zod 4, and the V2 tool registrar converts each definition's args to JSON Schema.
+
 ### ToolContext
 
 All tool implementations receive a shared context:
@@ -451,17 +465,18 @@ interface ToolContext {
   dataDir: string
   loopHandler: LoopEventHandler
   loop: Loop
-  v2: OpencodeClientV2
+  client: ForgeClient
   cleanup: () => Promise<void>
-  input: PluginInput
   sandboxManager: SandboxManager | null
   plansRepo: PlansRepo
   reviewFindingsRepo: ReviewFindingsRepo
   loopsRepo: LoopsRepo
   sectionPlansRepo: SectionPlansRepo
-  loopSessionUsageRepo: LoopSessionUsageRepo
-  workspaceStatusRegistry: WorkspaceStatusRegistry
+  loopSessionUsageRepo?: LoopSessionUsageRepo
+  featureGroupsRepo: FeatureGroupsRepo
+  groupOrchestrator: GroupOrchestrator
   pendingTeardowns: PendingTeardownRegistry
+  resolveActiveLoopForSession: (sessionID) => Promise<ResolvedLoop | null>
 }
 ```
 
@@ -471,15 +486,19 @@ Source: [src/tools/index.ts](../src/tools/index.ts), [src/tools/types.ts](../src
 
 ## `workspace/` — Git Worktree / Workspace Management
 
-Creates and manages git worktrees for isolated loop execution, integrated with OpenCode's experimental workspace API.
+Creates and manages git worktrees for isolated loop execution, registered through the V2 worktree inventory.
 
 ### Files
 
 | File | Purpose |
 |------|---------|
-| `forge-adapter.ts` | `createForgeWorkspaceAdapter()` — implements OpenCode's workspace API |
-| `forge-worktree.ts` | `bindSessionToWorkspace()`, `createBuiltinWorktreeWorkspace()` |
+| `forge-adapter.ts` | `createForgeWorkspaceAdapter()` — the host-neutral worktree adapter |
+| `forge-worktree.ts` | `bindSessionToWorkspace()`, `createBuiltinWorktreeWorkspace()`, workspace permission rules |
+| `forge-naming.ts` | Worktree/branch naming and forge-worktree directory detection |
+| `forge-workspace-metadata.ts` | `<worktree>/.forge/workspace.json` read/write/list |
 | `pending-teardown.ts` | Registry of pending teardown contexts for commit message building |
+| `worktree-commit.ts` | Teardown commit building |
+| `worktree-opencode-config.ts` | Writes `opencode.jsonc` into a fresh worktree |
 | `classify-stale.ts` | Decision function for stale forge workspace handling |
 | `remove-with-context.ts` | Workspace removal with teardown context |
 | `sweep-stale.ts` | Opportunistic same-project sweep of stale forge workspaces during loop teardown |
@@ -490,20 +509,21 @@ Source: [src/workspace/forge-adapter.ts](../src/workspace/forge-adapter.ts)
 
 ## `utils/` — Shared Utilities
 
-Cross-cutting helpers (~25 files) organized by concern:
+Cross-cutting helpers (~40 files) organized by concern:
 
 | Group | Files | Purpose |
 |---|---|---|
 | Logging | `logger.ts` | File logger with rotation (10MB max) |
 | Caching | `lru-cache.ts` | Generic LRU cache |
-| Plan | `plan-execution.ts`, `plan-capture.ts`, `plan-archive.ts` | Plan parsing and archiving |
+| Paths | `opencode-paths.ts`, `shipped-paths.ts`, `resolve-project-root.ts` | Data/tool-output/tmp paths, bundled-asset root, project root |
+| Plan | `plan-execution.ts`, `plan-structure.ts`, `marked-plan-parser.ts`, `markdown-fences.ts` | Plan parsing, structure reports, marker extraction |
 | Sections | `section-capture.ts`, `section-summary.ts` | Section extraction/summary parsing |
-| Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts` | Loop model/format/session helpers |
-| Sessions | `audit-session.ts`, `session-titles.ts` | Session naming |
-| TUI | `tui-client.ts`, `tui-plan-store.ts`, `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI RPC, storage, preferences, models |
-| Remote | `remote-config.ts`, `tui-remote-launch.ts` | Remote server config resolution and remote loop launch (see also `createRemoteForgeClient` in `client/sdk-adapter.ts`) |
-| Workspace | `worktree-cleanup.ts`, `workspace-listing.ts`, `workspace-status-registry.ts` | Worktree/workspace lifecycle |
-| Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `sandbox-ready.ts`, `format.ts` | Various helpers |
+| Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts`, `loop-registry.ts`, `loop-permission-options.ts`, `loop-permission-warnings.ts` | Loop model/format/session/permission helpers |
+| Sessions | `audit-session.ts`, `audit-snapshot.ts`, `coder-decisions.ts`, `session-ancestry.ts`, `session-titles.ts` | Session naming, ancestry, audit history |
+| TUI | `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI local reads, preferences, models |
+| Workspace | `worktree-cleanup.ts`, `git-service.ts` | Worktree cleanup and git operations |
+| Sandbox | `sandbox-ready.ts` | Sandbox readiness probe |
+| Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `format.ts`, `duration.ts`, `is-record.ts`, `toast.ts`, `architect-auto-output.ts`, `feature-list-parser.ts`, `review-format.ts`, `cli-flags.ts`, `bundled-sync.ts` | Various helpers |
 
 ---
 
@@ -515,7 +535,6 @@ Security rules for loop and audit sessions.
 buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, external_directory deny+allows, then configured rules, then review/plan/loop structural denies
 buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, external_directory deny+allows, configured rules, then structural denies for the direct mutation tools edit/write/multiedit/apply_patch plus the shared plan/loop denies
 resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Local resolver: allowDirectories + configured loop.permissions deny rules
-resolveRemoteLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Remote launch: configured rules without host-specific directories
 ```
 
 Only `deny` entries are honoured; Forge-managed permissions and blanket denies of Forge-required
@@ -523,7 +542,7 @@ permissions (`FORGE_REQUIRED_PERMISSIONS`) are rejected with a warning.
 
 Source: [src/constants/loop.ts](../src/constants/loop.ts)
 
-Workspace-aware resolution (merges portable `extra.permissionRules` persisted by a remote launch)
+Workspace-aware resolution (merges portable `extra.permissionRules` persisted in a workspace's metadata)
 lives in `resolveLoopPermissionOptionsForWorkspace`.
 
 Source: [src/utils/loop-permission-options.ts](../src/utils/loop-permission-options.ts)
@@ -537,7 +556,8 @@ Source: [src/utils/loop-permission-options.ts](../src/utils/loop-permission-opti
 Every major component uses a factory function pattern with dependency injection:
 
 ```typescript
-createForgePlugin(config)         // Server plugin
+setupForgeV2(ctx)                 // Server plugin entry
+createForgeCore(config, host)      // Host-neutral core
 createLoop(deps)                  // Loop runtime
 createLoopService(...)            // State management
 createSandboxManager(config, logger) // Sandbox
@@ -551,7 +571,7 @@ Dependencies are injected via parameter objects, not global singletons.
 
 ### Barrel Exports
 
-Three modules use barrel `index.ts` files:
+Five modules use barrel `index.ts` files:
 - `src/hooks/index.ts`
 - `src/storage/index.ts`
 - `src/loop/index.ts`
@@ -563,7 +583,7 @@ Other modules do NOT have barrel files (utils, sandbox, services, workspace).
 ### Repository Pattern
 
 All data access goes through typed repo interfaces:
-- `LoopsRepo`, `PlansRepo`, `ReviewFindingsRepo`, `SectionPlansRepo`, `TuiPrefsRepo`
+- `LoopsRepo`, `PlansRepo`, `ReviewFindingsRepo`, `SectionPlansRepo`, `LoopSessionUsageRepo`, `FeatureGroupsRepo`
 - Each created via `createXxxRepo(db)` with project-scoped queries.
 - Rows are mapped to domain objects via `loopRowToState()` etc.
 
@@ -581,11 +601,12 @@ A `LoopChangeNotifier` callback is threaded through all state mutation calls. It
 
 ### Plugin Hook Pattern
 
-The plugin returns a standard `Hooks` object with these hook points:
-- `tool` — custom tools for agents
-- `config` — agent/command configuration injection
-- `chat.message` — session message handling
-- `event` — event dispatching
-- `tool.execute.before` / `tool.execute.after` — pre/post tool execution
-- `experimental.session.compacting` — context compaction
-- `experimental.chat.messages.transform` — message transformation (architect read-only enforcement)
+`setup(ctx)` registers the core handlers through V2's hook API:
+- `tool.transform` — register the Forge tools and wrap the built-in `shell` tool for sandbox routing
+- `tool.hook('execute.before')` / `tool.hook('execute.after')` — pre/post tool execution
+- `shell.hook('create.before')` — sandbox shell routing
+- `session.hook('prompt')` — session message handling
+- `session.hook('context')` — system context injection and the architect reminder
+- `session.hook('compaction')` — context compaction
+- `agent.transform` / `command.transform` — agent/command configuration injection
+- `event.subscribe` — event dispatching

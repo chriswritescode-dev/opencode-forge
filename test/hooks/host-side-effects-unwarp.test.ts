@@ -28,15 +28,13 @@ function buildState(overrides?: Partial<LoopState>): LoopState {
 }
 
 function buildCtx(overrides?: {
-  tuiPublish?: ReturnType<typeof vi.fn>
-  tuiSelectSession?: ReturnType<typeof vi.fn>
+  toast?: ReturnType<typeof vi.fn>
   workspaceRemove?: ReturnType<typeof vi.fn>
   sessionDelete?: ReturnType<typeof vi.fn>
   log?: ReturnType<typeof vi.fn>
   error?: ReturnType<typeof vi.fn>
 }) {
-  const tuiPublish = overrides?.tuiPublish ?? vi.fn().mockResolvedValue(undefined)
-  const tuiSelectSession = overrides?.tuiSelectSession ?? vi.fn().mockResolvedValue(undefined)
+  const toast = overrides?.toast ?? vi.fn().mockResolvedValue(undefined)
   const workspaceRemove = overrides?.workspaceRemove ?? vi.fn().mockResolvedValue(undefined)
   const sessionDelete = overrides?.sessionDelete ?? vi.fn().mockResolvedValue(undefined)
   const log = overrides?.log ?? vi.fn()
@@ -49,24 +47,15 @@ function buildCtx(overrides?: {
         workspace: {
           create: async () => ({ id: '' }) as any,
           list: async () => [],
-          status: async () => ({}),
-          syncList: async () => {},
           remove: workspaceRemove,
           warp: async () => {},
         },
-        tui: {
-          publish: tuiPublish,
-          selectSession: tuiSelectSession,
-        },
-        sync: {
-          start: async () => {},
-        },
+        toast,
       } as never,
       logger: { log, error, debug: () => {} },
       getConfig: () => ({}) as PluginConfig,
     },
-    tuiPublish,
-    tuiSelectSession,
+    toast,
     workspaceRemove,
     sessionDelete,
     log,
@@ -77,106 +66,14 @@ function buildCtx(overrides?: {
 const completed: TerminationReason = { kind: 'completed' }
 const maxIterations: TerminationReason = { kind: 'max_iterations' }
 
-describe('performTerminationSideEffects unwarp', () => {
-  test('selects host session scoped to the loop workspace before workspace.remove', async () => {
-    const callOrder: string[] = []
-    const tuiSelectSession = vi.fn().mockImplementation(async () => {
-      callOrder.push('select')
-    })
-    const workspaceRemove = vi.fn().mockImplementation(async () => {
-      callOrder.push('remove')
-    })
-    const { ctx } = buildCtx({ tuiSelectSession, workspaceRemove })
-
-    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
-
-    expect(tuiSelectSession).toHaveBeenCalledWith({
-      directory: '/tmp/project',
-      sessionID: 'sess_host',
-      workspace: 'ws_abc',
-    })
-    expect(callOrder.indexOf('select')).toBeLessThan(callOrder.indexOf('remove'))
-  })
-
-  test('never emits a workspace-less select while a workspace is set (would hijack other projects TUIs)', async () => {
-    const { ctx, tuiSelectSession, tuiPublish } = buildCtx()
-
-    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
-
-    expect(tuiSelectSession).toHaveBeenCalledTimes(1)
-    expect(tuiSelectSession).not.toHaveBeenCalledWith(
-      expect.not.objectContaining({ workspace: expect.anything() }),
-    )
-    const untaggedPublish = tuiPublish.mock.calls.find((c) => {
-      const arg = c[0] as { body: { type: string }; workspace?: string }
-      return arg.body.type === 'tui.session.select' && arg.workspace === undefined
-    })
-    expect(untaggedPublish).toBeUndefined()
-  })
-
-
-
-  test('skips unwarp when hostSessionId missing', async () => {
-    const { ctx, tuiSelectSession, tuiPublish, workspaceRemove } = buildCtx()
-    const state = buildState({ hostSessionId: undefined })
-
-    await performTerminationSideEffects(state, completed, 'sess_worktree', ctx)
-
-    expect(tuiSelectSession).not.toHaveBeenCalled()
-    const selectPublish = tuiPublish.mock.calls.find(
-      (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
-    )
-    expect(selectPublish).toBeUndefined()
-    expect(workspaceRemove).toHaveBeenCalled()
-  })
-
-  test('skips unwarp when projectDir missing', async () => {
-    const { ctx, tuiSelectSession, tuiPublish, workspaceRemove } = buildCtx()
-    const state = buildState({ projectDir: undefined })
-
-    await performTerminationSideEffects(state, completed, 'sess_worktree', ctx)
-
-    expect(tuiSelectSession).not.toHaveBeenCalled()
-    const selectPublish = tuiPublish.mock.calls.find(
-      (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
-    )
-    expect(selectPublish).toBeUndefined()
-    expect(workspaceRemove).toHaveBeenCalled()
-  })
-
-  test('unwarp failure does not block workspace.remove', async () => {
-    const tuiSelectSession = vi.fn().mockRejectedValue(new Error('select failed'))
-    const tuiPublish = vi.fn().mockImplementation(async (arg: unknown) => {
-      const body = (arg as { body: { type: string } }).body
-      if (body.type === 'tui.session.select') throw new Error('publish failed')
-    })
-    const { ctx, workspaceRemove } = buildCtx({ tuiSelectSession, tuiPublish })
-
-    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
-
-    expect(tuiPublish).toHaveBeenCalledWith({
-      directory: '/tmp/project',
-      workspace: 'ws_abc',
-      body: {
-        type: 'tui.session.select',
-        properties: { sessionID: 'sess_host' },
-      },
-    })
-    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
-  })
-
+describe('performTerminationSideEffects', () => {
   test('max_iterations removes workspace but preserves restartable worktree', async () => {
-    const { ctx, tuiSelectSession, workspaceRemove } = buildCtx()
+    const { ctx, workspaceRemove } = buildCtx()
     const state = buildState({ iteration: 10, maxIterations: 10 })
 
     await performTerminationSideEffects(state, maxIterations, 'sess_worktree', ctx)
 
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
-    expect(tuiSelectSession).toHaveBeenCalledWith({
-      directory: '/tmp/project',
-      sessionID: 'sess_host',
-      workspace: 'ws_abc',
-    })
   })
 
   test('completed teardown deletes the final loop session after the worktree is removed', async () => {
@@ -196,7 +93,7 @@ describe('performTerminationSideEffects unwarp', () => {
   })
 
   test('sweep removes sibling completed forge workspace during teardown', async () => {
-    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const toast = vi.fn().mockResolvedValue(undefined)
     const workspaceRemove = vi.fn().mockResolvedValue(undefined)
     const workspaceList = vi.fn().mockResolvedValue([
       // The terminating loop's own workspace
@@ -245,16 +142,10 @@ describe('performTerminationSideEffects unwarp', () => {
       workspace: {
         create: async () => ({ id: '' }) as any,
         list: workspaceList,
-        status: async () => ({}),
-        syncList: async () => {},
         remove: workspaceRemove,
         warp: async () => {},
       },
-      tui: {
-        publish: tuiPublish,
-        selectSession: async () => {},
-      },
-      sync: { start: async () => {} },
+      toast,
     } as never
 
     const ctx = {
@@ -290,7 +181,7 @@ describe('performTerminationSideEffects unwarp', () => {
   })
 
   test('sweep is skipped when loopsRepo or projectId not in ctx', async () => {
-    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const toast = vi.fn().mockResolvedValue(undefined)
     const workspaceRemove = vi.fn().mockResolvedValue(undefined)
     const workspaceList = vi.fn().mockResolvedValue([])
 
@@ -300,16 +191,10 @@ describe('performTerminationSideEffects unwarp', () => {
         workspace: {
           create: async () => ({ id: '' }) as any,
           list: workspaceList,
-          status: async () => ({}),
-          syncList: async () => {},
           remove: workspaceRemove,
           warp: async () => {},
         },
-        tui: {
-          publish: tuiPublish,
-          selectSession: async () => {},
-        },
-        sync: { start: async () => {} },
+        toast,
       } as never,
       logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
       getConfig: () => ({}) as PluginConfig,

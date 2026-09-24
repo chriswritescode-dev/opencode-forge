@@ -1,5 +1,4 @@
 import type { Plugin } from '@opencode/plugin'
-import type { WorkspaceAdapter } from '@opencode-ai/plugin'
 import { createForgeClientFromV2 } from '../client/v2-adapter'
 import { createV2ForgeWorkspaces, type V2ForgeWorkspacesDeps } from '../client/v2-workspaces'
 import { unavailableError } from '../client/errors'
@@ -18,9 +17,10 @@ import {
 import { registerForgeAgentsV2, registerForgeCommandsV2, resolveForgeConfigMaps } from './v2-config'
 import { registerForgeHooksV2 } from './v2-hooks'
 import { registerForgeToolsV2 } from './v2-tools'
+import type { ForgeWorkspaceAdapter } from '../workspace/forge-adapter'
 
 type DeferredForgeWorkspacesDeps = Omit<V2ForgeWorkspacesDeps, 'adapter'> & {
-  getAdapter: () => WorkspaceAdapter | null
+  getAdapter: () => ForgeWorkspaceAdapter | null
 }
 
 function createDeferredForgeWorkspaces(deps: DeferredForgeWorkspacesDeps): ForgeClient['workspace'] {
@@ -44,8 +44,6 @@ function createDeferredForgeWorkspaces(deps: DeferredForgeWorkspacesDeps): Forge
   return {
     create: async (params) => resolve().create(params),
     list: async (params) => resolve().list(params),
-    status: async (params) => resolve().status(params),
-    syncList: async (params) => resolve().syncList(params),
     remove: async (params) => resolve().remove(params),
     warp: async (params) => resolve().warp(params),
   }
@@ -57,7 +55,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
   const projectId = ctx.location.project.id
   const dataDir = resolveForgeDataDir(config.dataDir)
 
-  let adapter: WorkspaceAdapter | null = null
+  let adapter: ForgeWorkspaceAdapter | null = null
 
   let core: ForgeCore | null = null
   let publishToast: ((toast: ForgeToastInput) => Promise<void>) | undefined
@@ -94,7 +92,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     projectId,
     projectRoot: ctx.location.project.canonical,
     client,
-    registerWorkspaceAdapter: (_type, registered) => {
+    registerWorkspaceAdapter: (registered) => {
       adapter = registered
     },
   })

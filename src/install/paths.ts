@@ -37,11 +37,6 @@ export function resolveConfigPath(): string {
   return join(resolveConfigDir(), 'forge-config.jsonc')
 }
 
-/** opencode's TUI config file, which lists plugin entries for the TUI surface. */
-export function resolveTuiConfigPath(): string {
-  return join(resolveConfigDir(), 'tui.json')
-}
-
 /** opencode V2's CLI config file, which lists plugin entries for both surfaces. */
 export function resolveCliConfigPath(): string {
   return join(resolveConfigDir(), 'cli.json')
@@ -82,15 +77,15 @@ export function resolveBundledSkillsDir(): string {
   return join(resolvePluginDir(), '..', 'skills')
 }
 
-/** Filename of the one-line server re-export shim installed into opencode's config dir. */
-export const PLUGIN_SHIM_FILENAME = 'opencode-forge.js'
+/** Legacy V1 server re-export shim filename, kept only so `--unlink` can clean up old installs. */
+const PLUGIN_SHIM_FILENAME = 'opencode-forge.js'
 
-/** opencode's global plugin scan directory (`<configDir>/plugin`, non-recursive glob). */
+/** opencode's global plugin directory (`<configDir>/plugin`), home of the vendored copy. */
 export function resolvePluginShimDir(): string {
   return join(resolveConfigDir(), 'plugin')
 }
 
-/** Absolute path of the installed server re-export shim. */
+/** Absolute path of the legacy V1 server re-export shim, removed by `--unlink` when present. */
 export function resolvePluginShimPath(): string {
   return join(resolvePluginShimDir(), PLUGIN_SHIM_FILENAME)
 }
@@ -120,11 +115,6 @@ export const VENDORED_ASSETS: readonly string[] = ['package.json', 'forge-config
  */
 export function resolveServerEntryCandidates(): string[] {
   return [join(resolvePluginDir(), 'index.js'), join(resolvePluginDir(), '..', 'dist', 'index.js')]
-}
-
-/** Candidate filenames for the global opencode config, in lookup order. */
-export function resolveOpencodeConfigCandidates(): string[] {
-  return ['opencode.jsonc', 'opencode.json'].map((f) => join(resolveConfigDir(), f))
 }
 
 /** Declarative description of one installable bundle directory. */

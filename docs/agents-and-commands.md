@@ -54,6 +54,6 @@ Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 | `/loop-cancel` | Cancel the active loop. | `code` | no |
 | `/launch-group` | Decompose a PRD or feature list into features and launch them as parallel planning + development loops. | `code` | no |
 
-Subtask commands spawn a child session on OpenCode 1.x. On OpenCode 2.x the same commands run inline in the invoking session, because a V2 plugin command cannot create a child session. On 2.x every Forge command switches the session to the command's agent for that one turn and, once the turn finishes, switches it back to the previous agent unless you selected a different agent in the meantime.
+`/review` and `/review-plan` are declared as subtask commands but run inline in the invoking session, because a plugin command cannot create a child session. Every Forge command switches the session to the command's agent for that one turn and, once the turn finishes, switches it back to the previous agent unless you selected a different agent in the meantime.
 
 Source: [`buildPluginCommands()`](../src/config.ts).

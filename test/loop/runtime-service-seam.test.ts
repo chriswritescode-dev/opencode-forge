@@ -89,7 +89,6 @@ function makeFakeForgeClient(): ForgeClient {
       update: vi.fn(async () => {}),
       messages: vi.fn(async () => []),
       status: vi.fn(async () => ({}) as any),
-      list: vi.fn(async () => []),
       promptAsync: vi.fn(async () => {}),
       abort: vi.fn(async () => {}),
       delete: vi.fn(async () => {}),
@@ -97,24 +96,10 @@ function makeFakeForgeClient(): ForgeClient {
     workspace: {
       create: vi.fn(async () => ({ id: 'w' }) as any),
       list: vi.fn(async () => []),
-      status: vi.fn(async () => ({}) as any),
-      syncList: vi.fn(async () => {}),
       remove: vi.fn(async () => {}),
       warp: vi.fn(async () => {}),
     },
-    project: {
-      list: vi.fn(async () => []),
-    },
-    provider: {
-      list: vi.fn(async () => ({ all: [], default: {}, connected: [] }) as any),
-    },
-    tui: {
-      publish: vi.fn(async () => {}),
-      selectSession: vi.fn(async () => {}),
-    },
-    sync: {
-      start: vi.fn(async () => {}),
-    },
+    toast: vi.fn(async () => {}),
   }
 }
 

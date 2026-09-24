@@ -177,9 +177,8 @@ function findSlot(slots: RecordedSlot[], target: string): RecordedSlot {
 describe('V2 TUI setup', () => {
   useTempConfigHome('forge-v2-tui')
 
-  test('the shared TUI module carries the V1 tui and the V2 setup', () => {
+  test('the TUI module exports the V2 setup', () => {
     expect(tuiModule.id).toBe('oc-forge')
-    expect(typeof tuiModule.tui).toBe('function')
     expect(typeof tuiModule.setup).toBe('function')
   })
 
@@ -281,7 +280,7 @@ describe('V2 TUI setup', () => {
 
     const cleanup = setupForgeTuiV2(fake.ctx)
 
-    for (const id of ['forge.plan.execute', 'forge.plan.executePasted', 'forge.loop.restart', 'forge.sandbox.buildImage']) {
+    for (const id of ['forge.plan.execute', 'forge.plan.executePasted', 'forge.loop.restart', 'forge.sandbox.toggleHost', 'forge.sandbox.buildImage']) {
       expect(findCommand(fake, id)).toMatchObject({ group: 'Forge', palette: true })
     }
     expect(findCommand(fake, 'forge.plan.execute').bind).toBe('<leader>x')

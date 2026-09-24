@@ -2,15 +2,13 @@
  * Forge workspace helpers using the ForgeClient port.
  *
  * The recommended entry point is {@link createBuiltinWorktreeWorkspace}, which creates
- * a Forge workspace with `type: 'forge'` through the ForgeClient adapter,
- * then registers it via syncList so the TUI can show it as connected (green dot).
+ * a Forge workspace with `type: 'forge'` through the ForgeClient adapter.
  *
  * Workspaces are created with `type: 'forge'` (not `type: 'worktree'`) because
  * Forge uses its own adapter registered in the experimental workspace API.
  */
 
 import type { ForgeClient } from '../client/port'
-import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
 import { FORGE_MANAGED_PERMISSIONS, FORGE_REQUIRED_PERMISSIONS, type PermissionRule } from '../constants/loop'
 import {
   classifyWorkspaceCreateThrow,
@@ -89,72 +87,9 @@ export async function getForgeWorkspaceEntry(
 }
 
 /**
- * Look up existing forge workspaces by loop name within a single project.
- *
- * `workspace.list()` is server-wide, and loop names are only unique per
- * project, so sibling worktrees of the same repo routinely hold live
- * workspaces under the same name. Scoping by `extra.projectDirectory` keeps a
- * launch in one worktree from matching (and deleting) another's.
- */
-async function findExistingForgeWorkspaces(
-  client: ForgeClient,
-  loopName: string,
-  projectDirectory: string | undefined,
-  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
-): Promise<ForgeWorkspaceEntry[]> {
-  try {
-    const entries = (await client.workspace.list() ?? []) as ForgeWorkspaceEntry[]
-    const matches = entries.filter((entry) => entry.id && workspaceMatchesLoop(entry, loopName, projectDirectory))
-    if (matches.length > 0) {
-      (logger ?? console).log?.(`findExistingForgeWorkspaces: found ${matches.length} existing workspace(s) for loop ${loopName}`)
-    }
-    return matches
-  } catch (err) {
-    (logger ?? console).error('findExistingForgeWorkspaces: workspace.list threw', err)
-    return []
-  }
-}
-
-/**
- * A workspace is excluded only when both sides positively declare a project
- * directory and they differ. Workspaces created before `extra.projectDirectory`
- * was stamped carry no marker, and the caller's directory can itself be
- * unknown; in either case fall back to name-only matching so stale cleanup
- * keeps working.
- */
-function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string, projectDirectory: string | undefined): boolean {
-  if (entry.type !== 'forge') return false
-  const entryProjectDir = entry.extra?.projectDirectory
-  if (projectDirectory && typeof entryProjectDir === 'string' && entryProjectDir !== projectDirectory) return false
-  if (entry.name === loopName) return true
-  return getForgeWorkspaceLoopName(entry) === loopName
-}
-
-export async function removeExistingForgeLoopWorkspaces(
-  client: ForgeClient,
-  loopName: string,
-  projectDirectory: string | undefined,
-  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
-): Promise<void> {
-  const matches = await findExistingForgeWorkspaces(client, loopName, projectDirectory, logger)
-  for (const match of matches) {
-    try {
-      await client.workspace.remove({ id: match.id })
-      ;(logger ?? console).log?.(`removeExistingForgeLoopWorkspaces: removed old workspace ${match.id} for loop ${loopName}`)
-    } catch (err) {
-      ;(logger ?? console).error?.(`removeExistingForgeLoopWorkspaces: failed to remove workspace ${match.id}`, err)
-    }
-  }
-}
-
-/**
  * Creates a Forge workspace via the ForgeClient port with the `forge` adapter.
  *
- * Uses `client.workspace.create({ type: 'forge', branch: null })` so the
- * workspace appears as fully connected (green dot) in the TUI.
- *
- * After a successful create, also issues a best-effort `client.workspace.syncList()`
- * so the new workspace is registered in the Warp picker, not just reachable from the session list.
+ * Uses `client.workspace.create({ type: 'forge', branch: null })`.
  *
  * @returns `{ ok: true, workspace: { workspaceId, directory, branch } }` on success,
  *          or `{ ok: false, error: WorkspaceCreateError }` on failure.
@@ -164,11 +99,10 @@ export async function createBuiltinWorktreeWorkspace(
   options: {
     loopName: string
     directory: string
-    /** Caller-supplied extra fields preserved onto the new workspace (e.g. portable permission rules, git sync refs). */
+    /** Caller-supplied extra fields preserved onto the new workspace (e.g. portable permission rules). */
     extra?: Record<string, unknown>
   },
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
-  statusRegistry?: WorkspaceStatusRegistry,
 ): Promise<CreateWorktreeWorkspaceResult> {
   if (!options.directory) {
     (logger ?? console).error('createBuiltinWorktreeWorkspace: options.directory is required')
@@ -221,34 +155,10 @@ export async function createBuiltinWorktreeWorkspace(
     (logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} created for ${options.loopName}`)
     ;(logger ?? console).log?.(`[warp] workspace.create.complete loopName=${options.loopName} workspaceId=${id} elapsedMs=${Date.now() - _wsStart}`)
 
-    // Best-effort syncList to register in the Warp picker
     try {
-      await client.workspace.syncList()
-      ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} registered via syncList`)
-      ;(logger ?? console).log?.(`[warp] syncList.complete loopName=${options.loopName} workspaceId=${id} elapsedMs=${Date.now() - _wsStart}`)
-    } catch (err) {
-      ;(logger ?? console).error('createBuiltinWorktreeWorkspace: syncList after create failed; workspace may be reachable via session list but not visible in Warp picker', err)
-    }
-
-    // Best-effort sync.start (adapter no-ops when unavailable)
-    try {
-      await client.sync.start()
-      ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace sync started for ${id}`)
-      ;(logger ?? console).log?.(`[warp] sync.start.complete loopName=${options.loopName} workspaceId=${id} elapsedMs=${Date.now() - _wsStart}`)
-    } catch (err) {
-      ;(logger ?? console).error('createBuiltinWorktreeWorkspace: sync.start after create failed; workspace status may remain unavailable in the TUI', err)
-    }
-
-    try {
-      const [listData, statusData] = await Promise.all([
-        client.workspace.list(),
-        client.workspace.status(),
-      ])
-      const listed = (listData ?? []).some((workspace: Record<string, unknown>) => workspace.id === id)
-      const statusArr = (statusData ?? []) as Array<{ workspaceID?: string; status?: string }>
-      const status = statusArr.find((entry) => entry.workspaceID === id)?.status
-      statusRegistry?.primeFromSnapshot(statusArr.map((entry) => ({ workspaceID: entry.workspaceID ?? '', status: entry.status ?? '' })))
-      ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} visibility listed=${listed} status=${status ?? 'unknown'}`)
+      const listData = await client.workspace.list()
+      const listed = (listData ?? []).some((workspace) => workspace.id === id)
+      ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} visibility listed=${listed}`)
     } catch (err) {
       ;(logger ?? console).error('createBuiltinWorktreeWorkspace: post-create workspace visibility check failed', err)
     }
@@ -270,7 +180,6 @@ export async function bindSessionToWorkspace(
   sessionId: string,
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
   options?: { copyChanges?: boolean; loopName?: string },
-  statusRegistry?: WorkspaceStatusRegistry,
 ): Promise<void> {
   const warpParams: { id: string; sessionID: string; copyChanges?: boolean } = {
     id: workspaceId,
@@ -291,25 +200,10 @@ export async function bindSessionToWorkspace(
 
   ;(logger ?? console).log?.(`[warp] warp.complete loopName=${options?.loopName ?? 'unknown'} workspaceId=${workspaceId} sessionId=${sessionId} elapsedMs=${Date.now() - _warpStart}`)
 
-  // Best-effort sync.start (adapter no-ops when unavailable)
   try {
-    await client.sync.start()
-    ;(logger ?? console).log?.(`bindSessionToWorkspace: workspace sync started for workspace=${workspaceId} session=${sessionId}`)
-  } catch (err) {
-    ;(logger ?? console).error('bindSessionToWorkspace: sync.start after warp failed; workspace status may remain unavailable in the TUI', err)
-  }
-
-  try {
-    const [listData, statusData] = await Promise.all([
-      client.workspace.list(),
-      client.workspace.status(),
-    ])
-    const listArr = (listData ?? []) as Array<{ id?: string }>
-    const listed = listArr.some((workspace) => workspace.id === workspaceId)
-    const statusArr = (statusData ?? []) as Array<{ workspaceID?: string; status?: string }>
-    const status = statusArr.find((entry) => entry.workspaceID === workspaceId)?.status
-    statusRegistry?.primeFromSnapshot(statusArr.map((entry) => ({ workspaceID: entry.workspaceID ?? '', status: entry.status ?? '' })))
-    ;(logger ?? console).log?.(`bindSessionToWorkspace: workspace ${workspaceId} visibility after warp listed=${listed} status=${status ?? 'unknown'}`)
+    const listData = await client.workspace.list()
+    const listed = (listData ?? []).some((workspace) => workspace.id === workspaceId)
+    ;(logger ?? console).log?.(`bindSessionToWorkspace: workspace ${workspaceId} visibility after warp listed=${listed}`)
   } catch (err) {
     ;(logger ?? console).error('bindSessionToWorkspace: post-warp workspace visibility check failed', err)
   }

@@ -1,9 +1,9 @@
-import { tool } from '@opencode-ai/plugin'
+import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 
 const z = tool.schema
 
-export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
+export function createPlanTools(ctx: ToolContext): Record<string, ToolDefinition> {
   const { plansRepo, projectId, logger } = ctx
   const loop = ctx.loop
 

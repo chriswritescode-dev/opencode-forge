@@ -2,7 +2,6 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { platform } from 'os'
 import { resolveForgeDbPath } from '../storage/database'
-import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
 import { buildDashboardUrls, describeDashboardBinding, isLoopbackHost, resolveDashboardConfig, type DashboardUrls } from './config'
 import { createRequestHandler } from './server'
@@ -28,12 +27,6 @@ export interface StartDashboardOptions {
   maxAttempts?: number
   /** Loaded plugin config; supplies `dataDir` and `dashboard.host`/`dashboard.port`. */
   config?: PluginConfig
-  /**
-   * Live opencode client. Supplied by the TUI launch surface (which has an
-   * in-process client); absent for the standalone dashboard, which then serves
-   * the read-only views only.
-   */
-  client?: ForgeClient
 }
 
 const DEFAULT_MAX_ATTEMPTS = 10
@@ -80,7 +73,6 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   db.run('PRAGMA busy_timeout=5000')
   const handler = createRequestHandler({
     forgeDb: db,
-    client: options.client,
     allowSend: isLoopbackHost(host),
   })
 
@@ -131,8 +123,6 @@ export interface DashboardToastInput {
 export interface DashboardLauncherOptions {
   dbPath: string
   config?: PluginConfig
-  /** Live opencode client; omitted by surfaces that cannot supply one (V2 TUI). */
-  client?: ForgeClient
   toast: (input: DashboardToastInput) => void
 }
 
@@ -159,7 +149,6 @@ export function createDashboardLauncher(options: DashboardLauncherOptions): Dash
           server = startDashboardServer({
             dbPath: options.dbPath,
             config: options.config,
-            client: options.client,
           })
         } catch (err) {
           options.toast({

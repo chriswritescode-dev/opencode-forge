@@ -1,6 +1,6 @@
 import type { PluginConfig } from '../types'
 import type { ExecutionContextCache } from '../utils/tui-execution-context-cache'
-import type { ForgeProjectClient } from '../utils/tui-client'
+import type { ForgeProjectClient } from './project-client'
 import { fetchLoopsList } from '../utils/tui-loop-store'
 import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { openExecutionDialog } from './execute-plan-panel'
@@ -10,7 +10,6 @@ export interface ForgePlanCommandsDeps {
   host: ForgeTuiHost
   pluginConfig: PluginConfig
   dbPath: string
-  projectDirectory: string | undefined
   currentSessionId(): string | null
   ensureClient(): Promise<ForgeProjectClient | null>
   cache(): ExecutionContextCache | null
@@ -39,7 +38,6 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
       pluginConfig: deps.pluginConfig,
       planContent,
       sessionId,
-      projectDirectory: deps.projectDirectory,
     })
   }
 
@@ -102,8 +100,7 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
         pluginConfig: deps.pluginConfig,
         planContent: '',
         sessionId: currentSessionId ?? '',
-        projectDirectory: deps.projectDirectory,
-        initialLoopName: currentLoop.name,
+          initialLoopName: currentLoop.name,
         initialAuditorModel: currentLoop.auditorModel,
         initialAuditorVariant: currentLoop.auditorVariant,
         initialExecutionModel: currentLoop.executionModel,

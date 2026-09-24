@@ -1,4 +1,3 @@
-import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Plugin } from '@opencode/plugin'
 import { existsSync } from 'fs'
 import { requestError } from './errors'
@@ -8,7 +7,6 @@ import type {
   WorkspaceCreateResult,
   WorkspaceList,
   WorkspaceRemoveParams,
-  WorkspaceStatus,
   WorkspaceWarpParams,
 } from './port'
 import {
@@ -19,11 +17,12 @@ import {
   type ForgeWorkspaceMetadata,
 } from '../workspace/forge-workspace-metadata'
 import { isRecord } from '../utils/is-record'
+import type { ForgeWorkspaceAdapter, ForgeWorkspaceInfo } from '../workspace/forge-adapter'
 
 const FORGE_WORKSPACE_TYPE = 'forge'
 
 export interface V2ForgeWorkspacesDeps {
-  adapter: WorkspaceAdapter
+  adapter: ForgeWorkspaceAdapter
   worktree: Pick<Plugin.Context['worktree'], 'refresh'>
   projectId: string
   dataDir: string
@@ -34,7 +33,7 @@ function toExtra(value: unknown): Record<string, unknown> | null {
   return isRecord(value) ? value : null
 }
 
-function toWorkspaceInfo(record: ForgeWorkspaceMetadata): WorkspaceInfo {
+function toWorkspaceInfo(record: ForgeWorkspaceMetadata): ForgeWorkspaceInfo {
   return {
     id: record.id,
     type: record.type,
@@ -47,7 +46,17 @@ function toWorkspaceInfo(record: ForgeWorkspaceMetadata): WorkspaceInfo {
 }
 
 function toWorkspace(record: ForgeWorkspaceMetadata): WorkspaceCreateResult {
-  return { ...toWorkspaceInfo(record), timeUsed: record.createdAt }
+  const info = toWorkspaceInfo(record)
+  return {
+    id: info.id,
+    type: info.type,
+    name: info.name,
+    branch: info.branch,
+    directory: info.directory,
+    extra: record.extra,
+    projectID: info.projectID,
+    timeUsed: record.createdAt,
+  }
 }
 
 export function createV2ForgeWorkspaces(deps: V2ForgeWorkspacesDeps): ForgeClient['workspace'] {
@@ -69,7 +78,7 @@ export function createV2ForgeWorkspaces(deps: V2ForgeWorkspacesDeps): ForgeClien
 
   return {
     async create(params: WorkspaceCreateParams): Promise<WorkspaceCreateResult> {
-      const configured = await adapter.configure({
+      const configured = adapter.configure({
         id: '',
         type: params.type ?? FORGE_WORKSPACE_TYPE,
         name: '',
@@ -82,7 +91,7 @@ export function createV2ForgeWorkspaces(deps: V2ForgeWorkspacesDeps): ForgeClien
         throw requestError('workspace.create', 'workspace adapter configure resolved no directory')
       }
 
-      await adapter.create(configured, process.env)
+      await adapter.create(configured)
 
       const record: ForgeWorkspaceMetadata = {
         id: configured.directory,
@@ -102,12 +111,6 @@ export function createV2ForgeWorkspaces(deps: V2ForgeWorkspacesDeps): ForgeClien
     async list(): Promise<WorkspaceList> {
       return listRecords().map(toWorkspace)
     },
-
-    async status(): Promise<WorkspaceStatus> {
-      return listRecords().map((record) => ({ workspaceID: record.id, status: 'connected' as const }))
-    },
-
-    async syncList(): Promise<void> {},
 
     async remove(params: WorkspaceRemoveParams): Promise<void> {
       const record = readForgeWorkspaceMetadata(params.id)

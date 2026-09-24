@@ -9,8 +9,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
-import { selectSessionBestEffort } from '../utils/tui-navigation'
-import type { ToastVariant } from '../utils/toast'
+import { publishToast, type ToastVariant } from '../utils/toast'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { deleteSessionBestEffort } from '../utils/loop-session'
 
@@ -113,19 +112,15 @@ function publishTerminationToast(
   const variants = getToastVariant(reason)
   const message = getToastMessage(state, reason)
 
-  ctx.client.tui.publish({
+  publishToast({
+    client: ctx.client,
     directory: state.projectDir ?? state.worktreeDir,
-    body: {
-      type: 'tui.toast.show',
-      properties: {
-        title: state.loopName,
-        message,
-        variant: variants.variant,
-        duration: variants.duration,
-      },
-    },
-  }).catch((err: unknown) => {
-    ctx.logger.error('Loop: failed to publish toast notification', err)
+    logger: ctx.logger,
+    title: state.loopName,
+    message,
+    variant: variants.variant,
+    duration: variants.duration,
+    logPrefix: 'Loop: failed to publish toast notification',
   })
 }
 
@@ -167,43 +162,6 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
 // 3. Worktree teardown (always commits unless directory is already gone)
 // ---------------------------------------------------------------------------
 
-/**
- * Unwarp the TUI back to the host project session before workspace removal.
- *
- * The TUI may currently be "warped" — displaying the workspace's worktree
- * session. Once `workspace.remove` fires, that view becomes orphaned. We reuse
- * the same navigation path as warp-in (`selectSessionBestEffort`): the
- * `tui.selectSession` command first, falling back to a `tui.session.select`
- * publish. Best-effort: failures are logged but never block teardown.
- *
- * The `workspace` tag decides which TUI reacts, and the two variants are
- * mutually exclusive: OpenCode's TUI drops a `tui.session.select` whose
- * `workspace` does not strictly equal its own current workspace. A warped TUI
- * has that workspace set (it is derived from `session.workspaceID` on every
- * navigation), so the tagged select is the one that reaches it. An untagged
- * select instead reaches every *non*-warped TUI on the server — the TUI event
- * stream is process-wide and unfiltered by directory — which hijacks unrelated
- * projects' TUIs. `teardownWorktree` only calls this with a workspace set, so
- * the tag is always available.
- */
-async function unwarpToHostSession(
-  state: LoopState,
-  ctx: TerminationSideEffectsContext,
-): Promise<void> {
-  if (!state.hostSessionId || !state.projectDir || !state.workspaceId) return
-
-  await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
-    sessionID: state.hostSessionId,
-    workspace: state.workspaceId,
-  })
-
-  const settleMs = resolveUnwarpSettleMs()
-  if (settleMs > 0) {
-    await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
-  }
-  ctx.logger.log(`Loop: unwarped TUI to host session ${state.hostSessionId} for ${state.loopName}`)
-}
-
 function resolveUnwarpSettleMs(): number {
   const raw = Number(process.env.FORGE_UNWARP_SETTLE_MS)
   return Number.isFinite(raw) && raw >= 0 ? raw : 750
@@ -228,8 +186,6 @@ async function teardownWorktree(
     doCommit,
     doRemoveWorktree: false,
   })
-
-  await unwarpToHostSession(state, ctx)
 
   let removedWorkspace = false
   try {

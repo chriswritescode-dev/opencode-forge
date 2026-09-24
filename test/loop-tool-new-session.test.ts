@@ -14,7 +14,6 @@ import Database from 'better-sqlite3'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
-import { createNoWaitWorkspaceStatusRegistry } from './helpers/workspace-status-registry'
 
 const TEST_DIR = '/tmp/opencode-loop-new-session-test-' + Date.now()
 
@@ -56,7 +55,6 @@ describe('loop tool mode=new-session', () => {
 
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
@@ -225,7 +223,6 @@ describe('execute-goal tool', () => {
 
     const tools = createLoopTools({
       client: forgeClient,
-      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
       pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},

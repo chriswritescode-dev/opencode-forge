@@ -189,18 +189,10 @@ describe('createAuditSession passes audit permission rules into session creation
       workspace: {
         create: vi.fn(async () => ({ id: '', directory: '', branch: '' })),
         list: vi.fn(async () => []),
-        status: vi.fn(async () => []),
-        syncList: vi.fn(async () => {}),
         remove: vi.fn(async () => {}),
         warp: vi.fn(async () => {}),
       },
-      tui: {
-        publish: vi.fn(async () => {}),
-        selectSession: vi.fn(async () => {}),
-      },
-      sync: {
-        start: vi.fn(async () => {}),
-      },
+      toast: vi.fn(async () => {}),
     } as any
 
     const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
@@ -246,18 +238,10 @@ describe('createLoopSessionWithWorkspace passes loop permission rules into sessi
       workspace: {
         create: vi.fn(async () => ({ id: '', directory: '', branch: '' })),
         list: vi.fn(async () => []),
-        status: vi.fn(async () => []),
-        syncList: vi.fn(async () => {}),
         remove: vi.fn(async () => {}),
         warp: vi.fn(async () => {}),
       },
-      tui: {
-        publish: vi.fn(async () => {}),
-        selectSession: vi.fn(async () => {}),
-      },
-      sync: {
-        start: vi.fn(async () => {}),
-      },
+      toast: vi.fn(async () => {}),
     } as any
 
     const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger

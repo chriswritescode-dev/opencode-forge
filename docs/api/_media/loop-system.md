@@ -187,7 +187,7 @@ Outstanding `severity: 'bug'` findings block completion of a sectioned plan loop
 
 Loops always run in an isolated git worktree. Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`: when enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop start is rolled back rather than silently falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
-Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, local or remote TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
+Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
 
 > Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
 
@@ -201,8 +201,6 @@ graph TD
     F --> G[Cleanup worktree]
     G --> H[Branch preserved]
 ```
-
-When a workspace carries a SHA pin (`extra.startRef`, set by remote loop launches), the new branch is created from that exact commit instead of the clone's current `HEAD`. If the commit is not present locally, the adapter fetches the sync ref (`extra.syncRef`, default `refs/forge/<loopName>`) from the configured git remote first, and fails with a descriptive error when the SHA still cannot be resolved. If the loop branch already exists, its tip must match the pinned SHA — a leftover same-named branch at a different commit fails creation with an actionable error instead of silently running old code (unpinned workspaces still reuse existing branches). On final teardown the sync ref is deleted from the shared git remote. See [Configuration → Remotes](configuration.md#remotes).
 
 Benefits of worktree isolation:
 - Isolation from ongoing development
@@ -360,7 +358,7 @@ Model and variant selection follows this priority order (first match wins):
 
 1. In-session dialog override (instance lifetime)
 2. `config.executionModel`
-3. Last-used workspace preference
+3. Last-used loop preference
 4. Platform default
 
 **Auditor model:**
@@ -372,7 +370,7 @@ Model and variant selection follows this priority order (first match wins):
 5. Last-used execution model
 6. Platform default
 
-Variants use override → matching config value → last-used workspace value. The auditor variant does not inherit the execution variant. When launching from the TUI dialog, your selection is remembered and pre-filled on subsequent launches, and the dialog allows selecting a separate model for the auditor phase. On model errors during execution, automatic fallback to the default model kicks in.
+Variants use override → matching config value → last-used loop value. The auditor variant does not inherit the execution variant. When launching from the TUI dialog, your selection is remembered and pre-filled on subsequent launches, and the dialog allows selecting a separate model for the auditor phase. On model errors during execution, automatic fallback to the default model kicks in.
 
 ## Management
 

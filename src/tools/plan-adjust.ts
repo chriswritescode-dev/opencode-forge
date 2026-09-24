@@ -1,4 +1,4 @@
-import { tool } from '@opencode-ai/plugin'
+import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
@@ -6,7 +6,7 @@ const z = tool.schema
 
 const nonBlankString = z.string().refine((value) => value.trim().length > 0, { error: 'must not be blank or whitespace-only' })
 
-export function createPlanAdjustTool(ctx: ToolContext): ReturnType<typeof tool> {
+export function createPlanAdjustTool(ctx: ToolContext): ToolDefinition {
   const loop = ctx.loop
 
   return tool({

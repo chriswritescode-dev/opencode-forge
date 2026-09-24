@@ -1,31 +1,31 @@
 # TUI Plugin
 
-The plugin includes a TUI sidebar widget and an execution dialog for launching plans directly in the OpenCode terminal interface. On OpenCode 1.x it is enabled separately from the server plugin in `tui.json` — see [Quick Start](../README.md#quick-start). On OpenCode 2.x the TUI surface loads from the same package entry the server plugin uses, or from the `cli.json` `plugins` array (see [OpenCode 2.x](#opencode-2x)).
+The plugin includes a TUI sidebar widget and an execution dialog for launching plans directly in the OpenCode terminal interface. The TUI surface loads from the same package entry the server plugin uses, or from the `cli.json` `plugins` array (see [Setup](#setup)).
 
 See also: [Dashboard](dashboard.md), [Workflow](workflow.md), [Configuration → TUI](configuration.md#tui).
 
-## OpenCode 2.x
+## Features
 
-The V2 TUI surface provides:
+The TUI surface provides:
 
-- the [Execution Dialog](#execution-dialog) (`Execute plan`, `tui.keybinds.executePlan`, and `Execute pasted plan`) with model, variant, and loop-name selection. The dialog is shared with 1.x and launches through the server plugin's `executePlan` RPC method, which runs the same execution service as the `execute-plan` tool.
-- `Restart loop`, with the same restart dialog as 1.x
+- the [Execution Dialog](#execution-dialog) (`Execute plan`, `tui.keybinds.executePlan`, and `Execute pasted plan`) with model, variant, and loop-name selection. It launches through the server plugin's `executePlan` RPC method, which runs the same execution service as the `execute-plan` tool.
+- `Restart loop`, opening the same execution dialog with restart parameters
 - `Build sandbox template`
 - auto-follow of replacement code and auditor sessions when a loop you are viewing rotates. Subagent sessions and sessions outside the loop worktree are not followed.
-- the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing running loops plus the five most recent finished ones, and refreshed every couple of seconds
+- the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing up to three loops — running loops first, then the most recent finished ones — each as a status-colored bullet with the truncated loop name, status, and `iteration/max`, refreshed every couple of seconds
 - the `Open dashboard` palette command (and `tui.keybinds.dashboard`)
 - a warning toast when sandboxing is enabled but the bundled build context is missing
 - Forge's server toasts (loop completion, workspace, sandbox, and permission warnings), delivered from the server plugin over the V2 plugin RPC event bus and shown only for the current project
 
 Options come from forge-config `tui`; plugin options set on the `cli.json` entry override them, with keybinds merged per key.
 
-Not available on V2: `Toggle host sandbox`, remote loop targets in the dialog, and the fallback that recovers a plan from chat history when no stored plan exists (paste the plan instead). The dialog's last-used models come from the project's most recent loop rather than from workspace metadata.
+When no stored plan exists, `Execute plan` opens the paste dialog instead of recovering a plan from chat history. The dialog's last-used models come from the project's most recent loop rather than from workspace metadata.
 
 ## Sidebar
 
-The sidebar shows Forge's connection status and version. Captured plans live on the server in the `plansRepo` SQL store; the TUI keeps no local archive or in-TUI editor.
+The sidebar shows the Forge title (with version when `tui.showVersion` is on) and the project's loops. Captured plans live on the server in the `plansRepo` SQL store; the TUI keeps no local archive or in-TUI editor.
 
-When sandboxing is configured, the sidebar displays the current session's msb state. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
+When sandboxing is configured, the sidebar displays the current session's msb state as `· MSB enabled/disabled/loading/failed` next to the Forge title. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
 
 ## Additional Commands
 
@@ -37,7 +37,7 @@ When sandboxing is configured, the sidebar displays the current session's msb st
 
 ## Execution Dialog
 
-Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. Legacy chat capture remains available for backward compatibility when no stored row exists; new plans should always be authored with `plan-write`. If no plan can be resolved, a toast prompts the user and the dialog falls back to a paste-input prompt so a plan can be entered manually. A separate command, `Execute pasted plan`, opens the paste dialog directly.
+Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. When no stored plan exists, a toast prompts the user and the dialog falls back to a paste-input prompt so a plan can be entered manually. A separate command, `Execute pasted plan`, opens the paste dialog directly.
 
 The dialog provides full control over execution parameters.
 
@@ -59,35 +59,20 @@ Models are sorted with recently used first (last 10, derived from the OpenCode s
 
 ### Persistence
 
-Selections live on the **OpenCode server**, not in a TUI-local cache. Loops launched from the TUI execution dialog stamp the chosen execution and auditor models (and variants) into `workspace.create.extra.forgeLoop`; later dialogs derive defaults and recents from `workspace.list()` plus the session list. This keeps the picker correct when the TUI and OpenCode server run on different hosts.
+Selections live on the **OpenCode server**, not in a TUI-local cache. A loop launched from the TUI execution dialog persists the chosen execution and auditor models (and variants) on the loop row; later dialogs derive defaults and recents from the project's loops plus the session list. This keeps the picker correct when the TUI and OpenCode server run on different hosts.
 
-The dialog tracks only loop-mode executions for recents / last-used defaults; `New session` and `Execute here` modes do not create a workspace, so they do not contribute to recents.
+The dialog tracks only loop-mode executions for recents / last-used defaults; `New session` and `Execute here` modes do not create a loop, so they do not contribute to recents.
 
 ## Setup
 
-When installed from the package, the TUI plugin loads automatically when added to your TUI config. The plugin is auto-detected via the `./tui` export in `package.json`.
+When installed from the package, the TUI surface loads from the plugin entry configured for the server (`plugins` in `opencode.json`) or from the `cli.json` `plugins` array, so no separate terminal entry is needed. See [Configuration → Plugin-directory install](configuration.md#plugin-directory-install).
 
-On OpenCode 2.x there is no `tui.json`: the TUI surface loads from the plugin configured for the server (`plugins` in `opencode.json`) or from the `cli.json` `plugins` array, so no separate terminal entry is needed. See [Configuration → Plugin-directory install](configuration.md#plugin-directory-install).
-
-Add to your `~/.config/opencode/tui.json` or project-level `tui.json` (OpenCode 1.x):
+For local development, point `cli.json`'s `plugins` array at the built `dist` directory:
 
 ```json
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    "opencode-forge"
-  ]
-}
-```
-
-For local development, reference the built TUI file directly:
-
-```json
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    "/path/to/opencode-forge/dist/tui.js"
-  ]
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": ["/path/to/opencode-forge/dist"]
 }
 ```
 
@@ -104,4 +89,4 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 }
 ```
 
-Set `sidebar` to `false` to disable the widget, Forge client connection, plan-execution commands, and execution dialog. Session-rotation following plus the dashboard, sandbox-template build, and host-sandbox toggle commands remain available.
+Set `sidebar` to `false` to disable the widget and the plan-execution commands. Session-rotation following plus the dashboard, sandbox-template build, and host-sandbox toggle commands remain available.

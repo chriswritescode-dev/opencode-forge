@@ -1,4 +1,3 @@
-import type { Hooks, WorkspaceAdapter } from '@opencode-ai/plugin'
 import type { ForgeClient, ForgeEvent, SessionGetParams } from '../client/port'
 import { ForgeClientError } from '../client/port'
 import { buildAgents } from '../agents'
@@ -27,7 +26,9 @@ import type { PluginConfig, CompactionConfig } from '../types'
 import { createTools } from '../tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from '../hooks/sandbox-tools'
-import { createShellEnvHook } from '../hooks/shell-env'
+import type { ToolAfterInput, ToolAfterOutput, ToolBeforeInput, ToolBeforeOutput } from '../hooks/tool-hook-types'
+import type { ToolDefinition } from '../tools/tool'
+import type { ForgeWorkspaceAdapter } from '../workspace/forge-adapter'
 import { ensureShellShim } from '../sandbox/shell-shim'
 import type { ToolContext } from '../tools'
 
@@ -42,7 +43,6 @@ import { createSandboxMessageHook } from '../hooks/sandbox-message'
 import { createGroupOrchestratorEventHook } from '../hooks/group-orchestrator'
 import { createGroupOrchestrator, mapLoopStateToOutcome, type GroupOrchestrator, type GroupEffects } from '../services/group-orchestrator'
 import { parseModelString } from '../utils/model-fallback'
-import { findLastIndex } from '../utils/array'
 import { parseFeatureList } from '../utils/feature-list-parser'
 import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils/architect-auto-output'
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
@@ -52,43 +52,39 @@ import type { ForgeExecutePlanInput, ForgeExecutePlanOutput } from './forge-rpc'
 import { createTuiLoopRestartController, type TuiLoopRestartController } from '../services/tui-loop-restart-controller'
 
 /**
- * Host-supplied inputs the core needs to run. Built by each host adapter (V1 today, V2
- * later) from its own plugin input, so the core never touches a host-specific type.
+ * Host-supplied inputs the core needs to run, built by the host adapter from its plugin
+ * context so the core never touches a host-specific type.
  */
 export interface ForgeHostInput {
   directory: string
   projectId: string
   projectRoot: string
   client: ForgeClient
-  registerWorkspaceAdapter?: (type: string, adapter: WorkspaceAdapter) => void
+  registerWorkspaceAdapter: (adapter: ForgeWorkspaceAdapter) => void
 }
 
-type HookArgs<K extends keyof Hooks> = NonNullable<Hooks[K]> extends (...args: infer A) => unknown ? A : never
-type HookInput<K extends keyof Hooks> = HookArgs<K>[0]
-type HookOutput<K extends keyof Hooks> = HookArgs<K>[1]
-
 /**
- * Host-neutral core of the Forge plugin: every handler an adapter needs to map onto its own
- * hook surface. Handlers keep the V1 input/output shapes so both adapters delegate to one
- * implementation instead of re-implementing routing, permissions, or sandbox resolution.
+ * Host-neutral core of the Forge plugin: every handler the host adapter maps onto its own
+ * hook surface, so routing, permissions, and sandbox resolution live in one implementation.
  */
 export interface ForgeCore {
-  tools: NonNullable<Hooks['tool']>
+  tools: Record<string, ToolDefinition>
   applyConfig(cfg: Record<string, unknown>): Promise<void>
-  shellEnv(input: HookInput<'shell.env'>, output: HookOutput<'shell.env'>): Promise<void>
   chatMessage(input: { sessionID: string; messageID?: string; agent?: string }, output: unknown): Promise<void>
   systemTransform(input: { sessionID?: string }, output: { system: string[] }): Promise<void>
   onEvent(input: { event: ForgeEvent }): Promise<void>
-  toolBefore(input: HookInput<'tool.execute.before'>, output: HookOutput<'tool.execute.before'>): Promise<void>
-  toolAfter(input: HookInput<'tool.execute.after'>, output: HookOutput<'tool.execute.after'>): Promise<void>
-  compacting(input: HookInput<'experimental.session.compacting'>, output: HookOutput<'experimental.session.compacting'>): Promise<void>
-  messagesTransform(
-    input: Record<string, never>,
-    output: { messages: Array<{ info: { role: string; agent?: string; id?: string }; parts: Array<Record<string, unknown>> }> },
-  ): Promise<void>
+  toolBefore(input: ToolBeforeInput, output: ToolBeforeOutput): Promise<void>
+  toolAfter(input: ToolAfterInput, output: ToolAfterOutput): Promise<void>
+  compacting(input: { sessionID: string }, output: { context: string[]; prompt?: string }): Promise<void>
   architectReminderFor(agent: string | undefined): string | null
   executeTuiPlan(input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput>
   resolveSandboxForDirectory(directory: string, opts?: { throwOnRestoreError?: boolean }): Promise<SandboxContext | null>
+  /**
+   * Sandbox for a shell tool call in `sessionID`, or null to run it on the host. Returns null
+   * without any session lookup while no loop is active and no host session sandbox is on.
+   * Fails closed: throws when an expected sandbox cannot be resolved or restored.
+   */
+  resolveShellSandbox(sessionID: string): Promise<SandboxContext | null>
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -411,10 +407,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       throw new Error('Sandbox shell shim unavailable on this host; refusing to run worktree-only mode while sandbox is enabled')
     }
   }
-  // The shell the user had configured before forge overrode `shell` with the shim; injected
-  // back via shell.env for non-sandbox sessions so their bash tool behavior is unchanged.
-  let userConfiguredShell: string | undefined
-
   if (sandboxManager && forgeClient) {
     const sandboxImage = config.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
     const buildContextDir = resolveBundledContainerDir()
@@ -465,24 +457,17 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const { createPendingTeardownRegistry } = await import('../workspace/pending-teardown')
   const pendingTeardowns = createPendingTeardownRegistry()
 
-  // Workspace status registry: tracks connected/connecting/disconnected/error
-  // state per workspace and exposes awaitConnected for deterministic readiness.
-  const { createWorkspaceStatusRegistry } = await import('../utils/workspace-status-registry')
-  const workspaceStatusRegistry = createWorkspaceStatusRegistry({ logger })
-
   // Register the forge workspace adapter so loop worktrees are created under <dataDir>/worktrees/
-  if (host.registerWorkspaceAdapter) {
-    const { createForgeWorkspaceAdapter } = await import('../workspace/forge-adapter')
-    host.registerWorkspaceAdapter('forge', createForgeWorkspaceAdapter({
-      dataDir,
-      logger,
-      sandboxManager,
-      gitService: defaultGitService,
-      getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
-      worktreeOpencodeConfig: config.loop?.worktreeOpencodeConfig,
-    }))
-    logger.log(`Registered forge workspace adapter (worktrees under ${forgeWorktreesRoot(dataDir)})`)
-  }
+  const { createForgeWorkspaceAdapter } = await import('../workspace/forge-adapter')
+  host.registerWorkspaceAdapter(createForgeWorkspaceAdapter({
+    dataDir,
+    logger,
+    sandboxManager,
+    gitService: defaultGitService,
+    getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
+    worktreeOpencodeConfig: config.loop?.worktreeOpencodeConfig,
+  }))
+  logger.log(`Registered forge workspace adapter (worktrees under ${forgeWorktreesRoot(dataDir)})`)
 
   const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
 
@@ -588,8 +573,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const handleSigterm = cleanup
   // The `exit` event fires once the event loop has drained and cannot await asynchronous work,
   // so it must never run the async disposal (container removal, applied-OFF persistence) — that
-  // work would be cut off mid-flight. The awaited shutdown runs through the
-  // `server.instance.disposed` event and the SIGINT/SIGTERM handlers (which keep the process
+  // work would be cut off mid-flight. The awaited shutdown runs through the host's
+  // location shutdown and the SIGINT/SIGTERM handlers (which keep the process
   // alive while their async cleanup completes). This listener is registered so shutdown
   // bookkeeping is explicit and cleaned up consistently with the other signals.
   const handleExit = () => {}
@@ -617,7 +602,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     sandboxManager,
     sectionPlansRepo,
     reviewFindingsRepo,
-    workspaceStatusRegistry,
     pendingTeardowns,
   }
   const forgeSessionAttachHook = createForgeSessionAttachHook({
@@ -764,7 +748,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     sectionPlansRepo,
     reviewFindingsRepo,
     loopSessionUsageRepo,
-    workspaceStatusRegistry,
     pendingTeardowns,
   })
 
@@ -921,7 +904,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     loopsRepo,
     sectionPlansRepo,
     loopSessionUsageRepo,
-    workspaceStatusRegistry,
     pendingTeardowns,
     resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     featureGroupsRepo,
@@ -1020,23 +1002,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   return {
     tools,
-    applyConfig: (() => {
-      const handler = createConfigHandler(agents, config.agents, promptsDir)
-      return async (cfg: Record<string, unknown>) => {
-        await handler(cfg)
-        if (!shellShimPath) return
-        const existingShell = cfg.shell
-        if (typeof existingShell === 'string' && existingShell && existingShell !== shellShimPath) {
-          userConfiguredShell = existingShell
-        }
-        cfg.shell = shellShimPath
-      }
-    })(),
-    shellEnv: createShellEnvHook({
-      resolveSandboxForSession,
-      getUserConfiguredShell: () => userConfiguredShell,
-      logger,
-    }),
+    applyConfig: createConfigHandler(agents, config.agents, promptsDir),
     chatMessage: async (input, output) => {
       await forgeSessionMessageAttachHook(input)
       // Fallback for filtered session.created events: subagent sessions inside
@@ -1049,12 +1015,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
     onEvent: async (input) => {
       const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
-      const event = eventInput.event
-      try { workspaceStatusRegistry.recordEvent(event) } catch { /* defensive */ }
-      if (eventInput.event?.type === 'server.instance.disposed') {
-        await cleanup()
-        return
-      }
       await planCaptureEventHook(eventInput)
       await loopHandler.onEvent(eventInput)
       await groupOrchestratorEventHook(eventInput)
@@ -1108,27 +1068,15 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         output as { context: string[]; prompt?: string }
       )
     },
-    messagesTransform: async (
-      _input: Record<string, never>,
-      output: { messages: Array<{ info: { role: string; agent?: string; id?: string }; parts: Array<Record<string, unknown>> }> }
-    ) => {
-      const messages = output.messages
-      const userIndex = findLastIndex(messages, (message) => message.info.role === 'user')
-      if (userIndex === -1) return
-      const userMessage = messages[userIndex]
-
-      const reminder = architectReminderFor(userMessage.info.agent)
-      if (!reminder) return
-
-      userMessage.parts.push({
-        type: 'text',
-        text: reminder,
-        synthetic: true,
-      })
-    },
     architectReminderFor,
     executeTuiPlan,
     resolveSandboxForDirectory,
+    resolveShellSandbox: async (sessionID) => {
+      if (!shellShimPath) return null
+      await sharedSessionSandbox.controller.start()
+      if (loopHandler.loop.listActive().length === 0 && sharedSessionSandbox.controller.isIdle()) return null
+      return resolveSandboxForSession(sessionID, { throwOnRestoreError: true })
+    },
     cleanup,
     shellShimPath,
   }

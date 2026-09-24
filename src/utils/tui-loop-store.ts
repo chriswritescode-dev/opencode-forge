@@ -135,7 +135,7 @@ export function fetchStoredSessionPlan(projectId: string, sessionId: string, dbP
   )
 }
 
-export const SIDEBAR_LOOP_LIMIT = 3
+const SIDEBAR_LOOP_LIMIT = 3
 
 export interface LoopSidebarReader {
   read(): LoopSidebarRow[]

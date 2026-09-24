@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { createForgeClientFromV2, fromV2Ruleset, resetV2SessionStatusCache, toV2Ruleset } from '../../src/client/v2-adapter'
+import { createForgeClientFromV2, fromV2Ruleset, resetV2SessionStatusCache, toProviderListFromV2, toV2Ruleset } from '../../src/client/v2-adapter'
 import type { ForgeToastInput } from '../../src/host/forge-rpc'
 import { ForgeClientError } from '../../src/client/port'
 import type { ForgeClient } from '../../src/client/port'
@@ -441,12 +441,6 @@ describe('createForgeClientFromV2', () => {
   })
 
   describe('unavailable calls', () => {
-    it('session.list rejects as unavailable', async () => {
-      const { client } = clientFor()
-
-      expect(failure(await client.session.list({}).catch((e: unknown) => e)).kind).toBe('unavailable')
-    })
-
     it('session.delete rejects as unavailable', async () => {
       const { client } = clientFor()
 
@@ -468,25 +462,14 @@ describe('createForgeClientFromV2', () => {
 
       expect(requestSessionDelete).toHaveBeenCalledWith('ses_1')
     })
-
-    it('tui.selectSession rejects as unavailable', async () => {
-      const { client } = clientFor()
-
-      expect(failure(await client.tui.selectSession({ sessionID: 'ses_1' }).catch((e: unknown) => e)).kind).toBe('unavailable')
-    })
   })
 
-  describe('tui.publish', () => {
-    const toastBody = {
-      type: 'tui.toast.show',
-      properties: { title: 'T', message: 'M', variant: 'success', duration: 1234 },
-    } as const
-
+  describe('toast', () => {
     it('emits the mapped toast payload when an emitter is configured', async () => {
       const publishToast = vi.fn()
       const { client } = clientFor({ publishToast })
 
-      await client.tui.publish({ directory: '/wt', body: toastBody })
+      await client.toast({ directory: '/wt', title: 'T', message: 'M', variant: 'success', duration: 1234 })
 
       expect(publishToast).toHaveBeenCalledWith({
         title: 'T',
@@ -496,22 +479,10 @@ describe('createForgeClientFromV2', () => {
       })
     })
 
-    it('ignores non-toast bodies', async () => {
-      const publishToast = vi.fn()
-      const { client } = clientFor({ publishToast })
-
-      await client.tui.publish({
-        directory: '/wt',
-        body: { type: 'tui.session.select', properties: { sessionID: 'ses_1' } },
-      })
-
-      expect(publishToast).not.toHaveBeenCalled()
-    })
-
     it('resolves without an emitter', async () => {
       const { client } = clientFor()
 
-      await expect(client.tui.publish({ directory: '/wt', body: toastBody })).resolves.toBeUndefined()
+      await expect(client.toast({ directory: '/wt', message: 'M' })).resolves.toBeUndefined()
     })
 
     it('resolves and logs when the emitter rejects', async () => {
@@ -519,7 +490,7 @@ describe('createForgeClientFromV2', () => {
       const publishToast = vi.fn().mockRejectedValue(new Error('emit failed'))
       const { client } = clientFor({ publishToast })
 
-      await expect(client.tui.publish({ directory: '/wt', body: toastBody })).resolves.toBeUndefined()
+      await expect(client.toast({ directory: '/wt', message: 'M' })).resolves.toBeUndefined()
       expect(errorSpy).toHaveBeenCalledWith('[forge] failed to emit toast over RPC', expect.any(Error))
       errorSpy.mockRestore()
     })
@@ -537,50 +508,29 @@ describe('createForgeClientFromV2', () => {
     })
   })
 
-  describe('project', () => {
-    it('reports the plugin location project for list and current', async () => {
-      const { client } = clientFor({ location: { directory: '/repo', project: { id: 'proj_1', canonical: '/repo/canonical' } } })
-
-      expect(await client.project.list()).toEqual([{ id: 'proj_1', worktree: '/repo/canonical' }])
-      expect(await client.project.current()).toEqual({ id: 'proj_1', worktree: '/repo/canonical' })
-    })
-  })
-
-  describe('provider.list', () => {
-    it('merges provider and model inventory into the V1 shape', async () => {
-      const { client } = clientFor({
-        provider: {
-          list: vi.fn().mockResolvedValue({
-            location: { directory: '/wt' },
-            data: [
-              { id: 'anthropic', name: 'Anthropic', activation: 'enabled', package: 'x' },
-              { id: 'openai', name: 'OpenAI', activation: 'disabled', package: 'y' },
-            ],
-          }),
-        },
-        model: {
-          list: vi.fn().mockResolvedValue({
-            location: { directory: '/wt' },
-            data: [
-              {
-                id: 'sonnet',
-                modelID: 'claude-sonnet-4',
-                providerID: 'anthropic',
-                name: 'Sonnet',
-                capabilities: { tools: true, input: ['text'], output: ['text'] },
-                variants: [{ id: 'thinking' }],
-                time: { released: 0 },
-                cost: [{ input: 3, output: 15, cache: { read: 0, write: 0 } }],
-                status: 'active',
-                enabled: true,
-                limit: { context: 1, output: 1 },
-              },
-            ],
-          }),
-        },
-      })
-
-      const list = await client.provider.list()
+  describe('toProviderListFromV2', () => {
+    it('merges provider and model inventory into the V1 shape', () => {
+      const list = toProviderListFromV2(
+        [
+          { id: 'anthropic', name: 'Anthropic', activation: 'enabled' },
+          { id: 'openai', name: 'OpenAI', activation: 'disabled' },
+        ],
+        [
+          {
+            id: 'sonnet',
+            modelID: 'claude-sonnet-4',
+            providerID: 'anthropic',
+            name: 'Sonnet',
+            capabilities: { tools: true, input: ['text'], output: ['text'] },
+            variants: [{ id: 'thinking' }],
+            time: { released: 0 },
+            cost: [{ input: 3, output: 15, cache: { read: 0, write: 0 } }],
+            status: 'active',
+            enabled: true,
+            limit: { context: 1, output: 1 },
+          },
+        ] as never,
+      )
 
       expect(list.connected).toEqual(['anthropic'])
       expect(list.all).toEqual([{
@@ -604,24 +554,11 @@ describe('createForgeClientFromV2', () => {
     })
   })
 
-  describe('event.subscribe', () => {
-    it('rejects as unavailable without touching the host', async () => {
-      const { client, calls } = clientFor()
-
-      const err = failure(await client.event.subscribe().catch((e: unknown) => e))
-
-      expect(err.kind).toBe('unavailable')
-      expect(err.method).toBe('event.subscribe')
-      expect(calls).toEqual([])
-    })
-  })
-
   describe('no-op calls', () => {
-    it('resolves tui.publish and sync.start without touching the host', async () => {
+    it('resolves toast without an emitter and without touching the host', async () => {
       const { client, calls } = clientFor()
 
-      await expect(client.tui.publish({ directory: '/wt' })).resolves.toBeUndefined()
-      await expect(client.sync.start({ directory: '/wt' })).resolves.toBeUndefined()
+      await expect(client.toast({ directory: '/wt', message: 'M' })).resolves.toBeUndefined()
       expect(calls).toEqual([])
     })
   })
@@ -706,13 +643,9 @@ describe('ForgeClient surface', () => {
     const surface: ForgeClient = client
 
     expect(Object.keys(surface).sort()).toEqual([
-      'event',
-      'project',
-      'provider',
       'recordStatusEvent',
       'session',
-      'sync',
-      'tui',
+      'toast',
       'workspace',
     ])
   })

@@ -97,12 +97,8 @@ describe('Audit session permissions', () => {
         warp: async () => {},
         list: async () => [],
         remove: async () => {},
-        status: async () => ({}),
       },
-      tui: {
-        publish: async () => {},
-        selectSession: async () => {},
-      },
+      toast: async () => {},
     })
 
     const logger: Logger = {
@@ -202,12 +198,8 @@ describe('Audit session permissions', () => {
         warp: async () => {},
         list: async () => [],
         remove: async () => {},
-        status: async () => ({}),
       },
-      tui: {
-        publish: async () => {},
-        selectSession: async () => {},
-      },
+      toast: async () => {},
     })
 
     const logger: Logger = {
@@ -316,12 +308,8 @@ describe('Audit session permissions', () => {
           },
         ],
         remove: async () => {},
-        status: async () => ({}),
       },
-      tui: {
-        publish: async () => {},
-        selectSession: async () => {},
-      },
+      toast: async () => {},
     })
 
     const logger: Logger = {

@@ -25,7 +25,6 @@ function stubContext(overrides: Partial<ToolContext> = {}): ToolContext {
     sectionPlansRepo: {} as never,
     featureGroupsRepo: {} as never,
     groupOrchestrator: {} as never,
-    workspaceStatusRegistry: {} as never,
     pendingTeardowns: {} as never,
     resolveActiveLoopForSession: async () => null,
     ...overrides,

@@ -3,7 +3,6 @@ import { mkdirSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
-import { SHIM_ENV_CONTAINER } from '../../src/sandbox/shell-shim'
 
 const TEST_ROOT = join('/tmp', `forge-core-test-${Date.now()}`)
 
@@ -23,40 +22,34 @@ describe('createForgeCore', () => {
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true })
   })
 
-  async function buildCore(): Promise<{ core: ForgeCore; calls: RecordedCall[] }> {
+  async function buildCore(): Promise<{ core: ForgeCore; calls: RecordedCall[]; adapters: unknown[] }> {
     const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const { client, calls } = createFakeForgeClient({
       session: {
         get: async () => ({ id: 'ses_host_1', projectID: projectId, directory: testDir, parentID: null }),
       },
     })
+    const adapters: unknown[] = []
     core = await createForgeCore(
       { dataDir: join(testDir, 'memory') },
-      { directory: testDir, projectId, projectRoot: testDir, client },
+      { directory: testDir, projectId, projectRoot: testDir, client, registerWorkspaceAdapter: (adapter) => adapters.push(adapter) },
     )
-    return { core, calls }
+    return { core, calls, adapters }
   }
 
-  test('shellEnv for a session outside any loop writes no sandbox container', async () => {
+  test('registers the forge workspace adapter and writes the sandbox shim', async () => {
     const built = await buildCore()
 
-    const output = { env: {} as Record<string, string> }
-    await built.core.shellEnv({ cwd: testDir, sessionID: 'ses_host_1' }, output)
-
-    expect(built.calls.some((call) => call.method === 'session.get')).toBe(true)
-    expect(output.env[SHIM_ENV_CONTAINER]).toBeUndefined()
-  })
-
-  test('applyConfig points the shell at the sandbox shim', async () => {
-    const built = await buildCore()
-
+    expect(built.adapters).toHaveLength(1)
     const shimPath = built.core.shellShimPath
     expect(shimPath).not.toBeNull()
     expect(shimPath !== null && existsSync(shimPath)).toBe(true)
+  })
 
-    const cfg: Record<string, unknown> = {}
-    await built.core.applyConfig(cfg)
+  test('resolveShellSandbox skips session lookups while no loop or host sandbox is active', async () => {
+    const built = await buildCore()
 
-    expect(cfg.shell).toBe(shimPath)
+    await expect(built.core.resolveShellSandbox('ses_host_1')).resolves.toBeNull()
+    expect(built.calls.some((call) => call.method === 'session.get')).toBe(false)
   })
 })

@@ -19,7 +19,7 @@ export type TuiOptions = {
   keybinds: TuiKeybinds
 }
 
-/** The option fields both the V1 config and the V2 plugin options supply. */
+/** The option fields both the forge config `tui` section and the plugin options supply. */
 export type TuiOptionOverrides = {
   readonly sidebar?: boolean
   readonly showVersion?: boolean

@@ -1,8 +1,6 @@
-import { describe, test, expect, vi } from 'vitest'
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import { createForgeClient } from '../src/client/sdk-adapter'
+import { describe, test, expect } from 'vitest'
 import {
-  fetchAvailableModels,
+  providersFromProviderList,
   flattenProviders,
   buildDialogSelectOptions,
   getModelDisplayLabel,
@@ -19,213 +17,52 @@ import {
   type DeriveRecentModelsInputs,
 } from '../src/utils/tui-models'
 
-function createMockApi(configProviders?: string[], providerListFn?: any): TuiPluginApi {
-  const listFn = providerListFn ?? vi.fn(() => Promise.resolve({ data: { all: [], connected: [] } }))
-  return {
-    state: {
-      config: {
-        provider: Object.fromEntries((configProviders ?? []).map(id => [id, {}])),
-      },
-      path: {
-        directory: '/test/project',
-      },
-    },
-    client: {
-      provider: {
-        list: listFn,
-      },
-    } as any,
-    ui: {
-      toast: vi.fn(() => {}),
-      dialog: {
-        clear: vi.fn(() => {}),
-      },
-    },
-    theme: {
-      current: {
-        text: '#ffffff',
-        textMuted: '#888888',
-        border: '#444444',
-        borderActive: '#007acc',
-        success: '#4caf50',
-        error: '#f44336',
-        warning: '#ff9800',
-      },
-    },
-  } as unknown as TuiPluginApi
-}
+describe('providersFromProviderList', () => {
+  test('keeps only connected providers and maps their models', () => {
+    const result = providersFromProviderList({
+      all: [
+        { id: 'anthropic', name: 'Anthropic', models: { 'claude-sonnet': { id: 'claude-sonnet', name: 'Claude Sonnet' } } },
+        { id: 'openai', name: 'OpenAI', models: { 'gpt-5': { id: 'gpt-5', name: 'GPT-5' } } },
+      ],
+      connected: ['anthropic'],
+      default: {},
+    })
 
-describe('fetchAvailableModels', () => {
-  test('returns providers array on success using provider.list', async () => {
-    const mockProviders: any = [
-      {
-        id: 'anthropic',
-        name: 'Anthropic',
-        models: {
-          'claude-sonnet-4-20250514': {
-            id: 'claude-sonnet-4-20250514',
-            name: 'Claude Sonnet 4',
-            capabilities: {
-              temperature: true,
-              toolcall: true,
-              reasoning: false,
-              attachment: true,
-            },
-            cost: { input: 0.003, output: 0.015 },
-          },
-        },
-      },
-    ]
-
-    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
-    const mockApi = createMockApi(['anthropic'], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.error).toBeUndefined()
-    expect(result.providers).toHaveLength(1)
-    expect(result.providers[0].id).toBe('anthropic')
-    expect(result.providers[0].name).toBe('Anthropic')
-    expect(result.providers[0].models).toHaveLength(1)
-    expect(result.providers[0].models[0].fullName).toBe('anthropic/claude-sonnet-4-20250514')
     expect(result.connectedProviderIds).toEqual(['anthropic'])
-    expect(result.configuredProviderIds).toEqual(['anthropic'])
-    expect(providerListMock).toHaveBeenCalled()
+    expect(result.providers.map((provider) => provider.id)).toEqual(['anthropic'])
+    expect(result.providers[0].models[0]).toMatchObject({
+      id: 'claude-sonnet',
+      providerID: 'anthropic',
+      fullName: 'anthropic/claude-sonnet',
+    })
   })
 
-  test('returns empty providers array when no providers exist', async () => {
-    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: [], connected: [] } }))
-    const mockApi = createMockApi([], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.error).toBeUndefined()
-    expect(result.providers).toHaveLength(0)
-    expect(result.connectedProviderIds).toEqual([])
-  })
-
-  test('returns error when API returns error', async () => {
-    const providerListMock = vi.fn(() => Promise.resolve({
-      error: {
-        data: { message: 'Authentication failed' },
-        name: 'APIError',
-      }
-    }))
-    const mockApi = createMockApi(['anthropic'], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.providers).toHaveLength(0)
-    expect(result.error).toBe('Authentication failed')
-    expect(result.configuredProviderIds).toEqual(['anthropic'])
-  })
-
-  test('returns error when API throws', async () => {
-    const providerListMock = vi.fn(() => Promise.reject(new Error('Network error')))
-    const mockApi = createMockApi(['openai'], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.providers).toHaveLength(0)
-    expect(result.error).toBe('Network error')
-    expect(result.configuredProviderIds).toEqual(['openai'])
-  })
-
-  test('returns error when no data returned', async () => {
-    const providerListMock = vi.fn(() => Promise.resolve({ data: null }))
-    const mockApi = createMockApi(['google'], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.providers).toHaveLength(0)
-    expect(result.error).toBe('no data returned')
-    expect(result.configuredProviderIds).toEqual(['google'])
-  })
-
-  test('handles providers with no models', async () => {
-    const mockProviders: any = [
-      {
-        id: 'empty-provider',
-        name: 'Empty Provider',
-        models: {},
-      },
-    ]
-
-    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['empty-provider'] } }))
-    const mockApi = createMockApi([], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.error).toBeUndefined()
-    expect(result.providers).toHaveLength(1)
-    expect(result.providers[0].models).toHaveLength(0)
-  })
-
-  test('filters to connected providers only', async () => {
-    const mockProviders: any = [
-      {
-        id: 'anthropic',
-        name: 'Anthropic',
-        models: {
-          'claude-sonnet': {
-            id: 'claude-sonnet',
-            name: 'Claude Sonnet',
-          },
-        },
-      },
-      {
-        id: 'openai',
-        name: 'OpenAI',
-        models: {
-          'gpt-4': {
-            id: 'gpt-4',
-            name: 'GPT-4',
-          },
-        },
-      },
-    ]
-
-    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
-    const mockApi = createMockApi([], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.providers).toHaveLength(1)
-    expect(result.providers[0].id).toBe('anthropic')
-    expect(result.connectedProviderIds).toEqual(['anthropic'])
-  })
-
-  test('includes releaseDate and cost in model info', async () => {
-    const mockProviders: any = [
-      {
-        id: 'anthropic',
-        name: 'Anthropic',
-        models: {
-          'claude-sonnet': {
-            id: 'claude-sonnet',
-            name: 'Claude Sonnet',
-            release_date: '2024-01-01',
-            cost: { input: 0.003, output: 0.015 },
-            capabilities: {
-              temperature: true,
-              toolcall: true,
-              reasoning: false,
-              attachment: true,
+  test('preserves variants from provider model data', () => {
+    const result = providersFromProviderList({
+      all: [
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          models: {
+            'claude-sonnet': {
+              id: 'claude-sonnet',
+              name: 'Claude Sonnet',
+              variants: {
+                default: { name: 'Default' },
+                'thinking-max': { name: 'Thinking Max' },
+              },
             },
           },
         },
-      },
-    ]
+      ],
+      connected: ['anthropic'],
+      default: {},
+    })
 
-    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
-    const mockApi = createMockApi([], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.providers).toHaveLength(1)
-    expect(result.providers[0].models).toHaveLength(1)
-    expect(result.providers[0].models[0].releaseDate).toBe('2024-01-01')
-    expect(result.providers[0].models[0].cost).toEqual({ input: 0.003, output: 0.015 })
+    expect(result.providers[0].models[0].variants).toEqual({
+      default: { name: 'Default' },
+      'thinking-max': { name: 'Thinking Max' },
+    })
   })
 })
 
@@ -574,37 +411,6 @@ describe('getModelDisplayLabel', () => {
 
   test('ignores fallback when value is non-empty', () => {
     expect(getModelDisplayLabel('anthropic/claude', models, 'unknown/model')).toBe('Claude Sonnet')
-  })
-})
-
-describe('fetchAvailableModels with variants', () => {
-  test('preserves variants from provider model data', async () => {
-    const mockProviders: any = [
-      {
-        id: 'anthropic',
-        name: 'Anthropic',
-        models: {
-          'claude-sonnet': {
-            id: 'claude-sonnet',
-            name: 'Claude Sonnet',
-            variants: {
-              default: { name: 'Default' },
-              'thinking-max': { name: 'Thinking Max' },
-            },
-          },
-        },
-      },
-    ]
-
-    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
-    const mockApi = createMockApi(['anthropic'], providerListMock)
-
-    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
-
-    expect(result.providers[0].models[0].variants).toEqual({
-      default: { name: 'Default' },
-      'thinking-max': { name: 'Thinking Max' },
-    })
   })
 })
 

@@ -35,7 +35,6 @@ export const FORGE_EVENT_TYPES = {
   sessionError: 'session.error',
   sessionCreated: 'session.created',
   sessionDeleted: 'session.deleted',
-  serverInstanceDisposed: 'server.instance.disposed',
   messagePartUpdated: 'message.part.updated',
 } as const
 
@@ -80,7 +79,7 @@ export function v2EventDirectory(event: V2Event): string | undefined {
   return event.location?.directory
 }
 
-export function v2EventSessionId(event: V2Event): string | undefined {
+function v2EventSessionId(event: V2Event): string | undefined {
   const data = (event as { data?: { sessionID?: unknown } }).data
   return typeof data?.sessionID === 'string' ? data.sessionID : undefined
 }

@@ -1,6 +1,6 @@
 # Tools Reference
 
-Forge exposes server-side tools for plan storage, review findings, loop management, group orchestration, section navigation, and sandbox shell execution. The same tools are registered on both OpenCode hosts. Two host differences apply: on OpenCode 2.x a loop cannot launch against a configured remote opencode server (remote loops are 1.x only), and the `review` / `review-plan` slash commands run inline instead of spawning a subtask. See [OpenCode 2.x limitations](../README.md#opencode-2x-limitations).
+Forge exposes server-side tools for plan storage, review findings, loop management, group orchestration, section navigation, and sandbox shell execution. The `review` / `review-plan` slash commands run inline instead of spawning a subtask. See [Limitations](../README.md#limitations).
 
 See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](configuration.md), [Loop System](loop-system.md).
 
@@ -158,7 +158,7 @@ Arguments:
 
 ### `execute-goal`
 
-Starts a managed **goal loop** from free-text goal input, with no plan, decomposition, approval flow, final audit, or post-action. Forge creates a dedicated code session inside an isolated worktree and sends the goal as its initial prompt. When that coding pass goes idle, Forge replaces it with a fresh auditor session; a dirty audit then creates a fresh code session for remediation. The invoking session remains the host redirect target and is not warped into the worktree.
+Starts a managed **goal loop** from free-text goal input, with no plan, decomposition, approval flow, final audit, or post-action. Forge creates a dedicated code session inside an isolated worktree and sends the goal as its initial prompt. When that coding pass goes idle, Forge replaces it with a fresh auditor session; a dirty audit then creates a fresh code session for remediation. The invoking session remains the host redirect target and is not moved into the worktree.
 
 Arguments:
 
@@ -226,4 +226,4 @@ Requires exactly one of `prd` or `features`.
 
 ## Sandbox Shell
 
-Sandbox loops use opencode's native `bash` tool; Forge routes the underlying shell into the loop sandbox via a generated shell shim and the `shell.env` hook. See [Sandbox](sandbox.md#shell-routing).
+Sandbox loops use opencode's native `shell` tool; Forge routes the underlying shell into the loop sandbox via a generated shell shim and the V2 `shell.hook('create.before')`. See [Sandbox](sandbox.md#shell-routing).

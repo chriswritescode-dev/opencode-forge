@@ -167,16 +167,6 @@ export function resolveLoopPermissionOptions(config: PluginConfig | undefined): 
   }
 }
 
-/**
- * Resolves ruleset options for a remote loop launched from this machine: the
- * configured rules without `allowDirectories`, because host-specific directory
- * paths are meaningless on the remote machine. This asymmetry is documented at
- * docs/configuration.md.
- */
-export function resolveRemoteLoopPermissionOptions(config: PluginConfig | undefined): LoopPermissionRulesetOptions {
-  return { extraRules: resolveLoopPermissionRules(config) }
-}
-
 /** Collects warnings produced while parsing `loop.permissions` (dropped or ignored entries). */
 export function collectLoopPermissionConfigWarnings(config: PluginConfig | undefined): string[] {
   return parseLoopPermissionRules(config?.loop?.permissions).warnings

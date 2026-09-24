@@ -1,4 +1,4 @@
-import { tool } from '@opencode-ai/plugin'
+import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
@@ -13,7 +13,7 @@ import { loopBranchExists } from '../workspace/forge-naming'
 
 const z = tool.schema
 
-export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
+export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition> {
   const { loopHandler, config, logger } = ctx
 
   function auditorModelStatusLabel(state: LoopState): string {
@@ -72,7 +72,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       sandboxManager: ctx.sandboxManager,
       sectionPlansRepo: ctx.sectionPlansRepo,
       loopSessionUsageRepo: ctx.loopSessionUsageRepo,
-      workspaceStatusRegistry: ctx.workspaceStatusRegistry,
       pendingTeardowns: ctx.pendingTeardowns,
     })
     return { service, execCtx }
@@ -123,8 +122,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             title: args.title,
             executionModel,
             lifecycle: {
-              selectSession: true,
-              selectSessionTiming: 'after-prompt',
               deleteSessionOnPromptFailure: true,
             },
           })
@@ -160,7 +157,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           executionModel,
           auditorModel,
           lifecycle: {
-            selectSession: true,
             startWatchdog: true,
           },
         })

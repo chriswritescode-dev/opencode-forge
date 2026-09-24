@@ -52,8 +52,6 @@ export interface ToolContext {
   featureGroupsRepo: FeatureGroupsRepo
   /** Group orchestrator for managing feature groups. */
   groupOrchestrator: GroupOrchestrator
-  /** Workspace status registry for tracking workspace readiness. */
-  workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   /** Pending teardown registry for workspace removal context. */
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
   /**

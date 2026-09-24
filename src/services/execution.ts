@@ -7,7 +7,7 @@
 
 import type { PluginConfig, Logger } from '../types'
 import type { ForgeClient } from '../client/port'
-import { selectSessionBestEffort } from '../utils/tui-navigation'
+import { publishToast } from '../utils/toast'
 
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
@@ -125,8 +125,6 @@ export interface AttachLoopInput {
   goal?: string
   /** Executor session binding for goal loops (the dedicated code session). */
   executorSessionId?: string
-  selectSession?: boolean
-  selectSessionTiming?: 'after-create' | 'after-prompt'
   startWatchdog?: boolean
   sendInitialPrompt?: boolean
   abortSourceSessionOnSuccess?: boolean
@@ -159,8 +157,6 @@ export interface ExecutePlanNewSessionCommand {
   executionModel?: string
   executionVariant?: string
   lifecycle?: {
-    selectSession?: boolean
-    selectSessionTiming?: 'after-create' | 'after-prompt'
     abortSourceSession?: boolean
     deleteSessionOnPromptFailure?: boolean
   }
@@ -187,8 +183,6 @@ export interface StartLoopCommand {
   auditorVariant?: string
   hostSessionId?: string
   lifecycle?: {
-    selectSession?: boolean
-    selectSessionTiming?: 'after-create' | 'after-prompt'
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
     onStarted?: (info: {
@@ -450,7 +444,6 @@ export interface ForgeExecutionServiceDeps {
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
   reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
   loopSessionUsageRepo?: import('../storage/repos/loop-session-usage-repo').LoopSessionUsageRepo
-  workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
 }
 
@@ -528,73 +521,6 @@ async function resolvePlanSource(
 }
 
 // ============================================================================
-// Port-based helpers
-// ============================================================================
-
-export interface SelectInitialWorktreeSessionOpts {
-  selectSession: boolean | undefined
-  logger: Logger | Console
-  workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
-  selectSessionFn: (selection: { sessionID: string; workspace?: string }) => Promise<void>
-  /** Maximum time to wait for selectSessionFn before falling through. Defaults to 2000ms. */
-  selectTimeoutMs?: number
-}
-
-export async function selectInitialWorktreeSession(
-  targetSessionId: string,
-  boundWorkspaceId: string | undefined,
-  context: string,
-  opts: SelectInitialWorktreeSessionOpts,
-): Promise<void> {
-  opts.logger.log(`[warp] select.entry context="${context}" targetSessionId=${targetSessionId} workspaceId=${boundWorkspaceId ?? 'none'}`)
-
-  if (!opts.selectSession) {
-    opts.logger.log(`[warp] select.exit context="${context}" reason=no-select-session`)
-    return
-  }
-
-  if (!boundWorkspaceId) {
-    opts.logger.log(`[warp] select.exit context="${context}" reason=no-workspace`)
-    return
-  }
-
-  const totalStart = Date.now()
-
-  try {
-    const connectedResult = await opts.workspaceStatusRegistry.awaitConnected(boundWorkspaceId, {
-      timeoutMs: 5000,
-      logger: opts.logger as Logger,
-    })
-
-    const readyElapsedMs = Date.now() - totalStart
-
-    if (connectedResult.connected) {
-      opts.logger.log(
-        `[warp] select.ready context="${context}" source=${connectedResult.source} elapsedMs=${readyElapsedMs}`,
-      )
-    } else {
-      opts.logger.log(
-        `[warp] select.degraded context="${context}" reason="${connectedResult.reason ?? 'unknown'}" lastStatus="${connectedResult.lastStatus ?? 'none'}" elapsedMs=${readyElapsedMs}`,
-      )
-    }
-
-    const envTimeout = Number(process.env.FORGE_SELECT_TIMEOUT_MS)
-    const SELECT_TIMEOUT_MS = opts.selectTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 2000)
-    await Promise.race([
-      opts.selectSessionFn({ sessionID: targetSessionId, workspace: boundWorkspaceId }),
-      new Promise<void>((resolve) => setTimeout(resolve, SELECT_TIMEOUT_MS)),
-    ])
-    const totalMs = Date.now() - totalStart
-    opts.logger.log(`[warp] select.complete context="${context}" totalMs=${totalMs}`)
-  } catch (err) {
-    const totalMs = Date.now() - totalStart
-    opts.logger.error(
-      `[warp] select.failed context="${context}" error="${err instanceof Error ? err.message : String(err)}" totalMs=${totalMs}`,
-    )
-  }
-}
-
-// ============================================================================
 // attachLoopToSession
 // ============================================================================
 
@@ -618,8 +544,6 @@ export async function attachLoopToSession(
     sandboxEnabled,
     sandboxContainer,
     planText,
-    selectSession,
-    selectSessionTiming,
     startWatchdog,
     sendInitialPrompt = true,
     abortSourceSessionOnSuccess,
@@ -755,13 +679,6 @@ export async function attachLoopToSession(
       }
     }
 
-    // Navigate TUI if requested with early timing
-    if (selectSession && selectSessionTiming === 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: workspaceId }).catch((err: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to navigate TUI (early)', err as Error)
-      })
-    }
-
     if (!sendInitialPrompt) {
       if (startWatchdog && deps.loopHandler) {
         deps.loopHandler.startWatchdog(loopName)
@@ -816,13 +733,6 @@ export async function attachLoopToSession(
     // Success: start watchdog if requested
     if (startWatchdog && deps.loopHandler) {
       deps.loopHandler.startWatchdog(loopName)
-    }
-
-    // Navigate TUI if requested with default/post-prompt timing
-    if (selectSession && selectSessionTiming !== 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: workspaceId }).catch((err: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to navigate TUI', err as Error)
-      })
     }
 
     // Abort source session if requested
@@ -894,13 +804,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
     deps.logger.log(`handlePlanNewSession: created session=${sessionId}`)
     
-    // Navigate TUI if requested with early timing
-    if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming === 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: sessionWorkspaceId }).catch((err: unknown) => {
-        deps.logger.error('handlePlanNewSession: failed to navigate TUI (early)', err as Error)
-      })
-    }
-    
     // Prompt code agent
     let promptError: unknown = null
     const workspaceParam = sessionWorkspaceId ? { workspace: sessionWorkspaceId } : {}
@@ -932,13 +835,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
       
       return fail('prompt_failed', 502, 'Session created but failed to send plan')
-    }
-    
-    // Navigate TUI if requested with default/post-prompt timing
-    if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming !== 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId, workspace: sessionWorkspaceId }).catch((err: unknown) => {
-        deps.logger.error('handlePlanNewSession: failed to navigate TUI', err as Error)
-      })
     }
     
     // Abort source session if requested
@@ -1025,19 +921,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   function guardCommittedProject(ctx: ForgeExecutionRequestContext): ForgeExecutionResponse<never> | null {
     const errorMsg = getWorktreeProjectPreconditionError(ctx.projectId)
     if (errorMsg) {
-      deps.client.tui.publish({
+      publishToast({
+        client: deps.client,
         directory: ctx.directory,
-        body: {
-          type: 'tui.toast.show',
-          properties: {
-            title: 'Loop start blocked',
-            message: 'No git commit in this project — the loop session would be invisible to this opencode instance. Commit, restart opencode, and retry.',
-            variant: 'error',
-            duration: 10_000,
-          },
-        },
-      }).catch((err: unknown) => {
-        deps.logger.error('guardCommittedProject: failed to publish toast', err)
+        logger: deps.logger,
+        title: 'Loop start blocked',
+        message: 'No git commit in this project — the loop session would be invisible to this opencode instance. Commit, restart opencode, and retry.',
+        variant: 'error',
+        duration: 10_000,
+        logPrefix: 'guardCommittedProject: failed to publish toast',
       })
 
       return fail(
@@ -1139,20 +1031,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     try {
       let sessionId: string
-      let initialBoundWorkspaceId: string | undefined
-
-      const doSelectInitialWorktreeSession = async (
-        targetSessionId: string,
-        boundWorkspaceId: string | undefined,
-        context: string,
-      ): Promise<void> => {
-        await selectInitialWorktreeSession(targetSessionId, boundWorkspaceId, context, {
-          selectSession: command.lifecycle?.selectSession,
-          logger: deps.logger,
-          workspaceStatusRegistry: deps.workspaceStatusRegistry,
-          selectSessionFn: (sel) => selectSessionBestEffort(deps.client, deps.directory, deps.logger, sel),
-        })
-      }
 
       // Compute host session ID for metadata persistence only (not session parenting)
       const hostSessionId = command.hostSessionId ?? ctx.sourceSessionId
@@ -1166,7 +1044,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
-      }, deps.logger, deps.workspaceStatusRegistry)
+      }, deps.logger)
       if (!wsResult.ok) {
         deps.logger.error(`handleStartLoop: failed to create builtin worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
         return fail('internal_error', 500, wsResult.error.message, { reason: wsResult.error.reason })
@@ -1193,7 +1071,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         loopName: uniqueLoopName,
         logPrefix: 'handleStartLoop',
         logger: deps.logger,
-        workspaceStatusRegistry: deps.workspaceStatusRegistry,
       })
 
       if (!createResult) {
@@ -1205,15 +1082,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // eslint-disable-next-line prefer-const
       sessionId = createResult.sessionId
       createdSessionId = sessionId
-      // eslint-disable-next-line prefer-const
-      initialBoundWorkspaceId = createResult.boundWorkspaceId
 
       if (createResult.bindFailed) {
         deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
       }
-      // Navigate the TUI to the worktree session immediately so the user sees the new
-      // session before the slow sandbox + provisioning + prompt path runs.
-      await doSelectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create')
 
       // Start sandbox if enabled
       if (sandboxEnabled && deps.sandboxManager) {
@@ -1255,8 +1127,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandboxEnabled: sandboxEnabledForLoop,
         sandboxContainer: sandboxContainer ?? undefined,
         planText,
-        selectSession: command.lifecycle?.selectSession,
-        selectSessionTiming: command.lifecycle?.selectSessionTiming,
         startWatchdog: command.lifecycle?.startWatchdog,
         abortSourceSessionOnSuccess: command.lifecycle?.abortSourceSessionOnSuccess,
         onStarted: command.lifecycle?.onStarted,
@@ -1386,7 +1256,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         deps.client,
         { loopName: uniqueLoopName, directory: ctx.directory },
         deps.logger,
-        deps.workspaceStatusRegistry,
       )
       if (!wsResult.ok) {
         deps.logger.error(`handleStartGoal: failed to create worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
@@ -1409,7 +1278,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         loopName: uniqueLoopName,
         logPrefix: 'handleStartGoal',
         logger: deps.logger,
-        workspaceStatusRegistry: deps.workspaceStatusRegistry,
       })
       if (!createResult) {
         deps.logger.error('handleStartGoal: failed to create session')
@@ -1417,13 +1285,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail('internal_error', 500, 'Failed to create goal session')
       }
       createdSessionId = createResult.sessionId
-
-      await selectInitialWorktreeSession(createdSessionId, createResult.boundWorkspaceId, 'goal start', {
-        selectSession: true,
-        logger: deps.logger,
-        workspaceStatusRegistry: deps.workspaceStatusRegistry,
-        selectSessionFn: (sel) => selectSessionBestEffort(deps.client, deps.directory, deps.logger, sel),
-      })
 
       if (sandboxEnabled && deps.sandboxManager) {
         const existingSandbox = deps.sandboxManager.getActive(uniqueLoopName)
@@ -1446,8 +1307,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      // Persist state, wait for sandbox readiness, send the initial prompt, re-select
-      // the TUI post-prompt, and start the watchdog — the same shared path plan loops use.
+      // Persist state, wait for sandbox readiness, send the initial prompt, and
+      // start the watchdog — the same shared path plan loops use.
       const attachResult = await attachLoopToSession(deps, ctx, {
         sessionId: createdSessionId,
         workspaceId: createdWorkspaceId,
@@ -1468,7 +1329,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         kind: 'goal',
         goal,
         executorSessionId: createdSessionId,
-        selectSession: true,
         startWatchdog: true,
         // Stop the invoking session's turn so its agent cannot keep implementing
         // the goal in the original directory after launch.
@@ -1878,14 +1738,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const previousEntry = stoppedState.workspaceId
           ? await getForgeWorkspaceEntry(deps.client, stoppedState.workspaceId).catch(() => undefined)
           : undefined
-        const preservedExtra = Object.fromEntries(
-          Object.entries(previousEntry?.extra ?? {}).filter(([key]) => !['startRef', 'syncRef', 'gitRemote'].includes(key)),
-        )
         const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
-          extra: preservedExtra,
-        }, deps.logger, deps.workspaceStatusRegistry)
+          extra: previousEntry?.extra ?? undefined,
+        }, deps.logger)
         if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
         const ws = wsResult.workspace
         stoppedState.workspaceId = ws.workspaceId
@@ -1917,7 +1774,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',
         logger: deps.logger,
-        workspaceStatusRegistry: deps.workspaceStatusRegistry,
       })
 
       if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
@@ -1928,16 +1784,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         stoppedState.workspaceId = undefined
         bindFailed = true
       }
-
-      // Navigate the TUI to the recreated worktree session and wait for the
-      // workspace to connect, mirroring handleStartLoop. Without this the loop
-      // restarts and runs but its workspace never connects/focuses in the TUI.
-      await selectInitialWorktreeSession(newSessionId, createResult.boundWorkspaceId, 'on restart', {
-        selectSession: true,
-        logger: deps.logger,
-        workspaceStatusRegistry: deps.workspaceStatusRegistry,
-        selectSessionFn: (sel) => selectSessionBestEffort(deps.client, deps.directory, deps.logger, sel),
-      })
 
       // Unified section extraction on restart — preserve existing progress if sections exist.
       // Goal loops never decompose: they carry goal text, not a plan, so applying plan
@@ -2120,7 +1966,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // Retry the prompt with backoff: a just-created + warped session can briefly
       // report "Session not found" before it is durably registered. Without this,
       // a transient race tore the restart down and reverted the loop to terminal.
-      // (Workspace connection was already awaited via selectInitialWorktreeSession.)
       const RESTART_PROMPT_MAX_ATTEMPTS = 4
       let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
       for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {

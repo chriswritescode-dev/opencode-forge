@@ -1,4 +1,4 @@
-import { tool } from '@opencode-ai/plugin'
+import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { writeSessionPlanContent } from '../services/plan-capture'
@@ -60,7 +60,7 @@ function writeAndReport(
   )}`
 }
 
-export function createPlanAuthoringTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
+export function createPlanAuthoringTools(ctx: ToolContext): Record<string, ToolDefinition> {
   return {
     'plan-write': tool({
       description:

@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { Plugin } from '@opencode/plugin/tui'
 import { existsSync } from 'fs'
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js'
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor } from 'solid-js'
 import { createDashboardLauncher } from '../dashboard/launch'
 import { isSandboxConfigEnabled } from '../sandbox/context'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
@@ -17,7 +17,7 @@ import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import { isToastVariant } from '../utils/toast'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { isForgeWorktreeDir } from '../workspace/forge-naming'
-import type { ForgeProjectClient } from '../utils/tui-client'
+import type { ForgeProjectClient } from './project-client'
 import { createExecutionContextCache, type ExecutionContextCache } from '../utils/tui-execution-context-cache'
 import { createV2TuiHost } from './host'
 import { createForgePlanCommands } from './plan-commands'
@@ -25,6 +25,8 @@ import { openSandboxBuildDialog } from './sandbox-build-dialog'
 import { attachV2LoopSessionFollower } from './session-follow'
 import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort } from './loop-session-cleanup'
 import { createV2ForgeProjectClient } from './v2-client'
+import { createHostSandboxToggle } from './host-sandbox'
+import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
 
 /** Sidebar refresh cadence; loop rows are cheap local reads. */
 const LOOP_REFRESH_INTERVAL_MS = 2000
@@ -66,14 +68,53 @@ function readForgeToast(data: Readonly<Record<string, unknown>>): ForgeToastEven
   }
 }
 
-function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; showVersion: boolean }) {
+const MSB_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+function SandboxStatusText(props: {
+  context: Plugin.Context
+  preference: Accessor<SessionSandboxPreference | null>
+  sessionId: Accessor<string | null>
+}) {
+  const theme = () => props.context.theme
+  const status = createMemo(() => deriveSessionSandboxDisplayStatus(props.preference(), props.sessionId() ?? undefined))
+  const [frame, setFrame] = createSignal(0)
+
+  createEffect(() => {
+    if (status() !== 'loading') return
+    const timer = setInterval(() => setFrame((current) => (current + 1) % MSB_SPINNER_FRAMES.length), 80)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const color = () => {
+    const current = status()
+    if (current === 'enabled') return theme().text.feedback.success.base
+    if (current === 'failed') return theme().text.feedback.error.base
+    return theme().text.muted
+  }
+
+  return (
+    <text fg={color()}>
+      {status() === 'loading' ? `· MSB ${MSB_SPINNER_FRAMES[frame()]}` : `· MSB ${status()}`}
+    </text>
+  )
+}
+
+function ForgeLoopsSidebar(props: {
+  context: Plugin.Context
+  dbPath: string
+  showVersion: boolean
+  sandboxPreference: Accessor<SessionSandboxPreference | null>
+  currentSessionId: () => string | null
+}) {
   const [loops, setLoops] = createSignal<LoopSidebarRow[]>([])
+  const [sessionId, setSessionId] = createSignal<string | null>(null)
   let projectId: string | null = null
   let disposed = false
   let reader: LoopSidebarReader | null = null
   let signature = ''
 
   const load = async () => {
+    setSessionId(props.currentSessionId())
     projectId ??= await resolveV2TuiProjectId(props.context)
     if (disposed || !projectId) return
     reader ??= openLoopSidebarReader(projectId, props.dbPath)
@@ -110,9 +151,14 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
 
   return (
     <box flexDirection="column">
-      <text fg={theme().text.base}>
-        <b>{formatForgeTitle(props.showVersion)}</b>
-      </text>
+      <box flexDirection="row" gap={1}>
+        <text fg={theme().text.base}>
+          <b>{formatForgeTitle(props.showVersion)}</b>
+        </text>
+        <Show when={props.sandboxPreference()}>
+          <SandboxStatusText context={props.context} preference={props.sandboxPreference} sessionId={sessionId} />
+        </Show>
+      </box>
       <Show when={loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
         <For each={loops()}>
           {(loop) => (
@@ -199,10 +245,17 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     host,
     pluginConfig,
     dbPath: forgeDbPath,
-    projectDirectory: resolveV2TuiDirectory(context) ?? undefined,
     currentSessionId,
     ensureClient,
     cache: () => executionContextCache,
+  })
+
+  const hostSandbox = createHostSandboxToggle({
+    pluginConfig,
+    dbPath: forgeDbPath,
+    resolveProjectId: () => resolveV2TuiProjectId(context),
+    currentSessionId,
+    toast: (input) => host.toast(input),
   })
 
   const dataDir = resolveForgeDataDir(pluginConfig.dataDir)
@@ -251,6 +304,15 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
             run: () => { void planCommands.restartLoop() },
           },
           {
+            id: 'forge.sandbox.toggleHost',
+            title: 'Toggle host sandbox',
+            description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox, or back on the host',
+            group: 'Forge',
+            palette: true,
+            ...(opts.keybinds.toggleHostSandbox ? { bind: opts.keybinds.toggleHostSandbox } : {}),
+            run: () => { void hostSandbox.toggle() },
+          },
+          {
             id: 'forge.sandbox.buildImage',
             title: 'Build sandbox template',
             description: 'Build the sandbox template image and load it into msb',
@@ -268,7 +330,13 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     context.ui.slot({
       append: 'sidebar.content',
       render: () => (
-        <ForgeLoopsSidebar context={context} dbPath={forgeDbPath} showVersion={opts.showVersion} />
+        <ForgeLoopsSidebar
+          context={context}
+          dbPath={forgeDbPath}
+          showVersion={opts.showVersion}
+          sandboxPreference={hostSandbox.preference}
+          currentSessionId={currentSessionId}
+        />
       ),
     })
   }
@@ -311,6 +379,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
 
   return () => {
     lifecycle.abort()
+    hostSandbox.dispose()
     detachSessionFollower()
     toastController.abort()
     dashboard.dispose()

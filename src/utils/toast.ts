@@ -22,23 +22,18 @@ export interface PublishToastInput {
 }
 
 /**
- * Single publisher for `tui.toast.show` notifications. All toast call sites
- * route through this so the envelope shape and failure handling stay in one
- * place. Publishes with the given directory and logs (rather than swallowing)
- * any publish failure.
+ * Single publisher for host TUI toast notifications. All toast call sites route
+ * through this so the payload shape and failure handling stay in one place.
+ * Publishes with the given directory and logs (rather than swallowing) any
+ * publish failure.
  */
 export function publishToast(input: PublishToastInput): void {
-  input.client.tui.publish({
+  input.client.toast({
     directory: input.directory,
-    body: {
-      type: 'tui.toast.show',
-      properties: {
-        title: input.title,
-        message: input.message,
-        variant: input.variant ?? 'warning',
-        duration: input.duration ?? 5000,
-      },
-    },
+    title: input.title,
+    message: input.message,
+    variant: input.variant ?? 'warning',
+    duration: input.duration ?? 5000,
   }).catch((err: unknown) => {
     input.logger.error(input.logPrefix ?? 'Forge: failed to publish toast', err)
   })

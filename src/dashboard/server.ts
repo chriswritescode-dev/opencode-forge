@@ -1,7 +1,5 @@
 import type { Database } from 'bun:sqlite'
-import type { ForgeClient } from '../client/port'
 import { createLoopsRepo, createPlanAmendmentsRepo, createPlansRepo } from '../storage'
-import { providersFromProviderList, flattenProviders, getAvailableModelVariants } from '../utils/tui-models'
 import { parseModelString } from '../utils/model-fallback'
 import { collectDashboardData } from './data'
 import { diffAmendmentSnapshots } from './amendment-diff'
@@ -15,61 +13,17 @@ import { isLoopbackHost } from './config'
 export interface DashboardDeps {
   forgeDb: Database
   /**
-   * Live opencode client. Present only when the dashboard was launched from the
-   * TUI (which has an in-process client). Without it the live session routes
-   * report 503 and the dashboard stays a read-only view of forge state.
-   */
-  client?: ForgeClient
-  /**
-   * Whether the dashboard's mutating routes (`POST /api/loop/message`,
-   * `POST /api/loop/models`, `POST /api/plan/delete`) are allowed. Set only for
-   * a loopback bind: the dashboard has no auth, so a reachable bind must not
-   * drive the agent, change its models, or delete plans.
+   * Whether the dashboard's mutating routes (`POST /api/loop/models`,
+   * `POST /api/plan/delete`) are allowed. Set only for a loopback bind: the
+   * dashboard has no auth, so a reachable bind must not change the loop's models
+   * or delete plans.
    */
   allowSend?: boolean
 }
 
 // ---------------------------------------------------------------------------
-// Live session routes
+// Mutating-route helpers
 // ---------------------------------------------------------------------------
-
-const MAX_MESSAGE_LENGTH = 10000
-
-/** The live session the dashboard talks to for a loop, resolved server-side. */
-interface LoopTarget {
-  sessionId: string
-  directory: string
-  workspaceId?: string
-}
-
-/** Events worth forwarding to the browser for a live transcript. */
-const LIVE_EVENT_TYPES = new Set([
-  'message.updated',
-  'message.part.updated',
-  'message.part.removed',
-  'message.removed',
-  'session.status',
-  'session.idle',
-  'session.error',
-])
-
-function eventSessionId(event: unknown): string | null {
-  if (!event || typeof event !== 'object') return null
-  const props = (event as { properties?: unknown }).properties
-  if (!props || typeof props !== 'object') return null
-  const sessionID = (props as { sessionID?: unknown }).sessionID
-  return typeof sessionID === 'string' ? sessionID : null
-}
-
-function eventType(event: unknown): string | null {
-  if (!event || typeof event !== 'object') return null
-  const type = (event as { type?: unknown }).type
-  return typeof type === 'string' ? type : null
-}
-
-function sseFrame(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -153,33 +107,8 @@ async function readJsonRecord(req: Request): Promise<JsonBodyResult> {
   return { ok: true, record: (body ?? {}) as Record<string, unknown> }
 }
 
-/** How often the stream re-checks the stored transcript when no events arrive. */
-const TRANSCRIPT_POLL_MS = 4000
-
-/**
- * Cheap fingerprint of a transcript: message and part identity plus the fields
- * that change as a turn progresses (tool status, text length). Compared between
- * polls to detect content the event stream never delivered.
- */
-function transcriptSignature(messages: unknown): string {
-  if (!Array.isArray(messages)) return ''
-  const parts: string[] = []
-  for (const entry of messages) {
-    const wrapper = entry as { info?: { id?: unknown }; parts?: unknown }
-    parts.push(String(wrapper?.info?.id ?? '?'))
-    if (!Array.isArray(wrapper?.parts)) continue
-    for (const raw of wrapper.parts) {
-      const part = raw as { id?: unknown; text?: unknown; state?: { status?: unknown } }
-      const text = typeof part?.text === 'string' ? part.text.length : 0
-      parts.push(`${String(part?.id ?? '?')}:${String(part?.state?.status ?? '')}:${text}`)
-    }
-  }
-  return parts.join('|')
-}
-
 export function createRequestHandler(deps: DashboardDeps): (req: Request) => Promise<Response> {
   const html = renderDashboardHtml()
-  const client = deps.client
   const allowSend = deps.allowSend ?? false
   const loopsRepo = createLoopsRepo(deps.forgeDb)
   const plansRepo = createPlansRepo(deps.forgeDb)
@@ -190,242 +119,9 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Pro
     amendmentsRepo = null
   }
 
-  /**
-   * Resolve the loop's current session. The browser never supplies a session
-   * id — it names a loop, and the current session is read from forge state, so
-   * a rotated loop cannot be addressed through a stale id.
-   */
-  function resolveTarget(projectId: string | null, loopName: string | null): LoopTarget | null {
-    if (!projectId || !loopName) return null
-    const loop = loopsRepo.get(projectId, loopName)
-    if (!loop || !loop.currentSessionId) return null
-    return {
-      sessionId: loop.currentSessionId,
-      directory: loop.worktreeDir,
-      ...(loop.workspaceId ? { workspaceId: loop.workspaceId } : {}),
-    }
-  }
-
-  /**
-   * Stream one loop session to the browser: a `snapshot` of the transcript as
-   * it stands, then the host's own events for that session. Nothing is stored;
-   * closing the request tears the upstream subscription down.
-   *
-   * opencode's event bus is per-process, so a loop being driven by a *different*
-   * opencode process emits nothing here even though its transcript (shared
-   * storage) keeps advancing. A periodic re-read covers that case: when the
-   * stored transcript moves without a matching event, a fresh snapshot is
-   * pushed and tagged `poll` so the browser can say it is refreshing rather
-   * than streaming.
-   */
-  function streamSession(req: Request, target: LoopTarget, live: ForgeClient): Response {
-    const encoder = new TextEncoder()
-    let subscription: { stream: AsyncGenerator<unknown> } | null = null
-    let poller: ReturnType<typeof setInterval> | null = null
-
-    const body = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        let open = true
-        let lastEventAt = 0
-        let signature = ''
-        const send = (event: string, data: unknown): void => {
-          if (!open) return
-          try {
-            controller.enqueue(encoder.encode(sseFrame(event, data)))
-          } catch {
-            open = false
-          }
-        }
-        const stopPolling = (): void => {
-          if (poller) clearInterval(poller)
-          poller = null
-        }
-        const close = (): void => {
-          stopPolling()
-          if (!open) return
-          open = false
-          try {
-            controller.close()
-          } catch {
-            // already closed by the consumer
-          }
-        }
-        req.signal.addEventListener('abort', () => {
-          open = false
-          stopPolling()
-          void subscription?.stream.return(undefined)
-        })
-
-        const readTranscript = async (): Promise<unknown[] | null> => {
-          try {
-            return await live.session.messages({
-              sessionID: target.sessionId,
-              directory: target.directory,
-            }) as unknown[]
-          } catch {
-            return null
-          }
-        }
-
-        try {
-          const messages = await live.session.messages({
-            sessionID: target.sessionId,
-            directory: target.directory,
-          })
-          signature = transcriptSignature(messages)
-          send('snapshot', { sessionId: target.sessionId, messages, reason: 'initial' })
-        } catch (err) {
-          send('failed', { message: `Could not load the transcript: ${errorMessage(err)}` })
-          close()
-          return
-        }
-
-        poller = setInterval(() => {
-          if (!open) return
-          // Events are arriving; the stream is authoritative.
-          if (Date.now() - lastEventAt < TRANSCRIPT_POLL_MS) return
-          void readTranscript().then((messages) => {
-            if (!open || messages === null) return
-            const next = transcriptSignature(messages)
-            if (next === signature) return
-            signature = next
-            send('snapshot', { sessionId: target.sessionId, messages, reason: 'poll' })
-          })
-        }, TRANSCRIPT_POLL_MS)
-
-        try {
-          // Loop sessions are workspace-bound, and the host's event bus is
-          // scoped per workspace: subscribing with the directory alone lands
-          // on a bus that never carries this session's events.
-          const sub = await live.event.subscribe({
-            directory: target.directory,
-            ...(target.workspaceId ? { workspace: target.workspaceId } : {}),
-          })
-          subscription = sub
-          try {
-            // The request can abort while `subscribe` is in flight, in which
-            // case the abort listener saw a null subscription and could not
-            // close this one.
-            if (open && !req.signal.aborted) {
-              for await (const event of sub.stream) {
-                if (!open || req.signal.aborted) break
-                const type = eventType(event)
-                if (!type || !LIVE_EVENT_TYPES.has(type)) continue
-                if (eventSessionId(event) !== target.sessionId) continue
-                lastEventAt = Date.now()
-                send('event', event)
-              }
-            }
-          } finally {
-            await sub.stream.return(undefined)
-          }
-        } catch (err) {
-          send('failed', { message: `Live stream ended: ${errorMessage(err)}` })
-        }
-        close()
-      },
-      cancel() {
-        if (poller) clearInterval(poller)
-        poller = null
-        void subscription?.stream.return(undefined)
-      },
-    })
-
-    return new Response(body, {
-      headers: {
-        'content-type': 'text/event-stream; charset=utf-8',
-        'cache-control': 'no-store',
-        connection: 'keep-alive',
-      },
-    })
-  }
-
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url)
     const pathname = url.pathname
-
-    if (pathname === '/api/loop/stream') {
-      if (req.method !== 'GET') return new Response('Not found', { status: 404 })
-      if (!client) {
-        return new Response(
-          'Live view unavailable: this dashboard was not launched from the opencode TUI.',
-          { status: 503 },
-        )
-      }
-      const target = resolveTarget(url.searchParams.get('project'), url.searchParams.get('loop'))
-      if (!target) return new Response('Loop has no active session.', { status: 404 })
-      return streamSession(req, target, client)
-    }
-
-    if (pathname === '/api/loop/message') {
-      if (req.method !== 'POST') return new Response('Not found', { status: 404 })
-      if (!client) {
-        return new Response(
-          'Sending is unavailable: this dashboard was not launched from the opencode TUI.',
-          { status: 503 },
-        )
-      }
-      if (!allowSend || !isLoopbackHostHeader(req.headers.get('host'))) {
-        return new Response(
-          'Sending is disabled: the dashboard must be reached via a loopback address and has no ' +
-          'authentication. Open it via localhost to send messages.',
-          { status: 403 },
-        )
-      }
-      const parsed = await readJsonRecord(req)
-      if (!parsed.ok) return parsed.response
-      const record = parsed.record
-      const text = typeof record.text === 'string' ? record.text.trim() : ''
-      if (!text) return new Response('text must be a non-empty string.', { status: 400 })
-      if (text.length > MAX_MESSAGE_LENGTH) {
-        return new Response(`text must be at most ${MAX_MESSAGE_LENGTH} characters.`, { status: 400 })
-      }
-      const target = resolveTarget(
-        typeof record.projectId === 'string' ? record.projectId : null,
-        typeof record.loopName === 'string' ? record.loopName : null,
-      )
-      if (!target) return new Response('Loop has no active session.', { status: 404 })
-
-      try {
-        await client.session.promptAsync({
-          sessionID: target.sessionId,
-          directory: target.directory,
-          ...(target.workspaceId ? { workspace: target.workspaceId } : {}),
-          parts: [{ type: 'text', text }],
-        })
-      } catch (err) {
-        return new Response(`Could not send the message: ${errorMessage(err)}`, { status: 502 })
-      }
-      return new Response(JSON.stringify({ ok: true, sessionId: target.sessionId }), {
-        headers: { 'content-type': 'application/json; charset=utf-8' },
-      })
-    }
-
-    if (pathname === '/api/models') {
-      if (req.method !== 'GET') return new Response('Not found', { status: 404 })
-      if (!client) {
-        return new Response(
-          'Model list unavailable: this dashboard was not launched from the opencode TUI.',
-          { status: 503 },
-        )
-      }
-      const target = resolveTarget(url.searchParams.get('project'), url.searchParams.get('loop'))
-      try {
-        const data = await client.provider.list(target ? { directory: target.directory } : undefined)
-        const { providers } = providersFromProviderList(data)
-        const models = flattenProviders(providers).map(m => ({
-          id: m.fullName,
-          name: m.name,
-          provider: m.providerName,
-          variants: getAvailableModelVariants(m).map(v => ({ id: v.id, label: v.label })),
-        }))
-        return new Response(JSON.stringify({ models }), {
-          headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
-        })
-      } catch (err) {
-        return new Response(`Could not list models: ${errorMessage(err)}`, { status: 502 })
-      }
-    }
 
     if (pathname === '/api/loop/models') {
       if (req.method !== 'POST') return new Response('Not found', { status: 404 })

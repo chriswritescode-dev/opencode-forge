@@ -46,7 +46,7 @@ const serverResult = await Bun.build({
   entrypoints: [join(__dirname, '..', 'src', 'index.ts')],
   outdir: join(__dirname, '..', 'dist'),
   target: 'node',
-  external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', '@opencode/plugin/tui', 'solid-js'],
+  external: ['@opentui/solid', '@opentui/core', '@opencode/plugin/tui', 'solid-js'],
 })
 
 if (!serverResult.success) {
@@ -62,7 +62,7 @@ const result = await Bun.build({
   outdir: join(__dirname, '..', 'dist'),
   target: 'node',
   plugins: [solidPlugin],
-  external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', '@opencode/plugin/tui', 'solid-js'],
+  external: ['@opentui/solid', '@opentui/core', '@opencode/plugin/tui', 'solid-js'],
 })
 
 if (!result.success) {
@@ -73,8 +73,8 @@ if (!result.success) {
 }
 
 console.log('Generating TUI type declarations...')
-const tuiDtsContent = `import type { TuiPluginModule } from '@opencode-ai/plugin/tui';
-declare const plugin: TuiPluginModule & { id: string; setup: (context: unknown) => unknown };
+const tuiDtsContent = `import type { Plugin } from '@opencode/plugin/tui';
+declare const plugin: { id: string; setup: (context: Plugin.Context) => () => void };
 export default plugin;
 `
 writeFileSync(join(__dirname, '..', 'dist', 'tui.d.ts'), tuiDtsContent, 'utf-8')

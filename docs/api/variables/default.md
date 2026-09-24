@@ -6,30 +6,6 @@
 
 # Variable: default
 
-> `const` **default**: `object`
+> **default**: `Plugin`
 
-Defined in: [src/index.ts:57](https://github.com/chriswritescode-dev/opencode-forge/blob/49b3ccdec804156ee5c8897e69343b3a8cb73cae/src/index.ts#L57)
-
-## Type Declaration
-
-### id
-
-> `readonly` **id**: `string`
-
-### server
-
-> **server**: `Plugin` = `plugin`
-
-### setup
-
-> `readonly` **setup**: (`context`) => `void` \| `Cleanup` \| `Promise`\<`void` \| `Cleanup`\>
-
-#### Parameters
-
-##### context
-
-`Context`
-
-#### Returns
-
-`void` \| `Cleanup` \| `Promise`\<`void` \| `Cleanup`\>
+Defined in: [index.ts:9](https://github.com/chriswritescode-dev/opencode-forge/blob/a31973e7fef7ab22cafccc5ae955ed1a556f52fc/src/index.ts#L9)

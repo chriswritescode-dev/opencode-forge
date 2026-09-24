@@ -50,15 +50,11 @@ describe('attachLoopToSession', () => {
     )
 
     const promptAsyncMock = vi.fn(async () => {})
-    const tuiSelectSessionMock = vi.fn(async () => undefined)
 
     const fakeClient = createFakeForgeClient({
       session: {
         create: async () => ({ id: 'new-session' }),
         promptAsync: promptAsyncMock,
-      },
-      tui: {
-        selectSession: tuiSelectSessionMock,
       },
     })
 
@@ -91,15 +87,9 @@ describe('attachLoopToSession', () => {
         clearLoopTimers: noopFn,
       },
       sandboxManager: null,
-      workspaceStatusRegistry: {
-        recordEvent: vi.fn(() => {}),
-        getStatus: vi.fn(() => 'connected' as const),
-        awaitConnected: vi.fn(async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const })),
-        primeFromSnapshot: vi.fn(() => {}),
-      },
     }
 
-    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, tuiSelectSessionMock, fakeClient }
+    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, fakeClient }
   }
 
   test('disabled mode persists state and sends code-agent prompt', async () => {
@@ -123,8 +113,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 50,
         sandboxEnabled: false,
         planText: '# Test Plan\n\nDo something.',
-        selectSession: true,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: true,
       },
     )
@@ -170,8 +158,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 25,
         sandboxEnabled: false,
         planText: '# CB Plan\n\nDo things.',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
         onStarted: onStartedSpy,
       },
@@ -209,8 +195,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 10,
         sandboxEnabled: false,
         planText: '# Fail Plan\n\nWill fail.',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )
@@ -251,8 +235,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 50,
         sandboxEnabled: false,
         planText: '# Plan\n\nAlready exists.',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )
@@ -313,8 +295,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 50,
         sandboxEnabled: false,
         planText: '# Plan\n\nRevive me.',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )
@@ -372,8 +352,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 50,
         sandboxEnabled: false,
         planText: '# Plan',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )
@@ -416,8 +394,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 10,
         sandboxEnabled: false,
         planText,
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )
@@ -461,8 +437,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 10,
         sandboxEnabled: false,
         planText,
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )
@@ -497,8 +471,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 10,
         sandboxEnabled: false,
         planText,
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )
@@ -533,8 +505,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 10,
         sandboxEnabled: false,
         planText: '# Plan\n\nSimple plan.',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: true,
       },
     )
@@ -572,8 +542,6 @@ describe('attachLoopToSession', () => {
           maxIterations: 50,
           sandboxEnabled: false,
           planText: '# Test Plan\n\nDo something.',
-          selectSession: surface === 'tui',
-          selectSessionTiming: 'after-prompt',
           startWatchdog: true,
         },
       )
@@ -605,8 +573,6 @@ describe('attachLoopToSession', () => {
         maxIterations: 50,
         sandboxEnabled: false,
         planText: '# Variant Plan\n\nDo things.',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
         startWatchdog: false,
       },
     )

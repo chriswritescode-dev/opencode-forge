@@ -40,7 +40,6 @@ import { createUsageCapture } from './runtime-usage'
 import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
-import { selectSessionBestEffort } from '../utils/tui-navigation'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
@@ -504,11 +503,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Retain the old session in the reverse index so delayed errors from the
     // pre-rotation session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(oldSessionId, loopName)
-
-    await selectSessionBestEffort(client, state.projectDir ?? state.worktreeDir, logger, {
-      sessionID: newSessionId,
-      workspace: ensured.workspaceId ?? state.workspaceId,
-    })
 
     watchdog.stop(loopName)
     watchdog.start(loopName)
@@ -2484,34 +2478,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const part = event.properties?.part as { sessionID?: string } | undefined
       const sessionId = part?.sessionID ?? (event.properties?.sessionID as string | undefined)
       if (sessionId) watchdog.recordSessionContent(sessionId)
-      return
-    }
-
-    if (event.type === 'worktree.failed') {
-      const message = event.properties?.message as string
-      const directory = event.properties?.directory as string
-      logger.error(`Loop: worktree failed: ${message}`)
-      
-      if (directory) {
-        const affectedLoop = loopService.findActiveByWorktreeDir(directory)
-        if (affectedLoop?.loopName) {
-          // Serialize with phase-rotation ticks (which also acquire the state
-          // lock). Without this guard, a tick could rotate the phase (and
-          // commit its row) between the time we read the affectedLoop snapshot
-          // and the time terminateLoop records the terminal row from that stale
-          // snapshot — yielding a phase-transition row AFTER the terminal row
-          // and a stale terminal fromPhase. Holding the lock for the duration
-          // of terminateLoop guarantees the authoritative under-lock state
-          // observed inside terminateLoop is the persisted phase at termination
-          // time, so the terminal row's fromPhase matches the persisted phase
-          // exactly and no rotation row lands after the terminal row.
-          await withStateLock(affectedLoop.loopName, async () => {
-            const state = loopService.getActiveState(affectedLoop.loopName!)
-            if (!state?.active) return
-            await terminateLoop(affectedLoop.loopName!, state, { kind: 'worktree_failed', message })
-          })
-        }
-      }
       return
     }
 

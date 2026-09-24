@@ -1,20 +1,82 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-
-type V2 = OpencodeClient
+// ── Permission types ──────────────────────────────────────────────────────────
+export type SessionPermissionRule = {
+  permission: string
+  pattern: string
+  action: 'allow' | 'deny' | 'ask'
+}
 
 // ── Session param types ──────────────────────────────────────────────────────
-export type SessionCreateParams = NonNullable<Parameters<V2['session']['create']>[0]>
-export type SessionGetParams = NonNullable<Parameters<V2['session']['get']>[0]>
-export type SessionUpdateParams = NonNullable<Parameters<V2['session']['update']>[0]>
-export type SessionMessagesParams = NonNullable<Parameters<V2['session']['messages']>[0]>
-export type SessionStatusParams = NonNullable<Parameters<V2['session']['status']>[0]>
-export type SessionPromptAsyncParams = NonNullable<Parameters<V2['session']['promptAsync']>[0]>
-export type SessionAbortParams = NonNullable<Parameters<V2['session']['abort']>[0]>
-export type SessionDeleteParams = NonNullable<Parameters<V2['session']['delete']>[0]>
+export type SessionCreateParams = {
+  title?: string
+  directory?: string
+  workspaceID?: string
+  workspace?: string
+  permission?: SessionPermissionRule[]
+}
+
+export type SessionGetParams = {
+  sessionID: string
+  directory?: string
+}
+
+export type SessionUpdateParams = {
+  sessionID: string
+  directory?: string
+  title?: string
+  permission?: SessionPermissionRule[]
+}
+
+export type SessionMessagesParams = {
+  sessionID: string
+  directory?: string
+  limit?: number
+}
+
+export type SessionStatusParams = {
+  directory?: string
+}
+
+export type SessionPromptAsyncParams = {
+  sessionID: string
+  directory?: string
+  workspace?: string
+  parts?: SessionMessagePart[]
+  agent?: string
+  model?: { providerID: string; modelID: string }
+  variant?: string
+}
+
+export type SessionAbortParams = {
+  sessionID: string
+  directory?: string
+}
+
+export type SessionDeleteParams = {
+  sessionID: string
+  directory?: string
+}
 
 // ── Session result types ─────────────────────────────────────────────────────
-export type Session = NonNullable<Awaited<ReturnType<V2['session']['create']>>['data']>
-export type SessionStatus = NonNullable<Awaited<ReturnType<V2['session']['status']>>['data']>
+export type Session = {
+  id: string
+  slug: string
+  projectID: string
+  directory: string
+  title: string
+  version: string
+  time: { created: number; updated: number }
+  parentID?: string
+  workspaceID?: string
+  permission?: SessionPermissionRule[]
+}
+
+export type SessionStatus = Record<string, {
+  type: 'idle' | 'busy' | 'retry'
+  attempt?: number
+  message?: string
+  next?: number
+  [key: string]: unknown
+}>
 
 // ── Session message types ────────────────────────────────────────────────────
 export type SessionMessagePart = {
@@ -51,38 +113,41 @@ export type SessionMessage = {
 export type SessionMessages = SessionMessage[]
 
 // ── Workspace param types ────────────────────────────────────────────────────
-export type WorkspaceCreateParams = NonNullable<Parameters<V2['experimental']['workspace']['create']>[0]>
-export type WorkspaceListParams = NonNullable<Parameters<V2['experimental']['workspace']['list']>[0]>
-export type WorkspaceStatusParams = NonNullable<Parameters<V2['experimental']['workspace']['status']>[0]>
-export type WorkspaceSyncListParams = NonNullable<Parameters<V2['experimental']['workspace']['syncList']>[0]>
-export type WorkspaceRemoveParams = NonNullable<Parameters<V2['experimental']['workspace']['remove']>[0]>
-export type WorkspaceWarpParams = NonNullable<Parameters<V2['experimental']['workspace']['warp']>[0]>
-
-// ── Workspace result types ───────────────────────────────────────────────────
-export type WorkspaceCreateResult = NonNullable<Awaited<ReturnType<V2['experimental']['workspace']['create']>>['data']>
-export type WorkspaceList = NonNullable<Awaited<ReturnType<V2['experimental']['workspace']['list']>>['data']>
-export type WorkspaceStatus = NonNullable<Awaited<ReturnType<V2['experimental']['workspace']['status']>>['data']>
-
-// ── Session list types (experimental) ───────────────────────────────────────
-// `list` lives under `experimental.session` in the SDK; the port hides that
-// placement so callers use a single `session` namespace.
-export type SessionListParams = NonNullable<Parameters<V2['experimental']['session']['list']>[0]>
-export type SessionList = NonNullable<Awaited<ReturnType<V2['experimental']['session']['list']>>['data']>
-
-// ── Project param/result types ───────────────────────────────────────────────
-export type ProjectListParams = NonNullable<Parameters<V2['project']['list']>[0]>
-export type ProjectCurrentParams = NonNullable<Parameters<V2['project']['current']>[0]>
-
-export type Project = {
-  id: string
-  worktree: string
+export type WorkspaceCreateParams = {
+  type?: string
+  branch?: string | null
+  extra?: Record<string, unknown> | null
 }
 
-export type ProjectList = Project[]
-export type ProjectCurrent = Project
+export type WorkspaceListParams = {
+  directory?: string
+}
 
-// ── Provider param/result types ──────────────────────────────────────────────
-export type ProviderListParams = NonNullable<Parameters<V2['provider']['list']>[0]>
+export type WorkspaceRemoveParams = {
+  id: string
+}
+
+export type WorkspaceWarpParams = {
+  id: string
+  sessionID: string
+  copyChanges?: boolean
+}
+
+// ── Workspace result types ───────────────────────────────────────────────────
+export type WorkspaceInfo = {
+  id: string
+  type?: string | null
+  name?: string
+  branch?: string | null
+  directory?: string | null
+  extra?: Record<string, unknown> | null
+  projectID?: string
+}
+
+export type WorkspaceCreateResult = WorkspaceInfo & { timeUsed?: number | string }
+export type WorkspaceList = WorkspaceInfo[]
+
+// ── Provider result types ──────────────────────────────────────────────────
 export type ProviderModelInfo = {
   id: string
   name: string
@@ -97,35 +162,31 @@ export type ProviderModelInfo = {
   variants?: Record<string, { disabled?: boolean; [key: string]: unknown }>
 }
 
-export type ProviderInfo = {
+export type ProviderListEntry = {
   id: string
   name: string
   models: Record<string, ProviderModelInfo>
 }
 
 export type ProviderList = {
-  all: ProviderInfo[]
+  all: ProviderListEntry[]
   connected: string[]
   default: Record<string, string>
 }
 
-// ── TUI param types ──────────────────────────────────────────────────────────
-export type TuiPublishParams = NonNullable<Parameters<V2['tui']['publish']>[0]>
-export type TuiSelectSessionParams = NonNullable<Parameters<V2['tui']['selectSession']>[0]>
+// ── Toast types ────────────────────────────────────────────────────────────
+export type ToastInput = {
+  directory: string
+  title?: string
+  message: string
+  variant?: 'info' | 'success' | 'warning' | 'error'
+  duration?: number
+}
 
-// ── Sync param types ─────────────────────────────────────────────────────────
-export type SyncStartParams = NonNullable<Parameters<V2['sync']['start']>[0]>
-
-// ── Event types ──────────────────────────────────────────────────────────────
-export type EventSubscribeParams = NonNullable<Parameters<V2['event']['subscribe']>[0]>
-
+// ── Event types ────────────────────────────────────────────────────────────
 export type ForgeEvent = {
   type: string
   properties: Record<string, unknown>
-}
-
-export type EventSubscription = {
-  stream: AsyncGenerator<ForgeEvent>
 }
 
 // ── Error model ──────────────────────────────────────────────────────────────
@@ -162,7 +223,6 @@ export interface ForgeClient {
     update(params: SessionUpdateParams): Promise<void>
     messages(params: SessionMessagesParams): Promise<SessionMessages>
     status(params?: SessionStatusParams): Promise<SessionStatus>
-    list(params?: SessionListParams): Promise<SessionList>
     promptAsync(params: SessionPromptAsyncParams): Promise<void>
     abort(params: SessionAbortParams): Promise<void>
     delete(params: SessionDeleteParams): Promise<void>
@@ -170,30 +230,9 @@ export interface ForgeClient {
   workspace: {
     create(params: WorkspaceCreateParams): Promise<WorkspaceCreateResult>
     list(params?: WorkspaceListParams): Promise<WorkspaceList>
-    status(params?: WorkspaceStatusParams): Promise<WorkspaceStatus>
-    syncList(params?: WorkspaceSyncListParams): Promise<void>
     remove(params: WorkspaceRemoveParams): Promise<void>
     warp(params: WorkspaceWarpParams): Promise<void>
   }
-  project: {
-    list(params?: ProjectListParams): Promise<ProjectList>
-    current(params?: ProjectCurrentParams): Promise<ProjectCurrent>
-  }
-  provider: {
-    list(params?: ProviderListParams): Promise<ProviderList>
-  }
-  tui: {
-    publish(params: TuiPublishParams): Promise<void>
-    selectSession(params: TuiSelectSessionParams): Promise<void>
-  }
-  sync: {
-    start(params?: SyncStartParams): Promise<void>
-  }
-  event: {
-    /**
-     * Live event feed for the host. The caller owns the returned generator and
-     * must call `stream.return()` to close the underlying connection.
-     */
-    subscribe(params?: EventSubscribeParams): Promise<EventSubscription>
-  }
+  /** Emits a toast notification to the host TUI. */
+  toast(input: ToastInput): Promise<void>
 }

@@ -29,7 +29,7 @@ interface CompactingOutput {
   prompt?: string
 }
 
-const LOGGED_EVENTS = new Set(['session.compacted', 'session.status', 'session.updated', 'session.created'])
+const LOGGED_EVENTS = new Set(['session.status', 'session.created'])
 
 function formatEventProperties(props?: Record<string, unknown>): string {
   if (!props) return ''
@@ -97,16 +97,6 @@ export function createSessionHooks(
       if (event && LOGGED_EVENTS.has(event.type)) {
         logger.log(`Event received: ${event.type}${formatEventProperties(event.properties)}`)
       }
-      if (event?.type !== 'session.compacted') return
-
-      const sessionId = (event.properties?.sessionId as string) ??
-                        (event.properties?.sessionID as string)
-      if (!sessionId) {
-        logger.log(`session.compacted event missing sessionId`)
-        return
-      }
-
-      logger.log(`Session compacted for project ${projectId}`)
     },
     async onCompacting(input: CompactingInput, output: CompactingOutput) {
       const { sessionID: sessionId } = input

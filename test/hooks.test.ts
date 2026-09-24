@@ -48,48 +48,6 @@ describe('SessionHooks', () => {
 
     expect(true).toBe(true)
   })
-
-  test('Session event handler logs session.compacted event', async () => {
-    const hooks = createSessionHooks(TEST_PROJECT_ID, mockLogger)
-
-    const input = {
-      event: {
-        type: 'session.compacted',
-        properties: { sessionId: 'test-session' },
-      },
-    }
-
-    await hooks.onEvent(input)
-
-    expect(true).toBe(true)
-  })
-
-
-  test('session.compacted with missing sessionId does NOT trigger flow', async () => {
-    let promptCalled = false
-
-    const hooks = createSessionHooks(TEST_PROJECT_ID, mockLogger)
-
-    await hooks.onEvent({
-      event: { type: 'session.compacted', properties: {} },
-    })
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    expect(promptCalled).toBe(false)
-  })
-
-  test('session.compacted skips extraction when no compaction summary found', async () => {
-    let promptCalled = false
-
-    const hooks = createSessionHooks(TEST_PROJECT_ID, mockLogger)
-
-    await hooks.onEvent({
-      event: { type: 'session.compacted', properties: { sessionId: 'test-no-summary' } },
-    })
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    expect(promptCalled).toBe(false)
-  })
 })
 
 

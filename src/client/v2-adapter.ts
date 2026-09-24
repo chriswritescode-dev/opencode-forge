@@ -32,8 +32,6 @@ export type V2PermissionRule = { action: string; resource: string; effect: 'allo
 export interface V2ClientLike {
   readonly session: V2Session
   readonly location: Plugin.Context['location']
-  readonly provider: Plugin.Context['provider']
-  readonly model: Plugin.Context['model']
 }
 
 export interface V2ForgeClientOptions {
@@ -346,10 +344,6 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     }
   }
 
-  function currentProject(): NonNullable<Awaited<ReturnType<ForgeClient['project']['current']>>> {
-    return { id: ctx.location.project.id, worktree: ctx.location.project.canonical }
-  }
-
   const session: ForgeClient['session'] = {
     create: (params) => call('session.create', async () =>
       toPortSession(await ctx.session.create({
@@ -385,7 +379,6 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
         : mapped
     }),
     status: () => call('session.status', async () => Object.fromEntries(sessionStatusCache.snapshot())),
-    list: () => Promise.reject(unavailableError('session.list', 'session.list is not available on this host')),
     promptAsync: (params) => call('session.promptAsync', async () => {
       const parts = params.parts ?? []
       const textParts = parts.filter((part) => part.type === 'text')
@@ -423,45 +416,19 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     },
   }
 
-  const project: ForgeClient['project'] = {
-    list: async () => [currentProject()],
-    current: async () => currentProject(),
+  const toast: ForgeClient['toast'] = async (input) => {
+    if (!options.publishToast) return
+    try {
+      await options.publishToast({
+        title: input.title,
+        message: input.message,
+        variant: input.variant,
+        duration: input.duration,
+      })
+    } catch (err) {
+      console.error('[forge] failed to emit toast over RPC', err)
+    }
   }
 
-  const provider: ForgeClient['provider'] = {
-    list: () => call('provider.list', async () => {
-      const providers = await ctx.provider.list()
-      const models = await ctx.model.list()
-      return toProviderListFromV2(providers.data, models.data)
-    }),
-  }
-
-  const tui: ForgeClient['tui'] = {
-    publish: async (params) => {
-      if (params.body?.type !== 'tui.toast.show') return
-      if (!options.publishToast) return
-      const properties = params.body.properties
-      try {
-        await options.publishToast({
-          title: properties.title,
-          message: properties.message,
-          variant: properties.variant,
-          duration: properties.duration,
-        })
-      } catch (err) {
-        console.error('[forge] failed to emit toast over RPC', err)
-      }
-    },
-    selectSession: () => Promise.reject(unavailableError('tui.selectSession', 'tui.selectSession is not available on this host')),
-  }
-
-  const sync: ForgeClient['sync'] = {
-    start: async () => {},
-  }
-
-  const event: ForgeClient['event'] = {
-    subscribe: () => Promise.reject(unavailableError('event.subscribe', 'event.subscribe is not available on this host')),
-  }
-
-  return { session, workspace: options.workspace, project, provider, tui, sync, event, recordStatusEvent }
+  return { session, workspace: options.workspace, toast, recordStatusEvent }
 }

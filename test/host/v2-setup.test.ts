@@ -129,9 +129,8 @@ describe('V2 server setup', () => {
     }
   })
 
-  test('default export carries the V1 server and the V2 setup', () => {
+  test('default export is the V2 plugin definition', () => {
     expect(pluginModule.id).toBe('oc-forge')
-    expect(typeof pluginModule.server).toBe('function')
     expect(typeof pluginModule.setup).toBe('function')
   })
 
@@ -140,7 +139,7 @@ describe('V2 server setup', () => {
 
     cleanups.push(await pluginModule.setup(fake.ctx))
 
-    expect(fake.calls.filter((call) => call.method === 'tool.transform')).toHaveLength(1)
+    expect(fake.calls.filter((call) => call.method === 'tool.transform')).toHaveLength(2)
     expect(fake.tools.map((tool) => tool.name)).toContain('plan-read')
     expect(fake.calls.filter((call) => call.method === 'agent.transform')).toHaveLength(1)
     expect(fake.agents.map((agent) => agent.id)).toContain('auditor')
@@ -167,12 +166,12 @@ describe('V2 server setup', () => {
     expect(registerCalls).toHaveLength(1)
     expect(registerCalls[0]?.args[0]).toBe(FORGE_RPC)
 
-    await lastClient().tui.publish({
+    await lastClient().toast({
       directory: '/tmp/forge-project',
-      body: {
-        type: 'tui.toast.show',
-        properties: { title: 'Loop done', message: 'All sections passed', variant: 'success', duration: 4000 },
-      },
+      title: 'Loop done',
+      message: 'All sections passed',
+      variant: 'success',
+      duration: 4000,
     })
 
     expect(fake.rpc.emitted).toEqual([{
@@ -252,9 +251,10 @@ describe('V2 server setup', () => {
     expect(errorSpy).toHaveBeenCalledWith('[forge] failed to register toast RPC', expect.any(Error))
     errorSpy.mockRestore()
 
-    await expect(lastClient().tui.publish({
+    await expect(lastClient().toast({
       directory: '/tmp/forge-project',
-      body: { type: 'tui.toast.show', properties: { message: 'Dropped', variant: 'warning' } },
+      message: 'Dropped',
+      variant: 'warning',
     })).resolves.toBeUndefined()
     expect(fake.rpc.emitted).toEqual([])
   })

@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from 'vitest'
+import { describe, test, expect, afterEach, vi } from 'vitest'
 import { spawnSync } from 'child_process'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -11,7 +11,6 @@ import { createSessionHooks } from '../../src/hooks/session'
 import {
   ensureShellShim,
   SHIM_ENV_CONTAINER,
-  SHIM_ENV_HOST_SHELL,
 } from '../../src/sandbox/shell-shim'
 import type { SandboxContext } from '../../src/sandbox/context'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
@@ -37,6 +36,7 @@ function sandboxContext(containerName = CONTAINER): SandboxContext {
 interface StubCoreOptions {
   shellShimPath?: string | null
   resolveSandboxForDirectory?: ForgeHooksV2Core['resolveSandboxForDirectory']
+  resolveShellSandbox?: ForgeHooksV2Core['resolveShellSandbox']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
   toolAfter?: ForgeHooksV2Core['toolAfter']
@@ -81,6 +81,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     architectReminderFor:
       options.architectReminderFor ?? ((agent) => (agent === 'architect' ? buildArchitectReminder() : null)),
     resolveSandboxForDirectory: options.resolveSandboxForDirectory ?? (async () => null),
+    resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
     shellShimPath: options.shellShimPath ?? null,
   }
   return { core, before, after, prompts }
@@ -329,6 +330,96 @@ describe('registerForgeHooksV2 shell hook', () => {
   })
 })
 
+describe('registerForgeHooksV2 shell tool sandbox routing', () => {
+  const toolContext = { sessionID: 'ses_host', agent: 'code', messageID: 'msg_1', id: 'call_1' }
+
+  async function setup(resolveShellSandbox: ForgeHooksV2Core['resolveShellSandbox']) {
+    const fake = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    const shellEvents: Array<ReturnType<typeof shellEvent>> = []
+    fake.builtinTools.shell!.execute = async (input) => {
+      const event = shellEvent({ command: (input as { command: string }).command, cwd: PROJECT })
+      await invokeHook(fake.hooks, 'shell', 'create.before', event)
+      shellEvents.push(event)
+      return { content: [] }
+    }
+    const { core } = createStubCore({ shellShimPath: '/data/forge-shell', resolveShellSandbox })
+    await registerForgeHooksV2(fake.ctx, core)
+    return { shell: fake.builtinTools.shell!, shellEvents }
+  }
+
+  test('routes a sandboxed session shell call through the shim with the original command', async () => {
+    const { shell, shellEvents } = await setup(async (sessionID) => (sessionID === 'ses_host' ? sandboxContext('forge-host') : null))
+
+    await shell.execute({ command: 'echo hi' }, toolContext)
+
+    expect(shellEvents).toHaveLength(1)
+    expect(shellEvents[0]!.command).toBe('echo hi')
+    expect(shellEvents[0]!.shell).toBe('/data/forge-shell')
+    expect(shellEvents[0]!.env[SHIM_ENV_CONTAINER]).toBe('forge-host')
+  })
+
+  test('leaves a non-sandboxed session shell call untouched', async () => {
+    const { shell, shellEvents } = await setup(async () => null)
+
+    await shell.execute({ command: 'echo hi' }, toolContext)
+
+    expect(shellEvents[0]!.command).toBe('echo hi')
+    expect(shellEvents[0]!.shell).toBe('/bin/zsh')
+    expect(shellEvents[0]!.env[SHIM_ENV_CONTAINER]).toBeUndefined()
+  })
+
+  test('routes identical concurrent commands to their own session sandboxes', async () => {
+    const fake = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    const commands: string[] = []
+    const releases: Array<() => void> = []
+    fake.builtinTools.shell!.execute = async (input) => {
+      commands.push((input as { command: string }).command)
+      await new Promise<void>((resolve) => releases.push(resolve))
+      return { content: [] }
+    }
+    const { core } = createStubCore({
+      shellShimPath: '/data/forge-shell',
+      resolveShellSandbox: async (sessionID) => sandboxContext(`forge-${sessionID}`),
+    })
+    await registerForgeHooksV2(fake.ctx, core)
+
+    const first = fake.builtinTools.shell!.execute({ command: 'make test' }, { ...toolContext, sessionID: 'a' })
+    const second = fake.builtinTools.shell!.execute({ command: 'make test' }, { ...toolContext, sessionID: 'b' })
+    await vi.waitFor(() => expect(commands).toHaveLength(2))
+
+    const events = commands.map((command) => shellEvent({ command, cwd: PROJECT }))
+    await invokeHook(fake.hooks, 'shell', 'create.before', events[1])
+    await invokeHook(fake.hooks, 'shell', 'create.before', events[0])
+    for (const release of releases) release()
+    await Promise.all([first, second])
+
+    expect(events.map((event) => event.command)).toEqual(['make test', 'make test'])
+    expect(events.map((event) => event.env[SHIM_ENV_CONTAINER])).toEqual(['forge-a', 'forge-b'])
+  })
+
+  test('keeps an unmatched marker on the command so the shell fails instead of running on the host', async () => {
+    const { ctx, hooks } = createFakeV2Context({ location: { directory: PROJECT, project: { directory: PROJECT } } })
+    const { core } = createStubCore({ shellShimPath: '/data/forge-shell' })
+    await registerForgeHooksV2(ctx, core)
+
+    const command = 'forge-sandbox-required-00000000-0000-0000-0000-000000000000 && echo hi'
+    const event = shellEvent({ command, cwd: PROJECT })
+    await invokeHook(hooks, 'shell', 'create.before', event)
+
+    expect(event.command).toBe(command)
+    expect(event.shell).toBe('/bin/zsh')
+  })
+
+  test('propagates a fail-closed sandbox resolution error from the shell tool', async () => {
+    const { shell, shellEvents } = await setup(async () => {
+      throw new Error('Host sandbox unavailable for the selected session')
+    })
+
+    await expect(shell.execute({ command: 'echo hi' }, toolContext)).rejects.toThrow('Host sandbox unavailable')
+    expect(shellEvents).toHaveLength(0)
+  })
+})
+
 describe('registerForgeHooksV2 session hooks', () => {
   test('prompt forwards the session, message, and text to the core', async () => {
     const { ctx, hooks } = createFakeV2Context()
@@ -412,7 +503,6 @@ describe('generated shim', () => {
 
     const env = { ...process.env }
     delete env[SHIM_ENV_CONTAINER]
-    delete env[SHIM_ENV_HOST_SHELL]
     const result = spawnSync(shim!, ['-c', 'echo ok'], { env, encoding: 'utf-8' })
 
     expect(result.status).toBe(0)
@@ -446,7 +536,7 @@ describe('createForgeCore integration', () => {
     const { client } = createFakeForgeClient()
     core = await createForgeCore(
       { dataDir, ...config },
-      { directory, projectId: 'proj_hooks', projectRoot: directory, client },
+      { directory, projectId: 'proj_hooks', projectRoot: directory, client, registerWorkspaceAdapter: () => {} },
     )
     return core
   }

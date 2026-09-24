@@ -9,7 +9,6 @@ import {
   resolveConfigDir,
   resolveConfigPath,
   resolveBundledConfigPath,
-  resolveTuiConfigPath,
   resolveVendorDir,
 } from './paths'
 import {
@@ -20,20 +19,14 @@ import {
   type OrphanChoice,
 } from './installer'
 import {
-  disableConfigRegistration,
   ensurePluginRegistration,
-  findConfigRegistrations,
-  linkPlugin,
   removePluginRegistration,
   resolveCliConfigTarget,
   resolveCliPluginDir,
-  resolveTuiConfigTarget,
-  resolveTuiEntry,
   unlinkPlugin,
   unvendorPlugin,
   vendorPlugin,
   VENDORED_CLI_SPEC,
-  VENDORED_TUI_SPEC,
   type PluginRegistrationResult,
 } from './plugin-link'
 import { MSB_INSTALL_COMMAND } from '../sandbox/msb'
@@ -108,8 +101,7 @@ The --link mode always loads the current build, so a rebuild needs no
 reinstall, but is tied to this machine's checkout path. The --vendor mode copies
 forge into the config dir, so the whole config folder can be version-controlled
 and moved to another machine, at the cost of re-running after an upgrade. Both
-modes write the tui.json entry for opencode V1 and the cli.json entry for
-opencode V2, because neither loads the TUI plugin from the plugin directory.
+modes register the plugin in opencode's cli.json plugins array.
 
 Options:
   -f, --force      Overwrite all conflicting files and delete all orphans
@@ -117,9 +109,9 @@ Options:
   -y, --yes        Non-interactive: keep edited files, prune orphans
   -n, --dry-run    Show what would change without writing anything
       --no-prune   Do not touch orphaned files (only report them)
-      --link       Install into opencode's plugin dir from the current build
+      --link       Register the current build's dist dir in cli.json
       --vendor     Install a self-contained copy into the config dir (portable)
-      --unlink     Remove the plugin-dir installation
+      --unlink     Remove the vendored copy and cli.json entry
   -h, --help       Show this help
 `
 
@@ -251,49 +243,15 @@ function reportPluginRegistration(result: PluginRegistrationResult): void {
   if (result.action === 'failed') process.exitCode = 1
 }
 
-function ensurePluginEntries(options: { dryRun: boolean; tuiSpec?: string; cliSpec?: string }): void {
-  if (options.tuiSpec) {
-    reportPluginRegistration(
-      ensurePluginRegistration({ dryRun: options.dryRun, spec: options.tuiSpec, target: resolveTuiConfigTarget() }),
-    )
-  } else {
-    stdout.write('  warning: TUI entry skipped because dist/tui.js was not found.\n')
-  }
-  if (options.cliSpec) {
-    reportPluginRegistration(
-      ensurePluginRegistration({ dryRun: options.dryRun, spec: options.cliSpec, target: resolveCliConfigTarget() }),
-    )
-  } else {
-    stdout.write('  warning: V2 entry skipped because dist was not found.\n')
-  }
-}
-
-async function handleConfigRegistrations(
-  opts: CliOptions,
-  prompter: InstallerPrompter & Partial<LinkPrompter>,
-): Promise<void> {
-  for (const reg of findConfigRegistrations()) {
-    stdout.write(`  config registration: ${reg.file}:${reg.line} "${reg.spec}"\n`)
-    stdout.write('    Leaving it in place makes opencode load forge twice under the same id (oc-forge).\n')
-    if (prompter.confirm) {
-      const disable = await prompter.confirm('Disable this entry?', true)
-      if (!disable) {
-        stdout.write('    kept: left in place\n')
-        continue
-      }
-      stdout.write(`    disabled: ${disableConfigRegistration(reg, { dryRun: opts.dryRun })}\n`)
-    } else {
-      stdout.write(
-        '    warning: not modified. Re-run interactively to disable it, or remove this entry by hand.\n',
-      )
-    }
-  }
+function ensurePluginEntries(options: { dryRun: boolean; cliSpec: string }): void {
+  reportPluginRegistration(
+    ensurePluginRegistration({ dryRun: options.dryRun, spec: options.cliSpec, target: resolveCliConfigTarget() }),
+  )
 }
 
 /**
- * Perform the plugin-directory step after the bundle install: install or remove
- * the server re-export shim, register the tui.json and cli.json entries, and
- * surface any double-loading config registrations.
+ * Perform the plugin-registration step after the bundle install: register the
+ * cli.json entry, or remove the vendored copy and cli.json entry on unlink.
  */
 async function runPluginLinkStep(
   opts: CliOptions,
@@ -301,19 +259,17 @@ async function runPluginLinkStep(
 ): Promise<void> {
   if (opts.link === 'prompt') {
     if (!prompter.confirm) return
-    const yes = await prompter.confirm("Install forge into opencode's plugin dir?", true)
+    const yes = await prompter.confirm('Register forge in opencode\u2019s cli.json?', true)
     if (!yes) return
     const selfContained = await prompter.confirm('Make it self-contained so the config folder is portable?', false)
     opts.link = selfContained ? 'vendored' : 'external'
   }
-  stdout.write('\nPlugin directory:\n')
+  stdout.write('\nPlugin registration:\n')
   if (opts.link === 'off') {
     const unlinked = unlinkPlugin({ dryRun: opts.dryRun })
     stdout.write(`  ${unlinked.action}: ${unlinked.shimPath}\n`)
     const unvendored = unvendorPlugin({ dryRun: opts.dryRun })
     stdout.write(`  ${unvendored}: ${resolveVendorDir()}\n`)
-    const tuiRemoved = removePluginRegistration({ dryRun: opts.dryRun, target: resolveTuiConfigTarget() })
-    stdout.write(`  ${tuiRemoved}: ${resolveTuiConfigPath()}\n`)
     const cliRemoved = removePluginRegistration({ dryRun: opts.dryRun, target: resolveCliConfigTarget() })
     stdout.write(`  ${cliRemoved}: ${resolveCliConfigPath()}\n`)
     return
@@ -331,24 +287,17 @@ async function runPluginLinkStep(
     stdout.write(`  copied: ${vendor.vendorDir}\n`)
     list('copied', vendor.copied)
     list('missing', vendor.missing)
-    const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'vendored' })
-    stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
-    if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
-    ensurePluginEntries({ dryRun: opts.dryRun, tuiSpec: VENDORED_TUI_SPEC, cliSpec: VENDORED_CLI_SPEC })
-    await handleConfigRegistrations(opts, prompter)
+    ensurePluginEntries({ dryRun: opts.dryRun, cliSpec: VENDORED_CLI_SPEC })
     return
   }
-  const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'external' })
-  if (linked.action === 'missing-entry') {
-    stdout.write(`  missing-entry: ${linked.shimPath}\n`)
-    stdout.write('  The built server entry could not be found. Run `pnpm build` first, then re-run.\n')
+  const cliSpec = resolveCliPluginDir()
+  if (!cliSpec) {
+    stdout.write('  missing-entry: the built dist directory could not be found.\n')
+    stdout.write('  Run `pnpm build` first, then re-run.\n')
     process.exitCode = 1
     return
   }
-  stdout.write(`  ${linked.action}: ${linked.shimPath}\n`)
-  if (linked.target) stdout.write(`    re-exports: ${linked.target}\n`)
-  ensurePluginEntries({ dryRun: opts.dryRun, tuiSpec: resolveTuiEntry(), cliSpec: resolveCliPluginDir() })
-  await handleConfigRegistrations(opts, prompter)
+  ensurePluginEntries({ dryRun: opts.dryRun, cliSpec })
 }
 
 /** True when the msb binary resolves on PATH. Deliberately not `msb doctor`, which costs 30s. */

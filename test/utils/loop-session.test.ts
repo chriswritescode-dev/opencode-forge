@@ -166,58 +166,6 @@ test('Returns null when session.create fails', async () => {
   expect(result).toBeNull()
 })
 
-test('WorkspaceStatusRegistry primeFromSnapshot is called during bind', async () => {
-  const primeFromSnapshotCalls: Array<Array<{ workspaceID: string; status: string }>> = []
-  const mockStatusRegistry = {
-    recordEvent: () => {},
-    getStatus: () => undefined,
-    awaitConnected: () => Promise.resolve({ connected: true, elapsedMs: 0, source: 'cached' }),
-    primeFromSnapshot: (snapshot: Array<{ workspaceID: string; status: string }>) => {
-      primeFromSnapshotCalls.push(snapshot)
-    },
-  }
-
-  const mockStatusData = [
-    { workspaceID: 'ws-1', status: 'connected' },
-  ]
-
-  const mockListResult = [{ id: 'ws-1' }]
-
-  const { client } = createFakeForgeClient({
-    session: {
-      create: async () => ({ id: 'session-123' }),
-    },
-    workspace: {
-      list: async () => mockListResult,
-      status: async () => mockStatusData,
-    },
-  })
-
-  const logger: Logger | Console = {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-
-  const result = await createLoopSessionWithWorkspace({
-    client,
-    title: 'Test Session',
-    directory: '/test/dir',
-    permission: buildLoopPermissionRuleset(),
-    workspaceId: 'ws-1',
-    logPrefix: 'test',
-    logger,
-    workspaceStatusRegistry: mockStatusRegistry as unknown as import('../../src/utils/workspace-status-registry').WorkspaceStatusRegistry,
-  })
-
-  expect(result).toBeDefined()
-  expect(result?.sessionId).toBe('session-123')
-  expect(primeFromSnapshotCalls.length).toBeGreaterThan(0)
-  expect(primeFromSnapshotCalls[0]).toEqual([
-    { workspaceID: 'ws-1', status: 'connected' },
-  ])
-})
-
 test('createLoopSessionWithWorkspace does not emit [perm-diag] log entries', async () => {
   const logEntries: string[] = []
   const errorEntries: string[] = []

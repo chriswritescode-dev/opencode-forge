@@ -244,22 +244,6 @@ export interface GroupLaunchConfig {
   maxConcurrentLoops?: number
 }
 
-/** A remote opencode server that can host forge loops. */
-export interface RemoteServerConfig {
-  /** Unique display name used in the TUI target picker. */
-  name: string
-  /** Base URL of the remote opencode server, e.g. "http://192.168.1.20:4096". */
-  url: string
-  /** Basic-auth password (OPENCODE_SERVER_PASSWORD on the remote). Omit when the remote runs without auth. */
-  password?: string
-  /** Basic-auth username. Defaults to "opencode" (OPENCODE_SERVER_USERNAME default). */
-  username?: string
-  /** Git remote name (shared by both machines) used for code sync. Defaults to "origin". */
-  gitRemote?: string
-  /** Whether the remote loop should run sandboxed. Mirrors the remote's sandbox capability. Defaults to true. */
-  sandbox?: boolean
-}
-
 /**
  * A fallback auditor model entry with its own reasoning/thinking variant.
  * Used when a fallback needs a different variant than the primary auditor model,
@@ -298,8 +282,6 @@ export interface PluginConfig {
   loop?: LoopConfig
   /** Group launch configuration. */
   groupLaunch?: GroupLaunchConfig
-  /** Remote opencode servers available as loop launch targets. */
-  remotes?: RemoteServerConfig[]
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
   /** TUI display configuration. */

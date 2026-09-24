@@ -90,7 +90,7 @@ describe('createV2ForgeWorkspaces', () => {
     expect(calls.map((call) => call.method)).toContain('worktree.refresh')
   })
 
-  it('lists the created workspace and reports it connected', async () => {
+  it('lists the created workspace', async () => {
     const { workspaces } = setup()
     const created = await workspaces.create(createParams())
 
@@ -98,10 +98,6 @@ describe('createV2ForgeWorkspaces', () => {
     expect(entries.map((entry) => entry.id)).toEqual([created.id])
     expect(entries[0].extra).toMatchObject({ loopName: LOOP_NAME })
     expect(entries[0].timeUsed).toBe(created.timeUsed)
-
-    await expect(workspaces.status()).resolves.toEqual([
-      { workspaceID: created.id, status: 'connected' },
-    ])
   })
 
   it('drops records from other projects and workspaces whose worktree is gone', async () => {
@@ -188,7 +184,6 @@ describe('createV2ForgeWorkspaces', () => {
     expect(existsSync(created.id)).toBe(true)
     expect(readForgeWorkspaceMetadata(created.id)).toBeUndefined()
     await expect(workspaces.list()).resolves.toEqual([])
-    await expect(workspaces.status()).resolves.toEqual([])
 
     const recreated = await workspaces.create(createParams(RESTARTABLE_LOOP_NAME))
 

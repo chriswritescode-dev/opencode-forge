@@ -1,7 +1,7 @@
 import type { Plugin } from '@opencode/plugin/tui'
 import { toProviderListFromV2 } from '../client/v2-adapter'
 import { FORGE_RPC, readForgeExecutePlanOutput, type ForgeExecutePlanInput } from '../host/forge-rpc'
-import type { ExecutionContext, ForgeProjectClient } from '../utils/tui-client'
+import type { ExecutionContext, ForgeProjectClient } from './project-client'
 import { deriveExecutionPreferencesFromWorkspaces } from '../utils/tui-execution-preferences'
 import { fetchLoopsList, fetchStoredSessionPlan, requestTuiLoopRestart } from '../utils/tui-loop-store'
 import { providersFromProviderList, type LoopInfo, type WorkspaceForRecents } from '../utils/tui-models'
@@ -81,10 +81,6 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
           return { error: `Plan execution failed: ${err instanceof Error ? err.message : String(err)}` }
         }
       },
-    },
-    workspaces: {
-      list: async () => [],
-      status: async () => ({}),
     },
     async selectSession(sessionId) {
       context.ui.router.navigate({ type: 'session', sessionID: sessionId })

@@ -1,4 +1,4 @@
-import type { ForgeClient } from '../client/port'
+import type { ForgeClient, SessionPermissionRule } from '../client/port'
 import type { Logger } from '../types'
 import type { createSessionLoopResolver } from '../services/session-loop-resolver'
 import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
@@ -24,16 +24,15 @@ interface SessionCreatedProperties {
   }
 }
 
-type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' | 'ask' }
 
 type ResolvedLoop = Awaited<
   ReturnType<ReturnType<typeof createSessionLoopResolver>['resolveActiveLoopForSession']>
 >
 
-function hasBlanketAllow(rules: unknown): rules is PermissionRule[] {
+function hasBlanketAllow(rules: unknown): rules is SessionPermissionRule[] {
   return (
     Array.isArray(rules) &&
-    rules.some((r: PermissionRule) => r.permission === '*' && r.pattern === '*' && r.action === 'allow')
+    rules.some((r: SessionPermissionRule) => r.permission === '*' && r.pattern === '*' && r.action === 'allow')
   )
 }
 
@@ -80,11 +79,11 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
   }): Promise<void> {
     const { sessionID, parentID, targetDirectory, loopName, workspaceId } = input
 
-    let ruleset: PermissionRule[] | null = null
+    let ruleset: SessionPermissionRule[] | null = null
     let rulesetSource = 'loop-default'
     try {
       const parent = await client.session.get({ sessionID: parentID, directory: targetDirectory })
-      const parentRules = (parent as { permission?: PermissionRule[] })?.permission
+      const parentRules = (parent as { permission?: SessionPermissionRule[] })?.permission
       if (hasBlanketAllow(parentRules)) {
         ruleset = parentRules
         rulesetSource = `inherited-from-parent=${parentID}`
@@ -177,7 +176,7 @@ export function createLoopPermissionPatcher(deps: CreateLoopPermissionPatcherDep
       let parentID: string | undefined
       try {
         const self = await client.session.get({ sessionID, directory: targetDirectory })
-        const selfInfo = self as { parentID?: string; permission?: PermissionRule[] }
+        const selfInfo = self as { parentID?: string; permission?: SessionPermissionRule[] }
         // Loop root and audit sessions are created with their ruleset upfront;
         // only task-spawned subagent sessions (which have a parent) need patching.
         if (!selfInfo?.parentID || hasBlanketAllow(selfInfo?.permission)) {
