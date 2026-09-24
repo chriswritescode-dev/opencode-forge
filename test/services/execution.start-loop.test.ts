@@ -10,7 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
-import { buildLoopPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../../src/constants/loop'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
@@ -333,7 +333,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       )
       expect(client.session.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          permission: buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories({}) }),
+          permission: buildLoopPermissionRuleset(),
         }),
       )
     }
@@ -1056,7 +1056,7 @@ describe('handleStartGoal creates dedicated code session', () => {
     expect(sessionCreateArgs.directory).toBe('/tmp/wt/goal')
     expect(sessionCreateArgs.workspaceID).toBe('ws_goal')
     expect(sessionCreateArgs.permission).toEqual(
-      buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories({}) }),
+      buildLoopPermissionRuleset(),
     )
 
     // The new session ID is returned in the result
@@ -1141,7 +1141,7 @@ describe('handleStartGoal creates dedicated code session', () => {
     // Permissions passed to session.create, NOT via session.update
     expect(client.session.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        permission: buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories({}) }),
+        permission: buildLoopPermissionRuleset(),
       }),
     )
     expect(client.session.update).not.toHaveBeenCalled()

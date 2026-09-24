@@ -1,9 +1,46 @@
-import { isAbsolute } from 'path'
+import { homedir } from 'os'
+import { isAbsolute, join, resolve } from 'path'
 import type { ToolAfterHook, ToolBeforeHook } from './tool-hook-types'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
 import { executeSandboxGlob, executeSandboxGrep } from '../sandbox/exec-fs'
-import { isInsideAnyMount } from '../sandbox/path'
+import { canonicalizeExistingPath, canonicalizePath, findContainingMount, isInsideAnyMount } from '../sandbox/path'
+
+const FILE_TOOLS: ReadonlySet<string> = new Set(['read', 'edit', 'write', 'patch'])
+const PATCH_FILE_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to):\s*(.+?)\s*$/gm
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
+function fileToolTargets(tool: string, args: any): string[] {
+  if (tool === 'patch') {
+    const text = args?.patchText
+    return typeof text === 'string' ? [...text.matchAll(PATCH_FILE_HEADER)].map((match) => match[1]) : []
+  }
+  const path = args?.path ?? args?.filePath
+  return typeof path === 'string' ? [path] : []
+}
+
+function resolveToolPath(path: string, baseDir: string): string {
+  const expanded = path === '~' || path.startsWith('~/') ? join(homedir(), path.slice(1)) : path
+  return canonicalizeExistingPath(resolve(baseDir, expanded))
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
+function assertFileToolInsideSandbox(tool: string, args: any, sandbox: SandboxContext): void {
+  const mounts = sandbox.mounts.map((mount) => ({
+    ...mount,
+    hostDir: canonicalizePath(mount.hostDir),
+    containerDir: canonicalizePath(mount.containerDir),
+  }))
+  for (const target of fileToolTargets(tool, args)) {
+    const mount = findContainingMount(resolveToolPath(target, sandbox.hostDir), mounts)
+    if (!mount) {
+      throw new Error(`Refusing to ${tool} outside the sandbox mounts: ${target}`)
+    }
+    if (mount.readOnly && tool !== 'read') {
+      throw new Error(`Refusing to ${tool} inside a read-only sandbox mount: ${target}`)
+    }
+  }
+}
 
 interface SandboxToolHookDeps {
   resolveSandboxForSession: (sessionID: string, opts?: { throwOnRestoreError?: boolean }) => Promise<SandboxContext | null>
@@ -20,17 +57,22 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): ToolBefo
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool arguments are tool-specific
     output: { args: any },
   ) => {
-    // This hook only intercepts search tools. Return before any resolution so a fail-closed
-    // resolver error can never block native file or management tools (`read`, `edit`, `write`,
-    // bash, etc.), preserving the shell + search isolation scope.
-    if (input.tool !== 'glob' && input.tool !== 'grep') return
+    // This hook routes search tools into the sandbox and fences host file tools to the sandbox
+    // mounts. Return before any resolution for every other tool so a fail-closed resolver error can
+    // never block shell or management tools.
+    if (input.tool !== 'glob' && input.tool !== 'grep' && !FILE_TOOLS.has(input.tool)) return
 
     // Request fail-closed resolution exactly as bash does: when an acknowledged sandbox cannot be
     // restored (or the selected session's start failed), the resolver throws and the tool call
-    // fails rather than silently searching the host checkout.
+    // fails rather than silently touching the host checkout.
     const sandbox = await deps.resolveSandboxForSession(input.sessionID, { throwOnRestoreError: true })
     if (!sandbox) {
       deps.logger.debug(`[sandbox-hook] no sandbox for session ${input.sessionID} tool=${input.tool}`)
+      return
+    }
+
+    if (FILE_TOOLS.has(input.tool)) {
+      assertFileToolInsideSandbox(input.tool, output.args, sandbox)
       return
     }
 

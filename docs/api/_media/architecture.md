@@ -128,7 +128,7 @@ Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with dr
 1. When a sandbox loop starts, an `msb` sandbox is created
 2. The worktree directory is mounted at its identical host path inside the sandbox
 3. Shell commands and search tools run inside the sandbox: `shell` through the generated shell shim, `glob` and `grep` through the sandbox tool hooks — both backed by `msb exec`
-4. File operations (`read`, `write`, `edit`) operate on the host directly
+4. File operations (`read`, `write`, `edit`, `patch`) operate on the host directly, fenced by the sandbox tool hook to the sandbox mounts (read-only mounts refuse mutation)
 5. On loop completion, the sandbox is stopped and removed
 
 ### State Model
@@ -185,7 +185,7 @@ The V2 adapter registers the shared core handlers through V2's hook API:
 Loops are autonomous and cannot answer permission prompts, but OpenCode's default subagent ruleset falls back to `ask` for most tools. To prevent deadlocks, `createLoopPermissionPatcher` listens for `session.created` events. When the new session resolves to an active loop, the hook calls `v2.session.update()` to overwrite the child session's `permission` ruleset:
 
 - If the parent session has an allow-all ruleset (e.g. an auditor subagent), the parent's ruleset is inherited so the child stays under the same constraints.
-- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit structural denies for `external_directory`, `review-write`, `review-delete`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`. User-configured `loop.permissions` rules are layered in after the external-directory allows and before these structural denies (via `resolveLoopPermissionOptions`), so they can tailor user tools without overriding a structural deny.
+- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree (external directories included; in a sandbox the mounts are the boundary), and explicit structural denies for `review-write`, `review-delete`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`. User-configured `loop.permissions` rules are layered in after the blanket allow and before these structural denies (via `resolveLoopPermissionOptions`), so they can tailor user tools without overriding a structural deny.
 
 A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stricter `buildAuditSessionPermissionRuleset()` (blanket allow-all with structural denies for the direct mutation tools `edit`/`write`, plus the shared plan/loop structural denies).
 

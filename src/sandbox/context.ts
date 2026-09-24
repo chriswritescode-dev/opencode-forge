@@ -123,11 +123,11 @@ export function isSandboxConfigEnabled(config: PluginConfig | undefined): boolea
  * Every host directory bind-mounted into the sandbox beyond the worktree, git, project,
  * tool-output and temp mounts the manager derives itself.
  *
- * `loop.allowExternalDirectories` entries are granted to host file tools through
- * `external_directory` allow rules, so they must also be visible to the container or `read`
- * would resolve files that in-container `bash`, `glob` and `grep` cannot see. They are mounted
- * read-only to match the documented read-access intent; an explicit `sandbox.mounts` entry for
- * the same path is listed first and therefore wins, which is how read-write access is granted.
+ * `loop.allowExternalDirectories` entries become read-only mounts. The mounts are the boundary for
+ * both in-container tools and host file tools (the sandbox tool hook refuses `read`/`edit`/`write`/
+ * `patch` outside them), so a directory is readable exactly when it is mounted. An explicit
+ * `sandbox.mounts` entry for the same path is listed first and therefore wins, which is how
+ * read-write access is granted.
  */
 export function resolveSandboxMountConfigs(config: PluginConfig | undefined): SandboxMountConfig[] {
   return [

@@ -1,34 +1,19 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
-import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../src/utils/opencode-paths'
 import { createLoopPermissionPatcher, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
 import type { Logger } from '../src/types'
-
-const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
-const TOOL_OUTPUT_ALLOW_RULES = [
-  { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
-  { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
-]
-const OPENCODE_TMP_DIR = resolveOpencodeTmpDir()
-const OPENCODE_TMP_ALLOW_RULES = [
-  { permission: 'external_directory', pattern: OPENCODE_TMP_DIR, action: 'allow' as const },
-  { permission: 'external_directory', pattern: `${OPENCODE_TMP_DIR}/**`, action: 'allow' as const },
-]
 
 beforeEach(() => {
   __resetLoopPermissionCache()
 })
 
 describe('buildLoopPermissionRuleset', () => {
-  test('loop ruleset: allow-all first, external_directory denied then tool-output allowed, code-agent denies, then operational denies last', () => {
+  test('loop ruleset: allow-all first, then code-agent denies, then operational denies last', () => {
     const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*', action: 'allow' },
-      { permission: 'external_directory', pattern: '*', action: 'deny' },
-      ...TOOL_OUTPUT_ALLOW_RULES,
-      ...OPENCODE_TMP_ALLOW_RULES,
       { permission: 'review-write',       pattern: '*', action: 'deny' },
       { permission: 'review-delete',      pattern: '*', action: 'deny' },
       { permission: 'plan-write',         pattern: '*', action: 'deny' },
@@ -57,58 +42,16 @@ describe('buildLoopPermissionRuleset', () => {
     }
   })
 
-  test('contains external_directory:*:deny rule', () => {
+  test('emits no external_directory rules, so external directories fall under the blanket allow', () => {
     const rules = buildLoopPermissionRuleset()
-    expect(rules).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
-  })
-
-  test('always allows the opencode tool-output directory, layered after the blanket deny', () => {
-    const rules = buildLoopPermissionRuleset()
-    const denyIdx = rules.findIndex(
-      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
-    )
-    expect(denyIdx).toBeGreaterThanOrEqual(0)
-    for (const allowRule of TOOL_OUTPUT_ALLOW_RULES) {
-      const idx = rules.findIndex(
-        (r) => r.permission === allowRule.permission && r.pattern === allowRule.pattern && r.action === allowRule.action,
-      )
-      expect(idx).toBeGreaterThan(denyIdx)
-    }
-  })
-
-  test('does not allow arbitrary external directories beyond tool-output, opencode tmp, and configured opt-ins', () => {
-    const rules = buildLoopPermissionRuleset()
-    const allowPatterns = rules
-      .filter((r) => r.permission === 'external_directory' && r.action === 'allow')
-      .map((r) => r.pattern)
-    expect(allowPatterns).toEqual([
-      TOOL_OUTPUT_DIR,
-      `${TOOL_OUTPUT_DIR}/**`,
-      OPENCODE_TMP_DIR,
-      `${OPENCODE_TMP_DIR}/**`,
-    ])
-  })
-
-  test('always allows opencode temp dir (Global.Path.tmp) layered after the blanket deny', () => {
-    const rules = buildLoopPermissionRuleset()
-    const denyIdx = rules.findIndex(
-      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
-    )
-    expect(denyIdx).toBeGreaterThanOrEqual(0)
-    for (const allowRule of OPENCODE_TMP_ALLOW_RULES) {
-      const idx = rules.findIndex(
-        (r) => r.permission === allowRule.permission && r.pattern === allowRule.pattern && r.action === allowRule.action,
-      )
-      expect(idx).toBeGreaterThan(denyIdx)
-    }
+    expect(rules.some((r) => r.permission === 'external_directory')).toBe(false)
   })
 })
 
 describe('buildAuditSessionPermissionRuleset', () => {
-  test('audit session ruleset: allow-all, external_directory denied, mutation denies', () => {
+  test('audit session ruleset: allow-all, mutation denies', () => {
     const rules = buildAuditSessionPermissionRuleset()
     expect(rules[0]).toEqual({ permission: '*', pattern: '*', action: 'allow' })
-    expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
 
     // Mutation denies
     expect(rules.some(r => r.permission === 'edit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
@@ -128,38 +71,9 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'plan-edit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
   })
 
-  test('contains external_directory:*:deny rule', () => {
+  test('emits no external_directory rules, so external directories fall under the blanket allow', () => {
     const rules = buildAuditSessionPermissionRuleset()
-    expect(rules).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
-  })
-
-  test('external_directory:*:deny appears before any /tmp allow rule if present', () => {
-    const rules = buildAuditSessionPermissionRuleset()
-    const denyIdx = rules.findIndex(
-      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
-    )
-    const allowIdx = rules.findIndex(
-      (r) => r.permission === 'external_directory' && r.pattern === '/tmp' && r.action === 'allow',
-    )
-    expect(denyIdx).toBeGreaterThanOrEqual(0)
-    // If a /tmp allow rule exists, deny must come first; otherwise deny is sufficient
-    if (allowIdx >= 0) {
-      expect(denyIdx).toBeLessThan(allowIdx)
-    }
-  })
-
-  test('always allows opencode temp dir (Global.Path.tmp) layered after the blanket deny', () => {
-    const rules = buildAuditSessionPermissionRuleset()
-    const denyIdx = rules.findIndex(
-      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
-    )
-    expect(denyIdx).toBeGreaterThanOrEqual(0)
-    for (const allowRule of OPENCODE_TMP_ALLOW_RULES) {
-      const idx = rules.findIndex(
-        (r) => r.permission === allowRule.permission && r.pattern === allowRule.pattern && r.action === allowRule.action,
-      )
-      expect(idx).toBeGreaterThan(denyIdx)
-    }
+    expect(rules.some((r) => r.permission === 'external_directory')).toBe(false)
   })
 })
 
@@ -204,11 +118,7 @@ describe('createAuditSession passes audit permission rules into session creation
     const callArgs = (mockCreate as any).mock.calls[0][0]
     expect(callArgs.directory).toBe('/tmp/permission-loop')
     expect(callArgs.permission).toEqual(expectedPermission)
-    expect(callArgs.permission).toContainEqual({
-      permission: 'external_directory',
-      pattern: '*',
-      action: 'deny',
-    })
+    expect(callArgs.permission.some((r: { permission: string }) => r.permission === 'external_directory')).toBe(false)
   })
 })
 
@@ -251,11 +161,7 @@ describe('createLoopSessionWithWorkspace passes loop permission rules into sessi
     const callArgs = (mockCreate as any).mock.calls[0][0]
     expect(callArgs.permission).toEqual(expectedPermission)
     expect(callArgs.directory).toBe('/tmp/permission-loop')
-    expect(callArgs.permission).toContainEqual({
-      permission: 'external_directory',
-      pattern: '*',
-      action: 'deny',
-    })
+    expect(callArgs.permission.some((r: { permission: string }) => r.permission === 'external_directory')).toBe(false)
   })
 })
 
@@ -379,47 +285,11 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
     })
   })
 
-  test('fallback ruleset includes configured external-directory allowlist for subagent sessions', async () => {
-    const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
-    const mockGet = vi.fn(async () => ({}))
-    const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
-
-    const hook = createLoopPermissionPatcher({
-      client: { session: { get: mockGet, update: mockUpdate } } as any,
-      sessionLoopResolver: {
-        resolveActiveLoopForSession: vi.fn(async () => ({
-          loopName: 'active-loop',
-          active: true,
-          worktreeDir: '/repo/.worktrees/active-loop',
-          sandbox: false,
-        })),
-      } as any,
-      directory: '/repo',
-      logger,
-      getPermissionOptions: () => ({ allowDirectories: [VAULT] }),
-    })
-
-    await hook.onSessionCreated({
-      event: {
-        type: 'session.created',
-        properties: { info: { id: 'child-session', parentID: 'parent-session' } },
-      },
-    })
-
-    expect(mockUpdate).toHaveBeenCalledWith({
-      sessionID: 'child-session',
-      directory: '/repo/.worktrees/active-loop',
-      permission: buildLoopPermissionRuleset({ allowDirectories: [VAULT] }),
-    })
-  })
-
   test('fallback ruleset includes configured loop.permissions deny rules for subagent sessions', async () => {
-    const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
     const mockGet = vi.fn(async () => ({}))
     const mockUpdate = vi.fn(async () => {})
     const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
-    const options = { allowDirectories: [VAULT], extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' as const }] }
+    const options = { extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' as const }] }
 
     const hook = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,

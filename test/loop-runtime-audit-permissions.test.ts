@@ -165,11 +165,7 @@ describe('Audit session permissions', () => {
     // With the ForgeClient port, create params are passed directly (not wrapped in { body })
     const callParams = createCalls[0] as any
     expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset(resolveLoopPermissionOptions(config)))
-    expect(callParams.permission).toContainEqual({
-      permission: 'external_directory',
-      pattern: '*',
-      action: 'deny',
-    })
+    expect(callParams.permission.some((r: { permission: string }) => r.permission === 'external_directory')).toBe(false)
   })
 
   test('audit session includes configured loop.permissions deny rules', async () => {

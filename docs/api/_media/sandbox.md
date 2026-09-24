@@ -45,7 +45,7 @@ obscura serve --port 9222
 1. A sandbox loop uses its isolated git worktree. A host-session sandbox instead uses the project root selected from the TUI.
 2. Forge creates one sandbox per loop, or one project-scoped host-session sandbox shared by plugin instances in the process.
 3. The active directory, the read-only source project (when `sandbox.mountProjectReadonly` is enabled), and the worktree's git metadata directory are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
-4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work.
+4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work, but are fenced to the sandbox mounts (see [File-Tool Boundary](#file-tool-boundary)).
 
 The read-only project mount is dropped whenever it would nest over the writable worktree — which is the default forge layout, where the worktree lives inside the source project — so `sandbox.mountProjectReadonly` is effectively inert there. The worktree stays writable and the git metadata directory is mounted read-write alongside it, so in-sandbox git works and multiple loops in the same project each mount their worktree plus the shared git metadata independently.
 
@@ -68,7 +68,7 @@ When the host sandbox is toggled on for a session (`Toggle host sandbox` in the 
 
 Configured `deny` rules still apply: OpenCode settles them before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
 
-File tools (`read`, `write`, `edit`) run on the host, not in the sandbox, so auto-approval also covers host file edits, including in external directories. To keep prompting while sandboxed, disable it:
+File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbox, but the [file-tool boundary](#file-tool-boundary) refuses any path the sandbox cannot see, so auto-approval never reaches host files outside the mounts. To keep prompting while sandboxed, disable it:
 
 ```jsonc
 {
@@ -84,7 +84,7 @@ File tools (`read`, `write`, `edit`) run on the host, not in the sandbox, so aut
 |---|---|
 | Shell | Native `shell` tool, executed inside the loop sandbox via the shell shim. |
 | Search tools | `glob` and `grep` route through the `msb exec` execution hooks. |
-| File tools | `read`, `write`, and `edit` operate on the host filesystem. |
+| File tools | `read`, `write`, `edit`, and `patch` operate on the host filesystem, restricted to the sandbox mounts; `write`/`edit`/`patch` are refused in read-only mounts. |
 | Git operations managed by Forge | Worktree commits, cleanup, and branch management are handled on the host. |
 
 ## Network Access
@@ -248,18 +248,25 @@ Shell output truncation is handled by opencode's native shell tool: when output 
 opencode spills large tool outputs to its truncation directory (`<opencode-data>/tool-output`, e.g. `~/.local/share/opencode/tool-output`) and references the saved file by absolute host path. Forge makes those overflow files readable from loop and audit sessions in two complementary ways:
 
 - **Sandbox tools** (`bash`, `glob`, `grep`): the directory is bind-mounted **read-only at the identical sandbox path**, so the same absolute path opencode reports resolves inside the sandbox. The mount is added automatically when the directory exists; it is skipped when missing or already covered by the workspace mount.
-- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop — the ruleset's blanket allow covers the `read` permission itself, but a `loop.permissions` rule that denies or asks for `read` is layered after these grants and still applies. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
+- **Host file tools** (`read`): the same mount is what the [file-tool boundary](#file-tool-boundary) checks, so `read` of an overflow file succeeds, and loop permission rulesets never ask about external directories.
 
-opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises to agents as pre-approved scratch space) is handled the same way, but for writes: it is granted an `external_directory` allow rule for host file tools **and** bind-mounted read-write at the identical sandbox path, so scratch files an agent writes at that path resolve identically on the host and inside the sandbox. It is opencode's own directory — Forge provides no separate scratch directory, and agents can use the advertised OS temp path without issue.
+opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises to agents as pre-approved scratch space) is handled the same way, but bind-mounted **read-write** at the identical sandbox path, so scratch files an agent writes at that path, from the shell or with `write`, resolve identically on the host and inside the sandbox. It is opencode's own directory — Forge provides no separate scratch directory, and agents can use the advertised OS temp path without issue.
+
+## File-Tool Boundary
+
+In a sandboxed session (a sandbox loop, its subagents and auditor, or a host session with the sandbox toggled on), the sandbox mounts are the boundary for every tool, including the file tools that run on the host. Before `read`, `write`, `edit`, or `patch` runs, Forge resolves each target path (relative paths against the workspace, `~` against the home directory, symlinks followed to their real location) and:
+
+- refuses it when it lies outside every sandbox mount, so a symlink in the worktree pointing at `~/.ssh` is refused like the direct path;
+- refuses `write`, `edit`, and `patch` when the path lies in a read-only mount;
+- fails closed, like the shell, when the session's sandbox cannot be resolved or restored.
+
+Because the mounts are the boundary, loop and audit permission rulesets contain no `external_directory` rules: external directories fall under the blanket allow, so an unattended loop never waits on an approval. A loop with the sandbox disabled (`sandbox.enabled: false`) has no boundary and full host file access.
 
 ## External Directory Access
 
-`loop.allowExternalDirectories` entries are granted the same two ways, so host and container agree on what exists:
+`loop.allowExternalDirectories` entries become **read-only** bind mounts at their identical host paths, added automatically, so in-container `bash`/`glob`/`grep` and the host file tools see the same tree. Entries that do not exist on the host are skipped with a log line.
 
-- **Host file tools** (`read`, `write`, `edit`): an `external_directory` allow rule layered after the blanket deny.
-- **Sandbox tools** (`bash`, `glob`, `grep`): a **read-only** bind mount at the identical sandbox path, added automatically. Entries that do not exist on the host are skipped with a log line.
-
-The mount is read-only because the setting exists to grant read access. To make an external directory writable from inside the sandbox, add it to `sandbox.mounts` with `"readonly": false`; explicit `sandbox.mounts` entries are resolved first, so they win for any path listed in both.
+The mount is read-only because the setting exists to grant read access. To make an external directory writable, add it to `sandbox.mounts` with `"readonly": false`; explicit `sandbox.mounts` entries are resolved first, so they win for any path listed in both.
 
 ## Resource Defaults
 

@@ -1,17 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
-import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../../src/utils/opencode-paths'
-
-const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
-const TOOL_OUTPUT_ALLOW_RULES = [
-  { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
-  { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
-]
-const OPENCODE_TMP_DIR = resolveOpencodeTmpDir()
-const OPENCODE_TMP_ALLOW_RULES = [
-  { permission: 'external_directory', pattern: OPENCODE_TMP_DIR, action: 'allow' as const },
-  { permission: 'external_directory', pattern: `${OPENCODE_TMP_DIR}/**`, action: 'allow' as const },
-]
 
 describe('MAX_TOTAL_SECTIONS', () => {
   it('is the single canonical section cap', () => {
@@ -38,9 +26,6 @@ describe('buildLoopPermissionRuleset', () => {
     const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
-      { permission: 'external_directory', pattern: '*', action: 'deny' },
-      ...TOOL_OUTPUT_ALLOW_RULES,
-      ...OPENCODE_TMP_ALLOW_RULES,
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan-write', pattern: '*', action: 'deny' },
@@ -88,9 +73,9 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules[0]).toEqual({ permission: '*', pattern: '*', action: 'allow' })
   })
 
-  it('external_directory is deny', () => {
+  it('emits no external_directory rules, so external directories fall under the blanket allow', () => {
     const rules = buildAuditSessionPermissionRuleset()
-    expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
+    expect(rules.some(r => r.permission === 'external_directory')).toBe(false)
   })
 
   it('emits no sh or bash permission rules', () => {
@@ -99,51 +84,12 @@ describe('buildAuditSessionPermissionRuleset', () => {
   })
 })
 
-describe('external directory allowlist', () => {
-  const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
-
-  it('loop ruleset allows only the tool-output and opencode tmp directories when allowDirectories is omitted', () => {
-    const rules = buildLoopPermissionRuleset()
-    const allowPatterns = rules
-      .filter(r => r.permission === 'external_directory' && r.action === 'allow')
-      .map(r => r.pattern)
-    expect(allowPatterns).toEqual([
-      TOOL_OUTPUT_DIR,
-      `${TOOL_OUTPUT_DIR}/**`,
-      OPENCODE_TMP_DIR,
-      `${OPENCODE_TMP_DIR}/**`,
-    ])
-  })
-
-  it('loop ruleset adds exact + recursive allow rules for each configured directory', () => {
-    const rules = buildLoopPermissionRuleset({ allowDirectories: [VAULT] })
-    expect(rules).toContainEqual({ permission: 'external_directory', pattern: VAULT, action: 'allow' })
-    expect(rules).toContainEqual({ permission: 'external_directory', pattern: `${VAULT}/**`, action: 'allow' })
-  })
-
-  it('loop ruleset places external_directory allow rules AFTER the deny (last-match-wins)', () => {
-    const rules = buildLoopPermissionRuleset({ allowDirectories: [VAULT] })
-    const denyIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny')
-    const allowIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === VAULT && r.action === 'allow')
-    expect(denyIdx).toBeGreaterThanOrEqual(0)
-    expect(allowIdx).toBeGreaterThan(denyIdx)
-  })
-
-  it('audit ruleset adds allow rules after the deny too', () => {
-    const rules = buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT] })
-    const denyIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny')
-    const allowIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === `${VAULT}/**` && r.action === 'allow')
-    expect(denyIdx).toBeGreaterThanOrEqual(0)
-    expect(allowIdx).toBeGreaterThan(denyIdx)
-  })
-
-  it('trims trailing slashes and ignores empty/blank entries', () => {
-    const rules = buildLoopPermissionRuleset({ allowDirectories: [`${VAULT}/`, '', '   '] })
-    expect(rules).toContainEqual({ permission: 'external_directory', pattern: VAULT, action: 'allow' })
-    const allowRules = rules.filter(r => r.permission === 'external_directory' && r.action === 'allow')
-    // Always-on tool-output dir (exact + recursive) + always-on opencode tmp dir (exact + recursive)
-    // + the one valid configured directory (exact + recursive) = 6 rules; blank/invalid entries are ignored.
-    expect(allowRules).toHaveLength(6)
+describe('external directories', () => {
+  it('neither ruleset emits external_directory rules, so an unattended loop never waits on an approval', () => {
+    for (const rules of [buildLoopPermissionRuleset(), buildAuditSessionPermissionRuleset()]) {
+      expect(rules.some(r => r.permission === 'external_directory')).toBe(false)
+      expect(rules.some(r => r.action !== 'allow' && r.action !== 'deny')).toBe(false)
+    }
   })
 })
 
@@ -160,51 +106,40 @@ describe('resolveLoopAllowedDirectories', () => {
 })
 
 describe('configured extraRules', () => {
-  const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
   const CONFIGURED_DENY = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
 
   it('omitted extraRules leaves both rulesets unchanged (backward compatibility)', () => {
-    expect(buildLoopPermissionRuleset({ allowDirectories: [VAULT] })).toEqual(
-      buildLoopPermissionRuleset({ allowDirectories: [VAULT], extraRules: [] }),
-    )
-    expect(buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT] })).toEqual(
-      buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT], extraRules: [] }),
-    )
+    expect(buildLoopPermissionRuleset()).toEqual(buildLoopPermissionRuleset({ extraRules: [] }))
+    expect(buildAuditSessionPermissionRuleset()).toEqual(buildAuditSessionPermissionRuleset({ extraRules: [] }))
   })
 
-  it('inserts a configured rule after the external_directory allow rules and before the first structural deny, in both rulesets', () => {
+  it('inserts a configured rule after the blanket allow and before the first structural deny, in both rulesets', () => {
     for (const rules of [
-      buildLoopPermissionRuleset({ allowDirectories: [VAULT], extraRules: [CONFIGURED_DENY] }),
-      buildAuditSessionPermissionRuleset({ allowDirectories: [VAULT], extraRules: [CONFIGURED_DENY] }),
+      buildLoopPermissionRuleset({ extraRules: [CONFIGURED_DENY] }),
+      buildAuditSessionPermissionRuleset({ extraRules: [CONFIGURED_DENY] }),
     ]) {
       expect(rules).toContainEqual(CONFIGURED_DENY)
       const occurrences = rules.filter(r => r.permission === CONFIGURED_DENY.permission && r.action === 'deny').length
       expect(occurrences).toBe(1)
 
       const configuredIdx = rules.findIndex(r => r.permission === 'webfetch' && r.action === 'deny')
-      const lastExternalAllowIdx = rules
-        .map((r, i) => (r.permission === 'external_directory' && r.action === 'allow' ? i : -1))
-        .filter(i => i !== -1)
-        .pop() ?? -1
-      const firstStructuralDenyIdx = rules.findIndex(
-        r => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission) && r.permission !== 'external_directory',
-      )
-      expect(configuredIdx).toBeGreaterThan(lastExternalAllowIdx)
+      const firstStructuralDenyIdx = rules.findIndex(r => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission))
+      expect(configuredIdx).toBeGreaterThan(0)
       expect(configuredIdx).toBeLessThan(firstStructuralDenyIdx)
     }
   })
 })
 
 describe('resolveLoopPermissionOptions', () => {
-  it('resolves both the directory list and the parsed rule from config', () => {
+  it('resolves the parsed rule from config and leaves external directories to the sandbox mounts', () => {
     const config = { loop: { permissions: { deny: ['webfetch'] }, allowExternalDirectories: ['/vault'] } }
-    const options = resolveLoopPermissionOptions(config)
-    expect(options.allowDirectories).toEqual(['/vault'])
-    expect(options.extraRules).toEqual([{ permission: 'webfetch', pattern: '*', action: 'deny' }])
+    expect(resolveLoopPermissionOptions(config)).toEqual({
+      extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' }],
+    })
   })
 
   it('yields empty options when config is undefined', () => {
-    expect(resolveLoopPermissionOptions(undefined)).toEqual({ allowDirectories: [], extraRules: [] })
+    expect(resolveLoopPermissionOptions(undefined)).toEqual({ extraRules: [] })
   })
 })
 

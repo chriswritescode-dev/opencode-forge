@@ -346,7 +346,7 @@ describe('buildLoopPermissionRuleset integration', () => {
     expect(ruleset.some(r => r.permission === 'review-delete' && r.action === 'deny')).toBe(true)
     expect(ruleset).toContainEqual({ permission: 'question', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: '*', pattern: '*', action: 'allow' })
-    expect(ruleset).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
+    expect(ruleset.some(r => r.permission === 'external_directory')).toBe(false)
     expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
   })

@@ -562,7 +562,7 @@ describe('createForgeCore', () => {
     closeDatabase(db)
   })
 
-  test('a transient ancestry lookup failure does not block native tools in toolBefore', async () => {
+  test('a transient ancestry lookup failure fails host file tools closed but not other native tools', async () => {
     const projectId = uniqueProjectId()
     const config: PluginConfig = {
       dataDir: join(testDir, 'memory'),
@@ -578,14 +578,13 @@ describe('createForgeCore', () => {
 
     const built = await buildCore({ config, projectId, client: failingClient })
 
+    for (const tool of ['read', 'edit', 'write']) {
+      await expect(
+        built.core.toolBefore({ tool, sessionID: 'ses-native', callID: `c-${tool}` }, { args: {} }),
+      ).rejects.toThrow()
+    }
     await expect(
-      built.core.toolBefore({ tool: 'read', sessionID: 'ses-native', callID: 'c1' }, { args: {} }),
-    ).resolves.toBeUndefined()
-    await expect(
-      built.core.toolBefore({ tool: 'edit', sessionID: 'ses-native', callID: 'c2' }, { args: {} }),
-    ).resolves.toBeUndefined()
-    await expect(
-      built.core.toolBefore({ tool: 'write', sessionID: 'ses-native', callID: 'c3' }, { args: {} }),
+      built.core.toolBefore({ tool: 'webfetch', sessionID: 'ses-native', callID: 'c-webfetch' }, { args: {} }),
     ).resolves.toBeUndefined()
   })
 
