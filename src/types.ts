@@ -180,6 +180,8 @@ export interface SandboxConfig {
   mounts?: SandboxMountConfig[]
   /** Network access configuration (egress allow-list, env passthrough, host-held secrets). */
   network?: SandboxNetworkConfig
+  /** Approve permission prompts automatically for sessions whose shell runs in a sandbox. Default: true. */
+  autoApprovePermissions?: boolean
 }
 
 /**

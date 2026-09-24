@@ -18,9 +18,6 @@ export const PLAN_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const
 
 /** Structural deny names shared by both loop and audit rulesets, in emit order. */
 export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
-  'plan',
-  'plan_enter',
-  'plan_exit',
   ...PLAN_AUTHORING_TOOL_NAMES,
   'execute-plan',
   'execute-goal',
@@ -36,7 +33,7 @@ export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
 export const LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['review-write', 'review-delete'] as const
 
 /** Structural deny names exclusive to audit sessions (code-mutation tools). */
-export const AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['edit', 'write', 'multiedit', 'apply_patch'] as const
+export const AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['edit', 'write'] as const
 
 /** Permissions config may not name: the blanket allow, the external_directory key, and
  *  every structural deny. Loop/audit rulesets are the only legal consumers of these. */

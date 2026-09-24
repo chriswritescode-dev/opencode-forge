@@ -37,6 +37,7 @@ interface StubCoreOptions {
   shellShimPath?: string | null
   resolveSandboxForDirectory?: ForgeHooksV2Core['resolveSandboxForDirectory']
   resolveShellSandbox?: ForgeHooksV2Core['resolveShellSandbox']
+  autoApprovesPermissions?: ForgeHooksV2Core['autoApprovesPermissions']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
   toolAfter?: ForgeHooksV2Core['toolAfter']
@@ -82,6 +83,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
       options.architectReminderFor ?? ((agent) => (agent === 'architect' ? buildArchitectReminder() : null)),
     resolveSandboxForDirectory: options.resolveSandboxForDirectory ?? (async () => null),
     resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
+    autoApprovesPermissions: options.autoApprovesPermissions ?? (async () => false),
     shellShimPath: options.shellShimPath ?? null,
   }
   return { core, before, after, prompts }
@@ -119,6 +121,47 @@ describe('toV1ToolName', () => {
     expect(toV1ToolName('glob')).toBe('glob')
     expect(toV1ToolName('grep')).toBe('grep')
     expect(toV1ToolName('execute-goal')).toBe('execute-goal')
+  })
+})
+
+describe('registerForgeHooksV2 permission hook', () => {
+  function permissionEvent(effect: 'allow' | 'deny' | 'ask', sessionID = 'ses_sandboxed') {
+    return { sessionID, action: 'shell', resources: ['git push'], effect }
+  }
+
+  test('approves an ask in a session the core auto-approves', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({
+      shellShimPath: '/tmp/forge-shell',
+      autoApprovesPermissions: async (sessionID) => sessionID === 'ses_sandboxed',
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const approved = permissionEvent('ask')
+    await invokeHook(hooks, 'permission', 'evaluate', approved)
+    expect(approved.effect).toBe('allow')
+
+    const other = permissionEvent('ask', 'ses_host')
+    await invokeHook(hooks, 'permission', 'evaluate', other)
+    expect(other.effect).toBe('ask')
+  })
+
+  test('never overrides a deny', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({ shellShimPath: '/tmp/forge-shell', autoApprovesPermissions: async () => true })
+    await registerForgeHooksV2(ctx, core)
+
+    const denied = permissionEvent('deny')
+    await invokeHook(hooks, 'permission', 'evaluate', denied)
+    expect(denied.effect).toBe('deny')
+  })
+
+  test('is not registered without a shell shim', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({ autoApprovesPermissions: async () => true })
+    await registerForgeHooksV2(ctx, core)
+
+    expect(hooks.some((hook) => hook.domain === 'permission' && hook.event === 'evaluate')).toBe(false)
   })
 })
 

@@ -533,7 +533,7 @@ Security rules for loop and audit sessions.
 
 ```typescript
 buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, external_directory deny+allows, then configured rules, then review/plan/loop structural denies
-buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, external_directory deny+allows, configured rules, then structural denies for the direct mutation tools edit/write/multiedit/apply_patch plus the shared plan/loop denies
+buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, external_directory deny+allows, configured rules, then structural denies for the direct mutation tools edit/write plus the shared plan/loop denies
 resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Local resolver: allowDirectories + configured loop.permissions deny rules
 ```
 

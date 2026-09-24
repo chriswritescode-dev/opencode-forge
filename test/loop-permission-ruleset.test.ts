@@ -31,9 +31,6 @@ describe('buildLoopPermissionRuleset', () => {
       ...OPENCODE_TMP_ALLOW_RULES,
       { permission: 'review-write',       pattern: '*', action: 'deny' },
       { permission: 'review-delete',      pattern: '*', action: 'deny' },
-      { permission: 'plan',               pattern: '*', action: 'deny' },
-      { permission: 'plan_enter',         pattern: '*', action: 'deny' },
-      { permission: 'plan_exit',          pattern: '*', action: 'deny' },
       { permission: 'plan-write',         pattern: '*', action: 'deny' },
       { permission: 'plan-edit',          pattern: '*', action: 'deny' },
       { permission: 'execute-plan',       pattern: '*', action: 'deny' },
@@ -53,7 +50,7 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
-    const required = ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'plan-write', 'plan-edit', 'execute-plan', 'question']
+    const required = ['review-write', 'review-delete', 'plan-write', 'plan-edit', 'execute-plan', 'question']
     const rules = buildLoopPermissionRuleset()
     for (const tool of required) {
       expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
@@ -116,16 +113,11 @@ describe('buildAuditSessionPermissionRuleset', () => {
     // Mutation denies
     expect(rules.some(r => r.permission === 'edit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'multiedit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'apply_patch' && r.pattern === '*' && r.action === 'deny')).toBe(true)
 
     // No shell-specific rules: native bash is covered by the blanket allow.
     expect(rules.some(r => r.permission === 'sh' || r.permission === 'bash')).toBe(false)
 
     // Loop/plan denies
-    expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'execute-plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'execute-goal' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'question' && r.pattern === '*' && r.action === 'deny')).toBe(true)

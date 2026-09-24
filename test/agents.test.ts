@@ -22,11 +22,8 @@ describe('Agent definitions', () => {
       expect(architectAgent.mode).toBe('primary')
     })
 
-    test('architect agent excludes plan tools', () => {
-      expect(architectAgent.tools?.exclude).toBeDefined()
-      expect(architectAgent.tools?.exclude).toContain('plan')
-      expect(architectAgent.tools?.exclude).toContain('plan_enter')
-      expect(architectAgent.tools?.exclude).toContain('plan_exit')
+    test('architect agent excludes mutation and subagent tools', () => {
+      expect(architectAgent.tools?.exclude).toEqual(['edit', 'write', 'patch', 'task'])
       expect(architectAgent.tools?.exclude).not.toContain('execute-plan')
     })
 
@@ -51,12 +48,8 @@ describe('Agent definitions', () => {
 
     test('auditor agent has expected tool exclusions', () => {
       expect(auditorAgent.tools?.exclude).toBeDefined()
-      expect(auditorAgent.tools?.exclude).toContain('apply_patch')
       expect(auditorAgent.tools?.exclude).toContain('edit')
       expect(auditorAgent.tools?.exclude).toContain('write')
-      expect(auditorAgent.tools?.exclude).toContain('multiedit')
-      expect(auditorAgent.tools?.exclude).toContain('plan')
-      expect(auditorAgent.tools?.exclude).toContain('plan_exit')
       expect(auditorAgent.tools?.exclude).toContain('execute-plan')
       expect(auditorAgent.tools?.exclude).toContain('execute-goal')
       expect(auditorAgent.tools?.exclude).toContain('question')
@@ -67,9 +60,6 @@ describe('Agent definitions', () => {
     test('code agent has expected tool exclusions', () => {
       expect(codeAgent.tools?.exclude).toBeDefined()
       expect(codeAgent.tools?.exclude).toContain('review-delete')
-      expect(codeAgent.tools?.exclude).toContain('plan')
-      expect(codeAgent.tools?.exclude).toContain('plan_enter')
-      expect(codeAgent.tools?.exclude).toContain('plan_exit')
       expect(codeAgent.tools?.exclude).toContain('plan-write')
       expect(codeAgent.tools?.exclude).toContain('plan-edit')
       expect(codeAgent.tools?.exclude).not.toContain('execute-plan')
@@ -227,11 +217,8 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.hidden).toBe(true)
     })
 
-    test('architect-auto agent excludes plan and question tools', () => {
+    test('architect-auto agent excludes question and execution tools', () => {
       expect(architectAutoAgent.tools?.exclude).toBeDefined()
-      expect(architectAutoAgent.tools?.exclude).toContain('plan')
-      expect(architectAutoAgent.tools?.exclude).toContain('plan_enter')
-      expect(architectAutoAgent.tools?.exclude).toContain('plan_exit')
       expect(architectAutoAgent.tools?.exclude).toContain('question')
       expect(architectAutoAgent.tools?.exclude).toContain('execute-plan')
       expect(architectAutoAgent.tools?.exclude).toContain('execute-goal')
@@ -246,16 +233,11 @@ describe('Agent definitions', () => {
       expect(featureSplitterAgent.hidden).toBe(true)
     })
 
-    test('feature-splitter agent excludes plan, question, write, edit, and patch tools', () => {
+    test('feature-splitter agent excludes question, write, edit, and plan-authoring tools', () => {
       expect(featureSplitterAgent.tools?.exclude).toBeDefined()
-      expect(featureSplitterAgent.tools?.exclude).toContain('plan')
-      expect(featureSplitterAgent.tools?.exclude).toContain('plan_enter')
-      expect(featureSplitterAgent.tools?.exclude).toContain('plan_exit')
       expect(featureSplitterAgent.tools?.exclude).toContain('question')
       expect(featureSplitterAgent.tools?.exclude).toContain('write')
       expect(featureSplitterAgent.tools?.exclude).toContain('edit')
-      expect(featureSplitterAgent.tools?.exclude).toContain('apply_patch')
-      expect(featureSplitterAgent.tools?.exclude).toContain('multiedit')
       expect(featureSplitterAgent.tools?.exclude).toContain('plan-write')
       expect(featureSplitterAgent.tools?.exclude).toContain('plan-edit')
     })

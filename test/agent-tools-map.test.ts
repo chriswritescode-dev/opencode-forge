@@ -6,7 +6,7 @@ const agents = buildAgents()
 describe('per-agent tools.exclude (regression guard)', () => {
   test('code agent excludes review and plan tools but can launch loops', () => {
     const excluded = agents.code.tools?.exclude ?? []
-    for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'plan-write', 'plan-edit']) {
+    for (const tool of ['review-write', 'review-delete', 'plan-write', 'plan-edit']) {
       expect(excluded).toContain(tool)
     }
     expect(excluded).not.toContain('execute-plan')
@@ -17,12 +17,20 @@ describe('per-agent tools.exclude (regression guard)', () => {
 
   test('auditor agent excludes plan/loop tools but NOT review tools', () => {
     const excluded = agents.auditor.tools?.exclude ?? []
-    for (const tool of ['plan', 'plan_exit', 'execute-plan', 'loop-cancel', 'loop-status', 'plan-write', 'plan-edit']) {
+    for (const tool of ['execute-plan', 'loop-cancel', 'loop-status', 'plan-write', 'plan-edit']) {
       expect(excluded).toContain(tool)
     }
     // Auditor MUST be allowed to use review-write and review-delete.
     expect(excluded).not.toContain('review-write')
     expect(excluded).not.toContain('review-delete')
+  })
+
+  test('no agent excludes tools OpenCode 2.x no longer has', () => {
+    for (const agent of Object.values(agents)) {
+      for (const tool of ['plan', 'plan_enter', 'plan_exit', 'multiedit', 'apply_patch']) {
+        expect(agent.tools?.exclude ?? []).not.toContain(tool)
+      }
+    }
   })
 
   test('no agent retains plan-execute in tools.exclude (regression: tool removed)', () => {

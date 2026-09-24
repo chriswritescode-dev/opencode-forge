@@ -25,7 +25,7 @@ When no stored plan exists, `Execute plan` opens the paste dialog instead of rec
 
 The sidebar shows the Forge title (with version when `tui.showVersion` is on) and the project's loops. Captured plans live on the server in the `plansRepo` SQL store; the TUI keeps no local archive or in-TUI editor.
 
-When sandboxing is configured, the sidebar displays the current session's msb state as `· MSB enabled/disabled/loading/failed` next to the Forge title. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
+When sandboxing is configured, the sidebar displays the current session's msb state as `· MSB enabled/disabled/loading/failed` next to the Forge title. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. While it is on, permission prompts in those sessions are approved automatically unless `sandbox.autoApprovePermissions` is `false` (see [Sandbox](sandbox.md#permission-auto-approval)). The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
 
 ## Additional Commands
 

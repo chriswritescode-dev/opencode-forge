@@ -62,6 +62,22 @@ The marker makes the routing fail closed: if it is not stripped, the command fai
 
 Commands the user runs directly — `!` commands and terminals — do not pass through the tool wrapper and stay on the host.
 
+## Permission Auto-Approval
+
+When the host sandbox is toggled on for a session (`Toggle host sandbox` in the TUI), Forge approves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask becomes allow. This applies only while the session's shell calls actually route into a running sandbox. If the sandbox is off, still starting, or failed to start, prompts are shown as usual.
+
+Configured `deny` rules still apply: OpenCode settles them before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
+
+File tools (`read`, `write`, `edit`) run on the host, not in the sandbox, so auto-approval also covers host file edits, including in external directories. To keep prompting while sandboxed, disable it:
+
+```jsonc
+{
+  "sandbox": {
+    "autoApprovePermissions": false
+  }
+}
+```
+
 ## Tool Behavior
 
 | Tool category | Behavior in a sandboxed session |

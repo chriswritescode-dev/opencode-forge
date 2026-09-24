@@ -642,6 +642,10 @@ describe('createForgeCore', () => {
 
       // An unrelated host session is unaffected and falls through to the host shell.
       await expect(built.core.resolveShellSandbox('ses-unrelated')).resolves.toBeNull()
+
+      // Permission auto-approval never applies when the sandbox cannot be resolved or is absent.
+      await expect(built.core.autoApprovesPermissions('ses-selected')).resolves.toBe(false)
+      await expect(built.core.autoApprovesPermissions('ses-unrelated')).resolves.toBe(false)
     } finally {
       if (originalPath === undefined) delete process.env.PATH
       else process.env.PATH = originalPath

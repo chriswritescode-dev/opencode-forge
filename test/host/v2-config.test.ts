@@ -38,11 +38,6 @@ describe('registerForgeAgentsV2', () => {
     expect(denies).toEqual(
       expect.arrayContaining([
         'edit',
-        'multiedit',
-        'apply_patch',
-        'plan',
-        'plan_enter',
-        'plan_exit',
         'plan-write',
         'plan-edit',
         'execute-plan',

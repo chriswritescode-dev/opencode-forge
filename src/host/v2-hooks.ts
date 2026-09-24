@@ -24,6 +24,7 @@ export type ForgeHooksV2Core = Pick<
   | 'architectReminderFor'
   | 'resolveSandboxForDirectory'
   | 'resolveShellSandbox'
+  | 'autoApprovesPermissions'
   | 'shellShimPath'
 >
 
@@ -95,7 +96,13 @@ export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooks
     }
   })
 
-  if (core.shellShimPath) await wrapShellToolForSandbox(ctx, core)
+  if (core.shellShimPath) {
+    await wrapShellToolForSandbox(ctx, core)
+    await ctx.permission.hook('evaluate', async (event) => {
+      if (event.effect !== 'ask') return
+      if (await core.autoApprovesPermissions(event.sessionID)) event.effect = 'allow'
+    })
+  }
 
   await ctx.shell.hook('create.before', async (event) => {
     const marked = SHELL_MARKER_PATTERN.exec(event.command)

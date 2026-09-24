@@ -85,6 +85,12 @@ export interface ForgeCore {
    * Fails closed: throws when an expected sandbox cannot be resolved or restored.
    */
   resolveShellSandbox(sessionID: string): Promise<SandboxContext | null>
+  /**
+   * True when a permission prompt in `sessionID` should be approved automatically: the session's
+   * shell calls run in a sandbox and `sandbox.autoApprovePermissions` is not disabled. Any
+   * resolution failure answers false so the prompt is still shown.
+   */
+  autoApprovesPermissions(sessionID: string): Promise<boolean>
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -1000,6 +1006,13 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return resolveSandboxContextForLoop(sandboxManager, state, logger, opts)
   }
 
+  const resolveShellSandbox = async (sessionID: string): Promise<SandboxContext | null> => {
+    if (!shellShimPath) return null
+    await sharedSessionSandbox.controller.start()
+    if (loopHandler.loop.listActive().length === 0 && sharedSessionSandbox.controller.isIdle()) return null
+    return resolveSandboxForSession(sessionID, { throwOnRestoreError: true })
+  }
+
   return {
     tools,
     applyConfig: createConfigHandler(agents, config.agents, promptsDir),
@@ -1071,11 +1084,15 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     architectReminderFor,
     executeTuiPlan,
     resolveSandboxForDirectory,
-    resolveShellSandbox: async (sessionID) => {
-      if (!shellShimPath) return null
-      await sharedSessionSandbox.controller.start()
-      if (loopHandler.loop.listActive().length === 0 && sharedSessionSandbox.controller.isIdle()) return null
-      return resolveSandboxForSession(sessionID, { throwOnRestoreError: true })
+    resolveShellSandbox,
+    autoApprovesPermissions: async (sessionID) => {
+      if (config.sandbox?.autoApprovePermissions === false) return false
+      try {
+        return (await resolveShellSandbox(sessionID)) !== null
+      } catch (err) {
+        logger.log(`[sandbox] permission auto-approval skipped for ${sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        return false
+      }
     },
     cleanup,
     shellShimPath,
