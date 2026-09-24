@@ -532,9 +532,9 @@ Cross-cutting helpers (~40 files) organized by concern:
 Security rules for loop and audit sessions.
 
 ```typescript
-buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, external_directory deny+allows, then configured rules, then review/plan/loop structural denies
-buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, external_directory deny+allows, configured rules, then structural denies for the direct mutation tools edit/write plus the shared plan/loop denies
-resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Local resolver: allowDirectories + configured loop.permissions deny rules
+buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, then configured rules, then review/plan/loop structural denies
+buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, configured rules, then structural denies for the direct mutation tools edit/write plus the shared plan/loop denies
+resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Local resolver: configured loop.permissions deny rules
 ```
 
 Only `deny` entries are honoured; Forge-managed permissions and blanket denies of Forge-required

@@ -1,4 +1,3 @@
-import { resolveOpencodeToolOutputDir, resolveOpencodeTmpDir } from '../utils/opencode-paths'
 import { isRecord } from '../utils/is-record'
 import type { PluginConfig, LoopPermissionsConfig } from '../types'
 
@@ -129,7 +128,7 @@ export function parseLoopPermissionRules(raw: unknown): { rules: PermissionRule[
         if (FORGE_MANAGED_PERMISSIONS.has(rule.permission)) {
           const suffix =
             rule.permission === 'external_directory'
-              ? ' — use loop.allowExternalDirectories instead'
+              ? ' — loops allow external directories; sandbox mounts are the boundary (add read-only mounts with loop.allowExternalDirectories)'
               : ''
           warnings.push(
             `loop.permissions.deny entry "${rule.permission}" is ignored: Forge manages this permission for every loop and audit session${suffix}`,
@@ -153,13 +152,11 @@ export function resolveLoopPermissionRules(config: PluginConfig | undefined): Pe
 }
 
 /**
- * Resolves the full ruleset options (allowed directories plus configured rules) for a config.
- * Single call every ruleset construction site uses so directories and configured rules can never
- * diverge. `resolveLoopAllowedDirectories` remains the single source for the directory list.
+ * Resolves the full ruleset options (configured `loop.permissions` rules) for a config. Single call
+ * every ruleset construction site uses so the configured rules can never diverge.
  */
 export function resolveLoopPermissionOptions(config: PluginConfig | undefined): LoopPermissionRulesetOptions {
   return {
-    allowDirectories: resolveLoopAllowedDirectories(config),
     extraRules: resolveLoopPermissionRules(config),
   }
 }
@@ -170,10 +167,8 @@ export function collectLoopPermissionConfigWarnings(config: PluginConfig | undef
 }
 
 /**
- * Resolves the user-configured external directories loop/audit sessions may access. Single source of
- * truth so every permission-ruleset call site grants the same paths regardless of sandbox mode.
- * (opencode's tool-output directory and its advertised temp directory are added separately inside
- * the ruleset builder.)
+ * Resolves the user-configured external directories bind-mounted read-only into loop sandboxes, so
+ * host file tools and in-container tools see the same tree.
  */
 export function resolveLoopAllowedDirectories(config: PluginConfig | undefined): string[] {
   return config?.loop?.allowExternalDirectories ?? []
@@ -181,69 +176,26 @@ export function resolveLoopAllowedDirectories(config: PluginConfig | undefined):
 
 export interface LoopPermissionRulesetOptions {
   /**
-   * Absolute directory paths to grant access to via `external_directory` allow rules.
-   * These are layered AFTER the blanket `external_directory` deny so last-match-wins
-   * permission resolution grants access to these paths while keeping all others denied.
-   */
-  allowDirectories?: string[]
-  /**
-   * User-configured rules (`loop.permissions`) inserted after the external-directory allow
-   * rules and before Forge's structural denies, so they can never override a structural deny.
+   * User-configured rules (`loop.permissions`) inserted after the blanket allow and before
+   * Forge's structural denies, so they can never override a structural deny.
    */
   extraRules?: PermissionRule[]
 }
 
 /**
- * Builds `external_directory` allow rules. Each directory produces two rules: an exact-path
- * allow and a recursive (`/**`) allow.
- *
- * opencode's tool-output (truncation) directory and its advertised temp directory (`Global.Path.tmp`,
- * which its shell-tool description presents as pre-approved) are always included: loop/audit sessions
- * must be able to read spilled tool outputs and use the advertised scratch dir without prompting in the
- * unattended loop. User-configured directories are layered on top. All are added AFTER the blanket
- * `external_directory` deny so last-match-wins resolution grants access to these paths while all
- * others stay denied.
- */
-function buildExternalDirectoryAllowRules(allowDirectories: string[] = []): PermissionRule[] {
-  const rules: PermissionRule[] = []
-  const dirs = [resolveOpencodeToolOutputDir(), resolveOpencodeTmpDir(), ...allowDirectories]
-  for (const dir of dirs) {
-    if (typeof dir !== 'string') continue
-    const trimmed = dir.trim().replace(/\/+$/, '')
-    if (!trimmed) continue
-    rules.push({ permission: 'external_directory', pattern: trimmed, action: 'allow' })
-    rules.push({ permission: 'external_directory', pattern: `${trimmed}/**`, action: 'allow' })
-  }
-  return rules
-}
-
-/**
  * Builds the permission ruleset for loop sessions.
  *
- * All loops use worktree isolation with a blanket allow-all, plus
- * explicit deny rules for review tools, plan tools, and loop-management tools.
- * External directory access is denied by default; opencode's tool-output directory (and any
- * user-configured directories) are then allowed so spilled tool outputs remain readable.
+ * All loops use worktree isolation with a blanket allow-all, plus explicit deny rules for review
+ * tools, plan tools, and loop-management tools. External directories are covered by the blanket
+ * allow so an unattended loop never waits on an approval: in a sandboxed loop the sandbox mounts
+ * are the boundary (the sandbox tool hook refuses host file tools outside them), and a loop with
+ * the sandbox disabled has host access.
  */
 export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
   const rules: PermissionRule[] = []
 
   // Blanket allow-all for worktree loops (isolated environment).
   rules.push({ permission: '*', pattern: '*', action: 'allow' })
-
-  // External directory access is denied by default so loop work stays confined to
-  // the isolated worktree, regardless of whether shell commands run on the host
-  // or inside a sandbox container.
-  rules.push({
-    permission: 'external_directory',
-    pattern: '*',
-    action: 'deny',
-  })
-
-  // Allow rules layered after the deny so last-match-wins grants access: opencode's
-  // tool-output directory (always) plus any opt-in configured paths (e.g. an Obsidian vault),
-  // while all other external directories stay denied.
-  rules.push(...buildExternalDirectoryAllowRules(options.allowDirectories))
 
   // User-configured rules layered before Forge's structural denies so they can never
   // override a structural deny.
@@ -261,18 +213,11 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
  * Audit sessions run the auditor agent in an isolated session. The ruleset
  * allows read-only operations (read, grep, glob, codesearch, webfetch,
  * websearch, list, task) and review tools (review-write, review-delete), but
- * denies direct code mutation tools.
- *
- * External directory access is denied by default; opencode's tool-output directory (and any
- * user-configured directories) are then allowed so spilled tool outputs remain readable.
+ * denies direct code mutation tools. External directories follow the same policy as loop sessions.
  */
 export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
   const rules: PermissionRule[] = [
     { permission: '*', pattern: '*', action: 'allow' },
-    { permission: 'external_directory', pattern: '*', action: 'deny' },
-    // Allow rules layered after the deny (last-match-wins): tool-output directory (always)
-    // plus any opt-in configured directories.
-    ...buildExternalDirectoryAllowRules(options.allowDirectories),
     // User-configured rules layered before Forge's structural denies.
     ...(options.extraRules ?? []),
     // Audit sessions must not mutate code, must never launch loops or manage other loops.

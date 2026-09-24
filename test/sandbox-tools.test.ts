@@ -1,4 +1,7 @@
-import { describe, test, expect, beforeEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from '../src/hooks/sandbox-tools'
 import type { Logger } from '../src/types'
 import type { SandboxContext } from '../src/sandbox/context'
@@ -391,20 +394,31 @@ describe('sandbox tool hooks', () => {
   })
 
   describe('fail-closed search restoration', () => {
-    test('resolver errors do not block unrelated (non-glob/grep) tools', async () => {
+    test('resolver errors do not block shell or management tools', async () => {
       const hook = createSandboxToolBeforeHook({
         resolveSandboxForSession: async () => {
           throw new Error('sandbox unavailable')
         },
         logger: mockLogger,
       })
-      // The resolver would reject, but this hook only handles glob/grep. Native file and
-      // management tools must pass through untouched, never blocked by a restoration failure.
-      for (const tool of ['read', 'edit', 'write', 'bash']) {
+      for (const tool of ['bash', 'webfetch', 'plan-read']) {
         const input = { tool, sessionID: TEST_SESSION_ID, callID: `${tool}-1` }
-        const output = { args: { filePath: '/tmp/x' } }
+        const output = { args: { path: '/tmp/x' } }
         await expect(hook(input as never, output as never)).resolves.toBeUndefined()
-        expect(output.args.filePath).toBe('/tmp/x')
+        expect(output.args.path).toBe('/tmp/x')
+      }
+    })
+
+    test('host file tools fail closed when the sandbox resolver rejects', async () => {
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => {
+          throw new Error('sandbox unavailable')
+        },
+        logger: mockLogger,
+      })
+      for (const tool of ['read', 'edit', 'write', 'patch']) {
+        const input = { tool, sessionID: TEST_SESSION_ID, callID: `${tool}-failclosed` }
+        await expect(hook(input as never, { args: { path: '/tmp/x' } } as never)).rejects.toThrow('sandbox unavailable')
       }
     })
 
@@ -433,5 +447,110 @@ describe('sandbox tool hooks', () => {
 
       await expect(hook(input as never, output as never)).rejects.toThrow('sandbox unavailable')
     })
+  })
+})
+
+describe('host file tool sandbox fence', () => {
+  const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+  let root: string
+  let worktree: string
+  let readOnlyDir: string
+  let outsideDir: string
+
+  const call = async (tool: string, args: Record<string, unknown>, sessionID = 'fenced') => {
+    const sandbox: SandboxContext = {
+      runtime: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }) } as never,
+      containerName: 'fence-container',
+      hostDir: worktree,
+      mounts: [
+        { hostDir: worktree, containerDir: worktree },
+        { hostDir: readOnlyDir, containerDir: readOnlyDir, readOnly: true },
+      ],
+    }
+    const hook = createSandboxToolBeforeHook({
+      resolveSandboxForSession: async (id) => (id === 'fenced' ? sandbox : null),
+      logger,
+    })
+    return hook({ tool, sessionID, callID: `${tool}-fence` } as never, { args } as never)
+  }
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'forge-fence-')))
+    worktree = join(root, 'worktree')
+    readOnlyDir = join(root, 'vault')
+    outsideDir = join(root, 'outside')
+    for (const dir of [worktree, readOnlyDir, outsideDir]) mkdirSync(dir)
+    writeFileSync(join(worktree, 'file.ts'), '')
+    writeFileSync(join(readOnlyDir, 'note.md'), '')
+    writeFileSync(join(outsideDir, 'secret'), '')
+    symlinkSync(outsideDir, join(worktree, 'escape'))
+  })
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  test('allows every file tool inside a writable mount, including relative and not-yet-existing paths', async () => {
+    for (const tool of ['read', 'edit', 'write']) {
+      await expect(call(tool, { path: join(worktree, 'file.ts') })).resolves.toBeUndefined()
+      await expect(call(tool, { path: 'src/new/file.ts' })).resolves.toBeUndefined()
+    }
+  })
+
+  test('refuses file tools on a path outside every mount', async () => {
+    for (const tool of ['read', 'edit', 'write']) {
+      await expect(call(tool, { path: join(outsideDir, 'secret') })).rejects.toThrow('outside the sandbox mounts')
+    }
+    await expect(call('read', { path: '../outside/secret' })).rejects.toThrow('outside the sandbox mounts')
+    await expect(call('read', { path: '~/.ssh/id_ed25519' })).rejects.toThrow('outside the sandbox mounts')
+  })
+
+  test('refuses a path that escapes a mount through a symlink', async () => {
+    await expect(call('read', { path: join(worktree, 'escape', 'secret') })).rejects.toThrow('outside the sandbox mounts')
+    await expect(call('write', { path: join(worktree, 'escape', 'new-file') })).rejects.toThrow('outside the sandbox mounts')
+  })
+
+  test('allows reads but refuses mutation inside a read-only mount', async () => {
+    await expect(call('read', { path: join(readOnlyDir, 'note.md') })).resolves.toBeUndefined()
+    await expect(call('edit', { path: join(readOnlyDir, 'note.md') })).rejects.toThrow('read-only sandbox mount')
+    await expect(call('write', { path: join(readOnlyDir, 'new.md') })).rejects.toThrow('read-only sandbox mount')
+  })
+
+  test('checks every path a patch touches, including move targets', async () => {
+    const inside = `*** Begin Patch\n*** Update File: ${join(worktree, 'file.ts')}\n@@\n-a\n+b\n*** End Patch`
+    await expect(call('patch', { patchText: inside })).resolves.toBeUndefined()
+    const moved = `*** Begin Patch\n*** Update File: ${join(worktree, 'file.ts')}\n*** Move to: ${join(outsideDir, 'moved.ts')}\n*** End Patch`
+    await expect(call('patch', { patchText: moved })).rejects.toThrow('outside the sandbox mounts')
+    const readOnly = `*** Begin Patch\n*** Delete File: ${join(readOnlyDir, 'note.md')}\n*** End Patch`
+    await expect(call('patch', { patchText: readOnly })).rejects.toThrow('read-only sandbox mount')
+  })
+
+  test('matches a mount declared through a symlinked path against its canonical target', async () => {
+    const aliasRoot = mkdtempSync(join(tmpdir(), 'forge-fence-alias-'))
+    const alias = join(aliasRoot, 'link')
+    symlinkSync(worktree, alias)
+    const hook = createSandboxToolBeforeHook({
+      resolveSandboxForSession: async () => ({
+        runtime: { exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }) } as never,
+        containerName: 'fence-container',
+        hostDir: alias,
+        mounts: [{ hostDir: alias, containerDir: alias }],
+      }),
+      logger,
+    })
+    try {
+      for (const path of [join(worktree, 'file.ts'), join(alias, 'file.ts'), 'file.ts']) {
+        await expect(hook({ tool: 'edit', sessionID: 'fenced', callID: 'alias' } as never, { args: { path } } as never)).resolves.toBeUndefined()
+      }
+      await expect(
+        hook({ tool: 'read', sessionID: 'fenced', callID: 'alias' } as never, { args: { path: join(outsideDir, 'secret') } } as never),
+      ).rejects.toThrow('outside the sandbox mounts')
+    } finally {
+      rmSync(aliasRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('leaves file tools untouched in sessions without a sandbox', async () => {
+    await expect(call('write', { path: join(outsideDir, 'secret') }, 'host-session')).resolves.toBeUndefined()
   })
 })

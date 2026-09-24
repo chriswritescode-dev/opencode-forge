@@ -74,10 +74,9 @@ export interface LoopConfig {
   /** Time in ms a loop session may stay busy with no tool activity before the watchdog aborts the wedged message and sends a continue prompt. 0 = disabled (default: 900000). */
   busyStallTimeoutMs?: number
   /**
-   * Absolute directory paths that loop, audit, and post-action sessions may read despite
-   * worktree isolation (e.g. an Obsidian vault). Each entry is granted via `external_directory`
-   * allow rules layered over the default deny, and is additionally bind-mounted read-only into
-   * the sandbox so in-container `bash`/`glob`/`grep` resolve the same tree host `read` does.
+   * Absolute directory paths bind-mounted read-only into loop sandboxes (e.g. an Obsidian vault),
+   * so in-container `bash`/`glob`/`grep` resolve the same tree host `read` does. The sandbox mounts
+   * are the file-tool boundary, so these are the external directories a sandboxed loop can read.
    * Always an absolute host path: msb mounts every workspace at its identical host path, so the
    * same value is correct on both sides. Use `sandbox.mounts` for read-write container access.
    */
@@ -95,8 +94,8 @@ export interface LoopConfig {
    * Extra `deny` rules layered over Forge's structural denies for loop, audit, and post-action
    * sessions. Entries are applied before Forge's structural denies, so a user rule for a permission
    * that Forge manages is rejected, as is a blanket (`*`) deny of a permission the loop requires;
-   * scoped denies remain honored. Use `allowExternalDirectories` for `external_directory` grants,
-   * which Forge manages for every session.
+   * scoped denies remain honored. `external_directory` is Forge-managed: loops allow it and rely on
+   * the sandbox mounts as the boundary (extend them with `allowExternalDirectories`).
    */
   permissions?: LoopPermissionsConfig
 }

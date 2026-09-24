@@ -71,7 +71,7 @@ describe('parseLoopPermissionRules', () => {
     expect(result.rules).toEqual([])
     expect(result.warnings).toEqual([
       'loop.permissions.deny entry "*" is ignored: Forge manages this permission for every loop and audit session',
-      'loop.permissions.deny entry "external_directory" is ignored: Forge manages this permission for every loop and audit session — use loop.allowExternalDirectories instead',
+      'loop.permissions.deny entry "external_directory" is ignored: Forge manages this permission for every loop and audit session — loops allow external directories; sandbox mounts are the boundary (add read-only mounts with loop.allowExternalDirectories)',
       'loop.permissions.deny entry "question" is ignored: Forge manages this permission for every loop and audit session',
       'loop.permissions.deny entry "plan-write" is ignored: Forge manages this permission for every loop and audit session',
       'loop.permissions.deny entry "loop-status" is ignored: Forge manages this permission for every loop and audit session',
