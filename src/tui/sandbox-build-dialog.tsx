@@ -1,11 +1,13 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import type { ForgeTuiHost } from './host'
 import type { SelectRenderable } from '@opentui/core'
 import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { tmpdir } from 'os'
 import { claimFocusOnMount } from './focus'
 import { createMsbRuntime } from '../sandbox/msb'
-import { buildAndLoadSandboxTemplate, type SandboxBuildStage } from '../sandbox/template'
+import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE, type SandboxBuildStage } from '../sandbox/template'
+import { resolveBundledContainerDir } from '../setup'
+import type { PluginConfig } from '../types'
 import { runCommand } from '../sandbox/process'
 
 const BUILD_PROGRESS_BAR_WIDTH = 24
@@ -32,11 +34,11 @@ function formatElapsed(totalSeconds: number): string {
 }
 
 export function SandboxBuildDialog(props: {
-  api: TuiPluginApi
+  host: ForgeTuiHost
   buildContextDir: string
   image: string
 }) {
-  const theme = () => props.api.theme.current
+  const colors = () => props.host.colors()
 
   type BuildPhase = 'confirm' | 'running' | 'success' | 'error'
   const [phase, setPhase] = createSignal<BuildPhase>('confirm')
@@ -76,7 +78,7 @@ export function SandboxBuildDialog(props: {
     return (step()?.description ?? lastLine()).slice(0, 96)
   })
 
-  const statusColor = createMemo(() => (phase() === 'error' ? theme().error : theme().text))
+  const statusColor = createMemo(() => (phase() === 'error' ? colors().error : colors().text))
 
   const selectOptions = createMemo(() => {
     if (phase() === 'confirm') {
@@ -102,7 +104,7 @@ export function SandboxBuildDialog(props: {
     setPhase('running')
     // Fires before any Docker work, so it also proves the keypress reached this
     // handler even if the dialog itself fails to repaint.
-    props.api.ui.toast({ message: `Building ${props.image}...`, variant: 'info', duration: 4000 })
+    props.host.toast({ message: `Building ${props.image}...`, variant: 'info', duration: 4000 })
     const startedAt = Date.now()
     timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000)
 
@@ -132,7 +134,7 @@ export function SandboxBuildDialog(props: {
       })
       stopTimer()
       setPhase('success')
-      props.api.ui.toast({
+      props.host.toast({
         message: `Sandbox template ${props.image} built and loaded successfully`,
         variant: 'success',
         duration: 5000,
@@ -143,38 +145,38 @@ export function SandboxBuildDialog(props: {
       setTail([...outputTail])
       setErrorMessage(message)
       setPhase('error')
-      props.api.ui.toast({ message, variant: 'error', duration: 10_000 })
+      props.host.toast({ message, variant: 'error', duration: 10_000 })
     }
   }
 
   return (
     <box flexDirection="column" paddingX={2}>
       <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
-        <text fg={theme().text}>
+        <text fg={colors().text}>
           <b>Build sandbox template</b>
         </text>
       </box>
 
       <box paddingBottom={1}>
-        <text fg={theme().textMuted}>
+        <text fg={colors().textMuted}>
           This builds the sandbox image with Docker, then loads it into msb.
         </text>
       </box>
       <box paddingBottom={1}>
-        <text fg={theme().textMuted}>Image: {props.image}</text>
+        <text fg={colors().textMuted}>Image: {props.image}</text>
       </box>
       <box paddingBottom={1}>
-        <text fg={theme().textMuted}>Context: {props.buildContextDir}</text>
+        <text fg={colors().textMuted}>Context: {props.buildContextDir}</text>
       </box>
 
       <box paddingBottom={1} flexDirection="column">
         <text fg={statusColor()}>{statusLine()}</text>
-        <text fg={theme().textMuted}>{detailLine()}</text>
+        <text fg={colors().textMuted}>{detailLine()}</text>
       </box>
 
       <Show when={phase() === 'error'}>
         <box paddingBottom={1} flexDirection="column">
-          <For each={tail()}>{(line) => <text fg={theme().textMuted}>{line.slice(0, 96)}</text>}</For>
+          <For each={tail()}>{(line) => <text fg={colors().textMuted}>{line.slice(0, 96)}</text>}</For>
         </box>
       </Show>
 
@@ -190,20 +192,26 @@ export function SandboxBuildDialog(props: {
               return
             }
             if (option?.value === 'cancel') {
-              props.api.ui.dialog.clear()
+              props.host.clearDialog()
             }
           }}
           showDescription={true}
           itemSpacing={1}
           wrapSelection={true}
-          textColor={theme().text}
-          focusedTextColor={theme().text}
-          selectedTextColor="#ffffff"
-          selectedBackgroundColor={theme().borderActive}
+          textColor={colors().text}
+          focusedTextColor={colors().text}
+          selectedTextColor={colors().selectedText}
+          selectedBackgroundColor={colors().selectedBackground}
           minHeight={4}
           flexShrink={0}
         />
       </box>
     </box>
   )
+}
+
+export function openSandboxBuildDialog(host: ForgeTuiHost, pluginConfig: PluginConfig): void {
+  const buildContextDir = resolveBundledContainerDir()
+  const image = pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
+  host.showDialog('medium', () => <SandboxBuildDialog host={host} buildContextDir={buildContextDir} image={image} />)
 }

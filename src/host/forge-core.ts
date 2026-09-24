@@ -47,7 +47,8 @@ import { parseFeatureList } from '../utils/feature-list-parser'
 import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils/architect-auto-output'
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
-import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
+import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
+import type { ForgeExecutePlanInput, ForgeExecutePlanOutput } from './forge-rpc'
 import { createTuiLoopRestartController, type TuiLoopRestartController } from '../services/tui-loop-restart-controller'
 
 /**
@@ -86,6 +87,7 @@ export interface ForgeCore {
     output: { messages: Array<{ info: { role: string; agent?: string; id?: string }; parts: Array<Record<string, unknown>> }> },
   ): Promise<void>
   architectReminderFor(agent: string | undefined): string | null
+  executeTuiPlan(input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput>
   resolveSandboxForDirectory(directory: string, opts?: { throwOnRestoreError?: boolean }): Promise<SandboxContext | null>
   cleanup(): Promise<void>
   shellShimPath: string | null
@@ -745,9 +747,9 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return plan ? inspectArchitectPlanReadiness(plan.content) : null
   }
 
-  // Execution service for group-launched loops. Built once and reused across launch/cancel
-  // (stateless dispatch) so the dependency wiring lives in a single place.
-  const groupExecService = createForgeExecutionService({
+  // Execution service shared by group launches, TUI loop restarts, and TUI plan execution.
+  // Built once and reused (stateless dispatch) so the dependency wiring lives in a single place.
+  const executionService = createForgeExecutionService({
     projectId,
     directory,
     config,
@@ -772,7 +774,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       repo: createTuiLoopRestartRepo(db),
       logger,
       async restart(request) {
-        const response = await groupExecService.dispatch(
+        const response = await executionService.dispatch(
           { surface: 'api', projectId, directory: projectRoot },
           {
             type: 'loop.restart',
@@ -856,7 +858,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         directory,
         sourceSessionId: architectSessionId,
       }
-      const response = await groupExecService.dispatch(execCtx, {
+      const response = await executionService.dispatch(execCtx, {
         type: 'loop.start',
         source: { kind: 'stored', sessionId: architectSessionId },
         loopName,
@@ -871,7 +873,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
 
     async cancelLoop(loopName) {
-      await groupExecService.dispatch(
+      await executionService.dispatch(
         { surface: 'tool', projectId, directory },
         { type: 'loop.cancel', selector: { kind: 'exact', name: loopName } },
       )
@@ -948,6 +950,63 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     if (messagesTransformConfig?.enabled === false) return null
     if (agent !== agents.architect.displayName) return null
     return buildArchitectReminder()
+  }
+
+  const executeTuiPlan = async (input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput> => {
+    const execCtx: ForgeExecutionRequestContext = {
+      surface: 'tui',
+      projectId,
+      directory,
+      ...(input.sessionId ? { sourceSessionId: input.sessionId } : {}),
+    }
+    const source: PlanSource = { kind: 'inline', planText: input.plan }
+    const executionModel = input.executionModel || undefined
+    const executionVariant = input.executionVariant || undefined
+
+    if (input.mode === 'execute-here') {
+      if (!input.sessionId) return { error: 'Execute here requires a current session' }
+      const response = await executionService.dispatch(execCtx, {
+        type: 'plan.execute.here',
+        source,
+        targetSessionId: input.sessionId,
+        title: input.title,
+        executionModel,
+        executionVariant,
+      })
+      return response.ok ? { sessionId: response.data.sessionId } : { error: response.error.message }
+    }
+
+    if (input.mode === 'new-session') {
+      const response = await executionService.dispatch(execCtx, {
+        type: 'plan.execute.newSession',
+        source,
+        title: input.title,
+        executionModel,
+        executionVariant,
+        lifecycle: { deleteSessionOnPromptFailure: true },
+      })
+      return response.ok ? { sessionId: response.data.sessionId } : { error: response.error.message }
+    }
+
+    const response = await executionService.dispatch(execCtx, buildStartLoopCommand({
+      source,
+      title: input.title,
+      loopName: input.loopName?.trim() ? slugify(input.loopName) : undefined,
+      maxIterations: config.loop?.defaultMaxIterations ?? 0,
+      executionModel,
+      auditorModel: input.auditorModel || undefined,
+      executionVariant,
+      auditorVariant: input.auditorVariant || undefined,
+      hostSessionId: input.sessionId || undefined,
+      lifecycle: { startWatchdog: true },
+    }))
+    if (!response.ok) return { error: response.error.message }
+    return {
+      sessionId: response.data.sessionId,
+      loopName: response.data.loopName,
+      ...(response.data.worktreeDir ? { worktreeDir: response.data.worktreeDir } : {}),
+      ...(response.data.workspaceId ? { workspaceId: response.data.workspaceId } : {}),
+    }
   }
 
   const resolveSandboxForDirectory = async (
@@ -1068,6 +1127,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       })
     },
     architectReminderFor,
+    executeTuiPlan,
     resolveSandboxForDirectory,
     cleanup,
     shellShimPath,

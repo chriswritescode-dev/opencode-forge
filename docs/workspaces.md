@@ -49,4 +49,4 @@ If initial workspace creation fails at startup — env var unset, OpenCode versi
 ## From the TUI
 
 - On OpenCode 1.x, loops are launched via the execution dialog (select Loop mode), and active loops appear as switchable workspaces alongside your main project
-- On OpenCode 2.x there is no execution dialog; launch loops through the `execute-plan` / `execute-goal` tools, and the sidebar lists active loops
+- On OpenCode 2.x, loops are launched from the same execution dialog (or the `execute-plan` / `execute-goal` tools); each loop runs in its worktree directory, and the sidebar lists active loops

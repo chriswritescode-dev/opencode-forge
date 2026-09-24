@@ -21,7 +21,7 @@ describe('loadPrompt', () => {
 
   test('loads code prompt from bundled markdown', () => {
     const prompt = loadPrompt(['agents', 'code.md'])
-    expect(prompt).toContain('You are a coding agent')
+    expect(prompt).toContain('You are an AI agent running in OpenCode')
   })
 
   test('uses user-provided prompts dir when file exists', () => {

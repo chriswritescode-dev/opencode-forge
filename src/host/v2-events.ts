@@ -80,6 +80,52 @@ export function v2EventDirectory(event: V2Event): string | undefined {
   return event.location?.directory
 }
 
+export function v2EventSessionId(event: V2Event): string | undefined {
+  const data = (event as { data?: { sessionID?: unknown } }).data
+  return typeof data?.sessionID === 'string' ? data.sessionID : undefined
+}
+
+export interface V2SessionOwnershipDeps {
+  ownsDirectory(directory: string): boolean
+  getSessionDirectory(sessionID: string): Promise<string>
+}
+
+export interface V2SessionOwnership {
+  owns(event: V2Event): Promise<boolean>
+}
+
+export function createV2SessionOwnership(deps: V2SessionOwnershipDeps): V2SessionOwnership {
+  const ownedBySession = new Map<string, boolean>()
+
+  return {
+    async owns(event) {
+      const sessionID = v2EventSessionId(event)
+      if (!sessionID) return true
+
+      if (event.type === V2_EVENT_TYPES.sessionCreated) {
+        const owned = deps.ownsDirectory(event.data.location.directory)
+        ownedBySession.set(sessionID, owned)
+        return owned
+      }
+
+      const cached = ownedBySession.get(sessionID)
+      if (event.type === V2_EVENT_TYPES.sessionDeleted) {
+        ownedBySession.delete(sessionID)
+        return cached ?? true
+      }
+      if (cached !== undefined) return cached
+
+      try {
+        const owned = deps.ownsDirectory(await deps.getSessionDirectory(sessionID))
+        ownedBySession.set(sessionID, owned)
+        return owned
+      } catch {
+        return true
+      }
+    },
+  }
+}
+
 export interface V2SessionInfoLike {
   id: string
   slug?: string

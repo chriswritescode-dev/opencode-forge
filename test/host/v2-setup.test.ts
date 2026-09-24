@@ -187,6 +187,50 @@ describe('V2 server setup', () => {
     }])
   })
 
+  test('the executePlan RPC runs execute-here and new-session through the execution service', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      executePlan: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+
+    await expect(handlers.executePlan({
+      sessionId: 'ses_host',
+      mode: 'execute-here',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      executionModel: 'anthropic/claude',
+      executionVariant: 'high',
+    })).resolves.toEqual({ sessionId: 'ses_host' })
+
+    const hereModel = fake.calls.find((call) => call.method === 'session.switchModel')
+    expect(hereModel?.args[0]).toEqual({
+      sessionID: 'ses_host',
+      model: { providerID: 'anthropic', id: 'claude', variant: 'high' },
+    })
+    const herePrompt = fake.calls.find((call) => call.method === 'session.prompt')
+    expect((herePrompt?.args[0] as { sessionID: string; text: string })).toMatchObject({ sessionID: 'ses_host' })
+    expect((herePrompt?.args[0] as { text: string }).text).toContain('Do the thing')
+
+    await expect(handlers.executePlan({
+      sessionId: 'ses_host',
+      mode: 'new-session',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+    })).resolves.toEqual({ sessionId: 'ses_fake_1' })
+  })
+
+  test('the executePlan RPC reports execute-here without a session as an error', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      executePlan: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+
+    await expect(handlers.executePlan({ sessionId: '', mode: 'execute-here', title: 'T', plan: '# Plan' }))
+      .resolves.toEqual({ error: 'Execute here requires a current session' })
+  })
+
   test('a registration failure does not reject setup and drops toasts', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fake = createFakeV2Context({
@@ -295,6 +339,63 @@ describe('V2 server setup', () => {
     stream.push({ id: 'evt_shutdown_a', type: V2_EVENT_TYPES.locationShutdown, location: { directory: '/project-a' }, data: {} })
     await waitFor(() => process.listenerCount('SIGINT') === baselineSigint)
     expect(stream.signals[0]?.aborted).toBe(true)
+  })
+
+  test('a session created in another location reaches only the instance that owns it', async () => {
+    const stream = createV2EventStream()
+    const host = createFakeV2Context({ location: { directory: '/project-host' }, event: { subscribe: stream.subscribe } })
+    const worktree = createFakeV2Context({ location: { directory: '/project-worktree' }, event: { subscribe: stream.subscribe } })
+    cleanups.push(await pluginModule.setup(host.ctx))
+    cleanups.push(await pluginModule.setup(worktree.ctx))
+
+    stream.push({
+      id: 'evt_created',
+      type: V2_EVENT_TYPES.sessionCreated,
+      created: 1,
+      data: { sessionID: 'ses_loop', projectID: 'proj_fake', location: { directory: '/project-worktree' } },
+    })
+    stream.push({ id: 'evt_idle', type: V2_EVENT_TYPES.sessionExecutionSucceeded, data: { sessionID: 'ses_loop' } })
+    stream.push({ id: 'evt_barrier', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_host' } })
+    await waitFor(() => receivedFor('/project-host').some((event) => event.properties.sessionID === 'ses_host'))
+    await waitFor(() => receivedFor('/project-worktree').some((event) => event.type === FORGE_EVENT_TYPES.sessionIdle))
+
+    expect(receivedFor('/project-host').some((event) => event.properties.sessionID === 'ses_loop')).toBe(false)
+    const loopEvents = receivedFor('/project-worktree').filter((event) =>
+      event.properties.sessionID === 'ses_loop' || (event.properties.info as { id?: string } | undefined)?.id === 'ses_loop')
+    expect(loopEvents.map((event) => event.type)).toEqual([
+      FORGE_EVENT_TYPES.sessionCreated,
+      FORGE_EVENT_TYPES.sessionStatus,
+      FORGE_EVENT_TYPES.sessionIdle,
+    ])
+  })
+
+  test('an unseen session is attributed by its looked-up location, and a failed lookup still delivers', async () => {
+    const stream = createV2EventStream()
+    const fake = createFakeV2Context({
+      location: { directory: '/project-host' },
+      event: { subscribe: stream.subscribe },
+      session: {
+        get: async (input: { sessionID: string }) => {
+          if (input.sessionID === 'ses_unknown') throw new Error('session lookup failed')
+          return {
+            id: input.sessionID,
+            projectID: 'proj_fake',
+            location: { directory: input.sessionID === 'ses_foreign' ? '/project-worktree' : '/project-host' },
+            time: { created: 1, updated: 1 },
+          }
+        },
+      },
+    })
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    stream.push({ id: 'evt_foreign', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_foreign' } })
+    stream.push({ id: 'evt_foreign_idle', type: V2_EVENT_TYPES.sessionExecutionSucceeded, data: { sessionID: 'ses_foreign' } })
+    stream.push({ id: 'evt_unknown', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_unknown' } })
+    stream.push({ id: 'evt_local', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_local' } })
+    await waitFor(() => receivedFor('/project-host').some((event) => event.properties.sessionID === 'ses_local'))
+
+    expect(receivedFor('/project-host').map((event) => event.properties.sessionID)).toEqual(['ses_unknown', 'ses_local'])
+    expect(fake.calls.filter((call) => call.method === 'session.get' && (call.args[0] as { sessionID: string }).sessionID === 'ses_foreign')).toHaveLength(1)
   })
 
   test('a shutdown without a location is ignored by every instance', async () => {

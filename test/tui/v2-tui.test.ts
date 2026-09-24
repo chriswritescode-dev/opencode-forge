@@ -5,6 +5,9 @@ import tuiModule from '../../src/tui'
 import { formatForgeTitle, resolveTuiOptions } from '../../src/tui/options'
 import { VERSION } from '../../src/version'
 import { useTempConfigHome } from '../helpers/temp-config'
+import { join } from 'path'
+import { resolveForgeDataDir } from '../../src/utils/opencode-paths'
+import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
 
 interface RecordedCommand {
   id?: string
@@ -53,7 +56,11 @@ interface FakeV2TuiOptions {
   defaultDirectory?: string
   defaultDirectoryThrows?: boolean
   locationGet?: (input?: { location?: { directory?: string } }) => Promise<{ project: { id: string } }>
+  route?: { type: 'home' } | { type: 'session'; sessionID: string }
+  sessions?: Array<{ id: string; location: { directory: string } }>
 }
+
+type DataHandler = (event: { data: Record<string, unknown> }) => void
 
 function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const layers: RecordedLayer[] = []
@@ -61,6 +68,10 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const toasts: Array<Record<string, unknown>> = []
   const rpcDefinitions: unknown[] = []
   const rpcSubscriptions: RecordedRpcSubscription[] = []
+  const dataHandlers = new Map<string, DataHandler[]>()
+  const navigations: unknown[] = []
+  const prompts: Array<Record<string, unknown>> = []
+  let route = fakeOptions.route ?? { type: 'home' as const }
 
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
@@ -92,6 +103,16 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
           return { directory: fakeOptions.defaultDirectory ?? '/test/project' }
         },
       },
+      on: vi.fn((type: string, handler: DataHandler) => {
+        dataHandlers.set(type, [...(dataHandlers.get(type) ?? []), handler])
+        return () => {
+          dataHandlers.set(type, (dataHandlers.get(type) ?? []).filter((candidate) => candidate !== handler))
+        }
+      }),
+      session: {
+        list: () => fakeOptions.sessions ?? [],
+        get: (sessionID: string) => fakeOptions.sessions?.find((session) => session.id === sessionID),
+      },
     },
     client: { location: { get: locationGet }, rpc },
     theme: { text: { base: '#ffffff', muted: '#888888' } },
@@ -110,10 +131,38 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
           toasts.push(input)
         }),
       },
+      router: {
+        current: () => route,
+        navigate: vi.fn((destination: typeof route) => {
+          navigations.push(destination)
+          route = destination
+        }),
+      },
+      dialog: {
+        show: vi.fn(),
+        set: vi.fn(),
+        clear: vi.fn(),
+        select: vi.fn(async () => undefined),
+        prompt: vi.fn(async (input: Record<string, unknown>) => {
+          prompts.push(input)
+          return undefined
+        }),
+      },
     },
   } as unknown as Plugin.Context
 
-  return { ctx, layers, slots, toasts, locationGet, rpc, rpcDefinitions, rpcSubscriptions }
+  const emit = (type: string, data: Record<string, unknown>) => {
+    for (const handler of dataHandlers.get(type) ?? []) handler({ data })
+  }
+
+  return { ctx, layers, slots, toasts, locationGet, rpc, rpcDefinitions, rpcSubscriptions, navigations, prompts, emit, dataHandlers }
+}
+
+function findCommand(fake: ReturnType<typeof createFakeV2TuiContext>, id: string): RecordedCommand {
+  findSlot(fake.slots, 'app').render({})
+  const command = fake.layers[0]?.commands?.find((candidate) => candidate.id === id)
+  if (!command) throw new Error(`no command registered for ${id}`)
+  return command
 }
 
 function findSlot(slots: RecordedSlot[], target: string): RecordedSlot {
@@ -210,6 +259,58 @@ describe('V2 TUI setup', () => {
     expect(signal?.aborted).toBe(false)
     cleanup()
     expect(signal?.aborted).toBe(true)
+  })
+
+  test('registers the execute-plan, restart, and sandbox-build palette commands', () => {
+    const fake = createFakeV2TuiContext({ options: { keybinds: { executePlan: '<leader>x' } } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    for (const id of ['forge.plan.execute', 'forge.plan.executePasted', 'forge.loop.restart', 'forge.sandbox.buildImage']) {
+      expect(findCommand(fake, id)).toMatchObject({ group: 'Forge', palette: true })
+    }
+    expect(findCommand(fake, 'forge.plan.execute').bind).toBe('<leader>x')
+    cleanup()
+  })
+
+  test('execute plan asks for a session when none is open', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await findCommand(fake, 'forge.plan.execute').run?.()
+
+    expect(fake.toasts).toContainEqual(expect.objectContaining({ message: 'Open a session first' }))
+    cleanup()
+  })
+
+  test('execute plan falls back to the paste dialog when the session has no stored plan', async () => {
+    const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_architect' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    findCommand(fake, 'forge.plan.execute').run?.()
+
+    await vi.waitFor(() => expect(fake.prompts).toEqual([expect.objectContaining({ title: 'Paste plan' })]))
+    expect(fake.toasts).toContainEqual(expect.objectContaining({ message: 'No plan in current session — paste one to execute' }))
+    cleanup()
+  })
+
+  test('follows a loop rotation inside the viewed worktree, but not subagents or non-loop sessions', () => {
+    const worktree = join(forgeWorktreesRoot(resolveForgeDataDir()), 'loop-a')
+    const fake = createFakeV2TuiContext({
+      route: { type: 'session', sessionID: 'ses_code' },
+      sessions: [{ id: 'ses_code', location: { directory: worktree } }],
+    })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    fake.emit('session.created', { sessionID: 'ses_task', parentID: 'ses_code', location: { directory: worktree } })
+    fake.emit('session.created', { sessionID: 'ses_other', location: { directory: '/test/project' } })
+    expect(fake.navigations).toEqual([])
+
+    fake.emit('session.created', { sessionID: 'ses_audit', location: { directory: worktree } })
+    expect(fake.navigations).toEqual([{ type: 'session', sessionID: 'ses_audit' }])
+
+    cleanup()
+    expect(fake.dataHandlers.get('session.created')).toEqual([])
   })
 
   test('resolves the project id from the current location directory', async () => {

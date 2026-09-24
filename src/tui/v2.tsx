@@ -16,6 +16,15 @@ import {
 } from '../utils/tui-loop-store'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import { isToastVariant } from '../utils/toast'
+import { resolveForgeDataDir } from '../utils/opencode-paths'
+import { isForgeWorktreeDir } from '../workspace/forge-naming'
+import type { ForgeProjectClient } from '../utils/tui-client'
+import { createExecutionContextCache, type ExecutionContextCache } from '../utils/tui-execution-context-cache'
+import { createV2TuiHost } from './host'
+import { createForgePlanCommands } from './plan-commands'
+import { openSandboxBuildDialog } from './sandbox-build-dialog'
+import { attachV2LoopSessionFollower } from './session-follow'
+import { createV2ForgeProjectClient } from './v2-client'
 
 /** Sidebar refresh cadence; loop rows are cheap local reads. */
 const LOOP_REFRESH_INTERVAL_MS = 2000
@@ -110,8 +119,9 @@ function ForgeLoopsSidebar(props: { context: Plugin.Context; dbPath: string; sho
 }
 
 /**
- * Minimal V2 TUI surface: the dashboard command, a loop sidebar, and the
- * missing-build-context toast. Returns the dashboard server cleanup.
+ * V2 TUI surface: the dashboard, execute-plan, restart-loop, and sandbox-build
+ * commands, loop session auto-follow, a loop sidebar, and the missing-build-context
+ * toast. Returns the cleanup for all of them.
  */
 export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const pluginConfig = loadPluginConfig()
@@ -134,6 +144,51 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     toast: (input) => context.ui.toast.show(input),
   })
 
+  const lifecycle = new AbortController()
+  let defaultModel = ''
+  const host = createV2TuiHost(context, () => defaultModel)
+  let projectClient: ForgeProjectClient | null = null
+  let executionContextCache: ExecutionContextCache | null = null
+
+  const ensureClient = async (): Promise<ForgeProjectClient | null> => {
+    if (projectClient) return projectClient
+    const directory = resolveV2TuiDirectory(context)
+    const projectId = await resolveV2TuiProjectId(context)
+    if (lifecycle.signal.aborted) return null
+    if (!directory || !projectId) {
+      host.toast({ message: 'Forge could not resolve the current project', variant: 'warning', duration: 5000 })
+      return null
+    }
+    const created = createV2ForgeProjectClient(context, {
+      projectId,
+      directory,
+      dbPath: forgeDbPath,
+      signal: lifecycle.signal,
+      onDefaultModel: (model) => { defaultModel = model },
+    })
+    projectClient ??= created
+    executionContextCache ??= createExecutionContextCache(projectId, pluginConfig, () => created.loadExecutionContext())
+    return projectClient
+  }
+
+  const currentSessionId = (): string | null => {
+    const route = context.ui.router.current()
+    return route.type === 'session' ? route.sessionID : null
+  }
+
+  const planCommands = createForgePlanCommands({
+    host,
+    pluginConfig,
+    dbPath: forgeDbPath,
+    projectDirectory: resolveV2TuiDirectory(context) ?? undefined,
+    currentSessionId,
+    ensureClient,
+    cache: () => executionContextCache,
+  })
+
+  const dataDir = resolveForgeDataDir(pluginConfig.dataDir)
+  const detachSessionFollower = attachV2LoopSessionFollower(context, (directory) => isForgeWorktreeDir(dataDir, directory))
+
   // A keymap layer needs a component owner, so the command is registered from
   // the always-mounted app slot rather than from setup itself.
   context.ui.slot({
@@ -150,6 +205,39 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
             palette: true,
             ...(opts.keybinds.dashboard ? { bind: opts.keybinds.dashboard } : {}),
             run: () => dashboard.open(),
+          },
+          {
+            id: 'forge.plan.execute',
+            title: 'Execute plan',
+            description: 'Open the execution dialog for the current session plan, or paste one if none is found',
+            group: 'Forge',
+            palette: true,
+            ...(opts.keybinds.executePlan ? { bind: opts.keybinds.executePlan } : {}),
+            run: () => { void planCommands.executePlan() },
+          },
+          {
+            id: 'forge.plan.executePasted',
+            title: 'Execute pasted plan',
+            description: 'Paste a marked or unmarked plan and open the execution dialog',
+            group: 'Forge',
+            palette: true,
+            run: () => { void planCommands.executePastedPlan() },
+          },
+          {
+            id: 'forge.loop.restart',
+            title: 'Restart loop',
+            description: 'Change the execution and auditor models and restart a running or stopped loop from persisted progress',
+            group: 'Forge',
+            palette: true,
+            run: () => { void planCommands.restartLoop() },
+          },
+          {
+            id: 'forge.sandbox.buildImage',
+            title: 'Build sandbox template',
+            description: 'Build the sandbox template image and load it into msb',
+            group: 'Forge',
+            palette: true,
+            run: () => openSandboxBuildDialog(host, pluginConfig),
           },
         ],
       }))
@@ -192,6 +280,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   }
 
   return () => {
+    lifecycle.abort()
+    detachSessionFollower()
     toastController.abort()
     dashboard.dispose()
   }

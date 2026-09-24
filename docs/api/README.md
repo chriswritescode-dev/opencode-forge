@@ -90,7 +90,7 @@ On OpenCode 2.x, loop worktrees use V2's native worktree and location model: no 
 Forge ships two plugin entrypoints plus standalone management surfaces:
 
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json` (`plugin` on 1.x, `plugins` on 2.x). Provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support.
-- **TUI plugin** — the sidebar and execution dialog on 1.x, enabled separately in `tui.json`. On 2.x it loads from the server plugin entry (or the `cli.json` `plugins` array) and provides the loop sidebar plus the `Open dashboard` command.
+- **TUI plugin** — the sidebar, execution dialog, and loop restart dialog. On 1.x it is enabled separately in `tui.json`; on 2.x it loads from the server plugin entry (or the `cli.json` `plugins` array).
 - **Installer CLI** — installs/upgrades bundled prompts and skills, and installs the plugin itself into opencode's plugin directory (`--link`/`--vendor`/`--unlink`).
 - **Dashboard** — an observability interface launchable from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only).
 
@@ -100,7 +100,6 @@ For a quick tour of the loop itself, see [Loop Flow](#loop-flow) below.
 
 The server side — loops, plans, review findings, tools, agents, commands, permissions, sandboxing, and event handling — works on both hosts. These surfaces remain OpenCode 1.x only:
 
-- **Execution dialog and loop restart** — the `Execute plan` / `Execute pasted plan` dialogs and the loop restart controls are not in the V2 TUI. Use the `execute-plan` tool, `loop-status` with `restart`, or the dashboard instead.
 - **Host-session sandbox toggle** — sandboxing a non-loop session from the TUI (`Toggle host sandbox`) has no routing key on V2. Loop sandboxes work on both hosts.
 - **Subtask commands** — `review` and `review-plan` run inline in the invoking session on V2 instead of spawning a subtask. Every Forge command runs its turn as the command's agent, then Forge switches the session back to the agent it had before.
 - **Retired loop sessions** — the V2 plugin API cannot delete sessions, so rotated coding and audit sessions stay in the session list under their Forge titles.

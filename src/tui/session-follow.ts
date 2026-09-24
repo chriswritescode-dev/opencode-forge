@@ -1,4 +1,5 @@
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import type { Plugin } from '@opencode/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { resolveLogPath } from '../storage'
@@ -16,16 +17,17 @@ export function getCurrentRouteSessionId(api: TuiPluginApi): string | null {
 
 export interface FollowDecisionInput {
   /** Session that was just created (from a session.created event). */
-  newSession: { id: string; workspaceID?: string | undefined; parentID?: string | undefined }
+  newSession: { id: string; scope?: string | undefined; parentID?: string | undefined }
   /** Session the user is currently viewing, or null when not on a session route. */
-  currentSession: { id: string; workspaceID?: string | undefined } | null
+  currentSession: { id: string; scope?: string | undefined } | null
 }
 
 /**
  * Pure decision rule: follow only when the user is viewing a session in the
- * same workspace as the new session, and they are not already on it. The
- * shared workspaceID is the trust signal — when a session.created event fires
- * inside the workspace the user is currently in, that is virtually always a
+ * same loop scope as the new session, and they are not already on it. The
+ * scope is the Forge workspace ID on V1 and the loop worktree directory on V2.
+ * A shared scope is the trust signal — when a session.created event fires
+ * inside the loop the user is currently in, that is virtually always a
  * loop rotation (coding → audit → coding) and the TUI should follow.
  *
  * Sessions with a `parentID` are subagents/children (e.g. Task-tool spawns)
@@ -42,8 +44,8 @@ export function shouldFollowNewSession(input: FollowDecisionInput): boolean {
   if (!currentSession) return false
   if (currentSession.id === newSession.id) return false
   if (newSession.parentID) return false
-  if (!newSession.workspaceID) return false
-  if (currentSession.workspaceID !== newSession.workspaceID) return false
+  if (!newSession.scope) return false
+  if (currentSession.scope !== newSession.scope) return false
   return true
 }
 
@@ -96,8 +98,8 @@ export function attachLoopSessionFollower(api: TuiPluginApi): () => void {
       return
     }
     if (!shouldFollowNewSession({
-      newSession: { id: newSession.id, workspaceID: newWorkspaceID, parentID: newSession.parentID },
-      currentSession: { id: currentSession.id, workspaceID: currentSession.workspaceID },
+      newSession: { id: newSession.id, scope: newWorkspaceID, parentID: newSession.parentID },
+      currentSession: { id: currentSession.id, scope: currentSession.workspaceID },
     })) {
       const reason = newSession.parentID ? 'subagent-child-session' : 'workspace-mismatch'
       tuiFollowDebug(`skip session=${newSession.id} workspace=${newWorkspaceID} reason=${reason} current=${currentSessionID} currentWorkspace=${currentSession.workspaceID ?? 'none'} parent=${newSession.parentID ?? 'none'}`)
@@ -120,4 +122,30 @@ export function attachLoopSessionFollower(api: TuiPluginApi): () => void {
       tuiFollowDebug(`unsubscribe failed error="${(err as Error).message}"`)
     }
   }
+}
+
+export function attachV2LoopSessionFollower(
+  context: Plugin.Context,
+  isLoopDirectory: (directory: string) => boolean,
+): () => void {
+  return context.data.on('session.created', (event) => {
+    const route = context.ui.router.current()
+    if (route.type !== 'session') return
+    const newDirectory = event.data.location.directory
+    const currentDirectory = context.data.session.get(route.sessionID)?.location.directory
+    if (!shouldFollowNewSession({
+      newSession: {
+        id: event.data.sessionID,
+        scope: isLoopDirectory(newDirectory) ? newDirectory : undefined,
+        parentID: event.data.parentID,
+      },
+      currentSession: { id: route.sessionID, scope: currentDirectory },
+    })) return
+    try {
+      context.ui.router.navigate({ type: 'session', sessionID: event.data.sessionID })
+      tuiFollowDebug(`navigated directory=${newDirectory} from=${route.sessionID} to=${event.data.sessionID}`)
+    } catch (err) {
+      tuiFollowDebug(`router.navigate failed from=${route.sessionID} to=${event.data.sessionID} error="${(err as Error).message}"`)
+    }
+  })
 }

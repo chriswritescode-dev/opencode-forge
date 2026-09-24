@@ -7,10 +7,11 @@ import type { ForgeClient } from '../client/port'
 import { canonicalizePath } from '../sandbox/path'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
-import { createForgeCore } from './forge-core'
-import { FORGE_RPC, type ForgeToastInput } from './forge-rpc'
+import { createForgeCore, type ForgeCore } from './forge-core'
+import { FORGE_RPC, type ForgeExecutePlanInput, type ForgeToastInput } from './forge-rpc'
 import {
   V2_EVENT_TYPES,
+  createV2SessionOwnership,
   normalizeV2Event,
   v2EventDirectory,
 } from './v2-events'
@@ -58,10 +59,15 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
 
   let adapter: WorkspaceAdapter | null = null
 
+  let core: ForgeCore | null = null
   let publishToast: ((toast: ForgeToastInput) => Promise<void>) | undefined
   let disposeRpc: (() => Promise<void>) | null = null
   try {
-    const registration = await ctx.rpc.register(FORGE_RPC, {})
+    const registration = await ctx.rpc.register(FORGE_RPC, {
+      executePlan: async (input) => core
+        ? core.executeTuiPlan(input as ForgeExecutePlanInput)
+        : { error: 'Forge is still starting; retry in a moment' },
+    })
     publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })
     disposeRpc = registration.dispose
   } catch (err) {
@@ -80,7 +86,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     ...(publishToast ? { publishToast } : {}),
   })
 
-  const core = await createForgeCore(config, {
+  core = await createForgeCore(config, {
     directory,
     projectId,
     projectRoot: ctx.location.project.canonical,
@@ -103,6 +109,11 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     return canonicalizePath(candidate) === canonicalDirectory
   }
 
+  const sessionOwnership = createV2SessionOwnership({
+    ownsDirectory,
+    getSessionDirectory: async (sessionID) => (await ctx.session.get({ sessionID })).location.directory,
+  })
+
   const dispose = async () => {
     controller.abort()
     await core.cleanup()
@@ -120,7 +131,9 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
           await dispose()
           return
         }
-        for (const normalized of normalizeV2Event(event)) {
+        const normalizedEvents = normalizeV2Event(event)
+        if (normalizedEvents.length === 0 || !(await sessionOwnership.owns(event))) continue
+        for (const normalized of normalizedEvents) {
           try {
             client.recordStatusEvent(normalized)
             await core.onEvent({ event: normalized })

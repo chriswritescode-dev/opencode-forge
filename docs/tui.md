@@ -1,13 +1,17 @@
 # TUI Plugin
 
-The plugin includes a TUI sidebar widget and an execution dialog for launching plans directly in the OpenCode terminal interface. On OpenCode 1.x it is enabled separately from the server plugin in `tui.json` — see [Quick Start](../README.md#quick-start). On OpenCode 2.x the TUI surface loads from the same package entry the server plugin uses, or from the `cli.json` `plugins` array, and provides a smaller surface (see [OpenCode 2.x](#opencode-2x)).
+The plugin includes a TUI sidebar widget and an execution dialog for launching plans directly in the OpenCode terminal interface. On OpenCode 1.x it is enabled separately from the server plugin in `tui.json` — see [Quick Start](../README.md#quick-start). On OpenCode 2.x the TUI surface loads from the same package entry the server plugin uses, or from the `cli.json` `plugins` array (see [OpenCode 2.x](#opencode-2x)).
 
 See also: [Dashboard](dashboard.md), [Workflow](workflow.md), [Configuration → TUI](configuration.md#tui).
 
 ## OpenCode 2.x
 
-The V2 TUI surface is deliberately minimal:
+The V2 TUI surface provides:
 
+- the [Execution Dialog](#execution-dialog) (`Execute plan`, `tui.keybinds.executePlan`, and `Execute pasted plan`) with model, variant, and loop-name selection. The dialog is shared with 1.x and launches through the server plugin's `executePlan` RPC method, which runs the same execution service as the `execute-plan` tool.
+- `Restart loop`, with the same restart dialog as 1.x
+- `Build sandbox template`
+- auto-follow of replacement code and auditor sessions when a loop you are viewing rotates. Subagent sessions and sessions outside the loop worktree are not followed.
 - the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing running loops plus the five most recent finished ones, and refreshed every couple of seconds
 - the `Open dashboard` palette command (and `tui.keybinds.dashboard`)
 - a warning toast when sandboxing is enabled but the bundled build context is missing
@@ -15,7 +19,7 @@ The V2 TUI surface is deliberately minimal:
 
 Options come from forge-config `tui`; plugin options set on the `cli.json` entry override them, with keybinds merged per key.
 
-Not available on V2: the execution dialog, plan viewer and editing, loop details/restart, model and variant selection, `Toggle host sandbox`, and `Build sandbox template`. Use the `execute-plan` / `execute-goal` tools, `loop-status` with `restart`, and the [Sandbox](sandbox.md) build commands instead.
+Not available on V2: `Toggle host sandbox`, remote loop targets in the dialog, and the fallback that recovers a plan from chat history when no stored plan exists (paste the plan instead). The dialog's last-used models come from the project's most recent loop rather than from workspace metadata.
 
 ## Sidebar
 

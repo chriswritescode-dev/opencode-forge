@@ -23,8 +23,9 @@ import { extractPlanExecutionMetadata, sanitizeLoopName, createPlanExecutionSess
 import { createForgeClient } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import { fetchLatestPlanForSession } from './plan-from-messages'
+import type { ForgeExecutionMode } from '../host/forge-rpc'
 
-export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
+export type ApiExecutionMode = ForgeExecutionMode
 
 /**
  * Builds a consistent model+variant payload for promptAsync calls.

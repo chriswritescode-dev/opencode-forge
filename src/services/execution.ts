@@ -157,6 +157,7 @@ export interface ExecutePlanNewSessionCommand {
   source: PlanSource
   title?: string
   executionModel?: string
+  executionVariant?: string
   lifecycle?: {
     selectSession?: boolean
     selectSessionTiming?: 'after-create' | 'after-prompt'
@@ -171,6 +172,7 @@ export interface ExecutePlanHereCommand {
   targetSessionId: string
   title?: string
   executionModel?: string
+  executionVariant?: string
 }
 
 export interface StartLoopCommand {
@@ -874,6 +876,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const sessionTitle = formatPlanSessionTitle(title)
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
+    const executionVariant = command.executionVariant ?? deps.config.executionVariant
     
     // Create new session
     let sessionId: string
@@ -908,6 +911,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         parts: [{ type: 'text' as const, text: planText }],
         agent: 'code',
         model: parsedModel!,
+        ...(executionVariant ? { variant: executionVariant } : {}),
         ...workspaceParam,
       })
     } catch (err) {
@@ -973,6 +977,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const title = command.title ?? extractPlanExecutionMetadata(planText).title
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
+    const executionVariant = command.executionVariant ?? deps.config.executionVariant
     
     // Build execute-here prompt
     const executeHerePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
@@ -986,6 +991,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         parts: [{ type: 'text' as const, text: executeHerePrompt }],
         agent: 'code',
         ...(parsedModel ? { model: parsedModel } : {}),
+        ...(executionVariant ? { variant: executionVariant } : {}),
       })
     } catch (err) {
       promptError = err

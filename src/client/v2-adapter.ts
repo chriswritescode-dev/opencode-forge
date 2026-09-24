@@ -307,6 +307,25 @@ function toProviderModelInfo(model: V2ModelInfo): ProviderList['all'][number]['m
   }
 }
 
+export function toProviderListFromV2(
+  providers: ReadonlyArray<{ id: string; name: string; activation: string }>,
+  models: ReadonlyArray<V2ModelInfo>,
+): ProviderList {
+  return {
+    all: providers.map((info) => ({
+      id: info.id,
+      name: info.name,
+      models: Object.fromEntries(
+        models
+          .filter((model) => model.providerID === info.id)
+          .map((model) => [model.modelID, toProviderModelInfo(model)]),
+      ),
+    })),
+    connected: providers.filter((info) => info.activation !== 'disabled').map((info) => info.id),
+    default: {},
+  }
+}
+
 export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClientOptions): V2ForgeClient {
   function recordStatusEvent(event: ForgeEvent): void {
     if (event.type === FORGE_EVENT_TYPES.sessionDeleted) {
@@ -406,19 +425,7 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     list: () => call('provider.list', async () => {
       const providers = await ctx.provider.list()
       const models = await ctx.model.list()
-      return {
-        all: providers.data.map((info) => ({
-          id: info.id,
-          name: info.name,
-          models: Object.fromEntries(
-            models.data
-              .filter((model) => model.providerID === info.id)
-              .map((model) => [model.modelID, toProviderModelInfo(model)]),
-          ),
-        })),
-        connected: providers.data.filter((info) => info.activation !== 'disabled').map((info) => info.id),
-        default: {},
-      }
+      return toProviderListFromV2(providers.data, models.data)
     }),
   }
 

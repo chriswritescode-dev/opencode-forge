@@ -2,21 +2,21 @@
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
 import type { Plugin } from '@opencode/plugin/tui'
 import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
-import { loadPluginConfig, resolveBundledContainerDir } from './setup'
+import { loadPluginConfig } from './setup'
 import { resolveForgeDbPath } from './storage'
 import { resolveForgeDataDir } from './utils/opencode-paths'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
-import { DEFAULT_SANDBOX_IMAGE } from './sandbox/template'
-import { SandboxBuildDialog } from './tui/sandbox-build-dialog'
+import { openSandboxBuildDialog } from './tui/sandbox-build-dialog'
+import { createV1TuiHost } from './tui/host'
+import { createForgePlanCommands } from './tui/plan-commands'
 import { isSandboxConfigEnabled } from './sandbox/context'
 import { existsSync } from 'fs'
 import { resolveLoopPermissionOptions } from './constants/loop'
 import { emitLoopPermissionConfigWarnings } from './utils/loop-permission-warnings'
 import { connectForgeProject, resolveTuiProjectIdOnce, type ForgeProjectClient } from './utils/tui-client'
 import { createForgeClient } from './client/sdk-adapter'
-import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import {
   awaitSessionSandboxState,
   beginSessionSandboxStateRequest,
@@ -28,8 +28,6 @@ import {
 import type { SessionSandboxPreference } from './tui/session-sandbox-store'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { createDashboardLauncher } from './dashboard/launch'
-import { normalizePastedPlanText } from './utils/marked-plan-parser'
-import { fetchLoopsList } from './utils/tui-loop-store'
 import { setupForgeTuiV2 } from './tui/v2'
 
 import type { TuiOptions } from './tui/options'
@@ -153,74 +151,6 @@ function Sidebar(props: {
     </Show>
   )
 }
-
-/**
- * Standalone wrapper around `ExecutePlanPanel`. The picker sub-dialogs
- * (model, variant, loop name) need to fully replace the dialog stack,
- * which means we lose the panel's component state every time the user
- * touches one. The wrapper re-renders itself via `dialog.replace` when
- * the panel reports a new selection, preserving the user's choices
- * across picker round-trips. This mirrors the pattern the deleted
- * `PlanViewerDialog` used internally.
- */
-function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecuted' | 'onSelectionChanged'>) {
-  const theme = () => props.api.theme.current
-
-  return (
-    <box flexDirection="column" paddingX={2}>
-      <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
-        <text fg={theme().text}>
-          <b>{props.restart ? 'Restart loop' : 'Execute plan'}</b>
-        </text>
-      </box>
-
-      <ExecutePlanPanel
-        api={props.api}
-        client={props.client}
-        cache={props.cache}
-        pluginConfig={props.pluginConfig}
-        planContent={props.planContent}
-        sessionId={props.sessionId}
-        initialExecutionModel={props.initialExecutionModel}
-        initialAuditorModel={props.initialAuditorModel}
-        initialExecutionVariant={props.initialExecutionVariant}
-        initialAuditorVariant={props.initialAuditorVariant}
-        initialLoopName={props.initialLoopName}
-        initialTarget={props.initialTarget}
-        projectDirectory={props.projectDirectory}
-        restart={props.restart}
-        onBack={() => props.api.ui.dialog.clear()}
-        onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName, target }) => {
-          if (!props.restart) props.cache?.setSelectionOverride({ executionModel, auditorModel, executionVariant, auditorVariant })
-          props.api.ui.dialog.setSize('xlarge')
-          props.api.ui.dialog.replace(() => (
-            <ExecutionDialog
-              api={props.api}
-              client={props.client}
-              cache={props.cache}
-              pluginConfig={props.pluginConfig}
-              planContent={props.planContent}
-              sessionId={props.sessionId}
-              initialExecutionModel={executionModel}
-              initialAuditorModel={auditorModel}
-              initialExecutionVariant={executionVariant}
-              initialAuditorVariant={auditorVariant}
-              initialLoopName={loopName}
-              initialTarget={target}
-              projectDirectory={props.projectDirectory}
-              restart={props.restart}
-            />
-          ))
-        }}
-      />
-
-      <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
-        <text fg={theme().textMuted} onMouseUp={() => props.api.ui.dialog.clear()}>Close (esc)</text>
-      </box>
-    </box>
-  )
-}
-
 
 const id = FORGE_PLUGIN_ID
 
@@ -478,19 +408,8 @@ const tui: TuiPlugin = async (api) => {
 
   api.lifecycle.onDispose(dashboard.dispose)
 
-  const runBuildSandboxImage = () => {
-    const buildContextDir = resolveBundledContainerDir()
-    const image = pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
-
-    api.ui.dialog.setSize('medium')
-    api.ui.dialog.replace(() => (
-      <SandboxBuildDialog
-        api={api}
-        buildContextDir={buildContextDir}
-        image={image}
-      />
-    ))
-  }
+  const host = createV1TuiHost(api)
+  const runBuildSandboxImage = () => openSandboxBuildDialog(host, pluginConfig)
 
   api.keymap.registerLayer({
     commands: [
@@ -599,116 +518,15 @@ const tui: TuiPlugin = async (api) => {
     return startClientConnection()
   }
 
-  const openExecutionDialog = (currentClient: ForgeProjectClient, sessionID: string, planContent: string) => {
-    api.ui.dialog.setSize('xlarge')
-    api.ui.dialog.replace(() => (
-      <ExecutionDialog
-        api={api}
-        client={currentClient}
-        cache={executionContextCache()}
-        pluginConfig={pluginConfig}
-        planContent={planContent}
-        sessionId={sessionID}
-        projectDirectory={directory}
-      />
-    ))
-  }
-
-  const openPastePlanDialog = (currentClient: ForgeProjectClient, sessionID: string) => {
-    api.ui.dialog.setSize('large')
-    api.ui.dialog.replace(() => (
-      <api.ui.DialogPrompt
-        title="Paste plan"
-        placeholder="Paste a marked or unmarked implementation plan"
-        value=""
-        onConfirm={(value) => {
-          const normalized = normalizePastedPlanText(value)
-          if (!normalized.ok) {
-            api.ui.toast({
-              message: normalized.reason === 'empty'
-                ? 'Paste a plan before executing'
-                : `Invalid plan markers: ${normalized.reason}`,
-              variant: 'error',
-              duration: 4000,
-            })
-            openPastePlanDialog(currentClient, sessionID)
-            return
-          }
-
-          openExecutionDialog(currentClient, sessionID, normalized.planText)
-        }}
-        onCancel={() => api.ui.dialog.clear()}
-      />
-    ))
-  }
-
-  const runExecutePlan = async () => {
-    const sessionID = getCurrentRouteSessionId(api)
-    if (!sessionID) {
-      api.ui.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
-      return
-    }
-    const currentClient = await ensureClient()
-    if (!currentClient) return
-
-    const planText = await currentClient.loadLatestPlan(sessionID)
-    if (!planText) {
-      api.ui.toast({
-        message: 'No plan in current session — paste one to execute',
-        variant: 'info',
-        duration: 4000,
-      })
-      openPastePlanDialog(currentClient, sessionID)
-      return
-    }
-
-    openExecutionDialog(currentClient, sessionID, planText)
-  }
-
-  const runRestartLoop = async () => {
-    const currentClient = await ensureClient()
-    if (!currentClient?.projectId) return
-    const loops = fetchLoopsList(currentClient.projectId, forgeDbPath)
-    if (loops.every(loop => !loop.restartable)) {
-      const reason = loops.find(loop => loop.restartBlockedMessage)?.restartBlockedMessage
-      api.ui.toast({ message: reason ?? 'No restartable loops', variant: 'info', duration: 5000 })
-      return
-    }
-
-    const currentSessionId = getCurrentRouteSessionId(api)
-    const currentLoop = loops.find(loop => loop.sessionId === currentSessionId && loop.restartable)
-      ?? loops.find(loop => loop.restartable)!
-    const restart = async (request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel: string; executionVariant: string }) => {
-      const auditorModel = request.auditorModel
-        || api.state.config?.model
-        || ''
-      if (!auditorModel) throw new Error('Select an auditor model before restarting')
-      const executionModel = request.executionModel
-        || api.state.config?.model
-        || ''
-      if (!executionModel) throw new Error('Select an execution model before restarting')
-      const result = await currentClient.restartLoop({ ...request, auditorModel, executionModel })
-      await currentClient.selectSession(result.sessionId)
-    }
-    api.ui.dialog.setSize('xlarge')
-    api.ui.dialog.replace(() => (
-      <ExecutionDialog
-        api={api}
-        client={currentClient}
-        cache={executionContextCache()}
-        pluginConfig={pluginConfig}
-        planContent=""
-        sessionId={currentSessionId ?? ''}
-        projectDirectory={directory}
-        initialLoopName={currentLoop?.name}
-        initialAuditorModel={currentLoop?.auditorModel}
-        initialAuditorVariant={currentLoop?.auditorVariant}
-        initialExecutionModel={currentLoop?.executionModel}
-        initialExecutionVariant={currentLoop?.executionVariant}
-        restart={{ loops, onRestart: restart }}
-      />
-    ))
-  }
+  const planCommands = createForgePlanCommands({
+    host,
+    pluginConfig,
+    dbPath: forgeDbPath,
+    projectDirectory: directory,
+    currentSessionId: () => getCurrentRouteSessionId(api),
+    ensureClient,
+    cache: executionContextCache,
+  })
 
   api.keymap.registerLayer({
     commands: [
@@ -718,7 +536,7 @@ const tui: TuiPlugin = async (api) => {
         desc: 'Open the execution dialog for the current session plan, or paste one if none is found',
         category: 'Forge',
         namespace: 'palette',
-        run: () => { void runExecutePlan() },
+        run: () => { void planCommands.executePlan() },
       },
       {
         name: 'forge.plan.executePasted',
@@ -726,16 +544,7 @@ const tui: TuiPlugin = async (api) => {
         desc: 'Paste a marked or unmarked plan and open the execution dialog',
         category: 'Forge',
         namespace: 'palette',
-        run: () => {
-          const sessionID = getCurrentRouteSessionId(api)
-          if (!sessionID) {
-            api.ui.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
-            return
-          }
-          void ensureClient().then((currentClient) => {
-            if (currentClient) openPastePlanDialog(currentClient, sessionID)
-          })
-        },
+        run: () => { void planCommands.executePastedPlan() },
       },
       {
         name: 'forge.loop.restart',
@@ -743,7 +552,7 @@ const tui: TuiPlugin = async (api) => {
         desc: 'Change the execution and auditor models and restart a running or stopped loop from persisted progress',
         category: 'Forge',
         namespace: 'palette',
-        run: () => { void runRestartLoop() },
+        run: () => { void planCommands.restartLoop() },
       },
     ],
     bindings: opts.keybinds.executePlan

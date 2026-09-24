@@ -77,12 +77,31 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
     })
 
-    test('code agent prompt requires two-at-a-time code subagents for todo implementation', () => {
+    test('code agent prompt uses the generic harness baseline and current tool names', () => {
       const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('Each `code` subagent must receive exactly one focused todo task')
-      expect(prompt).toContain('inspect and reconcile its changes before marking the todo complete')
-      expect(prompt).toContain('files changed, behavior implemented, validation run, results')
-      expect(prompt).toContain('Do not launch more than two code subagents at the same time')
+      expect(prompt).toContain('You are an AI agent running in OpenCode')
+      expect(prompt).not.toContain('TodoWrite')
+      expect(prompt).not.toContain('Task tool')
+      expect(prompt).not.toContain('Bash')
+      expect(prompt).not.toContain('${OPENCODE_TOOL_GUIDANCE}')
+    })
+
+    test('code agent prompt preserves scope, minion, and Forge protections', () => {
+      const prompt = codeAgent.systemPrompt
+      expect(prompt).toContain('completing the requested scope')
+      expect(prompt).toContain('Treat unfamiliar files or changes as potential user work')
+      expect(prompt).toContain('minion')
+      expect(prompt).toContain('permitted by the applicable instructions')
+      expect(prompt).toContain('at most three minions concurrently')
+      expect(prompt).toContain('target files do not overlap')
+      expect(prompt).toContain('inspect and reconcile')
+      expect(prompt).toContain('files changed, behavior implemented, validation run')
+      expect(prompt).toContain('execute-goal')
+      expect(prompt).toContain('execute-plan')
+      expect(prompt).toContain('launch-group')
+      expect(prompt).toContain('loop-cancel')
+      expect(prompt).toContain('unless the user explicitly asks you to')
+      expect(prompt).toContain('Never attempt to remove, delete, or clear review findings')
     })
 
     test('architect prompt requires TDD-aware behavior-first planning', () => {
