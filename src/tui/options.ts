@@ -5,12 +5,14 @@ export type TuiKeybinds = {
   executePlan: string
   dashboard: string
   toggleHostSandbox: string
+  toggleAutoApprove: string
 }
 
 const DEFAULT_KEYBINDS: TuiKeybinds = {
   executePlan: '<leader>f',
   dashboard: '',
   toggleHostSandbox: '',
+  toggleAutoApprove: '',
 }
 
 export type TuiOptions = {

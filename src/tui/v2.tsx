@@ -26,6 +26,7 @@ import { attachV2LoopSessionFollower } from './session-follow'
 import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort } from './loop-session-cleanup'
 import { createV2ForgeProjectClient } from './v2-client'
 import { createHostSandboxToggle } from './host-sandbox'
+import { createSessionAutoApproveToggle } from './session-auto-approve'
 import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
 
 /** Sidebar refresh cadence; loop rows are cheap local reads. */
@@ -104,6 +105,7 @@ function ForgeLoopsSidebar(props: {
   dbPath: string
   showVersion: boolean
   sandboxPreference: Accessor<SessionSandboxPreference | null>
+  autoApprove: Accessor<boolean>
   currentSessionId: () => string | null
 }) {
   const [loops, setLoops] = createSignal<LoopSidebarRow[]>([])
@@ -157,6 +159,9 @@ function ForgeLoopsSidebar(props: {
         </text>
         <Show when={props.sandboxPreference()}>
           <SandboxStatusText context={props.context} preference={props.sandboxPreference} sessionId={sessionId} />
+        </Show>
+        <Show when={props.autoApprove()}>
+          <text fg={theme().text.feedback.warning.base}>· AUTO</text>
         </Show>
       </box>
       <Show when={loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
@@ -259,6 +264,22 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   })
 
   const dataDir = resolveForgeDataDir(pluginConfig.dataDir)
+  const isLoopSession = async (sessionId: string): Promise<boolean> => {
+    try {
+      const session = await context.client.session.get({ sessionID: sessionId })
+      return isForgeWorktreeDir(dataDir, session.location.directory)
+    } catch {
+      return false
+    }
+  }
+  const autoApprove = createSessionAutoApproveToggle({
+    dbPath: forgeDbPath,
+    resolveProjectId: () => resolveV2TuiProjectId(context),
+    currentSessionId,
+    isLoopSession,
+    isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
+    toast: (input) => host.toast(input),
+  })
   const detachSessionFollower = attachV2LoopSessionFollower(context, (directory) => isForgeWorktreeDir(dataDir, directory))
 
   // A keymap layer needs a component owner, so the command is registered from
@@ -313,6 +334,15 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
             run: () => { void hostSandbox.toggle() },
           },
           {
+            id: 'forge.permissions.toggleAutoApprove',
+            title: 'Toggle auto-approve',
+            description: 'Allow or deny this session\'s permission requests without prompting',
+            group: 'Forge',
+            palette: true,
+            ...(opts.keybinds.toggleAutoApprove ? { bind: opts.keybinds.toggleAutoApprove } : {}),
+            run: () => { void autoApprove.toggle() },
+          },
+          {
             id: 'forge.sandbox.buildImage',
             title: 'Build sandbox template',
             description: 'Build the sandbox template image and load it into msb',
@@ -335,6 +365,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           dbPath={forgeDbPath}
           showVersion={opts.showVersion}
           sandboxPreference={hostSandbox.preference}
+          autoApprove={autoApprove.enabled}
           currentSessionId={currentSessionId}
         />
       ),
@@ -380,6 +411,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   return () => {
     lifecycle.abort()
     hostSandbox.dispose()
+    autoApprove.dispose()
     detachSessionFollower()
     toastController.abort()
     dashboard.dispose()

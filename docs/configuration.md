@@ -17,6 +17,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`/`final_auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
+| `autoApprove` | unset | Deny rules applied while per-session auto-approve is on. See [Auto-Approve](#auto-approve). |
 
 ## Logging
 
@@ -153,6 +154,7 @@ Notes:
 | `tui.keybinds.executePlan` | `"<leader>f"` | Open the execution dialog. Avoid `<leader>e`, which conflicts with opencode's built-in `editor_open`. |
 | `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
 | `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle host sandbox`, which enables or disables the project host-session sandbox for the current session. Empty registers the command without a default binding. Requires `sandbox.enabled`. |
+| `tui.keybinds.toggleAutoApprove` | `""` | Optional keybind for `Toggle auto-approve`, which turns per-session auto-approve on or off for the current session. Empty registers the command without a default binding. |
 
 The host-session sandbox applies only to sessions outside active loops. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. Shell, `glob`, and `grep` calls route through the sandbox; file tools remain host-side but are refused outside the sandbox mounts. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
 
@@ -245,6 +247,24 @@ Credentials that should never be readable inside the guest belong in `sandbox.ne
 Each named variable must be exported in the environment that **launches opencode**. Once a secret is bound, every `msb exec` fails with `invalid config: secret <name>: host environment variable <name> is not set` if the variable is absent from the invoking process's environment; because the shell shim inherits opencode's environment, a missing variable breaks every sandboxed shell command. Forge logs an explicit warning naming the variable.
 
 Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify` exactly once per adoption per plugin instance: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure blocks adoption without marking the sandbox converged, so a later startup can retry. The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is gone.
+
+## Auto-Approve
+
+`autoApprove` configures the deny list applied while per-session auto-approve is on (`Toggle auto-approve` in the TUI, see [TUI → Sidebar](tui.md#sidebar)).
+
+| Option | Default | Description |
+|---|---:|---|
+| `autoApprove.deny` | `[]` | Extra rules denied while auto-approving, using OpenCode permission `action`/`resource` wildcard syntax. A request matching any entry is denied. Explicit OpenCode `ask` rules are denied regardless; OpenCode `deny` rules still apply. |
+
+```jsonc
+{
+  "autoApprove": {
+    "deny": [
+      { "action": "shell", "resource": "rm -rf *" }
+    ]
+  }
+}
+```
 
 ## Bundled Assets & Installer
 

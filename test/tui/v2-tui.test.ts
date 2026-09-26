@@ -366,7 +366,7 @@ describe('resolveTuiOptions', () => {
     expect(resolveTuiOptions(undefined)).toEqual({
       sidebar: true,
       showVersion: true,
-      keybinds: { executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '' },
+      keybinds: { executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '', toggleAutoApprove: '' },
     })
   })
 
@@ -388,7 +388,7 @@ describe('resolveTuiOptions', () => {
 
     expect(opts.sidebar).toBe(false)
     expect(opts.showVersion).toBe(true)
-    expect(opts.keybinds).toEqual({ executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '' })
+    expect(opts.keybinds).toEqual({ executePlan: '<leader>f', dashboard: '', toggleHostSandbox: '', toggleAutoApprove: '' })
   })
 
   test('later layers win and keybinds merge key by key', () => {
@@ -403,6 +403,7 @@ describe('resolveTuiOptions', () => {
       executePlan: '<leader>c',
       dashboard: '<leader>D',
       toggleHostSandbox: '',
+      toggleAutoApprove: '',
     })
   })
 })

@@ -14,6 +14,7 @@ The TUI surface provides:
 - auto-follow of replacement code and auditor sessions when a loop you are viewing rotates. Subagent sessions and sessions outside the loop worktree are not followed.
 - the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing up to three loops — running loops first, then the most recent finished ones — each as a status-colored bullet with the truncated loop name, status, and `iteration/max`, refreshed every couple of seconds
 - the `Open dashboard` palette command (and `tui.keybinds.dashboard`)
+- the `Toggle auto-approve` palette command (and `tui.keybinds.toggleAutoApprove`), which turns per-session auto-approve on or off for the current session and its Task subagents
 - a warning toast when sandboxing is enabled but the bundled build context is missing
 - Forge's server toasts (loop completion, workspace, sandbox, and permission warnings), delivered from the server plugin over the V2 plugin RPC event bus and shown only for the current project
 
@@ -27,11 +28,14 @@ The sidebar shows the Forge title (with version when `tui.showVersion` is on) an
 
 When sandboxing is configured, the sidebar displays the current session's msb state as `· MSB enabled/disabled/loading/failed` next to the Forge title. The `Toggle host sandbox` palette command, and optional `tui.keybinds.toggleHostSandbox` binding, enable or disable sandbox routing for the current session and its Task subagents. While it is on, permission prompts in those sessions are approved automatically unless `sandbox.autoApprovePermissions` is `false` (see [Sandbox](sandbox.md#permission-auto-approval)). The TUI also follows replacement code and auditor sessions when a loop rotates, but does not follow unrelated subagent sessions.
 
+When auto-approve is on for the current session, the sidebar displays `· AUTO` next to the Forge title. The `Toggle auto-approve` palette command, and optional `tui.keybinds.toggleAutoApprove` binding, turn it on or off for the current session and its Task subagents. It is applied server-side through OpenCode's `permission.evaluate` hook, so it follows the session and its subagents regardless of which TUI is showing it, and it expires after 15 days without session activity (prompts and auto-approved requests). While on, nothing prompts: a request OpenCode would `ask` is resolved to deny or allow. It is denied when the last matching OpenCode rule (agent rules, then session rules; last match wins) is an explicit `ask`, or when it matches an `autoApprove.deny` rule (see [Configuration → Auto-Approve](configuration.md#auto-approve)); otherwise it is allowed. OpenCode `deny` rules still deny, and an unresolvable ruleset denies. It is refused for loop sessions, whose ruleset already allows everything not denied, and enabling it while the host sandbox is off warns that approved commands run directly on the machine. Unlike OpenCode's built-in Auto mode (`session.permissions: "autoaccept"`), which approves requests from every session on the server, this is scoped to the one session and its subagents; keep the built-in setting at `"prompt"`.
+
 ## Additional Commands
 
 | Command | Description |
 |---------|-------------|
 | `Toggle host sandbox` | Enable or disable sandbox for the current session |
+| `Toggle auto-approve` | Turn per-session auto-approve on or off for the current session |
 | `Build sandbox template` | Build, save, and load the sandbox template image |
 | `Open dashboard` | Start the Forge dashboard and open it in a browser |
 
@@ -89,4 +93,4 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 }
 ```
 
-Set `sidebar` to `false` to disable the widget and the plan-execution commands. Session-rotation following plus the dashboard, sandbox-template build, and host-sandbox toggle commands remain available.
+Set `sidebar` to `false` to disable the widget and the plan-execution commands. Session-rotation following plus the dashboard, sandbox-template build, host-sandbox toggle, and auto-approve toggle commands remain available.

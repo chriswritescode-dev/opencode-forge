@@ -183,6 +183,12 @@ export interface SandboxConfig {
   autoApprovePermissions?: boolean
 }
 
+/** Policy applied while auto-approve is on for a session. Requests are only ever allowed or denied, never prompted. */
+export interface AutoApproveConfig {
+  /** Extra rules denied during auto-approval, using OpenCode permission action/resource wildcard syntax. Explicit OpenCode `ask` rules are always denied during auto-approval. */
+  deny?: Array<{ action: string; resource: string }>
+}
+
 /**
  * Configuration for session compaction behavior.
  */
@@ -293,4 +299,6 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
+  /** Policy applied while auto-approve is on for a session. */
+  autoApprove?: AutoApproveConfig
 }

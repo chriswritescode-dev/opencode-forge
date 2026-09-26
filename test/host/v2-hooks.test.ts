@@ -6,7 +6,7 @@ import { join } from 'path'
 import { buildAgents } from '../../src/agents'
 import { buildArchitectReminder, createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import { closeDatabase, createLoopsRepo, initializeDatabase } from '../../src/storage'
-import { registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../../src/host/v2-hooks'
+import { AUTO_APPROVE_RULES_UNRESOLVED_MESSAGE, registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../../src/host/v2-hooks'
 import { createSessionHooks } from '../../src/hooks/session'
 import {
   ensureShellShim,
@@ -38,6 +38,7 @@ interface StubCoreOptions {
   resolveSandboxForDirectory?: ForgeHooksV2Core['resolveSandboxForDirectory']
   resolveShellSandbox?: ForgeHooksV2Core['resolveShellSandbox']
   autoApprovesPermissions?: ForgeHooksV2Core['autoApprovesPermissions']
+  autoApproveDenyRules?: ForgeHooksV2Core['autoApproveDenyRules']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
   toolAfter?: ForgeHooksV2Core['toolAfter']
@@ -84,6 +85,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     resolveSandboxForDirectory: options.resolveSandboxForDirectory ?? (async () => null),
     resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
     autoApprovesPermissions: options.autoApprovesPermissions ?? (async () => false),
+    autoApproveDenyRules: options.autoApproveDenyRules ?? [],
     shellShimPath: options.shellShimPath ?? null,
   }
   return { core, before, after, prompts }
@@ -125,43 +127,157 @@ describe('toV1ToolName', () => {
 })
 
 describe('registerForgeHooksV2 permission hook', () => {
-  function permissionEvent(effect: 'allow' | 'deny' | 'ask', sessionID = 'ses_sandboxed') {
-    return { sessionID, action: 'shell', resources: ['git push'], effect }
+  interface PermissionEvent {
+    sessionID: string
+    agent?: string
+    action: string
+    resources: string[]
+    effect: 'allow' | 'deny' | 'ask'
+    message?: string
   }
 
-  test('approves an ask in a session the core auto-approves', async () => {
+  function permissionEvent(overrides: Partial<PermissionEvent> = {}): PermissionEvent {
+    return { sessionID: 'ses_auto', action: 'shell', resources: ['git push origin main'], effect: 'ask', ...overrides }
+  }
+
+  const allowAllRules = [{ action: '*', resource: '*', effect: 'allow' as const }]
+
+  test('registers the evaluate hook even without a shell shim', async () => {
     const { ctx, hooks } = createFakeV2Context()
-    const { core } = createStubCore({
-      shellShimPath: '/tmp/forge-shell',
-      autoApprovesPermissions: async (sessionID) => sessionID === 'ses_sandboxed',
-    })
+    const { core } = createStubCore({ shellShimPath: null, autoApprovesPermissions: async () => true })
     await registerForgeHooksV2(ctx, core)
 
-    const approved = permissionEvent('ask')
-    await invokeHook(hooks, 'permission', 'evaluate', approved)
-    expect(approved.effect).toBe('allow')
-
-    const other = permissionEvent('ask', 'ses_host')
-    await invokeHook(hooks, 'permission', 'evaluate', other)
-    expect(other.effect).toBe('ask')
+    expect(hooks.some((hook) => hook.domain === 'permission' && hook.event === 'evaluate')).toBe(true)
   })
 
-  test('never overrides a deny', async () => {
-    const { ctx, hooks } = createFakeV2Context()
-    const { core } = createStubCore({ shellShimPath: '/tmp/forge-shell', autoApprovesPermissions: async () => true })
-    await registerForgeHooksV2(ctx, core)
-
-    const denied = permissionEvent('deny')
-    await invokeHook(hooks, 'permission', 'evaluate', denied)
-    expect(denied.effect).toBe('deny')
-  })
-
-  test('is not registered without a shell shim', async () => {
+  test('leaves allow and deny untouched and never overrides a deny', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore({ autoApprovesPermissions: async () => true })
     await registerForgeHooksV2(ctx, core)
 
-    expect(hooks.some((hook) => hook.domain === 'permission' && hook.event === 'evaluate')).toBe(false)
+    const allowed = permissionEvent({ effect: 'allow' })
+    await invokeHook(hooks, 'permission', 'evaluate', allowed)
+    expect(allowed.effect).toBe('allow')
+
+    const denied = permissionEvent({ effect: 'deny' })
+    await invokeHook(hooks, 'permission', 'evaluate', denied)
+    expect(denied.effect).toBe('deny')
+  })
+
+  test('leaves an ask untouched when the core does not auto-approve', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({ autoApprovesPermissions: async () => false })
+    await registerForgeHooksV2(ctx, core)
+
+    const asked = permissionEvent()
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('ask')
+  })
+
+  test('allows an ask that matches no rule when auto-approve is on', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      session: { get: async () => ({ id: 'ses_auto', agent: 'build' }) },
+      agent: {
+        get: async () => ({
+          location: { directory: PROJECT },
+          data: { permissions: [{ action: 'read', resource: '*', effect: 'ask' }] },
+        }),
+      },
+    })
+    const { core } = createStubCore({ autoApprovesPermissions: async () => true })
+    await registerForgeHooksV2(ctx, core)
+
+    const asked = permissionEvent()
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('allow')
+  })
+
+  test('denies an ask that matches an agent ask rule', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      session: { get: async () => ({ id: 'ses_auto', agent: 'build' }) },
+      agent: {
+        get: async () => ({
+          location: { directory: PROJECT },
+          data: { permissions: [{ action: 'shell', resource: 'git push *', effect: 'ask' }] },
+        }),
+      },
+    })
+    const { core } = createStubCore({ autoApprovesPermissions: async () => true })
+    await registerForgeHooksV2(ctx, core)
+
+    const asked = permissionEvent()
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('deny')
+    expect(asked.message).toContain('matches the ask rule')
+  })
+
+  test('lets a session rule override an earlier agent ask rule', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      session: {
+        get: async () => ({
+          id: 'ses_auto',
+          agent: 'build',
+          permissions: [{ action: 'shell', resource: 'git push *', effect: 'allow' }],
+        }),
+      },
+      agent: {
+        get: async () => ({
+          location: { directory: PROJECT },
+          data: { permissions: [{ action: 'shell', resource: 'git push *', effect: 'ask' }] },
+        }),
+      },
+    })
+    const { core } = createStubCore({ autoApprovesPermissions: async () => true })
+    await registerForgeHooksV2(ctx, core)
+
+    const asked = permissionEvent()
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('allow')
+  })
+
+  test('denies an ask that matches a configured auto-approve deny rule', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      session: { get: async () => ({ id: 'ses_auto', agent: 'build' }) },
+      agent: {
+        get: async () => ({
+          location: { directory: PROJECT },
+          data: { permissions: allowAllRules },
+        }),
+      },
+    })
+    const { core } = createStubCore({
+      autoApprovesPermissions: async () => true,
+      autoApproveDenyRules: [{ action: 'shell', resource: 'git push *' }],
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const asked = permissionEvent()
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+    expect(asked.effect).toBe('deny')
+    expect(asked.message).toContain('matches the auto-approve deny rule')
+  })
+
+  test('fails closed to deny when the agent rules cannot be resolved', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { ctx, hooks } = createFakeV2Context({
+        session: { get: async () => ({ id: 'ses_auto', agent: 'build' }) },
+        agent: {
+          get: async () => {
+            throw new Error('agent lookup failed')
+          },
+        },
+      })
+      const { core } = createStubCore({ autoApprovesPermissions: async () => true })
+      await registerForgeHooksV2(ctx, core)
+
+      const asked = permissionEvent()
+      await invokeHook(hooks, 'permission', 'evaluate', asked)
+      expect(asked.effect).toBe('deny')
+      expect(asked.message).toBe(AUTO_APPROVE_RULES_UNRESOLVED_MESSAGE)
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 })
 

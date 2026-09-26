@@ -64,9 +64,11 @@ Commands the user runs directly — `!` commands and terminals — do not pass t
 
 ## Permission Auto-Approval
 
-When the host sandbox is toggled on for a session (`Toggle host sandbox` in the TUI), Forge approves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask becomes allow. This applies only while the session's shell calls actually route into a running sandbox. If the sandbox is off, still starting, or failed to start, prompts are shown as usual.
+When the host sandbox is toggled on for a session (`Toggle host sandbox` in the TUI), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when the last matching OpenCode rule (agent rules, then session rules; last match wins) is an explicit `ask`, or when it matches an `autoApprove.deny` rule; otherwise it is allowed. OpenCode `deny` rules still deny, and an unresolvable ruleset denies. This applies only while the session's shell calls actually route into a running sandbox. If the sandbox is off, still starting, or failed to start, prompts are shown as usual.
 
-Configured `deny` rules still apply: OpenCode settles them before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
+OpenCode `deny` rules still apply: they settle before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
+
+The same allow/deny policy also applies to the per-session `Toggle auto-approve`, which works whether or not a sandbox is on — see [TUI → Sidebar](tui.md#sidebar).
 
 File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbox, but the [file-tool boundary](#file-tool-boundary) refuses any path the sandbox cannot see, so auto-approval never reaches host files outside the mounts. To keep prompting while sandboxed, disable it:
 

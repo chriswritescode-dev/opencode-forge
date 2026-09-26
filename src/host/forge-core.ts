@@ -3,7 +3,7 @@ import { ForgeClientError } from '../client/port'
 import { buildAgents } from '../agents'
 import { createConfigHandler } from '../config'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
-import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createTuiLoopRestartRepo } from '../storage'
+import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createTuiLoopRestartRepo, createSessionAutoApproveRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
 import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
 import { resolveLogPath } from '../storage'
@@ -34,6 +34,7 @@ import type { ToolContext } from '../tools'
 
 import { LRUCache } from '../utils/lru-cache'
 import { ParentLookupUndeterminedError } from '../utils/session-ancestry'
+import { resolveSessionAutoApproveFlag } from '../utils/session-auto-approve-flag'
 import { createSessionLoopResolver } from '../services/session-loop-resolver'
 import { createUnifiedSandboxResolver } from '../services/unified-sandbox-resolver'
 import { createPlanCaptureEventHook } from '../hooks/plan-capture'
@@ -86,11 +87,14 @@ export interface ForgeCore {
    */
   resolveShellSandbox(sessionID: string): Promise<SandboxContext | null>
   /**
-   * True when a permission prompt in `sessionID` should be approved automatically: the session's
-   * shell calls run in a sandbox and `sandbox.autoApprovePermissions` is not disabled. Any
-   * resolution failure answers false so the prompt is still shown.
+   * True when a permission prompt in `sessionID` should be approved automatically: the session has an
+   * enabled per-session auto-approve flag (its own or an ancestor's) and is not inside an active loop,
+   * or the session's shell calls run in a sandbox and `sandbox.autoApprovePermissions` is not disabled.
+   * Any resolution failure answers false so the prompt is still shown.
    */
   autoApprovesPermissions(sessionID: string): Promise<boolean>
+  /** Extra deny rules applied while auto-approve is on, from `autoApprove.deny`. */
+  autoApproveDenyRules: ReadonlyArray<{ action: string; resource: string }>
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -476,6 +480,20 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   logger.log(`Registered forge workspace adapter (worktrees under ${forgeWorktreesRoot(dataDir)})`)
 
   const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
+
+  const autoApproveRepo = createSessionAutoApproveRepo(db)
+  try {
+    const purgedAutoApproves = autoApproveRepo.purgeExpired(Date.now())
+    if (purgedAutoApproves > 0) {
+      logger.log(`Startup: purged ${purgedAutoApproves} expired session auto-approve flag(s)`)
+    }
+  } catch (err) {
+    logger.error('Failed to purge expired session auto-approve flags', err)
+  }
+
+  const autoApproveDenyRules: ReadonlyArray<{ action: string; resource: string }> = (config.autoApprove?.deny ?? []).filter(
+    (rule) => typeof rule?.action === 'string' && rule.action.length > 0 && typeof rule?.resource === 'string' && rule.resource.length > 0,
+  )
 
   const loopsRepo = createLoopsRepo(db)
   const plansRepo = createPlansRepo(db)
@@ -1017,6 +1035,11 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     tools,
     applyConfig: createConfigHandler(agents, config.agents, promptsDir),
     chatMessage: async (input, output) => {
+      try {
+        autoApproveRepo.touch(projectId, input.sessionID, Date.now())
+      } catch (err) {
+        logger.debug(`[auto-approve] touch failed for ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+      }
       await forgeSessionMessageAttachHook(input)
       // Fallback for filtered session.created events: subagent sessions inside
       // loops must carry the loop ruleset before their first LLM step.
@@ -1086,6 +1109,23 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     resolveSandboxForDirectory,
     resolveShellSandbox,
     autoApprovesPermissions: async (sessionID) => {
+      const flag = await resolveSessionAutoApproveFlag({
+        sessionID,
+        isEnabled: (id) => autoApproveRepo.isEnabled(projectId, id, Date.now()),
+        getParentId: parentSessionLookup,
+        isInActiveLoop: async (id) => (await sessionLoopResolver.resolveActiveLoopForSession(id)) !== null,
+      })
+      if (!flag.enabled && flag.error !== undefined) {
+        logger.log(`[auto-approve] session flag lookup failed for ${sessionID}: ${flag.error instanceof Error ? flag.error.message : String(flag.error)}`)
+      }
+      if (flag.enabled) {
+        try {
+          autoApproveRepo.touch(projectId, flag.flagOwnerId, Date.now())
+        } catch (err) {
+          logger.debug(`[auto-approve] touch failed for ${flag.flagOwnerId}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        return true
+      }
       if (config.sandbox?.autoApprovePermissions === false) return false
       try {
         return (await resolveShellSandbox(sessionID)) !== null
@@ -1094,6 +1134,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         return false
       }
     },
+    autoApproveDenyRules,
     cleanup,
     shellShimPath,
   }
