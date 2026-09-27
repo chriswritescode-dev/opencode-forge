@@ -244,6 +244,13 @@ export interface RestartLoopCommand {
   auditorVariant?: string
   executionModel?: string
   executionVariant?: string
+  /**
+   * Optimistic precondition carried from the TUI: the loop's `startedAt` when the
+   * restart dialog was opened. When set, the restart is rejected unless the
+   * under-lock loop still has that exact generation, so a stale view cannot abort
+   * and overwrite a restart that already happened.
+   */
+  expectedStartedAt?: string
 }
 
 export interface CancelLoopCommand {
@@ -1649,6 +1656,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // For active loops the original code already aborted and updated state here.
       // We preserve that behavior by checking `stoppedState.active` first.
       const latestState = deps.loop.service.getActiveState(stoppedState.loopName)
+      if (command.expectedStartedAt !== undefined) {
+        const expectedMs = Date.parse(command.expectedStartedAt)
+        const currentMs = Date.parse((latestState ?? stoppedState).startedAt)
+        if (!Number.isFinite(expectedMs) || expectedMs !== currentMs) {
+          return {
+            ok: false,
+            error: `Loop "${stoppedState.loopName}" was restarted since it was selected. Reopen the restart dialog to see its current state.`,
+          }
+        }
+      }
       if (!latestState && stoppedState.active) {
         // Active loop vanished under lock — treat as removed.
         return { ok: false, error: `Loop "${stoppedState.loopName}" has been removed.` }

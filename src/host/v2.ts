@@ -7,13 +7,15 @@ import { canonicalizePath } from '../sandbox/path'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { createForgeCore, type ForgeCore } from './forge-core'
-import { FORGE_RPC, writeForgeHostSandboxState, writeForgeSessionPlan, type ForgeExecutePlanInput, type ForgeLoopRestartInput, type ForgeToastInput } from './forge-rpc'
+import { FORGE_RPC, toForgeRpcJson, writeForgeHostSandboxState, writeForgeSessionPlan, type ForgeExecutePlanInput, type ForgeLoopRestartInput, type ForgeToastInput } from './forge-rpc'
 import {
   V2_EVENT_TYPES,
   createV2SessionOwnership,
   normalizeV2Event,
+  readV2InboxEvent,
   v2EventDirectory,
 } from './v2-events'
+import { recordInboxEnqueued, recordInboxSettled } from '../loop/idle-gate'
 import { registerForgeAgentsV2, registerForgeCommandsV2, resolveForgeConfigMaps } from './v2-config'
 import { registerForgeHooksV2 } from './v2-hooks'
 import { registerForgeToolsV2 } from './v2-tools'
@@ -49,6 +51,13 @@ function createDeferredForgeWorkspaces(deps: DeferredForgeWorkspacesDeps): Forge
   }
 }
 
+/** Passes every RPC handler result through {@link toForgeRpcJson} so no handler can emit `undefined`. */
+function withJsonOutput<H extends Record<string, (input: unknown) => Promise<unknown>>>(handlers: H): H {
+  return Object.fromEntries(
+    Object.entries(handlers).map(([name, handler]) => [name, async (input: unknown) => toForgeRpcJson(await handler(input))]),
+  ) as H
+}
+
 export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<void>> {
   const config = loadPluginConfig()
   const directory = ctx.location.directory
@@ -62,7 +71,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
   let requestSessionDelete: ((sessionID: string) => Promise<void>) | undefined
   let disposeRpc: (() => Promise<void>) | null = null
   try {
-    const registration = await ctx.rpc.register(FORGE_RPC, {
+    const registration = await ctx.rpc.register(FORGE_RPC, withJsonOutput({
       executePlan: async (input) => core
         ? core.executeTuiPlan(input as ForgeExecutePlanInput)
         : { error: 'Forge is still starting; retry in a moment' },
@@ -96,7 +105,10 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
         const { sessionId, enabled } = input as { sessionId: string; enabled: boolean }
         return core ? core.tui.requestHostSandbox(sessionId, enabled) : { error: 'Forge is still starting; retry in a moment' }
       },
-    })
+      worktrees: async () => core
+        ? core.tui.listWorktrees()
+        : { error: 'Forge is still starting; retry in a moment' },
+    }))
     publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })
     requestSessionDelete = (sessionID) => registration.events.emit('sessionDelete', { sessionID })
     disposeRpc = registration.dispose
@@ -162,11 +174,20 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
           await dispose()
           return
         }
+        const inboxEvent = readV2InboxEvent(event)
+        if (inboxEvent) {
+          if (inboxEvent.kind === 'enqueued') {
+            recordInboxEnqueued(inboxEvent.sessionId, inboxEvent.inboxId)
+          } else {
+            recordInboxSettled(inboxEvent.sessionId, inboxEvent.inboxId)
+          }
+          continue
+        }
         const normalizedEvents = normalizeV2Event(event)
+        for (const normalized of normalizedEvents) client.recordStatusEvent(normalized)
         if (normalizedEvents.length === 0 || !(await sessionOwnership.owns(event))) continue
         for (const normalized of normalizedEvents) {
           try {
-            client.recordStatusEvent(normalized)
             await core.onEvent({ event: normalized })
           } catch (err) {
             console.error('[forge] V2 event handler failed', err)

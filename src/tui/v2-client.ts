@@ -10,6 +10,7 @@ import {
   type ForgeLoopRestartInput,
 } from '../host/forge-rpc'
 import type { ExecutionContext, ForgeProjectClient } from './project-client'
+import { isRecord } from '../utils/is-record'
 import { deriveExecutionPreferencesFromWorkspaces } from '../utils/tui-execution-preferences'
 import { providersFromProviderList, type LoopInfo, type WorkspaceForRecents } from '../utils/tui-models'
 
@@ -50,6 +51,21 @@ export type ForgeRpcCall = <T>(
 ) => Promise<T | { error: string }>
 
 /**
+ * Message for a failed Forge RPC. The OpenCode client rejects an RPC with a plain
+ * `{ type, message, data? }` object rather than an `Error`, so `String(err)` would
+ * render it as "[object Object]".
+ */
+export function describeRpcError(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (isRecord(err)) {
+    const type = typeof err.type === 'string' ? err.type : undefined
+    if (typeof err.message === 'string' && err.message) return type ? `${err.message} (${type})` : err.message
+    if (type) return type
+  }
+  return String(err)
+}
+
+/**
  * The single caller every TUI Forge RPC goes through: it resolves the current
  * location, invokes the method there, and maps both a missing location and any
  * thrown transport error to the shared `{ error }` result shape.
@@ -64,7 +80,7 @@ export function createForgeRpcCaller(
     try {
       return read(await invoke(forgeRpcClient(context), { location: { directory } }))
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) }
+      return { error: describeRpcError(err) }
     }
   }
 }
@@ -120,7 +136,7 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
             try {
               return await rpc.executePlan(input, location)
             } catch (err) {
-              throw new Error(`Plan execution failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
+              throw new Error(`Plan execution failed: ${describeRpcError(err)}`, { cause: err })
             }
           },
           readForgeExecutePlanOutput,
@@ -159,6 +175,8 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
         auditorVariant: request.auditorVariant,
         ...(request.executionModel ? { executionModel: request.executionModel } : {}),
         ...(request.executionVariant ? { executionVariant: request.executionVariant } : {}),
+        ...(request.force !== undefined ? { force: request.force } : {}),
+        ...(request.expectedStartedAt ? { expectedStartedAt: request.expectedStartedAt } : {}),
       }
       const result = await call((rpc, location) => rpc.loopRestart(input, location), readForgeLoopRestartOutput)
       if ('error' in result) throw new Error(result.error)

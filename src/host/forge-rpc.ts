@@ -49,6 +49,8 @@ export type ForgeLoopsOutput = { loops: LoopInfo[] } | ForgeRpcError
 
 export type ForgeLoopSidebarOutput = { loops: LoopSidebarRow[] } | ForgeRpcError
 
+export type ForgeWorktreesOutput = { root: string; dirs: string[] } | ForgeRpcError
+
 export type ForgeSessionPlanOutput = { plan: string | null } | ForgeRpcError
 
 export interface ForgeLoopRestartInput {
@@ -57,6 +59,10 @@ export interface ForgeLoopRestartInput {
   auditorVariant: string
   executionModel?: string
   executionVariant?: string
+  /** Force-restart an active loop. Omitted by old TUIs, which the server treats as `true`. */
+  force?: boolean
+  /** Optimistic precondition: the loop's `startedAt` as seen when the dialog was opened. */
+  expectedStartedAt?: string
 }
 
 export type ForgeLoopRestartOutput = { sessionId: string } | ForgeRpcError
@@ -101,6 +107,16 @@ const AUTO_APPROVE_OUTPUT = {
     enabled: { type: 'boolean' },
     ownerSessionId: OPTIONAL_STRING,
     inherited: { type: 'boolean' },
+    error: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
+
+const WORKTREES_OUTPUT = {
+  type: 'object',
+  properties: {
+    root: OPTIONAL_STRING,
+    dirs: { type: 'array', items: { type: 'string' } },
     error: OPTIONAL_STRING,
   },
   additionalProperties: false,
@@ -203,6 +219,8 @@ export const FORGE_RPC = {
           auditorVariant: { type: 'string' },
           executionModel: OPTIONAL_STRING,
           executionVariant: OPTIONAL_STRING,
+          force: { type: 'boolean' },
+          expectedStartedAt: OPTIONAL_STRING,
         },
         required: ['loopName', 'auditorModel', 'auditorVariant'],
         additionalProperties: false,
@@ -249,6 +267,10 @@ export const FORGE_RPC = {
         },
         additionalProperties: false,
       },
+    },
+    worktrees: {
+      input: EMPTY_INPUT,
+      output: WORKTREES_OUTPUT,
     },
   },
   events: {
@@ -310,6 +332,15 @@ export function readForgeLoopSidebar(value: unknown): ForgeLoopSidebarOutput {
     && typeof row.maxIterations === 'number')
 }
 
+/**
+ * JSON form of an RPC result. OpenCode validates handler output before
+ * serializing it and rejects `undefined` ("Expected JSON value"), which optional
+ * fields such as `LoopInfo.auditorVariant` carry; a JSON round trip drops them.
+ */
+export function toForgeRpcJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
 /** Wire form of a session plan: the RPC schema has no null, so an absent plan is omitted. */
 export function writeForgeSessionPlan(plan: string | null): { plan?: string } {
   return plan === null ? {} : { plan }
@@ -369,4 +400,14 @@ export function readForgeAutoApproveState(value: unknown): ForgeAutoApproveState
     inherited: value.inherited === true,
     ...(typeof value.ownerSessionId === 'string' ? { ownerSessionId: value.ownerSessionId } : {}),
   }
+}
+
+export function readForgeWorktrees(value: unknown): ForgeWorktreesOutput {
+  if (!isRecord(value)) return { error: 'Forge returned an invalid worktree list' }
+  if (typeof value.error === 'string') return { error: value.error }
+  if (typeof value.root !== 'string') return { error: 'Forge returned an invalid worktree list' }
+  if (!Array.isArray(value.dirs) || !value.dirs.every((dir) => typeof dir === 'string')) {
+    return { error: 'Forge returned an invalid worktree list' }
+  }
+  return { root: value.root, dirs: value.dirs as string[] }
 }

@@ -1,4 +1,5 @@
 import type { Logger } from '../types'
+import { processShared } from '../utils/process-shared'
 
 export type PromptAgent = 'code' | 'auditor-loop'
 
@@ -26,7 +27,7 @@ interface InFlightEntry {
   startedAt: number
 }
 
-const inFlight = new Map<string, InFlightEntry>()
+const inFlight = processShared('prompt-in-flight.v1', () => new Map<string, InFlightEntry>())
 
 export function markPromptInFlight(loopName: string, sessionId: string, agent: PromptAgent): void {
   inFlight.set(loopName, { sessionId, agent, startedAt: Date.now() })

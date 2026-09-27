@@ -13,13 +13,13 @@ import {
   readForgeHostSandboxSetOutput,
   readForgeHostSandboxState,
   readForgeLoopSidebar,
+  readForgeWorktrees,
   type ForgeToastEvent,
 } from '../host/forge-rpc'
 import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import { isToastVariant } from '../utils/toast'
-import { resolveForgeDataDir } from '../utils/opencode-paths'
-import { isForgeWorktreeDir } from '../workspace/forge-naming'
+import { isWithinDir } from '../workspace/forge-naming'
 import type { ForgeProjectClient } from './project-client'
 import { createExecutionContextCache, type ExecutionContextCache } from '../utils/tui-execution-context-cache'
 import { createV2TuiHost } from './host'
@@ -257,6 +257,20 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
 
   const call = createForgeRpcCaller(context, () => resolveV2TuiDirectory(context))
 
+  let worktreesRoot: string | null = null
+  let worktreesRequest: Promise<string | null> | null = null
+  const loadWorktreesRoot = (): Promise<string | null> => {
+    if (worktreesRoot !== null) return Promise.resolve(worktreesRoot)
+    worktreesRequest ??= call((rpc, location) => rpc.worktrees({}, location), readForgeWorktrees)
+      .then((result) => {
+        if ('error' in result) return null
+        worktreesRoot = result.root
+        return result.root
+      })
+      .finally(() => { worktreesRequest = null })
+    return worktreesRequest
+  }
+
   const planCommands = createForgePlanCommands({
     host,
     pluginConfig,
@@ -275,7 +289,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     toast: (input) => host.toast(input),
   })
 
-  const dataDir = resolveForgeDataDir(pluginConfig.dataDir)
   const autoApprove = createSessionAutoApproveToggle({
     currentSessionId,
     readState: (sessionId) => call((rpc, location) => rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
@@ -283,7 +296,10 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
     toast: (input) => host.toast(input),
   })
-  const detachSessionFollower = attachV2LoopSessionFollower(context, (directory) => isForgeWorktreeDir(dataDir, directory))
+  const detachSessionFollower = attachV2LoopSessionFollower(context, async (directory) => {
+    const root = await loadWorktreesRoot()
+    return root !== null && isWithinDir(root, directory)
+  })
 
   // A keymap layer needs a component owner, so the command is registered from
   // the always-mounted app slot rather than from setup itself.
@@ -406,7 +422,12 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
 
   void resolveV2TuiProjectId(context).then(async (projectId) => {
     if (!projectId || lifecycle.signal.aborted) return
-    await removeOrphanedLoopSessions(context, projectId, dataDir, lifecycle.signal)
+    const worktrees = await call((rpc, location) => rpc.worktrees({}, location), readForgeWorktrees)
+    if ('error' in worktrees) {
+      console.error('[forge] failed to load server worktrees for orphan cleanup', worktrees.error)
+      return
+    }
+    await removeOrphanedLoopSessions(context, projectId, worktrees, lifecycle.signal)
   }).catch((err: unknown) => {
     console.error('[forge] failed to remove orphaned loop sessions', err)
   })

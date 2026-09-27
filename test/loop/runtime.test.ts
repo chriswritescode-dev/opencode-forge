@@ -11,8 +11,8 @@ import { createLoopSessionUsageRepo, type LoopSessionUsageRepo } from '../../src
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, type Loop } from '../../src/loop/runtime'
-import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
+import { createLoop, __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { sessionsAwaitingBusy, AWAITING_BUSY_TIMEOUT_MS, isAwaitingBusyExpired, recordInboxEnqueued, recordInboxSettled, __resetQueuedPrompts } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
   clearPromptInFlight,
@@ -82,7 +82,9 @@ describe('Loop Runtime', () => {
     )
 
     sessionsAwaitingBusy.clear()
+    __resetQueuedPrompts()
     __resetInFlightGuard()
+    __resetLoopRuntimeSharedState()
   })
 
   afterEach(() => {
@@ -97,6 +99,7 @@ describe('Loop Runtime', () => {
       // ignore cleanup errors
     }
     sessionsAwaitingBusy.clear()
+    __resetQueuedPrompts()
     vi.useRealTimers()
   })
 
@@ -4555,6 +4558,189 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       const abortCalls = calls.filter(c => c.method === 'session.abort')
       expect(abortCalls.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('queued-prompt idle suppression', () => {
+    test('idle is ignored while a prompt is queued, then resumes once delivered', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Done.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+
+      // The awaiting-busy marker is already expired, so only the queued check can suppress.
+      sessionsAwaitingBusy.set(state.loopName, {
+        sessionId: state.sessionId,
+        sentAt: Date.now() - AWAITING_BUSY_TIMEOUT_MS - 1,
+      })
+      expect(isAwaitingBusyExpired(state.loopName)).toBe(true)
+
+      recordInboxEnqueued(state.sessionId, 'inbox-1')
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+      })
+
+      expect(loopService.getActiveState(state.loopName)!.phase).toBe('coding')
+      expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
+
+      recordInboxSettled(state.sessionId, 'inbox-1')
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+      })
+
+      expect(loopService.getActiveState(state.loopName)!.phase).toBe('auditing')
+    })
+
+    test('coding idle with no assistant and a queued prompt does not retry or recover', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'user' }, parts: [{ type: 'text', text: 'queued prompt' }] },
+          ],
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      vi.useFakeTimers()
+      try {
+        // The first idle schedules the bounded retry (attempt 1/1).
+        await loop.tick({
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+        })
+
+        // The prompt is still queued when the retry re-invokes runCodingPhase.
+        recordInboxEnqueued(state.sessionId, 'inbox-1')
+        await vi.advanceTimersByTimeAsync(2000)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
+      expect(logs.some(l => l.message.includes('coding idle ignored'))).toBe(true)
+    })
+  })
+
+  describe('active-session idle suppression', () => {
+    test('coding idle with no assistant while the session is busy does not retry or recover', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'user' }, parts: [{ type: 'text', text: 'in flight' }] },
+          ],
+          status: async () => ({ 'loop-session-id': { type: 'busy' } }),
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      vi.useFakeTimers()
+      try {
+        await loop.tick({
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+        })
+        await vi.advanceTimersByTimeAsync(2000)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
+      expect(logs.some(l => l.message.includes('is still active; waiting for its idle'))).toBe(true)
+    })
+
+    test('coding idle retry and recovery resume once the session reports idle', async () => {
+      let statusType: 'busy' | 'idle' = 'busy'
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'user' }, parts: [{ type: 'text', text: 'in flight' }] },
+          ],
+          status: async () => ({ 'loop-session-id': { type: statusType } }),
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      vi.useFakeTimers()
+      try {
+        await loop.tick({
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+        })
+        expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
+
+        statusType = 'idle'
+        await loop.tick({
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+        })
+        await vi.advanceTimersByTimeAsync(2000)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codePrompts.length).toBe(1)
+    })
+
+    test('code launch recovery does not resend when the session becomes active again', async () => {
+      let statusCalls = 0
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'user' }, parts: [{ type: 'text', text: 'in flight' }] },
+          ],
+          status: async () => {
+            statusCalls += 1
+            return statusCalls >= 3
+              ? { 'loop-session-id': { type: 'busy' } }
+              : { 'loop-session-id': { type: 'idle' } }
+          },
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      vi.useFakeTimers()
+      try {
+        await loop.tick({
+          type: 'session.status',
+          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+        })
+        await vi.advanceTimersByTimeAsync(2000)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
+      expect(logs.some(l => l.message.includes('is still active; waiting for its idle'))).toBe(true)
     })
   })
 })

@@ -457,6 +457,24 @@ describe('Loop Runtime start()', () => {
       void loop.terminateAll()
     })
 
+    // Regression: a worktree instance that boots after its loop started (remote
+    // servers boot the worktree location lazily) missed the first idle event and
+    // never started supervision, so the loop sat idle forever.
+    test('an owning instance created after the loop started supervises it', () => {
+      const host = createRuntimeIn('/tmp/some-other-project')
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      host.loop.start({ state })
+
+      const owner = createRuntimeIn('/tmp/owned-worktree')
+
+      expect(host.loop.superviseOwnedLoops()).toEqual([])
+      expect(createRuntimeIn().loop.superviseOwnedLoops()).toEqual([])
+      expect(owner.loop.superviseOwnedLoops()).toEqual([state.loopName])
+      expect(owner.logs.some(l => l.message.includes('Loop watchdog: started for loop test-loop'))).toBe(true)
+
+      void owner.loop.terminateAll()
+    })
+
     // Regression: a non-owning instance never nudges, so it never holds the
     // internal-abort marker. Before the ownership gate it read the resulting
     // abort as a user abort and terminated a loop that was actively working.

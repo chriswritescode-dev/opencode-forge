@@ -1,7 +1,7 @@
 import { describe, test, expect, vi } from 'vitest'
 import type { Plugin } from '@opencode/plugin/tui'
 import { FORGE_RPC, readForgeLoopSidebar } from '../../src/host/forge-rpc'
-import { createForgeRpcCaller, createV2ForgeProjectClient, loopsToWorkspacesForRecents } from '../../src/tui/v2-client'
+import { createForgeRpcCaller, createV2ForgeProjectClient, describeRpcError, loopsToWorkspacesForRecents } from '../../src/tui/v2-client'
 import { deriveExecutionPreferencesFromWorkspaces } from '../../src/utils/tui-execution-preferences'
 import type { LoopInfo } from '../../src/utils/tui-models'
 
@@ -127,10 +127,33 @@ describe('createV2ForgeProjectClient', () => {
   })
 
   test('restartLoop throws the RPC error', async () => {
-    const { client } = createClient({ loopRestart: async () => ({ error: 'Another loop restart request is already in progress' }) })
+    const { client } = createClient({ loopRestart: async () => ({ error: 'Loop "loop-a" was restarted since it was selected.' }) })
 
     await expect(client.restartLoop({ loopName: 'loop-a', auditorModel: 'b/audit', auditorVariant: '' }))
-      .rejects.toThrow('Another loop restart request is already in progress')
+      .rejects.toThrow('Loop "loop-a" was restarted since it was selected.')
+  })
+
+  test('restartLoop forwards force and expectedStartedAt when provided', async () => {
+    const loopRestart = vi.fn(async () => ({ sessionId: 'ses_restart' }))
+    const { client, methods } = createClient({ loopRestart })
+
+    await expect(client.restartLoop({
+      loopName: 'loop-a',
+      auditorModel: 'b/audit',
+      auditorVariant: 'high',
+      force: false,
+      expectedStartedAt: '2026-01-01T00:00:00.000Z',
+    })).resolves.toEqual({ sessionId: 'ses_restart' })
+    expect(methods.loopRestart).toHaveBeenCalledWith(
+      {
+        loopName: 'loop-a',
+        auditorModel: 'b/audit',
+        auditorVariant: 'high',
+        force: false,
+        expectedStartedAt: '2026-01-01T00:00:00.000Z',
+      },
+      { location: { directory: '/work/project' } },
+    )
   })
 
   test('loadExecutionContext derives workspaces from the loops RPC', async () => {
@@ -181,6 +204,29 @@ describe('createForgeRpcCaller', () => {
 
     expect(result).toEqual({ loops: [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5 }] })
     expect(loopSidebar).toHaveBeenCalledWith({ limit: 3 }, { location: { directory: '/work/project' } })
+  })
+
+  test('surfaces the message of a plain-object RPC rejection instead of [object Object]', async () => {
+    const loopSidebar = vi.fn(async () => { throw { type: 'RpcMethodNotFound', message: 'Unknown method loopSidebar' } })
+    const context = { client: { rpc: vi.fn(() => ({ loopSidebar })) } } as unknown as Plugin.Context
+    const call = createForgeRpcCaller(context, () => '/work/project')
+
+    const result = await call(
+      (client, location) => client.loopSidebar({ limit: 3 }, location),
+      readForgeLoopSidebar,
+    )
+
+    expect(result).toEqual({ error: 'Unknown method loopSidebar (RpcMethodNotFound)' })
+  })
+})
+
+describe('describeRpcError', () => {
+  test('reads Error, typed plain objects, and falls back to String', () => {
+    expect(describeRpcError(new Error('boom'))).toBe('boom')
+    expect(describeRpcError({ type: 'Invalid', message: 'bad output' })).toBe('bad output (Invalid)')
+    expect(describeRpcError({ message: 'bad output' })).toBe('bad output')
+    expect(describeRpcError({ type: 'Invalid' })).toBe('Invalid')
+    expect(describeRpcError('plain')).toBe('plain')
   })
 })
 

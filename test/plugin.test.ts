@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { createForgeCore, type ForgeCore, type ForgeHostInput } from '../src/host/forge-core'
@@ -132,6 +132,7 @@ describe('createForgeCore', () => {
     projectRoot?: string
     client?: ForgeClient
     makeClient?: (projectId: string) => ForgeClient
+    createCore?: typeof createForgeCore
   }
 
   async function buildCore(options: BuildCoreOptions = {}): Promise<{
@@ -148,7 +149,7 @@ describe('createForgeCore', () => {
     const fake = options.client || options.makeClient ? null : createFakeForgeClient()
     const client = options.client ?? (options.makeClient ? options.makeClient(projectId) : fake!.client)
     const calls: RecordedCall[] = fake?.calls ?? []
-    const core = await createForgeCore(
+    const core = await (options.createCore ?? createForgeCore)(
       options.config ?? { dataDir: join(testDir, 'memory') },
       {
         directory,
@@ -690,6 +691,44 @@ describe('createForgeCore', () => {
     closeDatabase(db)
 
     // The last release disposes it, clearing the error to a confirmed-stopped OFF.
+    await second.core.cleanup()
+    db = initializeDatabase(config.dataDir!)
+    const applied = createSessionSandboxPreferencesRepo(db).getApplied(projectId)
+    expect(applied?.enabled).toBe(false)
+    expect(applied?.error).toBeNull()
+    closeDatabase(db)
+  })
+
+  test('instances from separate module copies (one per location) share one sandbox controller', async () => {
+    const projectId = uniqueProjectId()
+    const config: PluginConfig = {
+      dataDir: join(testDir, 'memory'),
+      sandbox: { mode: 'msb', enabled: false },
+    }
+    const setupDb = initializeDatabase(config.dataDir!)
+    createSessionSandboxPreferencesRepo(setupDb).setDesired(projectId, {
+      version: 1,
+      revision: 'r-copies',
+      enabled: true,
+      sessionId: 'ses-root',
+      requestedAt: Date.now(),
+    })
+    closeDatabase(setupDb)
+
+    const makeClient = (id: string) => sessionResolvingClient(testDir, id)
+    const first = await buildCore({ config, projectId, makeClient })
+    vi.resetModules()
+    const copy = await import('../src/host/forge-core')
+    expect(copy.createForgeCore).not.toBe(createForgeCore)
+    const second = await buildCore({ config, projectId, makeClient, createCore: copy.createForgeCore })
+
+    await expect(globBefore(second.core, 'ses-root', 'c1')).rejects.toThrow(/unavailable/)
+
+    await first.core.cleanup()
+    let db = initializeDatabase(config.dataDir!)
+    expect(createSessionSandboxPreferencesRepo(db).getApplied(projectId)?.error).toBeTruthy()
+    closeDatabase(db)
+
     await second.core.cleanup()
     db = initializeDatabase(config.dataDir!)
     const applied = createSessionSandboxPreferencesRepo(db).getApplied(projectId)

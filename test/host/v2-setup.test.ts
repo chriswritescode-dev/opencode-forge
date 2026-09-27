@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { FORGE_EVENT_TYPES, V2_EVENT_TYPES } from '../../src/host/v2-events'
 import { FORGE_RPC } from '../../src/host/forge-rpc'
+import { isPromptQueued, __resetQueuedPrompts } from '../../src/loop/idle-gate'
 import type { ForgeClient } from '../../src/client/port'
 import { createFakeV2Context } from '../helpers/fake-v2-context'
 import { useTempConfigHome } from '../helpers/temp-config'
@@ -114,6 +115,7 @@ describe('V2 server setup', () => {
   beforeEach(() => {
     coreEvents.received.length = 0
     coreEvents.clients.length = 0
+    __resetQueuedPrompts()
     const dataHome = mkdtempSync(join(tmpdir(), 'forge-v2-setup-data-'))
     dataHomes.push(dataHome)
     process.env['XDG_DATA_HOME'] = dataHome
@@ -123,6 +125,7 @@ describe('V2 server setup', () => {
     for (const cleanup of cleanups.splice(0)) {
       await cleanup().catch(() => {})
     }
+    __resetQueuedPrompts()
     delete process.env['XDG_DATA_HOME']
     for (const dir of dataHomes.splice(0)) {
       rmSync(dir, { recursive: true, force: true })
@@ -275,6 +278,7 @@ describe('V2 server setup', () => {
       loopRestart: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
       hostSandboxState: () => Promise<Record<string, unknown>>
       hostSandboxSet: (input: { sessionId: string; enabled: boolean }) => Promise<Record<string, unknown>>
+      worktrees: () => Promise<Record<string, unknown>>
     }
 
     expect(typeof handlers.loopRestart).toBe('function')
@@ -288,6 +292,10 @@ describe('V2 server setup', () => {
 
     const set = await handlers.hostSandboxSet({ sessionId: 'ses_host', enabled: true })
     expect(typeof set.revision).toBe('string')
+
+    const worktrees = await handlers.worktrees()
+    expect(typeof worktrees.root).toBe('string')
+    expect(worktrees.dirs).toEqual([])
   })
 
   test('a registration failure does not reject setup and drops toasts', async () => {
@@ -360,6 +368,41 @@ describe('V2 server setup', () => {
         properties: { sessionID: 'ses_started', status: { type: 'busy' } },
       },
     ])
+  })
+
+  test('an inbox event updates the process-wide queue before ownership filtering, and settling clears it', async () => {
+    const stream = createV2EventStream()
+    const fake = createFakeV2Context({
+      location: { directory: '/project-a' },
+      event: { subscribe: stream.subscribe },
+      session: {
+        get: async (input: { sessionID: string }) => ({
+          id: input.sessionID,
+          projectID: 'proj_fake',
+          location: { directory: '/project-foreign' },
+          time: { created: 1, updated: 1 },
+        }),
+      },
+    })
+
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    stream.push({
+      id: 'evt_inbox_enqueued',
+      type: V2_EVENT_TYPES.sessionInboxEnqueued,
+      data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
+    })
+    await waitFor(() => isPromptQueued('ses_loop'))
+
+    // The session is owned by a foreign location, so nothing reached the loop core.
+    expect(receivedFor('/project-a')).toEqual([])
+
+    stream.push({
+      id: 'evt_inbox_delivered',
+      type: V2_EVENT_TYPES.sessionInboxDelivered,
+      data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
+    })
+    await waitFor(() => !isPromptQueued('ses_loop'))
   })
 
   test('a foreign location shutdown leaves this location running and reusable', async () => {
@@ -440,7 +483,7 @@ describe('V2 server setup', () => {
           return {
             id: input.sessionID,
             projectID: 'proj_fake',
-            location: { directory: input.sessionID === 'ses_foreign' ? '/project-worktree' : '/project-host' },
+            location: { directory: input.sessionID.startsWith('ses_foreign') ? '/project-worktree' : '/project-host' },
             time: { created: 1, updated: 1 },
           }
         },
@@ -450,11 +493,15 @@ describe('V2 server setup', () => {
 
     stream.push({ id: 'evt_foreign', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_foreign' } })
     stream.push({ id: 'evt_foreign_idle', type: V2_EVENT_TYPES.sessionExecutionSucceeded, data: { sessionID: 'ses_foreign' } })
+    stream.push({ id: 'evt_foreign_busy', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_foreign_busy' } })
     stream.push({ id: 'evt_unknown', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_unknown' } })
     stream.push({ id: 'evt_local', type: V2_EVENT_TYPES.sessionExecutionStarted, data: { sessionID: 'ses_local' } })
     await waitFor(() => receivedFor('/project-host').some((event) => event.properties.sessionID === 'ses_local'))
 
     expect(receivedFor('/project-host').map((event) => event.properties.sessionID)).toEqual(['ses_unknown', 'ses_local'])
+    const statuses = await lastClient().session.status({ directory: '/project-worktree' })
+    expect(statuses?.ses_foreign).toEqual({ type: 'idle' })
+    expect(statuses?.ses_foreign_busy).toEqual({ type: 'busy' })
     expect(fake.calls.filter((call) => call.method === 'session.get' && (call.args[0] as { sessionID: string }).sessionID === 'ses_foreign')).toHaveLength(1)
   })
 

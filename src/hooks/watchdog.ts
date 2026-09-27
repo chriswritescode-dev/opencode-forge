@@ -89,6 +89,8 @@ export function createLoopWatchdog(input: {
   handleAuditorProviderLimit?: (loopName: string, limitReason: string) => Promise<boolean>
   /** Ancestor-aware session→loop resolver for child/subagent sessions. Falls back to loopService.resolveLoopName when absent. */
   resolveSessionLoopName?: (sessionId: string) => Promise<string | null>
+  /** True while the loop's current session has an inbox prompt that has not been delivered yet. */
+  isPromptQueued?: (sessionId: string) => boolean
   statusRetryAttempts?: number
   statusRetryBackoffMs?: number
 }): LoopWatchdog {
@@ -316,6 +318,12 @@ export function createLoopWatchdog(input: {
         }
 
         if (!stallReady) return
+
+        if (input.isPromptQueued?.(state.sessionId)) {
+          resetActivity(loopName, 'status:queued')
+          input.logger.debug(`Loop watchdog: queued prompt pending for ${loopName}, resetting timer`)
+          return
+        }
 
         const status = statusResult.data[state.sessionId]?.type
 

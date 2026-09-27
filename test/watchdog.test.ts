@@ -1046,4 +1046,69 @@ describe('createLoopWatchdog', () => {
 
     watchdog.stop(loopName)
   })
+
+  it('resets activity instead of counting a stall while the current session has a queued prompt', async () => {
+    const stateRef = { current: createState() }
+    const recoverCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
+      logger,
+      nudge: vi.fn(),
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+      isPromptQueued: (sessionId) => sessionId === 'coding-session',
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(80)
+
+    expect(recoverCalls.length).toBe(0)
+    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('counts a non-busy stall again once no prompt is queued', async () => {
+    const stateRef = { current: createState() }
+    const recoverCalls: unknown[] = []
+    let queued = true
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
+      logger,
+      nudge: vi.fn(),
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+      isPromptQueued: () => queued,
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
+    await wait(80)
+    expect(recoverCalls.length).toBe(0)
+
+    queued = false
+    await wait(80)
+    expect(recoverCalls.length).toBeGreaterThanOrEqual(1)
+
+    watchdog.stop(loopName)
+  })
 })

@@ -63,5 +63,5 @@ export interface ForgeProjectClient {
   /** Read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
 
-  restartLoop(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel?: string; executionVariant?: string }): Promise<{ sessionId: string }>
+  restartLoop(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel?: string; executionVariant?: string; force?: boolean; expectedStartedAt?: string }): Promise<{ sessionId: string }>
 }

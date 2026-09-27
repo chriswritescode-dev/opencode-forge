@@ -1,6 +1,6 @@
 import type { Plugin } from '@opencode/plugin/tui'
-import { existsSync } from 'fs'
-import { forgeWorktreesRoot, isForgeWorktreeDir } from '../workspace/forge-naming'
+import { join, relative, sep } from 'path'
+import { isWithinDir } from '../workspace/forge-naming'
 
 const SESSION_LIST_PAGE_SIZE = 100
 
@@ -16,13 +16,21 @@ export async function removeSessionBestEffort(context: Plugin.Context, sessionID
   }
 }
 
+function worktreeDirFor(root: string, directory: string): string | null {
+  if (!isWithinDir(root, directory)) return null
+  const rel = relative(root, directory)
+  if (rel === '') return null
+  const firstSegment = rel.split(sep)[0]
+  return firstSegment ? join(root, firstSegment) : null
+}
+
 async function listOrphanedLoopSessionIds(
   context: Plugin.Context,
   projectId: string,
-  dataDir: string,
+  worktrees: { root: string; dirs: string[] },
   signal: AbortSignal,
 ): Promise<string[]> {
-  if (!existsSync(forgeWorktreesRoot(dataDir))) return []
+  const knownDirs = new Set(worktrees.dirs)
   const orphaned: string[] = []
   let cursor: string | undefined
   while (!signal.aborted) {
@@ -30,8 +38,8 @@ async function listOrphanedLoopSessionIds(
       cursor ? { cursor } : { project: projectId, limit: SESSION_LIST_PAGE_SIZE },
     )
     for (const session of page.data) {
-      const directory = session.location.directory
-      if (isForgeWorktreeDir(dataDir, directory) && !existsSync(directory)) orphaned.push(session.id)
+      const worktreeDir = worktreeDirFor(worktrees.root, session.location.directory)
+      if (worktreeDir && !knownDirs.has(worktreeDir)) orphaned.push(session.id)
     }
     const next = page.cursor.next ?? undefined
     if (page.data.length < SESSION_LIST_PAGE_SIZE || !next) break
@@ -43,10 +51,10 @@ async function listOrphanedLoopSessionIds(
 export async function removeOrphanedLoopSessions(
   context: Plugin.Context,
   projectId: string,
-  dataDir: string,
+  worktrees: { root: string; dirs: string[] },
   signal: AbortSignal,
 ): Promise<number> {
-  const orphaned = await listOrphanedLoopSessionIds(context, projectId, dataDir, signal)
+  const orphaned = await listOrphanedLoopSessionIds(context, projectId, worktrees, signal)
   for (const sessionID of orphaned) {
     if (signal.aborted) break
     await removeSessionBestEffort(context, sessionID)

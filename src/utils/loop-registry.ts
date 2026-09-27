@@ -6,7 +6,9 @@
  * process, not pre-existing persisted loops from before plugin initialization.
  */
 
-const activeLoops = new Set<string>()
+import { processShared } from './process-shared'
+
+const activeLoops = processShared('loop-registry.v1', () => new Set<string>())
 
 export const loopRegistry = {
   /**

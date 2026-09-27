@@ -38,7 +38,7 @@ export interface ExecutePlanPanelProps {
   onSelectionChanged: (args: ExecutionSelection) => void
   restart?: {
     loops: LoopInfo[]
-    onRestart(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel: string; executionVariant: string }): Promise<void>
+    onRestart(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel: string; executionVariant: string; force: boolean; expectedStartedAt?: string }): Promise<void>
   }
 }
 
@@ -335,6 +335,8 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         auditorVariant: auditorVariant(),
         executionModel: executionModel(),
         executionVariant: executionVariant(),
+        force: !!selectedLoop()?.restartRequiresForce,
+        expectedStartedAt: selectedLoop()?.startedAt,
       })
       cache?.recordRecent(auditorModel())
       cache?.recordRecent(executionModel())

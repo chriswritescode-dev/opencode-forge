@@ -27,6 +27,9 @@ export const V2_EVENT_TYPES = {
   sessionStepStreamed: 'session.step.streamed',
   sessionStepEnded: 'session.step.ended',
   sessionStepFailed: 'session.step.failed',
+  sessionInboxEnqueued: 'session.inbox.enqueued',
+  sessionInboxDelivered: 'session.inbox.delivered',
+  sessionInboxCancelled: 'session.inbox.cancelled',
 } as const
 
 export const FORGE_EVENT_TYPES = {
@@ -82,6 +85,44 @@ export function v2EventDirectory(event: V2Event): string | undefined {
 function v2EventSessionId(event: V2Event): string | undefined {
   const data = (event as { data?: { sessionID?: unknown } }).data
   return typeof data?.sessionID === 'string' ? data.sessionID : undefined
+}
+
+export interface V2InboxEvent {
+  kind: 'enqueued' | 'settled'
+  sessionId: string
+  inboxId: string
+}
+
+type V2InboxEventType =
+  | typeof V2_EVENT_TYPES.sessionInboxEnqueued
+  | typeof V2_EVENT_TYPES.sessionInboxDelivered
+  | typeof V2_EVENT_TYPES.sessionInboxCancelled
+
+function readInboxEventData(event: Extract<V2Event, { type: V2InboxEventType }>): { sessionId: string; inboxId: string } | null {
+  const data = event.data as { sessionID?: unknown; inboxID?: unknown }
+  if (typeof data?.sessionID !== 'string' || data.sessionID === '') return null
+  if (typeof data?.inboxID !== 'string' || data.inboxID === '') return null
+  return { sessionId: data.sessionID, inboxId: data.inboxID }
+}
+
+/**
+ * Reads an inbox lifecycle event for the process-wide queued-prompt tracker.
+ * These events are never normalized into loop events.
+ */
+export function readV2InboxEvent(event: V2Event): V2InboxEvent | null {
+  switch (event.type) {
+    case V2_EVENT_TYPES.sessionInboxEnqueued: {
+      const data = readInboxEventData(event)
+      return data ? { kind: 'enqueued', ...data } : null
+    }
+    case V2_EVENT_TYPES.sessionInboxDelivered:
+    case V2_EVENT_TYPES.sessionInboxCancelled: {
+      const data = readInboxEventData(event)
+      return data ? { kind: 'settled', ...data } : null
+    }
+    default:
+      return null
+  }
 }
 
 export interface V2SessionOwnershipDeps {

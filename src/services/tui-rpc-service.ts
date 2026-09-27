@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
+import { readdirSync } from 'fs'
+import { join } from 'path'
 import type { PluginConfig, Logger } from '../types'
 import type { LoopsRepo, LoopRow } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import type { SessionSandboxPreferencesRepo } from '../storage/repos/session-sandbox-preferences-repo'
 import { getRestartability } from '../loop/restartability'
-import { loopBranchExists } from '../workspace/forge-naming'
+import { forgeWorktreesRoot, loopBranchExists } from '../workspace/forge-naming'
 import { isSandboxConfigEnabled } from '../sandbox/context'
 import type { LoopInfo } from '../utils/tui-models'
 import {
@@ -18,10 +20,12 @@ import {
   type ForgeLoopsOutput,
   type ForgeLoopSidebarOutput,
   type ForgeSessionPlanOutput,
+  type ForgeWorktreesOutput,
 } from '../host/forge-rpc'
 
 export interface TuiRpcServiceDeps {
   projectId: string
+  dataDir: string
   config: PluginConfig
   loopsRepo: LoopsRepo
   sectionPlansRepo: SectionPlansRepo
@@ -34,6 +38,7 @@ export interface TuiRpcServiceDeps {
 export interface TuiRpcService {
   listLoops(): ForgeLoopsOutput
   listLoopSidebar(limit: number): ForgeLoopSidebarOutput
+  listWorktrees(): ForgeWorktreesOutput
   getSessionPlan(sessionId: string): ForgeSessionPlanOutput
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
   getHostSandboxState(): ForgeHostSandboxStateOutput
@@ -106,8 +111,6 @@ function rowToLoopInfo(row: LoopRow, sectionPlans?: SectionPlanRow[]): LoopInfo 
 }
 
 export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
-  let restartInFlight = false
-
   return {
     listLoops(): ForgeLoopsOutput {
       try {
@@ -129,6 +132,19 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
       }
     },
 
+    listWorktrees(): ForgeWorktreesOutput {
+      const root = forgeWorktreesRoot(deps.dataDir)
+      try {
+        const dirs = readdirSync(root, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => join(root, entry.name))
+        return { root, dirs }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { root, dirs: [] }
+        return { error: errorMessage(err) }
+      }
+    },
+
     getSessionPlan(sessionId: string): ForgeSessionPlanOutput {
       try {
         return { plan: deps.plansRepo.getForSession(deps.projectId, sessionId)?.content ?? null }
@@ -138,18 +154,11 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
     },
 
     async restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput> {
-      if (restartInFlight) {
-        deps.logger.debug(`[tui-rpc] rejecting loop restart for ${request.loopName}: another request is in flight`)
-        return { error: 'Another loop restart request is already in progress' }
-      }
-      restartInFlight = true
       try {
         return await deps.restartLoop(request)
       } catch (err) {
         deps.logger.error('TUI loop restart failed', err)
         return { error: errorMessage(err) }
-      } finally {
-        restartInFlight = false
       }
     },
 

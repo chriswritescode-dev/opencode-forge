@@ -1,14 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo, createPlansRepo, createSectionPlansRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { LoopsRepo, LoopRow } from '../../src/storage/repos/loops-repo'
 import type { SessionSandboxDesiredState } from '../../src/storage'
 import type { Logger } from '../../src/types'
-import type { ForgeLoopRestartInput, ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
+import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
+import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const PROJECT = 'project-a'
@@ -76,6 +77,7 @@ describe('createTuiRpcService', () => {
   function createService(overrides: Partial<TuiRpcServiceDeps> = {}): TuiRpcService {
     return createTuiRpcService({
       projectId: PROJECT,
+      dataDir: tempDir,
       config: {},
       loopsRepo,
       sectionPlansRepo,
@@ -136,6 +138,29 @@ describe('createTuiRpcService', () => {
       expect(running?.sections).toBeUndefined()
     })
 
+    test('a loop with unset optional fields is JSON-clean after toForgeRpcJson', () => {
+      loopsRepo.insert(loopRow({
+        loopName: 'loop-sparse',
+        auditorVariant: null,
+        executionVariant: null,
+        workspaceId: null,
+        hostSessionId: null,
+        completedAt: null,
+      }), { lastAuditResult: null })
+
+      const result = createService().listLoops()
+      if ('error' in result) throw new Error(result.error)
+      const sparse = result.loops.find((loop) => loop.name === 'loop-sparse')
+      expect(Object.hasOwn(sparse ?? {}, 'auditorVariant')).toBe(true)
+      expect(sparse?.auditorVariant).toBeUndefined()
+
+      const wire = toForgeRpcJson(result)
+      const hasUndefined = (value: unknown): boolean =>
+        value === undefined || (typeof value === 'object' && value !== null && Object.values(value).some(hasUndefined))
+      expect(hasUndefined(wire)).toBe(false)
+      expect(Object.hasOwn(wire.loops.find((loop) => loop.name === 'loop-sparse') ?? {}, 'auditorVariant')).toBe(false)
+    })
+
     test('reports an error when the repo throws', () => {
       const throwingRepo = { listAll: () => { throw new Error('database gone') } } as unknown as LoopsRepo
       const result = createService({ loopsRepo: throwingRepo }).listLoops()
@@ -153,6 +178,25 @@ describe('createTuiRpcService', () => {
 
       expect(result.loops.map((row) => row.loopName)).toEqual(['loop-running', 'loop-done'])
       expect(result.loops[0]).toEqual({ loopName: 'loop-running', status: 'running', iteration: 3, maxIterations: 10 })
+    })
+  })
+
+  describe('listWorktrees', () => {
+    test('returns an empty dir list when the worktrees root is missing', () => {
+      expect(createService().listWorktrees()).toEqual({ root: forgeWorktreesRoot(tempDir), dirs: [] })
+    })
+
+    test('lists only directory entries under the worktrees root', () => {
+      const root = forgeWorktreesRoot(tempDir)
+      mkdirSync(join(root, 'loop-a'), { recursive: true })
+      mkdirSync(join(root, 'loop-b'), { recursive: true })
+      writeFileSync(join(root, 'notes.txt'), '')
+
+      const result = createService().listWorktrees()
+      if ('error' in result) throw new Error(result.error)
+
+      expect(result.root).toBe(root)
+      expect(result.dirs.sort()).toEqual([join(root, 'loop-a'), join(root, 'loop-b')].sort())
     })
   })
 
@@ -177,25 +221,30 @@ describe('createTuiRpcService', () => {
       auditorVariant: 'high',
     }
 
-    test('rejects a second restart while one is in flight, then allows the next', async () => {
+    test('two concurrent restarts of different loops both reach the restart dependency', async () => {
       let releaseFirst!: (output: ForgeLoopRestartOutput) => void
       const firstPromise = new Promise<ForgeLoopRestartOutput>((resolve) => { releaseFirst = resolve })
-      let callCount = 0
-      const restart = vi.fn((_request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput> => {
-        callCount += 1
-        return callCount === 1 ? firstPromise : Promise.resolve({ sessionId: 'ses_2' })
-      })
+      const restart = vi.fn((input: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput> =>
+        input.loopName === 'loop-1' ? firstPromise : Promise.resolve({ sessionId: 'ses_2' }))
       const service = createService({ restartLoop: restart })
 
-      const first = service.restartLoop(request)
-      const second = await service.restartLoop(request)
+      const first = service.restartLoop({ ...request, loopName: 'loop-1' })
+      const second = await service.restartLoop({ ...request, loopName: 'loop-2' })
 
-      expect(second).toEqual({ error: 'Another loop restart request is already in progress' })
-      expect(restart).toHaveBeenCalledTimes(1)
+      expect(second).toEqual({ sessionId: 'ses_2' })
+      expect(restart).toHaveBeenCalledTimes(2)
 
       releaseFirst({ sessionId: 'ses_1' })
       await expect(first).resolves.toEqual({ sessionId: 'ses_1' })
-      await expect(service.restartLoop(request)).resolves.toEqual({ sessionId: 'ses_2' })
+    })
+
+    test('forwards force and expectedStartedAt to the restart dependency', async () => {
+      const restart = vi.fn(async (): Promise<ForgeLoopRestartOutput> => ({ sessionId: 'ses_1' }))
+      const service = createService({ restartLoop: restart })
+
+      await expect(service.restartLoop({ ...request, force: false, expectedStartedAt: '2026-01-01T00:00:00.000Z' }))
+        .resolves.toEqual({ sessionId: 'ses_1' })
+      expect(restart).toHaveBeenCalledWith({ ...request, force: false, expectedStartedAt: '2026-01-01T00:00:00.000Z' })
     })
 
     test('maps a thrown restart failure into an error result', async () => {

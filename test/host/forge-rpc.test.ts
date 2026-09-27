@@ -10,6 +10,7 @@ import {
   readForgeLoopSidebar,
   readForgeLoops,
   readForgeSessionPlan,
+  readForgeWorktrees,
   writeForgeHostSandboxState,
   writeForgeSessionPlan,
 } from '../../src/host/forge-rpc'
@@ -28,6 +29,7 @@ describe('FORGE_RPC', () => {
       'loopRestart',
       'hostSandboxState',
       'hostSandboxSet',
+      'worktrees',
     ])
   })
 
@@ -150,5 +152,17 @@ describe('FORGE_RPC', () => {
     expect(readForgeHostSandboxSetOutput({ revision: 'rev-1' })).toEqual({ revision: 'rev-1' })
     expect(readForgeHostSandboxSetOutput({ error: 'disabled' })).toEqual({ error: 'disabled' })
     expect(readForgeHostSandboxSetOutput({})).toEqual({ error: 'Forge returned an invalid host sandbox result' })
+  })
+
+  test('readForgeWorktrees keeps a root and dir list and surfaces errors', () => {
+    expect(readForgeWorktrees({ root: '/server/worktrees', dirs: ['/server/worktrees/loop-a'] }))
+      .toEqual({ root: '/server/worktrees', dirs: ['/server/worktrees/loop-a'] })
+    expect(readForgeWorktrees({ root: '/server/worktrees', dirs: [] }))
+      .toEqual({ root: '/server/worktrees', dirs: [] })
+    expect(readForgeWorktrees({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeWorktrees({ dirs: [] })).toEqual({ error: 'Forge returned an invalid worktree list' })
+    expect(readForgeWorktrees({ root: '/server/worktrees', dirs: [1] }))
+      .toEqual({ error: 'Forge returned an invalid worktree list' })
+    expect(readForgeWorktrees(null)).toEqual({ error: 'Forge returned an invalid worktree list' })
   })
 })

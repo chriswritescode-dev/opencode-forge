@@ -52,6 +52,7 @@ import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
+import { processShared } from '../utils/process-shared'
 
 /**
  * Host-supplied inputs the core needs to run, built by the host adapter from its plugin
@@ -282,7 +283,11 @@ type SharedSessionSandboxController = {
   close: () => void
 }
 
-const sharedSessionSandboxControllers = new Map<string, SharedSessionSandboxController>()
+/**
+ * One host sandbox controller per project for the whole process: every location's plugin instance
+ * has its own module copy, and a second reconciler would race the first on the same container.
+ */
+const sharedSessionSandboxControllers = processShared('session-sandbox-controllers.v1', () => new Map<string, SharedSessionSandboxController>())
 
 function preferredSessionSandboxProvider(providers: Set<SessionSandboxProvider>): SessionSandboxProvider {
   return [...providers].find((provider) => !provider.worktree) ?? providers.values().next().value!
@@ -681,6 +686,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const parentSessionLookup = createParentSessionLookup({ client: forgeClient, directory, loop: loopHandler.loop, logger })
   loopHandler.loop.setParentSessionLookup(parentSessionLookup)
+  loopHandler.loop.superviseOwnedLoops()
   const sessionIdentityLookup = createSessionIdentityLookup({ client: forgeClient, directory, loop: loopHandler.loop })
   const sessionDirectoryLookup = async (sessionId: string) => (await sessionIdentityLookup(sessionId))?.directory ?? null
   const sessionLoopResolver = createSessionLoopResolver({
@@ -820,6 +826,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const tui = createTuiRpcService({
     projectId,
+    dataDir,
     config,
     loopsRepo,
     sectionPlansRepo,
@@ -831,11 +838,12 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         {
           type: 'loop.restart',
           selector: { kind: 'exact', name: request.loopName },
-          force: true,
+          force: request.force ?? true,
           auditorModel: request.auditorModel,
           auditorVariant: request.auditorVariant,
           executionModel: request.executionModel,
           executionVariant: request.executionVariant,
+          expectedStartedAt: request.expectedStartedAt,
         },
       )
       return response.ok

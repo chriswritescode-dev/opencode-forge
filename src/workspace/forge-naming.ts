@@ -28,6 +28,15 @@ export function forgeWorktreeDir(dataDir: string, loopName: string): string {
 }
 
 /**
+ * True when `directory` is `root` itself or any directory beneath it.
+ */
+export function isWithinDir(root: string, directory: string): boolean {
+  if (!root || !directory) return false
+  const rel = relative(root, directory)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
  * True when `directory` is the forge worktrees root (`<dataDir>/worktrees`) or
  * any directory beneath it.
  *
@@ -38,9 +47,7 @@ export function forgeWorktreeDir(dataDir: string, loopName: string): string {
  * is still alive and may be actively driving those groups in the same project.
  */
 export function isForgeWorktreeDir(dataDir: string, directory: string): boolean {
-  if (!dataDir || !directory) return false
-  const rel = relative(forgeWorktreesRoot(dataDir), directory)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return isWithinDir(forgeWorktreesRoot(dataDir), directory)
 }
 
 /**

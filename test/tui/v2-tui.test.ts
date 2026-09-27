@@ -58,6 +58,7 @@ interface FakeV2TuiOptions {
   locationGet?: (input?: { location?: { directory?: string } }) => Promise<{ project: { id: string } }>
   route?: { type: 'home' } | { type: 'session'; sessionID: string }
   sessions?: Array<{ id: string; location: { directory: string } }>
+  worktrees?: { root: string; dirs: string[] } | { error: string }
 }
 
 type DataHandler = (event: { data: Record<string, unknown> }) => void
@@ -82,7 +83,9 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
 
   const rpc = vi.fn((definition: unknown) => {
     rpcDefinitions.push(definition)
+    const worktrees = fakeOptions.worktrees ?? { root: forgeWorktreesRoot(resolveForgeDataDir()), dirs: [] }
     return {
+      worktrees: vi.fn(async () => worktrees),
       events: {
         on: vi.fn((
           name: string,
@@ -308,7 +311,7 @@ describe('V2 TUI setup', () => {
     cleanup()
   })
 
-  test('follows a loop rotation inside the viewed worktree, but not subagents or non-loop sessions', () => {
+  test('follows a loop rotation inside the viewed worktree, but not subagents or non-loop sessions', async () => {
     const worktree = join(forgeWorktreesRoot(resolveForgeDataDir()), 'loop-a')
     const fake = createFakeV2TuiContext({
       route: { type: 'session', sessionID: 'ses_code' },
@@ -318,10 +321,11 @@ describe('V2 TUI setup', () => {
     const cleanup = setupForgeTuiV2(fake.ctx)
     fake.emit('session.created', { sessionID: 'ses_task', parentID: 'ses_code', location: { directory: worktree } })
     fake.emit('session.created', { sessionID: 'ses_other', location: { directory: '/test/project' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(fake.navigations).toEqual([])
 
     fake.emit('session.created', { sessionID: 'ses_audit', location: { directory: worktree } })
-    expect(fake.navigations).toEqual([{ type: 'session', sessionID: 'ses_audit' }])
+    await vi.waitFor(() => expect(fake.navigations).toEqual([{ type: 'session', sessionID: 'ses_audit' }]))
 
     cleanup()
     expect(fake.dataHandlers.get('session.created')).toEqual([])
