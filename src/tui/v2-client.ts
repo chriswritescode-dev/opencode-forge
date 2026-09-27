@@ -1,16 +1,21 @@
 import type { Plugin } from '@opencode/plugin/tui'
 import { toProviderListFromV2 } from '../client/v2-adapter'
-import { FORGE_RPC, readForgeExecutePlanOutput, type ForgeExecutePlanInput } from '../host/forge-rpc'
+import {
+  FORGE_RPC,
+  readForgeExecutePlanOutput,
+  readForgeLoopRestartOutput,
+  readForgeLoops,
+  readForgeSessionPlan,
+  type ForgeExecutePlanInput,
+  type ForgeLoopRestartInput,
+} from '../host/forge-rpc'
 import type { ExecutionContext, ForgeProjectClient } from './project-client'
 import { deriveExecutionPreferencesFromWorkspaces } from '../utils/tui-execution-preferences'
-import { fetchLoopsList, fetchStoredSessionPlan, requestTuiLoopRestart } from '../utils/tui-loop-store'
 import { providersFromProviderList, type LoopInfo, type WorkspaceForRecents } from '../utils/tui-models'
 
 export interface V2ForgeProjectClientOptions {
   projectId: string
   directory: string
-  dbPath: string
-  signal: AbortSignal
   onDefaultModel(model: string): void
 }
 
@@ -28,6 +33,40 @@ export function loopsToWorkspacesForRecents(projectId: string, loops: ReadonlyAr
       },
     },
   }))
+}
+
+type ForgeRpcClient = ReturnType<typeof forgeRpcClient>
+
+const forgeRpcClient = (context: Plugin.Context) => context.client.rpc(FORGE_RPC)
+
+export type ForgeRpcInvoke = (
+  rpc: ForgeRpcClient,
+  options: { location: { directory: string } },
+) => Promise<unknown>
+
+export type ForgeRpcCall = <T>(
+  invoke: ForgeRpcInvoke,
+  read: (value: unknown) => T | { error: string },
+) => Promise<T | { error: string }>
+
+/**
+ * The single caller every TUI Forge RPC goes through: it resolves the current
+ * location, invokes the method there, and maps both a missing location and any
+ * thrown transport error to the shared `{ error }` result shape.
+ */
+export function createForgeRpcCaller(
+  context: Plugin.Context,
+  resolveDirectory: () => string | null,
+): ForgeRpcCall {
+  return async (invoke, read) => {
+    const directory = resolveDirectory()
+    if (!directory) return { error: 'no Forge location for this TUI' }
+    try {
+      return read(await invoke(forgeRpcClient(context), { location: { directory } }))
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
+  }
 }
 
 async function loadModels(context: Plugin.Context, directory: string): Promise<ExecutionContext['models'] & { defaultModel: string }> {
@@ -58,7 +97,8 @@ async function loadModels(context: Plugin.Context, directory: string): Promise<E
 }
 
 export function createV2ForgeProjectClient(context: Plugin.Context, options: V2ForgeProjectClientOptions): ForgeProjectClient {
-  const { projectId, directory, dbPath, signal } = options
+  const { projectId, directory } = options
+  const call = createForgeRpcCaller(context, () => directory)
 
   return {
     projectId,
@@ -75,23 +115,34 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
           ...(req.executionVariant ? { executionVariant: req.executionVariant } : {}),
           ...(req.auditorVariant ? { auditorVariant: req.auditorVariant } : {}),
         }
-        try {
-          return readForgeExecutePlanOutput(await context.client.rpc(FORGE_RPC).executePlan(input, { location: { directory } }))
-        } catch (err) {
-          return { error: `Plan execution failed: ${err instanceof Error ? err.message : String(err)}` }
-        }
+        return call(
+          async (rpc, location) => {
+            try {
+              return await rpc.executePlan(input, location)
+            } catch (err) {
+              throw new Error(`Plan execution failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
+            }
+          },
+          readForgeExecutePlanOutput,
+        )
       },
     },
     async selectSession(sessionId) {
       context.ui.router.navigate({ type: 'session', sessionID: sessionId })
     },
     async loadLatestPlan(sessionId) {
-      return fetchStoredSessionPlan(projectId, sessionId, dbPath)
+      const result = await call((rpc, location) => rpc.sessionPlan({ sessionId }, location), readForgeSessionPlan)
+      return 'error' in result ? null : result.plan
+    },
+    async loadLoops() {
+      return call((rpc, location) => rpc.loops({}, location), readForgeLoops)
     },
     async loadExecutionContext() {
       const { defaultModel, ...models } = await loadModels(context, directory)
       options.onDefaultModel(defaultModel)
-      const workspaces = loopsToWorkspacesForRecents(projectId, fetchLoopsList(projectId, dbPath))
+      const loopsResult = await call((rpc, location) => rpc.loops({}, location), readForgeLoops)
+      const loops = 'error' in loopsResult ? [] : loopsResult.loops
+      const workspaces = loopsToWorkspacesForRecents(projectId, loops)
       return {
         preferences: deriveExecutionPreferencesFromWorkspaces(projectId, workspaces),
         models,
@@ -102,9 +153,16 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
       }
     },
     async restartLoop(request) {
-      const applied = await requestTuiLoopRestart(projectId, request, { dbPath, signal })
-      if (!applied.sessionId) throw new Error('Loop restart completed without a session')
-      return { sessionId: applied.sessionId }
+      const input: ForgeLoopRestartInput = {
+        loopName: request.loopName,
+        auditorModel: request.auditorModel,
+        auditorVariant: request.auditorVariant,
+        ...(request.executionModel ? { executionModel: request.executionModel } : {}),
+        ...(request.executionVariant ? { executionVariant: request.executionVariant } : {}),
+      }
+      const result = await call((rpc, location) => rpc.loopRestart(input, location), readForgeLoopRestartOutput)
+      if ('error' in result) throw new Error(result.error)
+      return { sessionId: result.sessionId }
     },
   }
 }

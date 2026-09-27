@@ -30,8 +30,5 @@ export type { SessionSandboxDesiredState, SessionSandboxAppliedState, SessionSan
 export { createSessionAutoApproveRepo, SESSION_AUTO_APPROVE_KEY_PREFIX, SESSION_AUTO_APPROVE_TTL_MS } from './repos/session-auto-approve-repo'
 export type { SessionAutoApproveRepo } from './repos/session-auto-approve-repo'
 
-export { createTuiLoopRestartRepo, TUI_LOOP_RESTART_DESIRED_KEY, TUI_LOOP_RESTART_APPLIED_KEY } from './repos/tui-loop-restart-repo'
-export type { TuiLoopRestartDesiredState, TuiLoopRestartAppliedState, TuiLoopRestartRepo, TuiLoopRestartPair } from './repos/tui-loop-restart-repo'
-
 export { createLoopAttemptsRepo } from './repos/loop-attempts-repo'
 export type { LoopAttemptRow, LoopAttemptRecordInput, LoopAttemptOutcome, LoopAttemptsRepo } from './repos/loop-attempts-repo'

@@ -7,7 +7,7 @@ import { canonicalizePath } from '../sandbox/path'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { createForgeCore, type ForgeCore } from './forge-core'
-import { FORGE_RPC, type ForgeExecutePlanInput, type ForgeToastInput } from './forge-rpc'
+import { FORGE_RPC, writeForgeHostSandboxState, writeForgeSessionPlan, type ForgeExecutePlanInput, type ForgeLoopRestartInput, type ForgeToastInput } from './forge-rpc'
 import {
   V2_EVENT_TYPES,
   createV2SessionOwnership,
@@ -72,6 +72,29 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       autoApproveSet: async (input) => {
         const { sessionId, enabled } = input as { sessionId: string; enabled: boolean }
         return core ? core.setSessionAutoApprove(sessionId, enabled) : { error: 'Forge is still starting; retry in a moment' }
+      },
+      loops: async () => core
+        ? core.tui.listLoops()
+        : { error: 'Forge is still starting; retry in a moment' },
+      loopSidebar: async (input) => core
+        ? core.tui.listLoopSidebar((input as { limit: number }).limit)
+        : { error: 'Forge is still starting; retry in a moment' },
+      sessionPlan: async (input) => {
+        if (!core) return { error: 'Forge is still starting; retry in a moment' }
+        const result = core.tui.getSessionPlan((input as { sessionId: string }).sessionId)
+        return 'error' in result ? result : writeForgeSessionPlan(result.plan)
+      },
+      loopRestart: async (input) => core
+        ? core.tui.restartLoop(input as ForgeLoopRestartInput)
+        : { error: 'Forge is still starting; retry in a moment' },
+      hostSandboxState: async () => {
+        if (!core) return { error: 'Forge is still starting; retry in a moment' }
+        const state = core.tui.getHostSandboxState()
+        return 'error' in state ? state : writeForgeHostSandboxState(state)
+      },
+      hostSandboxSet: async (input) => {
+        const { sessionId, enabled } = input as { sessionId: string; enabled: boolean }
+        return core ? core.tui.requestHostSandbox(sessionId, enabled) : { error: 'Forge is still starting; retry in a moment' }
       },
     })
     publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })

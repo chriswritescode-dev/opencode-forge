@@ -68,7 +68,7 @@ The TUI plugin provides:
 - Command palette integration (`Execute plan`, `Execute pasted plan`, `Restart loop`, `Open dashboard`, `Build sandbox template`, `Toggle host sandbox`)
 - Model selection with recent-model tracking
 
-The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches, plus a `toast`/`sessionDelete` event bus for server-pushed notifications.
+The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`), served by `src/services/tui-rpc-service.ts`: `executePlan` for plan launches, `autoApproveState`/`autoApproveSet` for per-session auto-approve, `loops`/`loopSidebar` for the loop list and sidebar, `sessionPlan` for the stored plan, `loopRestart` for loop restarts, and `hostSandboxState`/`hostSandboxSet` for the host-session sandbox, plus a `toast`/`sessionDelete` event bus for server-pushed notifications. The TUI holds no Forge database of its own — its only `forge.db` reference is the path handed to the local dashboard launcher — so it works attached to a remote OpenCode server running Forge.
 
 ## Module Layout
 
@@ -81,7 +81,7 @@ The codebase is organized into these module groups under `src/`:
 | `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects, group orchestrator) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `group-orchestrator.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
-| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `group-orchestrator.ts`, `group-scheduler.ts`, `tui-loop-restart-controller.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
+| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `group-orchestrator.ts`, `group-scheduler.ts`, `tui-rpc-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
 | `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
 | `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `plan-adjust.ts`, `section-read.ts`, `group.ts`, `tool.ts` |
@@ -230,7 +230,6 @@ All data access goes through typed repository interfaces created via factory fun
 | `FeatureGroupsRepo` | Feature-group state for grouped execution | `FeatureGroupsRepo` |
 | `LoopAttemptsRepo` | Durable audit-attempt history | `LoopAttemptsRepo` |
 | `SessionSandboxPreferencesRepo` | Desired/applied host-session sandbox state | `SessionSandboxPreferencesRepo` |
-| `TuiLoopRestartRepo` | TUI loop-restart request/acknowledgement handoff | `TuiLoopRestartRepo` |
 
 Each repository is project-scoped via `projectId` parameter.
 
@@ -247,7 +246,7 @@ The plugin follows this initialization sequence within `createForgeCore()`:
 3. **Pending Teardown Registry** - Track worktree teardown contexts
 4. **Workspace Adapter** - Register the forge workspace adapter
 5. **Database** - Initialize SQLite storage (`initializeDatabase()`)
-6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, featureGroups, transitions, planAmendments, attempts, sessionSandboxPreferences, tuiLoopRestart)
+6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, featureGroups, transitions, planAmendments, attempts, sessionSandboxPreferences)
 7. **Loop Event Handler** - Connect loop runtime to events and state management
 8. **Session Sandbox Controller** - Reconcile the host-session sandbox selection
 9. **Group Orchestrator** - Manage grouped execution

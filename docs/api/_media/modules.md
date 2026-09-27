@@ -73,7 +73,7 @@ Host-neutral core plus the thin adapter that maps the OpenCode V2 plugin context
 | `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
 | `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
 | `v2-events.ts` | Normalizes V2 events into Forge's event shape; busy, idle, and retry derive only from `session.execution.*` and `session.retry.scheduled` |
-| `forge-rpc.ts` | `FORGE_RPC` contract: the `toast` event the V2 server emits and the V2 TUI shows |
+| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`) and the `toast`/`sessionDelete` events the V2 server emits and the V2 TUI shows |
 | `v2-hooks.ts` | Registers the core handlers through V2's hook API |
 | `v2-tools.ts` | Registers the shared Forge tools on V2 |
 | `v2-config.ts` | Resolves and registers agents and commands on V2 |
@@ -301,7 +301,7 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
 | `group-orchestrator.ts` | Feature-group scheduling and per-feature loop launch |
 | `group-scheduler.ts` | Ordering and concurrency cap for a group's features |
-| `tui-loop-restart-controller.ts` | Applies TUI loop-restart requests and writes the acknowledgement |
+| `tui-rpc-service.ts` | Server-side TUI RPC service: loop list/sidebar, session plan, single-flight loop restart, and host-sandbox desired/applied state |
 | `worktree-log.ts` | Log worktree completions |
 
 ### Key Interfaces
@@ -416,7 +416,6 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `FeatureGroupsRepo` | `feature_groups` | `FeatureGroupsRepo` — grouped-execution state |
 | `LoopAttemptsRepo` | `loop_attempts` | `LoopAttemptsRepo` — durable audit-attempt history |
 | `SessionSandboxPreferencesRepo` | `session_sandbox_preferences` | `SessionSandboxPreferencesRepo` — host-session sandbox desired/applied state |
-| `TuiLoopRestartRepo` | `tui_loop_restart` | `TuiLoopRestartRepo` — TUI loop-restart request/acknowledgement handoff |
 
 ### Migrations
 
@@ -520,7 +519,7 @@ Cross-cutting helpers (~40 files) organized by concern:
 | Sections | `section-capture.ts`, `section-summary.ts` | Section extraction/summary parsing |
 | Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts`, `loop-registry.ts`, `loop-permission-options.ts`, `loop-permission-warnings.ts` | Loop model/format/session/permission helpers |
 | Sessions | `audit-session.ts`, `audit-snapshot.ts`, `coder-decisions.ts`, `session-ancestry.ts`, `session-titles.ts` | Session naming, ancestry, audit history |
-| TUI | `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI local reads, preferences, models |
+| TUI | `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI preferences and models |
 | Workspace | `worktree-cleanup.ts`, `git-service.ts` | Worktree cleanup and git operations |
 | Sandbox | `sandbox-ready.ts` | Sandbox readiness probe |
 | Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `format.ts`, `duration.ts`, `is-record.ts`, `toast.ts`, `architect-auto-output.ts`, `feature-list-parser.ts`, `review-format.ts`, `cli-flags.ts`, `bundled-sync.ts` | Various helpers |

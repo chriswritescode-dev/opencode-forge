@@ -1,6 +1,6 @@
 import type { ForgeExecutionMode } from '../host/forge-rpc'
 import type { ExecutionPreferences } from '../utils/tui-execution-preferences'
-import type { SessionForRecents, WorkspaceForRecents } from '../utils/tui-models'
+import type { LoopInfo, SessionForRecents, WorkspaceForRecents } from '../utils/tui-models'
 
 export interface ExecutionContext {
   preferences: ExecutionPreferences | null
@@ -56,6 +56,9 @@ export interface ForgeProjectClient {
 
   /** Read the latest stored plan for a session, or `null` when none is found. */
   loadLatestPlan(sessionId: string): Promise<string | null>
+
+  /** List loops for the current project through the Forge server RPC. */
+  loadLoops(): Promise<{ loops: LoopInfo[] } | { error: string }>
 
   /** Read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>

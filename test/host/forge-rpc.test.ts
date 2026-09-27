@@ -1,11 +1,34 @@
 import { describe, test, expect } from 'vitest'
-import { FORGE_EXECUTION_MODES, FORGE_RPC, readForgeAutoApproveState, readForgeExecutePlanOutput } from '../../src/host/forge-rpc'
+import {
+  FORGE_EXECUTION_MODES,
+  FORGE_RPC,
+  readForgeAutoApproveState,
+  readForgeExecutePlanOutput,
+  readForgeHostSandboxSetOutput,
+  readForgeHostSandboxState,
+  readForgeLoopRestartOutput,
+  readForgeLoopSidebar,
+  readForgeLoops,
+  readForgeSessionPlan,
+  writeForgeHostSandboxState,
+  writeForgeSessionPlan,
+} from '../../src/host/forge-rpc'
 import { FORGE_PLUGIN_ID } from '../../src/constants/plugin'
 
 describe('FORGE_RPC', () => {
-  test('uses the plugin id and exposes the plan and auto-approve methods', () => {
+  test('uses the plugin id and exposes every method in contract order', () => {
     expect(FORGE_RPC.id).toBe(FORGE_PLUGIN_ID)
-    expect(Object.keys(FORGE_RPC.methods)).toEqual(['executePlan', 'autoApproveState', 'autoApproveSet'])
+    expect(Object.keys(FORGE_RPC.methods)).toEqual([
+      'executePlan',
+      'autoApproveState',
+      'autoApproveSet',
+      'loops',
+      'loopSidebar',
+      'sessionPlan',
+      'loopRestart',
+      'hostSandboxState',
+      'hostSandboxSet',
+    ])
   })
 
   test('executePlan requires a session, mode, title, and plan, and accepts every execution mode', () => {
@@ -57,5 +80,75 @@ describe('FORGE_RPC', () => {
       required: ['projectId', 'message'],
       additionalProperties: false,
     })
+  })
+
+  test('readForgeLoops keeps loop rows and surfaces errors', () => {
+    const loops = [{ name: 'loop-a', status: 'running', restartable: true }]
+    expect(readForgeLoops({ loops })).toEqual({ loops })
+    expect(readForgeLoops({ loops: [{ name: 'loop-a' }] })).toEqual({ error: 'Forge returned an invalid loop list' })
+    expect(readForgeLoops({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeLoops(null)).toEqual({ error: 'Forge returned an invalid loop list' })
+  })
+
+  test('readForgeLoopSidebar keeps sidebar rows and surfaces errors', () => {
+    const loops = [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5 }]
+    expect(readForgeLoopSidebar({ loops })).toEqual({ loops })
+    expect(readForgeLoopSidebar({ loops: [{ loopName: 'loop-a' }] }))
+      .toEqual({ error: 'Forge returned an invalid loop sidebar' })
+    expect(readForgeLoopSidebar({ error: 'no db' })).toEqual({ error: 'no db' })
+  })
+
+  test('writeForgeSessionPlan omits a null plan and readForgeSessionPlan restores it', () => {
+    expect(writeForgeSessionPlan(null)).toEqual({})
+    expect(writeForgeSessionPlan('# Plan')).toEqual({ plan: '# Plan' })
+
+    expect(readForgeSessionPlan({ plan: '# Plan' })).toEqual({ plan: '# Plan' })
+    expect(readForgeSessionPlan({})).toEqual({ plan: null })
+    expect(readForgeSessionPlan({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeSessionPlan(null)).toEqual({ error: 'Forge returned an invalid session plan' })
+  })
+
+  test('readForgeLoopRestartOutput keeps a session and surfaces errors', () => {
+    expect(readForgeLoopRestartOutput({ sessionId: 'ses_1' })).toEqual({ sessionId: 'ses_1' })
+    expect(readForgeLoopRestartOutput({ error: 'in progress' })).toEqual({ error: 'in progress' })
+    expect(readForgeLoopRestartOutput({})).toEqual({ error: 'Loop restart completed without a session' })
+    expect(readForgeLoopRestartOutput(null)).toEqual({ error: 'Forge returned an invalid loop restart result' })
+  })
+
+  test('writeForgeHostSandboxState omits null rows and readForgeHostSandboxState restores them', () => {
+    expect(writeForgeHostSandboxState({ configEnabled: true, desired: null, applied: null, controller: null }))
+      .toEqual({ configEnabled: true })
+    expect(writeForgeHostSandboxState({
+      configEnabled: true,
+      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
+      applied: null,
+      controller: null,
+      activeLoopSandboxes: { ses_loop: true },
+    })).toEqual({
+      configEnabled: true,
+      desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
+      activeLoopSandboxes: { ses_loop: true },
+    })
+
+    expect(readForgeHostSandboxState({
+      configEnabled: true,
+      desired: { version: 1, revision: 'rev-1' },
+      activeLoopSandboxes: { ses_loop: true },
+    })).toEqual({
+      configEnabled: true,
+      desired: { version: 1, revision: 'rev-1' },
+      applied: null,
+      controller: null,
+      activeLoopSandboxes: { ses_loop: true },
+    })
+    expect(readForgeHostSandboxState({ configEnabled: 'yes' }))
+      .toEqual({ error: 'Forge returned an invalid host sandbox state' })
+    expect(readForgeHostSandboxState({ error: 'no db' })).toEqual({ error: 'no db' })
+  })
+
+  test('readForgeHostSandboxSetOutput keeps a revision and surfaces errors', () => {
+    expect(readForgeHostSandboxSetOutput({ revision: 'rev-1' })).toEqual({ revision: 'rev-1' })
+    expect(readForgeHostSandboxSetOutput({ error: 'disabled' })).toEqual({ error: 'disabled' })
+    expect(readForgeHostSandboxSetOutput({})).toEqual({ error: 'Forge returned an invalid host sandbox result' })
   })
 })

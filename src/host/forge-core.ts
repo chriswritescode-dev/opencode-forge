@@ -3,7 +3,7 @@ import { ForgeClientError } from '../client/port'
 import { buildAgents } from '../agents'
 import { createConfigHandler } from '../config'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
-import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createTuiLoopRestartRepo, createSessionAutoApproveRepo } from '../storage'
+import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
 import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
 import { resolveLogPath } from '../storage'
@@ -51,7 +51,7 @@ import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState } from './forge-rpc'
-import { createTuiLoopRestartController, type TuiLoopRestartController } from '../services/tui-loop-restart-controller'
+import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
 
 /**
  * Host-supplied inputs the core needs to run, built by the host adapter from its plugin
@@ -104,6 +104,8 @@ export interface ForgeCore {
   setSessionAutoApprove(sessionID: string, enabled: boolean): Promise<ForgeAutoApproveState>
   /** Extra deny rules applied while auto-approve is on, from `autoApprove.deny`. */
   autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule>
+  /** Read and control surface the TUI reaches through the FORGE_RPC plugin RPC. */
+  tui: TuiRpcService
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -590,7 +592,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   let sessionSandboxProjectId: string | null = null
   let sessionSandboxProvider: SessionSandboxProvider | null = null
-  let tuiLoopRestartController: TuiLoopRestartController | null = null
 
   const cleanup = (): Promise<void> => {
     if (cleanupPromise) {
@@ -607,7 +608,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       logger.log('Loop: active loops preserved during plugin cleanup')
       
       loopHandler.clearAllRetryTimeouts()
-      await tuiLoopRestartController?.dispose()
 
       // Disposal and DB close must both be exception-safe: a rejected controller disposal (e.g.
       // a failed container removal or acknowledgement persistence) must never prevent the SQLite
@@ -818,33 +818,32 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     pendingTeardowns,
   })
 
-  if (!isForgeWorktreeDir(dataDir, directory)) {
-    tuiLoopRestartController = createTuiLoopRestartController({
-      projectId,
-      repo: createTuiLoopRestartRepo(db),
-      logger,
-      async restart(request) {
-        const response = await executionService.dispatch(
-          { surface: 'api', projectId, directory: projectRoot },
-          {
-            type: 'loop.restart',
-            selector: { kind: 'exact', name: request.loopName },
-            force: true,
-            auditorModel: request.auditorModel,
-            auditorVariant: request.auditorVariant,
-            executionModel: request.executionModel,
-            executionVariant: request.executionVariant,
-          },
-        )
-        return response.ok
-          ? { sessionId: response.data.sessionId }
-          : { error: response.error.message }
-      },
-    })
-    void tuiLoopRestartController.start().catch((err) => {
-      logger.error('TUI loop restart controller failed to start', err)
-    })
-  }
+  const tui = createTuiRpcService({
+    projectId,
+    config,
+    loopsRepo,
+    sectionPlansRepo,
+    plansRepo,
+    sandboxPreferences: createSessionSandboxPreferencesRepo(db),
+    async restartLoop(request) {
+      const response = await executionService.dispatch(
+        { surface: 'api', projectId, directory: projectRoot },
+        {
+          type: 'loop.restart',
+          selector: { kind: 'exact', name: request.loopName },
+          force: true,
+          auditorModel: request.auditorModel,
+          auditorVariant: request.auditorVariant,
+          executionModel: request.executionModel,
+          executionVariant: request.executionVariant,
+        },
+      )
+      return response.ok
+        ? { sessionId: response.data.sessionId }
+        : { error: response.error.message }
+    },
+    logger,
+  })
 
   // ── Real GroupEffects ─────────────────────────────────────────────────────
   const effects: GroupEffects = {
@@ -1209,6 +1208,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     getSessionAutoApproveState,
     setSessionAutoApprove,
     autoApproveDenyRules,
+    tui,
     cleanup,
     shellShimPath,
   }

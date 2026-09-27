@@ -265,6 +265,31 @@ describe('V2 server setup', () => {
     })
   })
 
+  test('the loop, plan, and sandbox RPC handlers route to the core TUI service', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      loops: () => Promise<Record<string, unknown>>
+      loopSidebar: (input: { limit: number }) => Promise<Record<string, unknown>>
+      sessionPlan: (input: { sessionId: string }) => Promise<Record<string, unknown>>
+      loopRestart: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+      hostSandboxState: () => Promise<Record<string, unknown>>
+      hostSandboxSet: (input: { sessionId: string; enabled: boolean }) => Promise<Record<string, unknown>>
+    }
+
+    expect(typeof handlers.loopRestart).toBe('function')
+
+    await expect(handlers.loops()).resolves.toEqual({ loops: [] })
+    await expect(handlers.loopSidebar({ limit: 5 })).resolves.toEqual({ loops: [] })
+    await expect(handlers.sessionPlan({ sessionId: 'ses_none' })).resolves.toEqual({})
+
+    const hostState = await handlers.hostSandboxState()
+    expect(hostState.configEnabled).toBe(true)
+
+    const set = await handlers.hostSandboxSet({ sessionId: 'ses_host', enabled: true })
+    expect(typeof set.revision).toBe('string')
+  })
+
   test('a registration failure does not reject setup and drops toasts', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fake = createFakeV2Context({

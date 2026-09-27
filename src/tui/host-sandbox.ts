@@ -1,21 +1,31 @@
-import { existsSync } from 'fs'
 import { createSignal, type Accessor } from 'solid-js'
-import type { ForgeToastInput } from '../host/forge-rpc'
-import { isSandboxConfigEnabled } from '../sandbox/context'
-import type { PluginConfig } from '../types'
+import {
+  FORGE_HOST_SANDBOX_DISABLED_ERROR,
+  type ForgeHostSandboxSetOutput,
+  type ForgeHostSandboxStateOutput,
+  type ForgeToastInput,
+} from '../host/forge-rpc'
 import {
   awaitSessionSandboxState,
-  beginSessionSandboxStateRequest,
   deriveSandboxPollDelayMs,
   hostSandboxToggleBlocked,
-  readSessionSandboxPreference,
   type SessionSandboxPreference,
 } from './session-sandbox-store'
 
+/** Delay between host sandbox polls while the server reports sandboxing disabled. */
+const SANDBOX_HIDDEN_POLL_DELAY_MS = 5000
+
+/** Keeps an awaiting toggle polling when the server reports sandboxing disabled mid-flight. */
+const HIDDEN_PREFERENCE: SessionSandboxPreference = {
+  desired: null,
+  applied: null,
+  unavailable: true,
+  unavailableReason: FORGE_HOST_SANDBOX_DISABLED_ERROR,
+}
+
 export interface HostSandboxToggleDeps {
-  pluginConfig: PluginConfig
-  dbPath: string
-  resolveProjectId(): Promise<string | null>
+  readState(): Promise<ForgeHostSandboxStateOutput>
+  setState(sessionId: string, enabled: boolean): Promise<ForgeHostSandboxSetOutput>
   currentSessionId(): string | null
   toast(input: ForgeToastInput): void
 }
@@ -35,94 +45,101 @@ function preferencesEqual(a: SessionSandboxPreference | null, b: SessionSandboxP
 }
 
 /**
- * The TUI side of the host session sandbox: writes the desired state for the current session
- * and follows the server's acknowledgement in the Forge database. The server reconciles the
- * request and routes the session's shell, glob, and grep calls into the sandbox.
+ * Maps the server's host sandbox state to the TUI preference shape. A config-disabled
+ * server returns null so the sidebar hides the indicator; a read error becomes an
+ * unavailable preference so the toggle refuses with the reason.
+ */
+function preferenceFrom(state: ForgeHostSandboxStateOutput): SessionSandboxPreference | null {
+  if ('error' in state) {
+    return { desired: null, applied: null, unavailable: true, unavailableReason: state.error }
+  }
+  if (!state.configEnabled) return null
+  return {
+    desired: state.desired,
+    applied: state.applied,
+    controller: state.controller,
+    ...(state.activeLoopSandboxes ? { activeLoopSandboxes: state.activeLoopSandboxes } : {}),
+  }
+}
+
+/**
+ * The TUI side of the host session sandbox: reads the desired/applied pair for the
+ * current session through the Forge server RPC and follows the server's
+ * acknowledgement. The server reconciles the request and routes the session's shell,
+ * glob, and grep calls into the sandbox.
  */
 export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandboxToggle {
-  const configEnabled = isSandboxConfigEnabled(deps.pluginConfig)
   const [preference, setPreference] = createSignal<SessionSandboxPreference | null>(null, { equals: preferencesEqual })
   const lifecycle = new AbortController()
-  let projectId: string | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let waiter: AbortController | null = null
 
-  const resolveProjectId = async (): Promise<string | null> => {
-    projectId ??= await deps.resolveProjectId()
-    return projectId
-  }
-
-  const refresh = (id: string): SessionSandboxPreference | null => {
-    if (lifecycle.signal.aborted || !configEnabled) return null
-    const pref = readSessionSandboxPreference(id, deps.dbPath)
-    setPreference(pref)
-    return pref
-  }
-
-  // Follows the preference pair independently of a toggle's own wait, so a late server
-  // acknowledgement still reaches the sidebar.
-  const ensurePolling = (id: string): void => {
-    if (pollTimer || lifecycle.signal.aborted || !configEnabled) return
-    const step = (): void => {
-      pollTimer = null
-      const pref = refresh(id)
-      if (!pref) return
-      pollTimer = setTimeout(step, deriveSandboxPollDelayMs(pref))
+  const readState = async (): Promise<ForgeHostSandboxStateOutput> => {
+    try {
+      return await deps.readState()
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
     }
-    step()
   }
 
-  if (configEnabled) {
-    void resolveProjectId().then((id) => {
-      if (id) ensurePolling(id)
-    })
+  const schedule = (delayMs: number): void => {
+    if (lifecycle.signal.aborted) return
+    pollTimer = setTimeout(() => {
+      pollTimer = null
+      void tick()
+    }, delayMs)
   }
+
+  const tick = async (): Promise<void> => {
+    if (lifecycle.signal.aborted) return
+    const next = preferenceFrom(await readState())
+    if (lifecycle.signal.aborted) return
+    setPreference(next)
+    schedule(next ? deriveSandboxPollDelayMs(next) : SANDBOX_HIDDEN_POLL_DELAY_MS)
+  }
+
+  schedule(0)
 
   const toggle = async (): Promise<void> => {
-    const blocked = hostSandboxToggleBlocked(configEnabled)
-    if (blocked) {
-      deps.toast({ message: blocked, variant: 'warning', duration: 5000 })
-      return
-    }
     const sessionId = deps.currentSessionId()
     if (!sessionId) {
       deps.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
       return
     }
-    const id = await resolveProjectId()
+    const state = await readState()
     if (lifecycle.signal.aborted) return
-    if (!id) {
-      deps.toast({ message: 'Sandbox toggle unavailable: could not resolve this project', variant: 'warning', duration: 5000 })
+    if ('error' in state) {
+      setPreference(preferenceFrom(state))
+      deps.toast({ message: `Sandbox toggle unavailable: ${state.error}`, variant: 'warning', duration: 5000 })
       return
     }
-    if (!existsSync(deps.dbPath)) {
-      deps.toast({ message: `Sandbox toggle unavailable: no Forge database at ${deps.dbPath}`, variant: 'warning', duration: 5000 })
+    const blocked = hostSandboxToggleBlocked(state.configEnabled)
+    if (blocked) {
+      deps.toast({ message: blocked, variant: 'warning', duration: 5000 })
       return
     }
-    const current = readSessionSandboxPreference(id, deps.dbPath)
-    if (current.unavailable) {
-      deps.toast({
-        message: `Sandbox toggle unavailable: Forge preferences unreadable (${current.unavailableReason ?? 'unknown reason'})`,
-        variant: 'warning',
-        duration: 5000,
-      })
-      return
-    }
+    const current = preferenceFrom(state)
+    if (!current) return
     const enabling = !(current.desired?.enabled === true && current.desired.sessionId === sessionId)
     let revision: string | null = null
     const request = new AbortController()
     waiter?.abort()
     waiter = request
     try {
-      revision = beginSessionSandboxStateRequest(id, deps.dbPath, { sessionId, enabled: enabling })
-      refresh(id)
-      ensurePolling(id)
-      const applied = await awaitSessionSandboxState(id, deps.dbPath, revision, {
-        timeoutMs: 15_000,
-        pollMs: 250,
-        signal: AbortSignal.any([request.signal, lifecycle.signal]),
-      })
-      const latest = refresh(id)
+      const result = await deps.setState(sessionId, enabling)
+      if (lifecycle.signal.aborted) return
+      if ('error' in result) {
+        deps.toast({ message: `Sandbox toggle failed: ${result.error}`, variant: 'error', duration: 6000 })
+        return
+      }
+      revision = result.revision
+      setPreference(preferenceFrom(await readState()))
+      const applied = await awaitSessionSandboxState(
+        async () => preferenceFrom(await readState()) ?? HIDDEN_PREFERENCE,
+        revision,
+        { timeoutMs: 15_000, pollMs: 250, signal: AbortSignal.any([request.signal, lifecycle.signal]) },
+      )
+      const latest = preferenceFrom(await readState())
       if (latest?.desired?.revision !== applied.revision) return
       deps.toast({
         message: applied.enabled
@@ -133,7 +150,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
       })
     } catch (err) {
       if (lifecycle.signal.aborted) return
-      const latest = refresh(id)
+      const latest = preferenceFrom(await readState())
       if (latest?.desired && revision && latest.desired.revision !== revision) return
       const message = err instanceof Error ? err.message : String(err)
       const guidance = enabling ? 'Toggle off, then on to retry.' : 'Toggle again to retry disabling.'

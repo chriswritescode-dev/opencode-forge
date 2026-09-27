@@ -45,6 +45,36 @@ describe('createSessionLoopResolver', () => {
     })
   })
 
+  describe('logging', () => {
+    it('logs a session outcome only when it changes', async () => {
+      let active = false
+      const logger = { log: vi.fn(), debug: vi.fn(), error: vi.fn() }
+      const resolver = createSessionLoopResolver({
+        loop: {
+          service: {
+            resolveLoopName: () => 'loop-1',
+            getActiveState: () => (active ? { loopName: 'loop-1', active: true } : null),
+            findActiveByWorktreeDir: () => null,
+          },
+        },
+        getParentSessionId: async () => null,
+        logger,
+      })
+
+      await resolver.resolveActiveLoopForSession('session-a')
+      await resolver.resolveActiveLoopForSession('session-a')
+      active = true
+      await resolver.resolveActiveLoopForSession('session-a')
+      await resolver.resolveActiveLoopForSession('session-a')
+
+      expect(logger.debug).not.toHaveBeenCalled()
+      expect(logger.log.mock.calls.map(([line]) => line)).toEqual([
+        '[session-resolver] session=session-a no active loop',
+        '[session-resolver] session=session-a loop=loop-1 via direct',
+      ])
+    })
+  })
+
   describe('direct resolution happy path', () => {
     it('returns active loop without consulting parent', async () => {
       const getParentSessionId = async () => { throw new Error('should not be called') }

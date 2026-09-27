@@ -1,6 +1,7 @@
 import type { Logger } from '../types'
 import type { LoopService } from '../loop/service'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
+import { LRUCache } from '../utils/lru-cache'
 
 export interface SessionLoopResolverDeps {
   loop: {
@@ -20,56 +21,63 @@ export interface ResolvedLoop {
   workspaceId?: string
 }
 
+interface Resolution {
+  loop: ResolvedLoop | null
+  via: string
+}
+
 export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
   resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null>
 } {
-  return {
-    async resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null> {
-      const directLoopName = deps.loop.service.resolveLoopName(sessionId)
-      const directState = directLoopName ? deps.loop.service.getActiveState(directLoopName) : null
+  const lastLogged = new LRUCache<string>(1000)
 
-      deps.logger.debug(
-        `[session-resolver] session=${sessionId} direct=${directLoopName ?? 'none'} parent=checking active=${directState?.loopName ?? 'none'}`,
-      )
+  const resolve = async (sessionId: string): Promise<Resolution> => {
+    const directLoopName = deps.loop.service.resolveLoopName(sessionId)
+    const directState = directLoopName ? deps.loop.service.getActiveState(directLoopName) : null
+    if (directState?.active) return { loop: directState, via: 'direct' }
 
-      if (directState?.active) return directState
+    // Walk the ancestor chain so deeply-nested sub-agents (a sub-agent that
+    // spawns another sub-agent via the Task tool) still resolve to the loop
+    // session at the top of their chain. The immediate parent of such a
+    // session is itself a sub-agent with no loop name, so a single hop is not
+    // enough.
+    let firstParentId: string | null = null
+    let via = 'none'
+    const ancestorState = await tolerateUndeterminedParent(findSessionAncestor(sessionId, deps.getParentSessionId, (parentId, depth) => {
+      if (depth === 0) firstParentId = parentId
+      const parentLoopName = deps.loop.service.resolveLoopName(parentId)
+      const parentState = parentLoopName ? deps.loop.service.getActiveState(parentLoopName) : null
+      if (parentState?.active) {
+        via = `ancestor=${parentId} depth=${depth}`
+        return parentState
+      }
+      return null
+    }))
+    if (ancestorState) return { loop: ancestorState, via }
 
-      // Walk the ancestor chain so deeply-nested sub-agents (a sub-agent that
-      // spawns another sub-agent via the Task tool) still resolve to the loop
-      // session at the top of their chain. The immediate parent of such a
-      // session is itself a sub-agent with no loop name, so a single hop is not
-      // enough.
-      let firstParentId: string | null = null
-      const ancestorState = await tolerateUndeterminedParent(findSessionAncestor(sessionId, deps.getParentSessionId, (parentId, depth) => {
-        if (depth === 0) firstParentId = parentId
-
-        deps.logger.debug(
-          `[session-resolver] session=${sessionId} ancestor[${depth}]=${parentId} active=${directState?.loopName ?? 'none'}`,
-        )
-
-        const parentLoopName = deps.loop.service.resolveLoopName(parentId)
-        const parentState = parentLoopName ? deps.loop.service.getActiveState(parentLoopName) : null
-        if (parentState?.active) {
-          deps.logger.log(`[session-resolver] session=${sessionId} resolved via ancestor=${parentId} depth=${depth} loop=${parentState.loopName}`)
-          return parentState
-        }
-        return null
-      }))
-      if (ancestorState) return ancestorState
-
-      if (firstParentId && deps.getSessionDirectory) {
-        const dir = await deps.getSessionDirectory(sessionId)
-        if (dir) {
-          const matched = deps.loop.service.findActiveByWorktreeDir(dir, { worktreeOnly: true })
-          if (matched) {
-            deps.logger.log(`[session-resolver] session=${sessionId} resolved via directory match loop=${matched.loopName}`)
-            const full = deps.loop.service.getActiveState(matched.loopName)
-            if (full?.active) return full
-          }
+    if (firstParentId && deps.getSessionDirectory) {
+      const dir = await deps.getSessionDirectory(sessionId)
+      if (dir) {
+        const matched = deps.loop.service.findActiveByWorktreeDir(dir, { worktreeOnly: true })
+        if (matched) {
+          const full = deps.loop.service.getActiveState(matched.loopName)
+          if (full?.active) return { loop: full, via: 'directory match' }
         }
       }
+    }
 
-      return null
+    return { loop: null, via: 'none' }
+  }
+
+  return {
+    async resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null> {
+      const { loop, via } = await resolve(sessionId)
+      const outcome = loop ? `loop=${loop.loopName} via ${via}` : 'no active loop'
+      if (lastLogged.get(sessionId) !== outcome) {
+        lastLogged.set(sessionId, outcome)
+        deps.logger.log(`[session-resolver] session=${sessionId} ${outcome}`)
+      }
+      return loop
     },
   }
 }

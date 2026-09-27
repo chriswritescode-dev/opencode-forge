@@ -7,12 +7,15 @@ import { isSandboxConfigEnabled } from '../sandbox/context'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
 import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
 import { resolveForgeDbPath } from '../storage'
-import { FORGE_RPC, readForgeAutoApproveState, type ForgeAutoApproveState, type ForgeToastEvent } from '../host/forge-rpc'
-import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
 import {
-  openLoopSidebarReader,
-  type LoopSidebarReader,
-} from '../utils/tui-loop-store'
+  FORGE_RPC,
+  readForgeAutoApproveState,
+  readForgeHostSandboxSetOutput,
+  readForgeHostSandboxState,
+  readForgeLoopSidebar,
+  type ForgeToastEvent,
+} from '../host/forge-rpc'
+import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import { isToastVariant } from '../utils/toast'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
@@ -24,13 +27,16 @@ import { createForgePlanCommands } from './plan-commands'
 import { openSandboxBuildDialog } from './sandbox-build-dialog'
 import { attachV2LoopSessionFollower } from './session-follow'
 import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort } from './loop-session-cleanup'
-import { createV2ForgeProjectClient } from './v2-client'
+import { createForgeRpcCaller, createV2ForgeProjectClient, type ForgeRpcCall } from './v2-client'
 import { createHostSandboxToggle } from './host-sandbox'
 import { createSessionAutoApproveToggle } from './session-auto-approve'
 import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
 
-/** Sidebar refresh cadence; loop rows are cheap local reads. */
+/** Sidebar refresh cadence; loop rows are cheap server reads. */
 const LOOP_REFRESH_INTERVAL_MS = 2000
+
+/** Most recent loops shown in the sidebar. */
+const SIDEBAR_LOOP_LIMIT = 3
 
 /** Current location directory, or null when neither the context nor its default resolves. */
 function resolveV2TuiDirectory(context: Plugin.Context): string | null {
@@ -102,31 +108,38 @@ function SandboxStatusText(props: {
 
 function ForgeLoopsSidebar(props: {
   context: Plugin.Context
-  dbPath: string
   showVersion: boolean
   sandboxPreference: Accessor<SessionSandboxPreference | null>
   autoApprove: Accessor<boolean>
   currentSessionId: () => string | null
+  call: ForgeRpcCall
 }) {
   const [loops, setLoops] = createSignal<LoopSidebarRow[]>([])
   const [sessionId, setSessionId] = createSignal<string | null>(null)
-  let projectId: string | null = null
   let disposed = false
-  let reader: LoopSidebarReader | null = null
+  let polling = false
   let signature = ''
 
   const load = async () => {
     setSessionId(props.currentSessionId())
-    projectId ??= await resolveV2TuiProjectId(props.context)
-    if (disposed || !projectId) return
-    reader ??= openLoopSidebarReader(projectId, props.dbPath)
-    const next = reader.read()
-    const nextSignature = next
-      .map((loop) => `${loop.loopName}|${loop.status}|${loop.iteration}|${loop.maxIterations}`)
-      .join('\n')
-    if (!disposed && nextSignature !== signature) {
-      signature = nextSignature
-      setLoops(next)
+    if (disposed || polling) return
+    polling = true
+    try {
+      const result = await props.call(
+        (rpc, location) => rpc.loopSidebar({ limit: SIDEBAR_LOOP_LIMIT }, location),
+        readForgeLoopSidebar,
+      )
+      if (disposed || 'error' in result) return
+      const next = result.loops
+      const nextSignature = next
+        .map((loop) => `${loop.loopName}|${loop.status}|${loop.iteration}|${loop.maxIterations}`)
+        .join('\n')
+      if (nextSignature !== signature) {
+        signature = nextSignature
+        setLoops(next)
+      }
+    } finally {
+      polling = false
     }
   }
 
@@ -136,8 +149,6 @@ function ForgeLoopsSidebar(props: {
     onCleanup(() => {
       disposed = true
       clearInterval(timer)
-      reader?.close()
-      reader = null
     })
   })
 
@@ -232,8 +243,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     const created = createV2ForgeProjectClient(context, {
       projectId,
       directory,
-      dbPath: forgeDbPath,
-      signal: lifecycle.signal,
       onDefaultModel: (model) => { defaultModel = model },
     })
     projectClient ??= created
@@ -246,43 +255,31 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     return route.type === 'session' ? route.sessionID : null
   }
 
+  const call = createForgeRpcCaller(context, () => resolveV2TuiDirectory(context))
+
   const planCommands = createForgePlanCommands({
     host,
     pluginConfig,
-    dbPath: forgeDbPath,
     currentSessionId,
     ensureClient,
     cache: () => executionContextCache,
   })
 
   const hostSandbox = createHostSandboxToggle({
-    pluginConfig,
-    dbPath: forgeDbPath,
-    resolveProjectId: () => resolveV2TuiProjectId(context),
+    readState: () => call((rpc, location) => rpc.hostSandboxState({}, location), readForgeHostSandboxState),
+    setState: (sessionId, enabled) => call(
+      (rpc, location) => rpc.hostSandboxSet({ sessionId, enabled }, location),
+      readForgeHostSandboxSetOutput,
+    ),
     currentSessionId,
     toast: (input) => host.toast(input),
   })
 
   const dataDir = resolveForgeDataDir(pluginConfig.dataDir)
-  const forgeRpcClient = () => context.client.rpc(FORGE_RPC)
-  const callAutoApprove = async (
-    call: (
-      rpc: ReturnType<typeof forgeRpcClient>,
-      options: { location: { directory: string } },
-    ) => Promise<unknown>,
-  ): Promise<ForgeAutoApproveState> => {
-    const directory = resolveV2TuiDirectory(context)
-    if (!directory) return { error: 'no Forge location for this TUI' }
-    try {
-      return readForgeAutoApproveState(await call(forgeRpcClient(), { location: { directory } }))
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) }
-    }
-  }
   const autoApprove = createSessionAutoApproveToggle({
     currentSessionId,
-    readState: (sessionId) => callAutoApprove((rpc, location) => rpc.autoApproveState({ sessionId }, location)),
-    setState: (sessionId, enabled) => callAutoApprove((rpc, location) => rpc.autoApproveSet({ sessionId, enabled }, location)),
+    readState: (sessionId) => call((rpc, location) => rpc.autoApproveState({ sessionId }, location), readForgeAutoApproveState),
+    setState: (sessionId, enabled) => call((rpc, location) => rpc.autoApproveSet({ sessionId, enabled }, location), readForgeAutoApproveState),
     isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
     toast: (input) => host.toast(input),
   })
@@ -368,11 +365,11 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       render: () => (
         <ForgeLoopsSidebar
           context={context}
-          dbPath={forgeDbPath}
           showVersion={opts.showVersion}
           sandboxPreference={hostSandbox.preference}
           autoApprove={autoApprove.enabled}
           currentSessionId={currentSessionId}
+          call={call}
         />
       ),
     })
