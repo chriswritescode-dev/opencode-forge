@@ -1,6 +1,7 @@
 import type { Plugin } from '@opencode/plugin'
 import { classify, requestError, unavailableError } from './errors'
 import { ForgeClientError } from './port'
+import { processShared } from '../utils/process-shared'
 import type {
   ForgeClient,
   ForgeEvent,
@@ -114,7 +115,11 @@ function isSessionStatus(value: unknown): value is SessionStatus[string] {
 
 const SESSION_STATUS_CACHE_CAPACITY = 1000
 
-const sessionStatusCache = new LRUCache<SessionStatus[string]>(SESSION_STATUS_CACHE_CAPACITY)
+/**
+ * Process-wide session status, fed from every location's events before the ownership filter, so a
+ * host instance can report the status of loop sessions that live in a worktree location.
+ */
+const sessionStatusCache = processShared('v2-session-status.v1', () => new LRUCache<SessionStatus[string]>(SESSION_STATUS_CACHE_CAPACITY))
 
 export function resetV2SessionStatusCache(): void {
   sessionStatusCache.clear()

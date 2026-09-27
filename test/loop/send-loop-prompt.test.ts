@@ -15,7 +15,6 @@ const { clearPromptPendingMock, markPromptSentMock } = vi.hoisted(() => ({
 vi.mock('../../src/loop/idle-gate', () => ({
   clearPromptPending: clearPromptPendingMock,
   markPromptSent: markPromptSentMock,
-  sessionsAwaitingBusy: new Map(),
   AWAITING_BUSY_TIMEOUT_MS: 10000,
   isAwaitingBusy: vi.fn(),
   isAwaitingBusyExpired: vi.fn(),
@@ -32,6 +31,7 @@ function createMockLogger(): Logger {
 }
 
 const testModel = { providerID: 'test-provider', modelID: 'test-model' }
+const PROJECT_ID = 'test-project'
 const loopName = 'test-loop'
 const sessionId = 'test-session'
 const agent: PromptAgent = 'code'
@@ -47,6 +47,7 @@ describe('sendLoopPrompt', () => {
     const performPrompt = vi.fn().mockResolvedValue({})
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -69,6 +70,7 @@ describe('sendLoopPrompt', () => {
     })
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -90,6 +92,7 @@ describe('sendLoopPrompt', () => {
     const performPrompt = vi.fn().mockResolvedValue({ error: testError })
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -100,7 +103,7 @@ describe('sendLoopPrompt', () => {
 
     expect(result.result.error).toBe(testError)
     expect(clearPromptPendingMock).toHaveBeenCalledTimes(1)
-    expect(clearPromptPendingMock).toHaveBeenCalledWith(loopName, expect.anything())
+    expect(clearPromptPendingMock).toHaveBeenCalledWith(PROJECT_ID, loopName, expect.anything())
   })
 
   test('clearPendingOnError: false', async () => {
@@ -108,6 +111,7 @@ describe('sendLoopPrompt', () => {
     const performPrompt = vi.fn().mockResolvedValue({ error: testError })
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -123,9 +127,10 @@ describe('sendLoopPrompt', () => {
 
   test('in-flight guard rejects concurrent', async () => {
     const performPrompt = vi.fn()
-    markPromptInFlight(loopName, 'other-session', agent)
+    markPromptInFlight(PROJECT_ID, loopName, 'other-session', agent)
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -141,9 +146,10 @@ describe('sendLoopPrompt', () => {
 
   test('useInFlightGuard: false allows concurrent', async () => {
     const performPrompt = vi.fn().mockResolvedValue({})
-    markPromptInFlight(loopName, 'other-session', agent)
+    markPromptInFlight(PROJECT_ID, loopName, 'other-session', agent)
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -164,6 +170,7 @@ describe('sendLoopPrompt', () => {
       .mockResolvedValueOnce({})
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -189,6 +196,7 @@ describe('sendLoopPrompt', () => {
       .mockResolvedValueOnce({}) // fallback succeeds
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,
@@ -211,6 +219,7 @@ describe('sendLoopPrompt', () => {
     const performPrompt = vi.fn().mockResolvedValue({ error: authError })
 
     const result = await sendLoopPrompt({
+      projectId: PROJECT_ID,
       loopName,
       sessionId,
       agent,

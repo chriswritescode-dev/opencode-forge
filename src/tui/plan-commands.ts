@@ -1,7 +1,6 @@
 import type { PluginConfig } from '../types'
 import type { ExecutionContextCache } from '../utils/tui-execution-context-cache'
 import type { ForgeProjectClient } from './project-client'
-import { fetchLoopsList } from '../utils/tui-loop-store'
 import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { openExecutionDialog } from './execute-plan-panel'
 import type { ForgeTuiHost } from './host'
@@ -9,7 +8,6 @@ import type { ForgeTuiHost } from './host'
 export interface ForgePlanCommandsDeps {
   host: ForgeTuiHost
   pluginConfig: PluginConfig
-  dbPath: string
   currentSessionId(): string | null
   ensureClient(): Promise<ForgeProjectClient | null>
   cache(): ExecutionContextCache | null
@@ -82,8 +80,13 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
 
     async restartLoop() {
       const client = await deps.ensureClient()
-      if (!client?.projectId) return
-      const loops = fetchLoopsList(client.projectId, deps.dbPath)
+      if (!client) return
+      const result = await client.loadLoops()
+      if ('error' in result) {
+        host.toast({ message: `Could not list loops: ${result.error}`, variant: 'warning', duration: 5000 })
+        return
+      }
+      const loops = result.loops
       const restartable = loops.filter((loop) => loop.restartable)
       if (restartable.length === 0) {
         const reason = loops.find((loop) => loop.restartBlockedMessage)?.restartBlockedMessage

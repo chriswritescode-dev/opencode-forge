@@ -10,7 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
-import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
+import { __resetIdleGate } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
@@ -185,7 +185,7 @@ describe('Loop Runtime cancel()', () => {
       sectionPlansRepo,
     )
 
-    sessionsAwaitingBusy.clear()
+    __resetIdleGate()
   })
 
   afterEach(() => {
@@ -195,7 +195,7 @@ describe('Loop Runtime cancel()', () => {
     } catch {
       // ignore cleanup errors
     }
-    sessionsAwaitingBusy.clear()
+    __resetIdleGate()
   })
 
   function makeActiveState(overrides: Partial<LoopState> = {}): LoopState {

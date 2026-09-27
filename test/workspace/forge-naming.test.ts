@@ -1,7 +1,38 @@
 import { describe, test, expect, vi } from 'vitest'
-import { gitBranchExists, loopBranchExists, isForgeWorktreeDir } from '../../src/workspace/forge-naming'
+import { gitBranchExists, loopBranchExists, isForgeWorktreeDir, isWithinDir } from '../../src/workspace/forge-naming'
 import { createFakeGitService } from '../helpers/fake-git'
 import type { GitService } from '../../src/utils/git-service'
+
+describe('isWithinDir', () => {
+  const root = '/server/forge/worktrees'
+
+  test('true for the root itself', () => {
+    expect(isWithinDir(root, root)).toBe(true)
+  })
+
+  test('true for a directory beneath the root', () => {
+    expect(isWithinDir(root, `${root}/my-loop`)).toBe(true)
+    expect(isWithinDir(root, `${root}/my-loop/nested`)).toBe(true)
+  })
+
+  test('false for a sibling that shares a prefix', () => {
+    expect(isWithinDir(root, `${root}-archive/x`)).toBe(false)
+  })
+
+  test('true for a child whose name starts with dots', () => {
+    expect(isWithinDir(root, `${root}/..cache`)).toBe(true)
+    expect(isWithinDir(root, `${root}/..cache/nested`)).toBe(true)
+  })
+
+  test('false for an unrelated directory', () => {
+    expect(isWithinDir(root, '/missing/project')).toBe(false)
+  })
+
+  test('false when root or directory is empty', () => {
+    expect(isWithinDir('', `${root}/x`)).toBe(false)
+    expect(isWithinDir(root, '')).toBe(false)
+  })
+})
 
 describe('isForgeWorktreeDir', () => {
   const dataDir = '/Users/x/.local/share/opencode/forge'

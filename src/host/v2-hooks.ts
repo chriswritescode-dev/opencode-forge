@@ -6,7 +6,9 @@ import { canonicalizePath } from '../sandbox/path'
 import { SHIM_ENV_CONTAINER } from '../sandbox/shell-shim'
 import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client/v2-adapter'
 import { findLastIndex } from '../utils/array'
+import { resolveAutoApproveDecision, type PermissionEffectLike } from '../utils/auto-approve-policy'
 import { isRecord } from '../utils/is-record'
+import { processShared } from '../utils/process-shared'
 
 const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
 
@@ -25,6 +27,7 @@ export type ForgeHooksV2Core = Pick<
   | 'resolveSandboxForDirectory'
   | 'resolveShellSandbox'
   | 'autoApprovesPermissions'
+  | 'autoApproveDenyRules'
   | 'shellShimPath'
 >
 
@@ -36,7 +39,7 @@ const SHELL_MARKER_PATTERN = /^(forge-sandbox-required-[0-9a-f-]{36}) && /
  * Sandboxes awaiting their shell, keyed by the one-off marker the shell tool wrapper prefixed
  * to the command. Process-wide because every plugin instance in the process may run the hook.
  */
-const pendingShellSandboxes = new Map<string, SandboxContext>()
+const pendingShellSandboxes = processShared('pending-shell-sandboxes.v1', () => new Map<string, SandboxContext>())
 
 /**
  * Wraps the built-in shell tool so a call from a sandboxed session reaches the shell hook
@@ -64,6 +67,52 @@ async function wrapShellToolForSandbox(ctx: Plugin.Context, core: ForgeHooksV2Co
       }
     })
   })
+}
+
+export const AUTO_APPROVE_RULES_UNRESOLVED_MESSAGE =
+  'Blocked in auto-approve mode: Forge could not resolve the permission rules for this session. Continue without it and report what was skipped.'
+
+interface AutoApprovePermissionEvent {
+  sessionID: string
+  agent?: string
+  action: string
+  resources: ReadonlyArray<string>
+  effect: PermissionEffectLike
+  message?: string
+}
+
+/**
+ * Turns an auto-approved `ask` into allow or deny. Explicit OpenCode `ask` rules and the configured
+ * deny rules deny with a message; requests no rule matched fall back to allow. An unresolvable agent or
+ * session fails closed to deny so a prompt is never shown.
+ */
+async function resolveAutoApprovedPermission(
+  ctx: Plugin.Context,
+  core: ForgeHooksV2Core,
+  event: AutoApprovePermissionEvent,
+): Promise<void> {
+  if (event.effect !== 'ask') return
+  if (!(await core.autoApprovesPermissions(event.sessionID))) return
+
+  try {
+    const session = await ctx.session.get({ sessionID: event.sessionID })
+    const agentID = event.agent ?? session.agent
+    if (!agentID) throw new Error(`no agent id for session ${event.sessionID}`)
+    const agent = await ctx.agent.get({ agentID })
+    const rules = [...agent.data.permissions, ...(session.permissions ?? [])]
+    const decision = resolveAutoApproveDecision({
+      action: event.action,
+      resources: event.resources,
+      rules,
+      denyRules: core.autoApproveDenyRules,
+    })
+    event.effect = decision.effect
+    if (decision.effect === 'deny') event.message = decision.message
+  } catch (err) {
+    console.error('[forge] auto-approve permission resolution failed', err)
+    event.effect = 'deny'
+    event.message = AUTO_APPROVE_RULES_UNRESOLVED_MESSAGE
+  }
 }
 
 export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooksV2Core): Promise<void> {
@@ -98,11 +147,11 @@ export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooks
 
   if (core.shellShimPath) {
     await wrapShellToolForSandbox(ctx, core)
-    await ctx.permission.hook('evaluate', async (event) => {
-      if (event.effect !== 'ask') return
-      if (await core.autoApprovesPermissions(event.sessionID)) event.effect = 'allow'
-    })
   }
+
+  await ctx.permission.hook('evaluate', async (event) => {
+    await resolveAutoApprovedPermission(ctx, core, event)
+  })
 
   await ctx.shell.hook('create.before', async (event) => {
     const marked = SHELL_MARKER_PATTERN.exec(event.command)

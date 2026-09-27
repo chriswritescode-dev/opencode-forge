@@ -49,26 +49,31 @@ function tuiFollowDebug(message: string): void {
 
 export function attachV2LoopSessionFollower(
   context: Plugin.Context,
-  isLoopDirectory: (directory: string) => boolean,
+  isLoopDirectory: (directory: string) => Promise<boolean>,
 ): () => void {
   return context.data.on('session.created', (event) => {
     const route = context.ui.router.current()
     if (route.type !== 'session') return
     const newDirectory = event.data.location.directory
-    const currentDirectory = context.data.session.get(route.sessionID)?.location.directory
-    if (!shouldFollowNewSession({
-      newSession: {
-        id: event.data.sessionID,
-        scope: isLoopDirectory(newDirectory) ? newDirectory : undefined,
-        parentID: event.data.parentID,
-      },
-      currentSession: { id: route.sessionID, scope: currentDirectory },
-    })) return
-    try {
-      context.ui.router.navigate({ type: 'session', sessionID: event.data.sessionID })
-      tuiFollowDebug(`navigated directory=${newDirectory} from=${route.sessionID} to=${event.data.sessionID}`)
-    } catch (err) {
-      tuiFollowDebug(`router.navigate failed from=${route.sessionID} to=${event.data.sessionID} error="${(err as Error).message}"`)
-    }
+    void (async () => {
+      const inLoop = await isLoopDirectory(newDirectory)
+      const currentRoute = context.ui.router.current()
+      if (currentRoute.type !== 'session') return
+      const currentDirectory = context.data.session.get(currentRoute.sessionID)?.location.directory
+      if (!shouldFollowNewSession({
+        newSession: {
+          id: event.data.sessionID,
+          scope: inLoop ? newDirectory : undefined,
+          parentID: event.data.parentID,
+        },
+        currentSession: { id: currentRoute.sessionID, scope: currentDirectory },
+      })) return
+      try {
+        context.ui.router.navigate({ type: 'session', sessionID: event.data.sessionID })
+        tuiFollowDebug(`navigated directory=${newDirectory} from=${currentRoute.sessionID} to=${event.data.sessionID}`)
+      } catch (err) {
+        tuiFollowDebug(`router.navigate failed from=${currentRoute.sessionID} to=${event.data.sessionID} error="${(err as Error).message}"`)
+      }
+    })()
   })
 }

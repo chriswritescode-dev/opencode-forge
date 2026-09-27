@@ -179,8 +179,20 @@ export interface SandboxConfig {
   mounts?: SandboxMountConfig[]
   /** Network access configuration (egress allow-list, env passthrough, host-held secrets). */
   network?: SandboxNetworkConfig
-  /** Approve permission prompts automatically for sessions whose shell runs in a sandbox. Default: true. */
+  /** Resolve permission prompts to allow or deny, using the auto-approve policy, for sessions whose shell runs in a sandbox. Does not affect per-session auto-approve. Default: true. */
   autoApprovePermissions?: boolean
+}
+
+/** An extra deny rule applied only while auto-approve is on, using OpenCode permission action/resource wildcard syntax. */
+export interface AutoApproveDenyRule {
+  action: string
+  resource: string
+}
+
+/** Policy applied while auto-approve is on for a session. Requests are only ever allowed or denied, never prompted. */
+export interface AutoApproveConfig {
+  /** Extra rules denied during auto-approval, using OpenCode permission action/resource wildcard syntax. Explicit OpenCode `ask` rules are always denied during auto-approval. */
+  deny?: AutoApproveDenyRule[]
 }
 
 /**
@@ -293,4 +305,6 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
+  /** Policy applied while auto-approve is on for a session. */
+  autoApprove?: AutoApproveConfig
 }

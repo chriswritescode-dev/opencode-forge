@@ -3,7 +3,7 @@ import { ForgeClientError } from '../client/port'
 import { buildAgents } from '../agents'
 import { createConfigHandler } from '../config'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
-import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createTuiLoopRestartRepo } from '../storage'
+import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
 import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
 import { resolveLogPath } from '../storage'
@@ -22,7 +22,8 @@ import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type ResolveActiveLoopForSession, type SessionSandboxController } from '../sandbox/session-controller'
-import type { PluginConfig, CompactionConfig } from '../types'
+import type { PluginConfig, CompactionConfig, AutoApproveDenyRule } from '../types'
+import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
 import { createTools } from '../tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from '../hooks/sandbox-tools'
@@ -34,6 +35,7 @@ import type { ToolContext } from '../tools'
 
 import { LRUCache } from '../utils/lru-cache'
 import { ParentLookupUndeterminedError } from '../utils/session-ancestry'
+import { resolveSessionAutoApproveFlag } from '../utils/session-auto-approve-flag'
 import { createSessionLoopResolver } from '../services/session-loop-resolver'
 import { createUnifiedSandboxResolver } from '../services/unified-sandbox-resolver'
 import { createPlanCaptureEventHook } from '../hooks/plan-capture'
@@ -48,8 +50,11 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import type { ForgeExecutePlanInput, ForgeExecutePlanOutput } from './forge-rpc'
-import { createTuiLoopRestartController, type TuiLoopRestartController } from '../services/tui-loop-restart-controller'
+import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeTuiEvent } from './forge-rpc'
+import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
+import { processShared } from '../utils/process-shared'
+import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
+import { errorMessage } from '../utils/error-message'
 
 /**
  * Host-supplied inputs the core needs to run, built by the host adapter from its plugin
@@ -61,6 +66,11 @@ export interface ForgeHostInput {
   projectRoot: string
   client: ForgeClient
   registerWorkspaceAdapter: (adapter: ForgeWorkspaceAdapter) => void
+  /**
+   * Host push channel for TUI refresh events. Fire-and-forget: it must never
+   * throw into the core, and a failed publish is the host's to log.
+   */
+  publishTuiEvent?: (event: ForgeTuiEvent) => void
 }
 
 /**
@@ -86,11 +96,24 @@ export interface ForgeCore {
    */
   resolveShellSandbox(sessionID: string): Promise<SandboxContext | null>
   /**
-   * True when a permission prompt in `sessionID` should be approved automatically: the session's
-   * shell calls run in a sandbox and `sandbox.autoApprovePermissions` is not disabled. Any
-   * resolution failure answers false so the prompt is still shown.
+   * True when a permission prompt in `sessionID` should be approved automatically: the session has an
+   * enabled per-session auto-approve flag (its own or an ancestor's) and is not inside an active loop,
+   * or the session's shell calls run in a sandbox and `sandbox.autoApprovePermissions` is not disabled.
+   * Any resolution failure answers false so the prompt is still shown.
    */
   autoApprovesPermissions(sessionID: string): Promise<boolean>
+  /** Resolves whether per-session auto-approve is on for `sessionID`, whether that is inherited, and the session that owns the flag. */
+  getSessionAutoApproveState(sessionID: string): Promise<ForgeAutoApproveState>
+  /**
+   * Turns per-session auto-approve on or off for `sessionID`. Refuses to toggle a flag inherited from
+   * an ancestor, and refuses to enable it inside an active loop. Resolves to the resulting state, or
+   * an error when the toggle could not be applied.
+   */
+  setSessionAutoApprove(sessionID: string, enabled: boolean): Promise<ForgeAutoApproveState>
+  /** Extra deny rules applied while auto-approve is on, from `autoApprove.deny`. */
+  autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule>
+  /** Read and control surface the TUI reaches through the FORGE_RPC plugin RPC. */
+  tui: TuiRpcService
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -267,7 +290,11 @@ type SharedSessionSandboxController = {
   close: () => void
 }
 
-const sharedSessionSandboxControllers = new Map<string, SharedSessionSandboxController>()
+/**
+ * One host sandbox controller per project for the whole process: every location's plugin instance
+ * has its own module copy, and a second reconciler would race the first on the same container.
+ */
+const sharedSessionSandboxControllers = processShared('session-sandbox-controllers.v1', () => new Map<string, SharedSessionSandboxController>())
 
 function preferredSessionSandboxProvider(providers: Set<SessionSandboxProvider>): SessionSandboxProvider {
   return [...providers].find((provider) => !provider.worktree) ?? providers.values().next().value!
@@ -345,6 +372,24 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const dataDir = resolveForgeDataDir(config.dataDir)
 
+  // Live TUI emitter for this instance. The host sandbox controller is process-shared and may
+  // outlive its creator, so it emits through the registry rather than a captured reference.
+  const unregisterTuiEventEmitter = host.publishTuiEvent
+    ? registerTuiEventEmitter(projectId, host.publishTuiEvent)
+    : null
+
+  // Bursts of loop-row writes (phase rotation, section advance, error bookkeeping) collapse to a
+  // single loopsChanged per microtask so the TUI re-reads once instead of once per write.
+  let loopsChangedScheduled = false
+  const publishLoopsChanged = (): void => {
+    if (loopsChangedScheduled) return
+    loopsChangedScheduled = true
+    queueMicrotask(() => {
+      loopsChangedScheduled = false
+      emitTuiEvent(projectId, { type: 'loopsChanged', projectId })
+    })
+  }
+
   const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox as unknown)
   for (const warning of legacySandboxWarnings) {
     logger.log(warning)
@@ -375,6 +420,23 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       })
     },
   })
+
+  const parsedAutoApproveDeny = parseAutoApproveDenyRules(config.autoApprove?.deny)
+  for (const warning of parsedAutoApproveDeny.warnings) {
+    logger.log(warning)
+  }
+  if (parsedAutoApproveDeny.warnings.length > 0 && !isForgeWorktreeDir(dataDir, directory)) {
+    publishToast({
+      client: forgeClient,
+      directory,
+      logger,
+      title: 'Forge auto-approve config',
+      message: parsedAutoApproveDeny.warnings.join(' '),
+      variant: 'warning',
+      duration: 10_000,
+    })
+  }
+  const autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule> = parsedAutoApproveDeny.rules
 
   let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
   const runtime = createMsbRuntime(logger)
@@ -451,7 +513,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
           })
         }
       } catch (err: unknown) {
-        logger.log(`Sandbox image check: ${err instanceof Error ? err.message : String(err)}`)
+        logger.log(`Sandbox image check: ${errorMessage(err)}`)
       }
     })()
   }
@@ -476,6 +538,30 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   logger.log(`Registered forge workspace adapter (worktrees under ${forgeWorktreesRoot(dataDir)})`)
 
   const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
+
+  const autoApproveRepo = createSessionAutoApproveRepo(db)
+  try {
+    const purgedAutoApproves = autoApproveRepo.purgeExpired(Date.now())
+    if (purgedAutoApproves > 0) {
+      logger.log(`Startup: purged ${purgedAutoApproves} expired session auto-approve flag(s)`)
+    }
+  } catch (err) {
+    logger.error('Failed to purge expired session auto-approve flags', err)
+  }
+
+  const autoApproveFlagTouchCache = new LRUCache<number>(1000)
+  const AUTO_APPROVE_FLAG_TOUCH_INTERVAL_MS = 60 * 60 * 1000
+  const touchAutoApproveFlag = (sessionID: string): void => {
+    const now = Date.now()
+    const lastTouched = autoApproveFlagTouchCache.get(sessionID)
+    if (lastTouched !== undefined && now - lastTouched < AUTO_APPROVE_FLAG_TOUCH_INTERVAL_MS) return
+    try {
+      autoApproveRepo.touch(projectId, sessionID, now)
+      autoApproveFlagTouchCache.set(sessionID, now)
+    } catch (err) {
+      logger.debug(`[auto-approve] touch failed for ${sessionID}: ${errorMessage(err)}`)
+    }
+  }
 
   const loopsRepo = createLoopsRepo(db)
   const plansRepo = createPlansRepo(db)
@@ -521,6 +607,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         logger.error(`[notifyLoopChange] groupOrchestrator.onLoopTerminated failed for loop=${loopName}:`, err as Error)
       })
     }
+
+    publishLoopsChanged()
   }
 
   const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory, defaultGitService, loopAttemptsRepo)
@@ -536,7 +624,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   let sessionSandboxProjectId: string | null = null
   let sessionSandboxProvider: SessionSandboxProvider | null = null
-  let tuiLoopRestartController: TuiLoopRestartController | null = null
 
   const cleanup = (): Promise<void> => {
     if (cleanupPromise) {
@@ -549,11 +636,11 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       process.removeListener('exit', handleExit)
       process.removeListener('SIGINT', handleSigint)
       process.removeListener('SIGTERM', handleSigterm)
+      unregisterTuiEventEmitter?.()
 
       logger.log('Loop: active loops preserved during plugin cleanup')
       
       loopHandler.clearAllRetryTimeouts()
-      await tuiLoopRestartController?.dispose()
 
       // Disposal and DB close must both be exception-safe: a rejected controller disposal (e.g.
       // a failed container removal or acknowledgement persistence) must never prevent the SQLite
@@ -627,6 +714,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const parentSessionLookup = createParentSessionLookup({ client: forgeClient, directory, loop: loopHandler.loop, logger })
   loopHandler.loop.setParentSessionLookup(parentSessionLookup)
+  loopHandler.loop.superviseOwnedLoops()
   const sessionIdentityLookup = createSessionIdentityLookup({ client: forgeClient, directory, loop: loopHandler.loop })
   const sessionDirectoryLookup = async (sessionId: string) => (await sessionIdentityLookup(sessionId))?.directory ?? null
   const sessionLoopResolver = createSessionLoopResolver({
@@ -635,6 +723,18 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     getSessionDirectory: sessionDirectoryLookup,
     logger,
   })
+  const resolveAutoApproveFlag = async (sessionID: string) => {
+    const flag = await resolveSessionAutoApproveFlag({
+      sessionID,
+      isEnabled: (id) => autoApproveRepo.isEnabled(projectId, id, Date.now()),
+      getParentId: parentSessionLookup,
+      isInActiveLoop: async (id) => (await sessionLoopResolver.resolveActiveLoopForSession(id)) !== null,
+    })
+    if (!flag.enabled && flag.error !== undefined) {
+      logger.log(`[auto-approve] session flag lookup failed for ${sessionID}: ${errorMessage(flag.error)}`)
+    }
+    return flag
+  }
   const loopPermissionPatcher = createLoopPermissionPatcher({
     client: forgeClient,
     sessionLoopResolver,
@@ -672,6 +772,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         getSessionDirectory: forwarding.getSessionDirectory,
         getSessionIdentity: forwarding.getSessionIdentity,
         resolveActiveLoopForSession: forwarding.resolveActiveLoopForSession,
+        onChange: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
         logger,
       }),
     }
@@ -757,33 +858,34 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     pendingTeardowns,
   })
 
-  if (!isForgeWorktreeDir(dataDir, directory)) {
-    tuiLoopRestartController = createTuiLoopRestartController({
-      projectId,
-      repo: createTuiLoopRestartRepo(db),
-      logger,
-      async restart(request) {
-        const response = await executionService.dispatch(
-          { surface: 'api', projectId, directory: projectRoot },
-          {
-            type: 'loop.restart',
-            selector: { kind: 'exact', name: request.loopName },
-            force: true,
-            auditorModel: request.auditorModel,
-            auditorVariant: request.auditorVariant,
-            executionModel: request.executionModel,
-            executionVariant: request.executionVariant,
-          },
-        )
-        return response.ok
-          ? { sessionId: response.data.sessionId }
-          : { error: response.error.message }
-      },
-    })
-    void tuiLoopRestartController.start().catch((err) => {
-      logger.error('TUI loop restart controller failed to start', err)
-    })
-  }
+  const tui = createTuiRpcService({
+    projectId,
+    dataDir,
+    config,
+    loopsRepo,
+    plansRepo,
+    sandboxPreferences: createSessionSandboxPreferencesRepo(db),
+    async restartLoop(request) {
+      const response = await executionService.dispatch(
+        { surface: 'api', projectId, directory: projectRoot },
+        {
+          type: 'loop.restart',
+          selector: { kind: 'exact', name: request.loopName },
+          force: request.force ?? true,
+          auditorModel: request.auditorModel,
+          auditorVariant: request.auditorVariant,
+          executionModel: request.executionModel,
+          executionVariant: request.executionVariant,
+          expectedStartedAt: request.expectedStartedAt,
+        },
+      )
+      return response.ok
+        ? { sessionId: response.data.sessionId }
+        : { error: response.error.message }
+    },
+    onHostSandboxChanged: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
+    logger,
+  })
 
   // ── Real GroupEffects ─────────────────────────────────────────────────────
   const effects: GroupEffects = {
@@ -1013,10 +1115,52 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return resolveSandboxForSession(sessionID, { throwOnRestoreError: true })
   }
 
+  const getSessionAutoApproveState = async (sessionID: string): Promise<ForgeAutoApproveState> => {
+    const flag = await resolveAutoApproveFlag(sessionID)
+    if (flag.enabled) {
+      return { enabled: true, ownerSessionId: flag.flagOwnerId, inherited: flag.flagOwnerId !== sessionID }
+    }
+    if (flag.error !== undefined) {
+      return { error: `Could not resolve auto-approve state: ${errorMessage(flag.error)}` }
+    }
+    return { enabled: false, inherited: false }
+  }
+
+  const setSessionAutoApprove = async (sessionID: string, enabled: boolean): Promise<ForgeAutoApproveState> => {
+    const state = await getSessionAutoApproveState(sessionID)
+    if ('error' in state) return state
+    if (state.enabled && state.inherited) {
+      return { error: `Auto-approve is inherited from parent session ${state.ownerSessionId}; toggle it there` }
+    }
+    if (enabled) {
+      let activeLoop: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>>
+      try {
+        activeLoop = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+      } catch (err) {
+        return { error: `Could not verify that this session is not in a loop: ${errorMessage(err)}` }
+      }
+      if (activeLoop) return { error: 'Loop sessions already auto-approve everything not denied' }
+      try {
+        autoApproveRepo.enable(projectId, sessionID, Date.now())
+      } catch (err) {
+        return { error: `Auto-approve toggle failed: ${errorMessage(err)}` }
+      }
+    } else {
+      try {
+        autoApproveRepo.disable(projectId, sessionID)
+      } catch (err) {
+        return { error: `Auto-approve toggle failed: ${errorMessage(err)}` }
+      }
+    }
+    emitTuiEvent(projectId, { type: 'autoApproveChanged', projectId, sessionId: sessionID })
+    return getSessionAutoApproveState(sessionID)
+  }
+
   return {
     tools,
     applyConfig: createConfigHandler(agents, config.agents, promptsDir),
     chatMessage: async (input, output) => {
+      touchAutoApproveFlag(input.sessionID)
       await forgeSessionMessageAttachHook(input)
       // Fallback for filtered session.created events: subagent sessions inside
       // loops must carry the loop ruleset before their first LLM step.
@@ -1046,7 +1190,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       try {
         resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
       } catch (err) {
-        logger.debug(`[tool-before] loop resolution failed for session ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        logger.debug(`[tool-before] loop resolution failed for session ${input.sessionID}: ${errorMessage(err)}`)
       }
       if (resolved) {
         logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
@@ -1063,7 +1207,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       try {
         resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
       } catch (err) {
-        logger.debug(`[tool-after] loop resolution failed for session ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        logger.debug(`[tool-after] loop resolution failed for session ${input.sessionID}: ${errorMessage(err)}`)
       }
       if (resolved) {
         logger.log(`[tool-after] ${input.tool} callID=${input.callID} output=${output.output?.slice(0, 200)}`)
@@ -1086,14 +1230,23 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     resolveSandboxForDirectory,
     resolveShellSandbox,
     autoApprovesPermissions: async (sessionID) => {
+      const flag = await resolveAutoApproveFlag(sessionID)
+      if (flag.enabled) {
+        touchAutoApproveFlag(flag.flagOwnerId)
+        return true
+      }
       if (config.sandbox?.autoApprovePermissions === false) return false
       try {
         return (await resolveShellSandbox(sessionID)) !== null
       } catch (err) {
-        logger.log(`[sandbox] permission auto-approval skipped for ${sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        logger.log(`[sandbox] permission auto-approval skipped for ${sessionID}: ${errorMessage(err)}`)
         return false
       }
     },
+    getSessionAutoApproveState,
+    setSessionAutoApprove,
+    autoApproveDenyRules,
+    tui,
     cleanup,
     shellShimPath,
   }

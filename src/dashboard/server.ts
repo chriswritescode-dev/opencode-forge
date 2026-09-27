@@ -5,6 +5,7 @@ import { collectDashboardData } from './data'
 import { diffAmendmentSnapshots } from './amendment-diff'
 import { renderDashboardHtml } from './render'
 import { isLoopbackHost } from './config'
+import { errorMessage } from '../utils/error-message'
 
 // ---------------------------------------------------------------------------
 // Deps
@@ -24,10 +25,6 @@ export interface DashboardDeps {
 // ---------------------------------------------------------------------------
 // Mutating-route helpers
 // ---------------------------------------------------------------------------
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
 
 function isValidHostPort(raw: string): boolean {
   if (!/^[1-9]\d{0,4}$/.test(raw)) return false

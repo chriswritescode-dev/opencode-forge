@@ -2,9 +2,12 @@ import { describe, test, expect } from 'vitest'
 import type { V2Event } from '@opencode/client'
 import {
   FORGE_EVENT_TYPES,
+  V2_EVENT_TYPES,
   mapV2SessionInfo,
   normalizeV2Event,
+  readV2InboxEvent,
   v2EventDirectory,
+  v2IdleEvents,
 } from '../../src/host/v2-events'
 
 const durableV1 = { aggregateID: 's1', seq: 1, version: 1 } as const
@@ -594,5 +597,56 @@ describe('normalizeV2Event', () => {
     expect(normalizeV2Event(moved)).toEqual([])
     expect(normalizeV2Event(renamed)).toEqual([])
     expect(normalizeV2Event(toast)).toEqual([])
+  })
+})
+
+describe('readV2InboxEvent', () => {
+  function inboxEvent(type: string, data: unknown): V2Event {
+    return { id: 'evt-1', created: 1, type, data } as unknown as V2Event
+  }
+
+  test('reads an enqueued event', () => {
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxEnqueued, { sessionID: 's1', inboxID: 'i1' })))
+      .toEqual({ kind: 'enqueued', sessionId: 's1', inboxId: 'i1' })
+  })
+
+  test('reads delivered and cancelled events distinctly', () => {
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxDelivered, { sessionID: 's1', inboxID: 'i1' })))
+      .toEqual({ kind: 'delivered', sessionId: 's1', inboxId: 'i1' })
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxCancelled, { sessionID: 's1', inboxID: 'i1' })))
+      .toEqual({ kind: 'cancelled', sessionId: 's1', inboxId: 'i1' })
+  })
+
+  test('returns null for malformed inbox data', () => {
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxEnqueued, { sessionID: 's1' }))).toBeNull()
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxEnqueued, { sessionID: 1, inboxID: 'i1' }))).toBeNull()
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxDelivered, { sessionID: '', inboxID: 'i1' }))).toBeNull()
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxCancelled, { sessionID: 's1', inboxID: '' }))).toBeNull()
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionInboxCancelled, undefined))).toBeNull()
+  })
+
+  test('returns null for non-inbox events', () => {
+    expect(readV2InboxEvent(inboxEvent(V2_EVENT_TYPES.sessionExecutionStarted, { sessionID: 's1' }))).toBeNull()
+  })
+
+  test('inbox events are not normalized into loop events', () => {
+    expect(normalizeV2Event(inboxEvent(V2_EVENT_TYPES.sessionInboxEnqueued, { sessionID: 's1', inboxID: 'i1' }))).toEqual([])
+    expect(normalizeV2Event(inboxEvent(V2_EVENT_TYPES.sessionInboxDelivered, { sessionID: 's1', inboxID: 'i1' }))).toEqual([])
+    expect(normalizeV2Event(inboxEvent(V2_EVENT_TYPES.sessionInboxCancelled, { sessionID: 's1', inboxID: 'i1' }))).toEqual([])
+  })
+})
+
+describe('v2IdleEvents', () => {
+  test('matches the idle pair a session.execution.succeeded normalizes to', () => {
+    const event: V2Event = {
+      id: 'evt-1',
+      created: 1,
+      type: 'session.execution.succeeded',
+      durable: durableV1,
+      location: { directory: '/repo' },
+      data: { sessionID: 's1' },
+    }
+
+    expect(v2IdleEvents('s1')).toEqual(normalizeV2Event(event))
   })
 })

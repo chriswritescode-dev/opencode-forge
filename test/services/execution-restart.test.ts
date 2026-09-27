@@ -125,6 +125,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     auditorVariant: string | null
     executionModel: string | null
     executionVariant: string | null
+    startedAt: number
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -141,6 +142,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditorVariant: null as string | null,
       executionModel: null as string | null,
       executionVariant: null as string | null,
+      startedAt: Date.now(),
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -165,7 +167,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
-      startedAt: Date.now(),
+      startedAt: opts.startedAt,
       completedAt: null,
       terminationReason: opts.terminationReason,
       completionSummary: null,
@@ -2434,6 +2436,7 @@ describe('handleLoopRestart restartability rules', () => {
     hostSessionId: string | null
     executorSessionId: string | null
     goal: string | null
+    startedAt: number
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -2453,6 +2456,7 @@ describe('handleLoopRestart restartability rules', () => {
       hostSessionId: null as string | null,
       executorSessionId: null as string | null,
       goal: null as string | null,
+      startedAt: Date.now(),
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -2477,7 +2481,7 @@ describe('handleLoopRestart restartability rules', () => {
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
-      startedAt: Date.now(),
+      startedAt: opts.startedAt,
       completedAt: null,
       terminationReason: opts.terminationReason,
       completionSummary: null,
@@ -2622,6 +2626,102 @@ describe('handleLoopRestart restartability rules', () => {
       handleAuditorProviderLimitCalls,
     }
   }
+
+  test('restart proceeds when expectedStartedAt matches the current generation', async () => {
+    const startedAt = Date.now() - 60_000
+    insertLoop({
+      loopName: 'generation-match-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      startedAt,
+    })
+
+    const { service } = await createMockService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'generation-match-loop' },
+        expectedStartedAt: new Date(startedAt).toISOString(),
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.sessionId).toBe('new-session-restart')
+  })
+
+  test('stale expectedStartedAt is rejected before aborting the active session', async () => {
+    const startedAt = Date.now() - 60_000
+    insertLoop({
+      loopName: 'stale-generation-loop',
+      status: 'running',
+      phase: 'coding',
+      startedAt,
+    })
+
+    const { service, client } = await createMockService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'stale-generation-loop' },
+        force: true,
+        expectedStartedAt: new Date(startedAt - 1000).toISOString(),
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toBe(
+      'Loop "stale-generation-loop" was restarted since it was selected. Reopen the restart dialog to see its current state.',
+    )
+    expect(client.session.abort).not.toHaveBeenCalled()
+    expect(client.session.create).not.toHaveBeenCalled()
+  })
+
+  test('a second restart with the same stale expectedStartedAt is rejected after the first completed', async () => {
+    const startedAt = Date.now() - 60_000
+    insertLoop({
+      loopName: 'sequential-generation-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      startedAt,
+    })
+
+    const { service, client } = await createMockService()
+    const first = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'sequential-generation-loop' },
+        expectedStartedAt: new Date(startedAt).toISOString(),
+      },
+    )
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    expect(client.session.abort).not.toHaveBeenCalled()
+
+    const second = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'sequential-generation-loop' },
+        force: true,
+        expectedStartedAt: new Date(startedAt).toISOString(),
+      },
+    )
+
+    expect(second.ok).toBe(false)
+    if (second.ok) return
+    expect(second.error.message).toContain('was restarted since it was selected')
+    expect(client.session.abort).not.toHaveBeenCalled()
+
+    const state = loopService.getActiveState('sequential-generation-loop')
+    expect(state?.sessionId).toBe(first.data.sessionId)
+  })
 
   test.each([
     ['cancelled', 'user_aborted'],

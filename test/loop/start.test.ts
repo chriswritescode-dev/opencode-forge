@@ -11,7 +11,8 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
-import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
+import { __resetIdleGate } from '../../src/loop/idle-gate'
+import { loopRegistry } from '../../src/utils/loop-registry'
 import { normalizeV2Event } from '../../src/host/v2-events'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { ForgeClient } from '../../src/client/port'
@@ -187,7 +188,8 @@ describe('Loop Runtime start()', () => {
       sectionPlansRepo,
     )
 
-    sessionsAwaitingBusy.clear()
+    __resetIdleGate()
+    loopRegistry.clear()
   })
 
   afterEach(() => {
@@ -197,7 +199,8 @@ describe('Loop Runtime start()', () => {
     } catch {
       // ignore cleanup errors
     }
-    sessionsAwaitingBusy.clear()
+    __resetIdleGate()
+    loopRegistry.clear()
   })
 
   function makeState(overrides: Partial<LoopState> = {}): LoopState {
@@ -455,6 +458,40 @@ describe('Loop Runtime start()', () => {
       expect(logs.some(l => l.message.includes('skipping watchdog'))).toBe(false)
 
       void loop.terminateAll()
+    })
+
+    // Regression: a worktree instance that boots after its loop started (remote
+    // servers boot the worktree location lazily) missed the first idle event and
+    // never started supervision, so the loop sat idle forever.
+    test('an owning instance created after the loop started supervises it', () => {
+      const host = createRuntimeIn('/tmp/some-other-project')
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      host.loop.start({ state })
+
+      const owner = createRuntimeIn('/tmp/owned-worktree')
+
+      expect(host.loop.superviseOwnedLoops()).toEqual([])
+      expect(createRuntimeIn().loop.superviseOwnedLoops()).toEqual([])
+      expect(owner.loop.superviseOwnedLoops()).toEqual([state.loopName])
+      expect(owner.logs.some(l => l.message.includes('Loop watchdog: started for loop test-loop'))).toBe(true)
+
+      void owner.loop.terminateAll()
+    })
+
+    // Accepted ADR "No boot-time loop recovery": a loop persisted before this
+    // process must not be supervised at init, even by the instance that owns its
+    // worktree. Only loops started/restarted in this process are registered.
+    test('a persisted owned loop not started in this process is not supervised', () => {
+      const state = makeState({ worktreeDir: '/tmp/owned-worktree' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      const owner = createRuntimeIn('/tmp/owned-worktree')
+
+      expect(owner.loop.superviseOwnedLoops()).toEqual([])
+      expect(owner.logs.some(l => l.message.includes('Loop watchdog: started'))).toBe(false)
+
+      void owner.loop.terminateAll()
     })
 
     // Regression: a non-owning instance never nudges, so it never holds the

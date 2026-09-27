@@ -19,6 +19,7 @@ export interface ReconcileSandboxesDeps {
   sandboxManager: SandboxManager
   loop: Loop
   logger: Logger
+  projectId: string
 }
 
 // Per-deps re-entrancy guard. Using a WeakMap keyed on the deps object ensures
@@ -42,7 +43,7 @@ const inFlightByDeps = new WeakMap<ReconcileSandboxesDeps, boolean>()
  * @returns Promise that resolves when reconciliation is complete
  */
 export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<void> {
-  const { sandboxManager, loop, logger } = deps
+  const { sandboxManager, loop, logger, projectId } = deps
 
   if (inFlightByDeps.get(deps)) {
     // Another reconciliation is already in progress for this deps, return early
@@ -53,7 +54,7 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
 
   try {
     const activeLoops = loop.listActive()
-    const registeredLoops = loopRegistry.getAll()
+    const registeredLoops = loopRegistry.getAll(projectId)
 
     for (const state of activeLoops) {
       // Only reconcile loops that were started/restarted in the current process.

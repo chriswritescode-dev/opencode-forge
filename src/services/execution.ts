@@ -244,6 +244,13 @@ export interface RestartLoopCommand {
   auditorVariant?: string
   executionModel?: string
   executionVariant?: string
+  /**
+   * Optimistic precondition carried from the TUI: the loop's `startedAt` when the
+   * restart dialog was opened. When set, the restart is rejected unless the
+   * under-lock loop still has that exact generation, so a stale view cannot abort
+   * and overwrite a restart that already happened.
+   */
+  expectedStartedAt?: string
 }
 
 export interface CancelLoopCommand {
@@ -693,6 +700,7 @@ export async function attachLoopToSession(
     const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
 
     const promptResult = await sendLoopPrompt({
+      projectId: ctx.projectId,
       loopName,
       sessionId,
       agent: 'code',
@@ -700,7 +708,7 @@ export async function attachLoopToSession(
       primaryModel: loopModel,
       useInFlightGuard: false,
       performPrompt: async (model) => {
-        markPromptSent(loopName, sessionId, deps.logger)
+        markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
         try {
           await deps.client.session.promptAsync({
             sessionID: sessionId,
@@ -1649,6 +1657,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // For active loops the original code already aborted and updated state here.
       // We preserve that behavior by checking `stoppedState.active` first.
       const latestState = deps.loop.service.getActiveState(stoppedState.loopName)
+      if (command.expectedStartedAt !== undefined) {
+        const expectedMs = Date.parse(command.expectedStartedAt)
+        const currentMs = Date.parse((latestState ?? stoppedState).startedAt)
+        if (!Number.isFinite(expectedMs) || expectedMs !== currentMs) {
+          return {
+            ok: false,
+            error: `Loop "${stoppedState.loopName}" was restarted since it was selected. Reopen the restart dialog to see its current state.`,
+          }
+        }
+      }
       if (!latestState && stoppedState.active) {
         // Active loop vanished under lock — treat as removed.
         return { ok: false, error: `Loop "${stoppedState.loopName}" has been removed.` }
@@ -1947,7 +1965,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         : stoppedState.executionVariant
 
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
-        markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
+        markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
         try {
           await deps.client.session.promptAsync({
             sessionID: effectiveSessionId,
@@ -1970,6 +1988,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
       for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
         const { result } = await sendLoopPrompt({
+          projectId: ctx.projectId,
           loopName: stoppedState.loopName,
           sessionId: effectiveSessionId,
           agent: promptAgent,
@@ -1996,7 +2015,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.error))
         if (limitReason) {
           deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
-          clearPromptPending(stoppedState.loopName, deps.logger)
+          clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
           // For a final-audit restart the session is reused by the auditor
           // fallback re-dispatch, so keep its reverse index intact. For a
           // coding-style restart the loop terminates and the session is orphaned.
@@ -2024,7 +2043,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
         const isConcurrent = promptResult.error instanceof ConcurrentPromptError
         if (!isConcurrent) {
-          clearPromptPending(stoppedState.loopName, deps.logger)
+          clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
         }
         deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
         // Save section plans before rollback (the DB row stays intact in-place;

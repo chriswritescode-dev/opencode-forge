@@ -27,8 +27,8 @@ export type { FeatureGroupRow, GroupFeatureRow } from './repos/feature-groups-re
 export { createSessionSandboxPreferencesRepo, SESSION_SANDBOX_DESIRED_KEY, SESSION_SANDBOX_APPLIED_KEY, SESSION_SANDBOX_CONTROLLER_KEY } from './repos/session-sandbox-preferences-repo'
 export type { SessionSandboxDesiredState, SessionSandboxAppliedState, SessionSandboxPreferencesRepo } from './repos/session-sandbox-preferences-repo'
 
-export { createTuiLoopRestartRepo, TUI_LOOP_RESTART_DESIRED_KEY, TUI_LOOP_RESTART_APPLIED_KEY } from './repos/tui-loop-restart-repo'
-export type { TuiLoopRestartDesiredState, TuiLoopRestartAppliedState, TuiLoopRestartRepo, TuiLoopRestartPair } from './repos/tui-loop-restart-repo'
+export { createSessionAutoApproveRepo, SESSION_AUTO_APPROVE_KEY_PREFIX, SESSION_AUTO_APPROVE_TTL_MS } from './repos/session-auto-approve-repo'
+export type { SessionAutoApproveRepo } from './repos/session-auto-approve-repo'
 
 export { createLoopAttemptsRepo } from './repos/loop-attempts-repo'
 export type { LoopAttemptRow, LoopAttemptRecordInput, LoopAttemptOutcome, LoopAttemptsRepo } from './repos/loop-attempts-repo'

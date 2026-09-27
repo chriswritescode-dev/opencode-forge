@@ -26,7 +26,7 @@ import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../util
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
-import { clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from './idle-gate'
+import { clearPromptPending, isAwaitingBusy, isAwaitingBusyExpired, isPromptQueued, recordSuppressedIdle } from './idle-gate'
 import {
   clearPromptInFlight,
   clearPromptInFlightBySession,
@@ -40,6 +40,7 @@ import { createUsageCapture } from './runtime-usage'
 import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
+import { processShared, projectLoopKey } from '../utils/process-shared'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
@@ -120,6 +121,14 @@ export interface Loop {
   clearAllRetryTimeouts(): void
   recordActivity(name: string, source?: string): void
   startWatchdog(name: string): void
+  /**
+   * Starts the watchdog for every active loop whose worktree this instance owns and
+   * returns their names. An owning instance can come up after its loop is already
+   * running (lazy location boot, server restart, plugin reload) and miss the idle
+   * event that would otherwise start supervision, leaving the loop idle forever.
+   * No-op when the instance has no directory.
+   */
+  superviseOwnedLoops(): string[]
   getStallInfo(name: string): LoopWatchdogStallInfo | null
   restart(name: string, params: { newState: LoopState; newSessionId: string }): void
   generateUniqueLoopName(baseName: string): string
@@ -156,6 +165,19 @@ export interface Loop {
 
 export { isWorkspaceNotFoundError } from './runtime-workspace'
 
+const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'
+const INTERNAL_FALLBACK_ABORTS_SHARED_KEY = 'loop-internal-fallback-aborts.v1'
+
+/**
+ * Test-only: clear the process-shared runtime maps between tests. Production code must never
+ * call this — clearing a shared map from one disposing instance would break every other live
+ * instance that relies on it.
+ */
+export function __resetLoopRuntimeSharedState(): void {
+  processShared<Map<string, Promise<unknown>>>(STATE_LOCKS_SHARED_KEY, () => new Map()).clear()
+  processShared<Map<string, number>>(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map()).clear()
+}
+
 export function createLoop(deps: LoopRuntimeDeps): Loop {
   const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, gitService } = deps
 
@@ -168,13 +190,26 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
 
-  const { sendPromptWithFallback, getLastAssistantInfo, getAssistantTranscript } = createPromptDispatch({ client, logger, getConfig, loopService })
+  const { sendPromptWithFallback, getLastAssistantInfo, getAssistantTranscript } = createPromptDispatch({ client, logger, getConfig, loopService, projectId })
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
   const handoffWaits = new Map<string, { sessionId: string; phase: string; since: number }>()
-  const stateLocks = new Map<string, Promise<unknown>>()
+
+  /**
+   * Process-wide per-loop state locks. OpenCode loads a separate copy of the plugin module
+   * graph for each location, so a loop's state lock must be shared across instances: the host
+   * instance can restart a loop under its lock while the worktree instance that owns the loop
+   * handles the resulting abort under a different lock, reading pre-restart state and
+   * terminating the loop mid-restart. Entries are keyed by project AND loop name because loop
+   * names are only unique within a project.
+   */
+  const stateLocks = processShared<Map<string, Promise<unknown>>>(STATE_LOCKS_SHARED_KEY, () => new Map())
+
+  function stateLockKey(loopName: string): string {
+    return projectLoopKey(projectId, loopName)
+  }
 
   /**
    * Sections that already received their one summary re-prompt this audit
@@ -241,8 +276,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * abort is still outstanding. The counter is drained as AbortError events are
    * observed and cleared as a backstop once the replacement prompt completes its
    * lifecycle, so it can never suppress a later genuine abort.
+   *
+   * Process-wide: the instance that aborts for an internal resend can differ from
+   * the instance receiving the resulting AbortError event, so the marker must be
+   * visible to both. Session ids are globally unique, so no project key is needed.
    */
-  const internalFallbackAborts = new Map<string, number>()
+  const internalFallbackAborts = processShared<Map<string, number>>(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map())
 
   /**
    * Consume one outstanding internal-abort marker for `sessionId`, mirroring how
@@ -293,12 +332,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /** Per-loop admission guard: prevents concurrent terminateLoop calls from executing side effects twice. */
   const terminatingLoops = new Set<string>()
   function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
-    const prev = stateLocks.get(loopName) ?? Promise.resolve()
+    const key = stateLockKey(loopName)
+    const prev = stateLocks.get(key) ?? Promise.resolve()
     const nextPromise = prev.catch(() => undefined).then(() => fn())
-    stateLocks.set(loopName, nextPromise)
+    stateLocks.set(key, nextPromise)
     void nextPromise.finally(() => {
-    if (stateLocks.get(loopName) === nextPromise) {
-      stateLocks.delete(loopName)
+    if (stateLocks.get(key) === nextPromise) {
+      stateLocks.delete(key)
     }
   })
   return nextPromise
@@ -397,13 +437,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return `${state.sessionId}:${message}`
   }
 
+  /** Reads the directory's session statuses, or null when the shape is unexpected. */
+  async function fetchSessionStatuses(directory: string): Promise<Record<string, { type?: string }> | null> {
+    const statuses = await client.session.status({ directory })
+    if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses)) return null
+    return statuses
+  }
+
   async function deferUntilQuiescent(state: LoopState): Promise<boolean> {
     if (!deps.loopAttemptsRepo) return false
     const loopName = state.loopName
     let reason: string | null = null
     try {
-      const statuses = await client.session.status({ directory: state.worktreeDir })
-      if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses)) throw new Error('Session status is unavailable')
+      const statuses = await fetchSessionStatuses(state.worktreeDir)
+      if (!statuses) throw new Error('Session status is unavailable')
       const active = await activeLoopSessions(statuses, loopName, sessionId => resolveSessionLoopName(sessionId, true))
       if (active.length > 0) reason = 'Loop sessions are still busy or retrying'
     } catch (err) {
@@ -443,6 +490,42 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
+  /**
+   * Whether the loop's current session is still busy or retrying. Used to suppress
+   * no-assistant idle handling while the session is still working. Any error or
+   * unexpected status shape returns false so the existing retry/recovery behavior
+   * (and the watchdog backstop) stays in charge.
+   */
+  async function isSessionActive(state: LoopState): Promise<boolean> {
+    try {
+      const statuses = await fetchSessionStatuses(state.worktreeDir)
+      if (!statuses) return false
+      const active = await activeLoopSessions(statuses, state.loopName, sessionId => (sessionId === state.sessionId ? state.loopName : null))
+      return active.length > 0
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Shared no-assistant idle gate. Returns true when the caller must wait for a
+   * later idle instead of retrying or recovering: a prompt is still queued in the
+   * session inbox, or the session is still busy/retrying. A queued-prompt wait
+   * records the suppressed idle so a later cancel can replay it.
+   */
+  async function shouldDeferNoAssistantIdle(loopName: string, state: LoopState, phaseLabel: string): Promise<boolean> {
+    if (isPromptQueued(state.sessionId)) {
+      recordSuppressedIdle(state.sessionId)
+      logger.debug(`[idle-gate] ${phaseLabel} idle ignored for ${loopName}; a prompt is still queued in the session inbox`)
+      return true
+    }
+    if (await isSessionActive(state)) {
+      logger.debug(`Loop: ${phaseLabel} has no assistant reply yet for ${loopName} but session ${state.sessionId} is still active; waiting for its idle`)
+      return true
+    }
+    return false
+  }
+
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
 
   /**
@@ -458,7 +541,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
 
-    clearPromptPending(loopName, logger)
+    clearPromptPending(projectId, loopName, logger)
 
     logger.log(
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
@@ -851,23 +934,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function recoverCodeLaunchWithoutAssistant(loopName: string, state: LoopState, lastMessageRole: string): Promise<void> {
-    const attempts = (codingLaunchRecoveryAttempts.get(loopName) ?? 0) + 1
-    codingLaunchRecoveryAttempts.set(loopName, attempts)
-
-    if (attempts > MAX_CODE_LAUNCH_RECOVERIES) {
-      logger.error(`Loop: coding launch failed after ${attempts} no-assistant idle events for ${loopName} (last=${lastMessageRole})`)
-      await terminateLoop(loopName, state, { kind: 'coding_no_assistant' })
-      return
-    }
-
-    const recoveryPrompt = buildCodingPromptForCurrentState(state)
-    logger.log(`Loop: recovering code launch for ${loopName} (attempt ${attempts}/${MAX_CODE_LAUNCH_RECOVERIES}, last=${lastMessageRole})`)
-
     const codeSessionId = state.sessionId
 
     try {
       const freshState = loopService.getActiveState(loopName)
       if (!freshState?.active || freshState.phase !== 'coding' || freshState.sessionId !== codeSessionId) return
+
+      if (await shouldDeferNoAssistantIdle(loopName, state, 'coding')) return
+
+      const attempts = (codingLaunchRecoveryAttempts.get(loopName) ?? 0) + 1
+      codingLaunchRecoveryAttempts.set(loopName, attempts)
+
+      if (attempts > MAX_CODE_LAUNCH_RECOVERIES) {
+        logger.error(`Loop: coding launch failed after ${attempts} no-assistant idle events for ${loopName} (last=${lastMessageRole})`)
+        await terminateLoop(loopName, state, { kind: 'coding_no_assistant' })
+        return
+      }
+
+      const recoveryPrompt = buildCodingPromptForCurrentState(state)
+      logger.log(`Loop: recovering code launch for ${loopName} (attempt ${attempts}/${MAX_CODE_LAUNCH_RECOVERIES}, last=${lastMessageRole})`)
 
       const currentConfig = getConfig()
       await sendPromptWithRetryRecovery({
@@ -880,7 +965,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         errorContext: 'failed to recover code launch',
         sendErrorContext: 'failed to recover code launch',
         errorState: freshState,
-        onSendError: () => clearPromptPending(loopName, logger),
+        onSendError: () => clearPromptPending(projectId, loopName, logger),
         isRetryValid: (fresh) => fresh.phase === 'coding' && fresh.sessionId === codeSessionId,
         send: async (fresh) => {
           await client.session.promptAsync({
@@ -971,7 +1056,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const sessionId = state.sessionId
     watchdog.stop(loopName)
-    loopRegistry.remove(loopName)
+    loopRegistry.remove(projectId, loopName)
 
     const retryTimeout = retryTimeouts.get(loopName)
     if (retryTimeout) {
@@ -989,8 +1074,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
     summaryRepromptedSections.delete(loopName)
-    clearPromptPending(loopName, logger)
-    clearPromptInFlight(loopName)
+    clearPromptPending(projectId, loopName, logger)
+    clearPromptInFlight(projectId, loopName)
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
@@ -1094,8 +1179,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     await new Promise((r) => setTimeout(r, AUDITOR_FALLBACK_SETTLE_MS))
 
-    clearPromptPending(loopName, logger)
-    clearPromptInFlight(loopName)
+    clearPromptPending(projectId, loopName, logger)
+    clearPromptInFlight(projectId, loopName)
   }
 
   /**
@@ -1309,7 +1394,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const freshState = loopService.getActiveState(opts.loopName)
       if (!freshState?.active || (opts.isRetryValid && !opts.isRetryValid(freshState))) throw new Error('loop_cancelled')
       try {
-        await withInFlightGuard(opts.loopName, opts.sessionId, opts.agent, logger, () => send(freshState))
+        await withInFlightGuard(projectId, opts.loopName, opts.sessionId, opts.agent, logger, () => send(freshState))
       } catch (err) {
         if (err instanceof ConcurrentPromptError) {
           logger.log(`Loop: ${opts.errorContext} — retry rejected as concurrent prompt (prior guard active), skipping`)
@@ -1440,6 +1525,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     handleAuditorProviderLimit: (loopName: string, limitReason: string) =>
       withStateLock(loopName, () => handleAuditorProviderLimit(loopName, limitReason)),
     resolveSessionLoopName,
+    isPromptQueued,
   })
 
   /**
@@ -1456,6 +1542,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     opts: { phaseLabel: string; exhaustedReason: TerminationReason; rerun: (loopName: string, state: LoopState) => Promise<void> },
   ): Promise<boolean> {
     if (lastMessageRole !== 'assistant') {
+      if (await shouldDeferNoAssistantIdle(loopName, currentState, opts.phaseLabel)) return true
       const attempts = idleRetryAttempts.get(loopName) ?? 0
       if (attempts >= MAX_IDLE_RETRIES) {
         logger.error(`Loop: ${opts.phaseLabel} retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
@@ -1603,6 +1690,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     if (lastMessageRole !== 'assistant') {
+      if (await shouldDeferNoAssistantIdle(loopName, currentState, 'coding')) return
       const attempts = idleRetryAttempts.get(loopName) ?? 0
       if (attempts < MAX_IDLE_RETRIES) {
         logger.log(`Loop: coding idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
@@ -2655,13 +2743,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // provider-limit signals for the same failed prompt are queued with
       // `withStateLock`, so an unlocked cleanup would clear the guard before
       // the queued handler consumed it, re-advancing the fallback index.
-      if (loopName && isAwaitingBusy(loopName, sessionId)) {
+      if (loopName && isAwaitingBusy(projectId, loopName, sessionId)) {
         logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
-        clearPromptPending(loopName, logger)
+        clearPromptPending(projectId, loopName, logger)
       }
       if (loopName) {
         const coalesced = coalescedLimitSessions.get(loopName) === sessionId
-        clearPromptInFlightBySession(loopName, sessionId)
+        clearPromptInFlightBySession(projectId, loopName, sessionId)
         if (coalesced) {
           await withStateLock(loopName, async () => {
             coalescedLimitSessions.delete(loopName)
@@ -2706,8 +2794,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     logger.debug(`Loop: idle event matched loop=${loopName}`)
 
-    if (isAwaitingBusy(loopName, sessionId)) {
-      if (!isAwaitingBusyExpired(loopName)) {
+    if (isPromptQueued(sessionId)) {
+      recordSuppressedIdle(sessionId)
+      logger.debug(`[idle-gate] ignoring idle loop=${loopName} session=${sessionId}; a prompt is still queued in the session inbox`)
+      return
+    }
+
+    if (isAwaitingBusy(projectId, loopName, sessionId)) {
+      if (!isAwaitingBusyExpired(projectId, loopName)) {
         logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
         // This premature idle is the aborted prompt's abort terminal (the
         // internal abort emitted idle instead of an AbortError). Consume its
@@ -2716,12 +2810,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
       logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName}, dispatching idle anyway`)
-      clearPromptPending(loopName, logger)
+      clearPromptPending(projectId, loopName, logger)
     }
 
     await withStateLock(loopName, async () => {
       const state = loopService.getActiveState(loopName)
       if (!state || !state.active) return
+
+      if (isPromptQueued(sessionId)) {
+        recordSuppressedIdle(sessionId)
+        logger.debug(`[idle-gate] ignoring queued idle loop=${loopName} session=${sessionId}; a prompt is still queued in the session inbox`)
+        return
+      }
 
       // Re-check the idle gate now that we hold the lock. During a provider-limit
       // fallback, `resendAuditPromptWithAuditorModel` holds the lock while aborting,
@@ -2732,8 +2832,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // marked pending for this same reused session, so this stale idle must be
       // suppressed against the latest lifecycle rather than running the phase on a
       // session that is busy again.
-      if (isAwaitingBusy(loopName, sessionId)) {
-        if (!isAwaitingBusyExpired(loopName)) {
+      if (isAwaitingBusy(projectId, loopName, sessionId)) {
+        if (!isAwaitingBusyExpired(projectId, loopName)) {
           logger.debug(`[idle-gate] suppressing queued premature idle loop=${loopName} session=${sessionId} (replacement prompt pending)`)
           // Same as the pre-lock suppression: this stale idle is the failed
           // prompt's abort terminal (idle, not AbortError). Consume the marker
@@ -2742,7 +2842,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           return
         }
         logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName} after lock, dispatching idle anyway`)
-        clearPromptPending(loopName, logger)
+        clearPromptPending(projectId, loopName, logger)
       }
 
       // The session's prompt has completed its lifecycle. Any internal abort we
@@ -2841,7 +2941,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
         // Contended: defer to the locked pass so we serialize behind the
         // in-flight tick's phase-rotation work.
-        if (stateLocks.has(state.loopName)) {
+        if (stateLocks.has(stateLockKey(state.loopName))) {
           contended.push(state)
           continue
         }
@@ -2922,14 +3022,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     idleRetryAttempts.clear()
     handoffWaits.clear()
     codingLaunchRecoveryAttempts.clear()
-    internalFallbackAborts.clear()
     coalescedLimitSessions.clear()
     loopRetainedSessions.clear()
     sessionToLoop.clear()
     terminatingLoops.clear()
     watchdog.clearAll()
-    stateLocks.clear()
-    sessionsAwaitingBusy.clear()
     logger.log('Loop: cleared all retry timeouts')
   }
 
@@ -3053,6 +3150,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.start(name)
   }
 
+  /**
+   * Starts watchdogs for active loops this instance owns that were started or restarted
+   * in this process (registered in the loop registry). Loops persisted before this
+   * process are never recovered at boot — plugin init must not resurrect them — while a
+   * worktree instance that loads after another instance in the same process started the
+   * loop still finds it registered and supervises it.
+   */
+  function superviseOwnedLoops(): string[] {
+    if (instanceDirectory === null) return []
+    const owned = listActive().filter(
+      (state) =>
+        state.worktreeDir &&
+        ownsLoopWorktree(state.worktreeDir) &&
+        loopRegistry.has(projectId, state.loopName),
+    )
+    for (const state of owned) {
+      logger.log(`Loop: supervising ${state.loopName} owned by instance directory ${instanceDirectory}`)
+      watchdog.start(state.loopName)
+    }
+    return owned.map((state) => state.loopName)
+  }
+
   function getStallInfo(name: string): LoopWatchdogStallInfo | null {
     return watchdog.getStallInfo(name)
   }
@@ -3077,7 +3196,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
     sessionToLoop.set(state.sessionId, state.loopName)
-    loopRegistry.add(state.loopName)
+    loopRegistry.add(projectId, state.loopName)
     logger.log(`Loop: started loop=${state.loopName} session=${state.sessionId}`)
   }
 
@@ -3096,7 +3215,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (oldState?.sessionId) {
       sessionToLoop.set(oldState.sessionId, name)
     }
-    loopRegistry.add(name)
+    loopRegistry.add(projectId, name)
     // Record at most one phase-changing restart row, matching the production
     // restart path in services/execution.ts (eventType 'restart', kind 'phase',
     // skipped when the restart preserves the persisted phase). The previous
@@ -3166,6 +3285,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearAllRetryTimeouts,
     recordActivity,
     startWatchdog,
+    superviseOwnedLoops,
     getStallInfo,
     restart,
     generateUniqueLoopName,
