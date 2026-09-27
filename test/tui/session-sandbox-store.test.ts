@@ -1,7 +1,5 @@
 import { describe, test, expect } from 'vitest'
 import {
-  awaitSessionSandboxState,
-  deriveSandboxPollDelayMs,
   deriveSessionSandboxAcknowledged,
   deriveSessionSandboxDisplayStatus,
   hostSandboxToggleBlocked,
@@ -163,99 +161,6 @@ describe('session-sandbox-store', () => {
       const off = appliedState({ revision: 'r1', enabled: false, sessionId: 'sess-1', error: null })
       expect(deriveSessionSandboxDisplayStatus({ desired: desired({ enabled: false }), applied: off }, 'sess-1')).toBe('disabled')
       expect(deriveSessionSandboxDisplayStatus(null, 'sess-1')).toBe('disabled')
-    })
-  })
-
-  describe('deriveSandboxPollDelayMs', () => {
-    test('polls promptly while a desired revision is pending', () => {
-      expect(deriveSandboxPollDelayMs({ desired: desired(), applied: null })).toBe(1500)
-    })
-
-    test('backs off once the pair settles', () => {
-      const settled = appliedState({ revision: 'r1', enabled: true, error: null })
-      expect(deriveSandboxPollDelayMs({ desired: desired(), applied: settled })).toBe(10_000)
-    })
-
-    test('retries unavailable state and polls for newly started loops', () => {
-      expect(deriveSandboxPollDelayMs({ desired: null, applied: null, unavailable: true })).toBe(5000)
-      expect(deriveSandboxPollDelayMs({ desired: null, applied: null })).toBe(5000)
-    })
-  })
-
-  describe('awaitSessionSandboxState', () => {
-    test('resolves once the reader reports the requested revision', async () => {
-      let applied: SessionSandboxAppliedState | null = null
-      const promise = awaitSessionSandboxState(
-        async () => ({ desired: null, applied }),
-        'r1',
-        { timeoutMs: 2000, pollMs: 10 },
-      )
-      setTimeout(() => { applied = appliedState({ revision: 'r1', enabled: true, error: null }) }, 20)
-      await expect(promise).resolves.toMatchObject({ revision: 'r1', enabled: true })
-    })
-
-    test('ignores stale applied state until the requested revision arrives', async () => {
-      let applied: SessionSandboxAppliedState | null = appliedState({ revision: 'stale', enabled: true, error: null })
-      const promise = awaitSessionSandboxState(
-        async () => ({ desired: null, applied }),
-        'r1',
-        { timeoutMs: 2000, pollMs: 10 },
-      )
-      setTimeout(() => { applied = appliedState({ revision: 'r1', enabled: true, error: null }) }, 20)
-      await expect(promise).resolves.toMatchObject({ revision: 'r1', enabled: true })
-    })
-
-    test('rejects matching applied errors including an empty string', async () => {
-      const promise = awaitSessionSandboxState(
-        async () => ({ desired: null, applied: appliedState({ revision: 'r1', enabled: false, error: '' }) }),
-        'r1',
-        { timeoutMs: 2000, pollMs: 10 },
-      )
-      await expect(promise).rejects.toThrow()
-    })
-
-    test('times out when no matching applied revision arrives', async () => {
-      await expect(
-        awaitSessionSandboxState(
-          async () => ({ desired: null, applied: null }),
-          'r1',
-          { timeoutMs: 60, pollMs: 10 },
-        ),
-      ).rejects.toThrow(/Timed out/)
-    })
-
-    test('reads an acknowledgement that arrives during the final bounded sleep', async () => {
-      let applied: SessionSandboxAppliedState | null = null
-      const promise = awaitSessionSandboxState(
-        async () => ({ desired: null, applied }),
-        'r1',
-        { timeoutMs: 100, pollMs: 10_000 },
-      )
-      setTimeout(() => { applied = appliedState({ revision: 'r1', enabled: true, error: null }) }, 50)
-      await expect(promise).resolves.toMatchObject({ revision: 'r1', enabled: true })
-    })
-
-    test('caps poll sleep to the remaining timeout', async () => {
-      const start = Date.now()
-      await expect(
-        awaitSessionSandboxState(
-          async () => ({ desired: null, applied: null }),
-          'r1',
-          { timeoutMs: 100, pollMs: 10_000 },
-        ),
-      ).rejects.toThrow(/Timed out/)
-      expect(Date.now() - start).toBeLessThan(1000)
-    })
-
-    test('rejects when polling is cancelled', async () => {
-      const controller = new AbortController()
-      const promise = awaitSessionSandboxState(
-        async () => ({ desired: null, applied: null }),
-        'r1',
-        { timeoutMs: 2000, pollMs: 10, signal: controller.signal },
-      )
-      controller.abort()
-      await expect(promise).rejects.toThrow(/cancelled/i)
     })
   })
 })

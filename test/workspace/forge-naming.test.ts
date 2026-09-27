@@ -19,6 +19,11 @@ describe('isWithinDir', () => {
     expect(isWithinDir(root, `${root}-archive/x`)).toBe(false)
   })
 
+  test('true for a child whose name starts with dots', () => {
+    expect(isWithinDir(root, `${root}/..cache`)).toBe(true)
+    expect(isWithinDir(root, `${root}/..cache/nested`)).toBe(true)
+  })
+
   test('false for an unrelated directory', () => {
     expect(isWithinDir(root, '/missing/project')).toBe(false)
   })

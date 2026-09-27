@@ -12,7 +12,7 @@ import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-re
 import { createLoopService, type LoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
-import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
+import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
@@ -230,7 +230,7 @@ describe('durable attempt handoff', () => {
     sectionPlansRepo = createSectionPlansRepo(db)
     loopTransitionsRepo = createLoopTransitionsRepo(db)
     attemptsRepo = createLoopAttemptsRepo(db, silentLogger)
-    sessionsAwaitingBusy.clear()
+    __resetIdleGate()
     __resetInFlightGuard()
     vi.mocked(captureAuditSnapshot).mockReset()
     vi.mocked(compareAuditSnapshots).mockReset()
@@ -250,7 +250,7 @@ describe('durable attempt handoff', () => {
     } catch {
       // ignore cleanup errors
     }
-    sessionsAwaitingBusy.clear()
+    __resetIdleGate()
     __resetInFlightGuard()
     vi.useRealTimers()
   })

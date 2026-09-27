@@ -1,4 +1,4 @@
-import type { ForgeExecutionMode } from '../host/forge-rpc'
+import type { ForgeExecutionMode, ForgeLoopRestartInput } from '../host/forge-rpc'
 import type { ExecutionPreferences } from '../utils/tui-execution-preferences'
 import type { LoopInfo, SessionForRecents, WorkspaceForRecents } from '../utils/tui-models'
 
@@ -63,5 +63,5 @@ export interface ForgeProjectClient {
   /** Read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
 
-  restartLoop(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel?: string; executionVariant?: string; force?: boolean; expectedStartedAt?: string }): Promise<{ sessionId: string }>
+  restartLoop(request: ForgeLoopRestartInput): Promise<{ sessionId: string }>
 }

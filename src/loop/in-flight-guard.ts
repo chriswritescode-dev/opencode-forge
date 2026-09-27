@@ -1,5 +1,5 @@
 import type { Logger } from '../types'
-import { processShared } from '../utils/process-shared'
+import { processShared, projectLoopKey } from '../utils/process-shared'
 
 export type PromptAgent = 'code' | 'auditor-loop'
 
@@ -27,51 +27,55 @@ interface InFlightEntry {
   startedAt: number
 }
 
-const inFlight = processShared('prompt-in-flight.v1', () => new Map<string, InFlightEntry>())
+const inFlight = processShared('prompt-in-flight.v2', () => new Map<string, InFlightEntry>())
 
-export function markPromptInFlight(loopName: string, sessionId: string, agent: PromptAgent): void {
-  inFlight.set(loopName, { sessionId, agent, startedAt: Date.now() })
+export function markPromptInFlight(projectId: string, loopName: string, sessionId: string, agent: PromptAgent): void {
+  inFlight.set(projectLoopKey(projectId, loopName), { sessionId, agent, startedAt: Date.now() })
 }
 
-export function clearPromptInFlight(loopName: string): void {
-  inFlight.delete(loopName)
+export function clearPromptInFlight(projectId: string, loopName: string): void {
+  inFlight.delete(projectLoopKey(projectId, loopName))
 }
 
-export function clearPromptInFlightBySession(loopName: string, sessionId: string): boolean {
-  const entry = inFlight.get(loopName)
+export function clearPromptInFlightBySession(projectId: string, loopName: string, sessionId: string): boolean {
+  const key = projectLoopKey(projectId, loopName)
+  const entry = inFlight.get(key)
   if (!entry) return false
   if (entry.sessionId === sessionId) {
-    inFlight.delete(loopName)
+    inFlight.delete(key)
     return true
   }
   return false
 }
 
 export function clearPromptInFlightIfMatches(
+  projectId: string,
   loopName: string,
   sessionId: string,
   agent: PromptAgent,
 ): boolean {
-  const entry = inFlight.get(loopName)
+  const key = projectLoopKey(projectId, loopName)
+  const entry = inFlight.get(key)
   if (!entry) return false
   if (entry.sessionId === sessionId && entry.agent === agent) {
-    inFlight.delete(loopName)
+    inFlight.delete(key)
     return true
   }
   return false
 }
 
-export function getPromptInFlight(loopName: string): InFlightEntry | undefined {
-  return inFlight.get(loopName)
+export function getPromptInFlight(projectId: string, loopName: string): InFlightEntry | undefined {
+  return inFlight.get(projectLoopKey(projectId, loopName))
 }
 
 export function assertNoPromptInFlight(
+  projectId: string,
   loopName: string,
   attemptedSessionId: string,
   attemptedAgent: PromptAgent,
   logger: Logger,
 ): void {
-  const prior = inFlight.get(loopName)
+  const prior = inFlight.get(projectLoopKey(projectId, loopName))
   if (!prior) return
   logger.error(
     `[in-flight-guard] concurrent prompt rejected loop=${loopName} ` +
@@ -81,18 +85,19 @@ export function assertNoPromptInFlight(
 }
 
 export async function withInFlightGuard<T>(
+  projectId: string,
   loopName: string,
   sessionId: string,
   agent: PromptAgent,
   logger: Logger,
   fn: () => Promise<T>,
 ): Promise<T> {
-  assertNoPromptInFlight(loopName, sessionId, agent, logger)
-  markPromptInFlight(loopName, sessionId, agent)
+  assertNoPromptInFlight(projectId, loopName, sessionId, agent, logger)
+  markPromptInFlight(projectId, loopName, sessionId, agent)
   try {
     return await fn()
   } finally {
-    clearPromptInFlightIfMatches(loopName, sessionId, agent)
+    clearPromptInFlightIfMatches(projectId, loopName, sessionId, agent)
   }
 }
 

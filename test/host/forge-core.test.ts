@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
+import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 import {
   closeDatabase,
   createLoopsRepo,
@@ -36,6 +37,7 @@ describe('createForgeCore', () => {
   async function buildCore(
     config: PluginConfig = {},
     clientOverrides?: Parameters<typeof createFakeForgeClient>[0],
+    hostOverrides?: { publishTuiEvent?: (event: ForgeTuiEvent) => void },
   ): Promise<{ core: ForgeCore; calls: RecordedCall[]; adapters: unknown[]; projectId: string }> {
     const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const { client, calls } = createFakeForgeClient({
@@ -47,7 +49,14 @@ describe('createForgeCore', () => {
     const adapters: unknown[] = []
     core = await createForgeCore(
       { dataDir: join(testDir, 'memory'), ...config },
-      { directory: testDir, projectId, projectRoot: testDir, client, registerWorkspaceAdapter: (adapter) => adapters.push(adapter) },
+      {
+        directory: testDir,
+        projectId,
+        projectRoot: testDir,
+        client,
+        registerWorkspaceAdapter: (adapter) => adapters.push(adapter),
+        ...(hostOverrides?.publishTuiEvent ? { publishTuiEvent: hostOverrides.publishTuiEvent } : {}),
+      },
     )
     return { core, calls, adapters, projectId }
   }
@@ -211,6 +220,62 @@ describe('createForgeCore', () => {
     await expect(built.core.setSessionAutoApprove('ses_host_1', true)).resolves.toEqual({
       error: 'Loop sessions already auto-approve everything not denied',
     })
+  })
+
+  test('emits autoApproveChanged when a session flag changes', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({}, undefined, { publishTuiEvent: (event) => events.push(event) })
+
+    await expect(built.core.setSessionAutoApprove('ses_host_1', true)).resolves.toEqual({
+      enabled: true,
+      ownerSessionId: 'ses_host_1',
+      inherited: false,
+    })
+    expect(events.filter((event) => event.type === 'autoApproveChanged'))
+      .toEqual([{ type: 'autoApproveChanged', projectId: built.projectId, sessionId: 'ses_host_1' }])
+
+    events.length = 0
+    await expect(built.core.setSessionAutoApprove('ses_host_1', false)).resolves.toEqual({ enabled: false, inherited: false })
+    expect(events.filter((event) => event.type === 'autoApproveChanged'))
+      .toEqual([{ type: 'autoApproveChanged', projectId: built.projectId, sessionId: 'ses_host_1' }])
+  })
+
+  test('emits hostSandboxChanged when the desired host sandbox revision is written', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({}, undefined, { publishTuiEvent: (event) => events.push(event) })
+
+    const result = built.core.tui.requestHostSandbox('ses_host_1', true)
+    expect('revision' in result).toBe(true)
+    expect(events.filter((event) => event.type === 'hostSandboxChanged').at(-1))
+      .toEqual({ type: 'hostSandboxChanged', projectId: built.projectId })
+  })
+
+  test('emits one coalesced loopsChanged on a loop change', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({}, undefined, { publishTuiEvent: (event) => events.push(event) })
+
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createLoopsRepo(db).insert({
+        ...runningLoopRow(built.projectId, 'ses_loop_1'),
+        status: 'stalled',
+        terminationReason: 'stall_timeout',
+      }, { lastAuditResult: null })
+    } finally {
+      closeDatabase(db)
+    }
+
+    const restarted = await built.core.tui.restartLoop({
+      loopName: 'core-loop',
+      auditorModel: 'prov/aud',
+      auditorVariant: '',
+    })
+    expect('sessionId' in restarted).toBe(true)
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(events.filter((event) => event.type === 'loopsChanged')).toEqual([
+      { type: 'loopsChanged', projectId: built.projectId },
+    ])
   })
 
   test('throttles the flag TTL touch to once an hour per session', async () => {

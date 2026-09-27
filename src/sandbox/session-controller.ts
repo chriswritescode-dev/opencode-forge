@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { isAbsolute, relative, resolve, sep } from 'path'
+import { resolve } from 'path'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
 import type { SandboxContext } from './context'
 import type { SandboxRuntime } from './msb'
 import type { ActiveSandbox } from './manager'
 import { findSessionAncestor } from '../utils/session-ancestry'
+import { isWithinDir } from '../workspace/forge-naming'
 
 export const DEFAULT_POLL_INTERVAL_MS = 500
 
@@ -84,6 +85,8 @@ export interface SessionSandboxControllerDeps {
    * loop refusal is skipped.
    */
   resolveActiveLoopForSession?: ResolveActiveLoopForSession
+  /** Notified after the controller writes an applied state or controller record. */
+  onChange?: () => void
   logger: Logger
   pollIntervalMs?: number
 }
@@ -217,6 +220,14 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
     return run
   }
 
+  function notifyChanged(): void {
+    try {
+      deps.onChange?.()
+    } catch (err) {
+      logger.log(`[session-sandbox] change notification failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   function writeControllerState(phase: 'loading' | 'ready' | 'failed'): void {
     const desired = preferences.getDesired(projectId)
     preferences.setControllerState(projectId, {
@@ -225,6 +236,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       revision: desired?.revision ?? null,
       sessionId: desired?.sessionId ?? null,
     })
+    notifyChanged()
   }
 
   function bind(sessionId: string | null, revision: string | null = null): void {
@@ -236,6 +248,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
   function writeApplied(state: SessionSandboxAppliedState): void {
     preferences.setApplied(projectId, state)
     lastApplied = state
+    notifyChanged()
   }
 
   function restoreFromApplied(applied: SessionSandboxAppliedState, desired: SessionSandboxDesiredState): void {
@@ -292,10 +305,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       return 'uncertain'
     }
     if (!dir) return 'uncertain'
-    const relativeDirectory = relative(resolve(directory), resolve(dir))
-    const local = relativeDirectory !== '..' &&
-      !relativeDirectory.startsWith(`..${sep}`) &&
-      !isAbsolute(relativeDirectory)
+    const local = isWithinDir(resolve(directory), resolve(dir))
     if (local) selectedProjectDirectory = dir
     return local ? 'local' : 'foreign'
   }

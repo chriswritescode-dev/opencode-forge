@@ -13,7 +13,6 @@ function loop(overrides: Partial<LoopInfo> = {}): LoopInfo {
     iteration: 1,
     maxIterations: 5,
     sessionId: 'ses_loop',
-    active: false,
     restartable: true,
     restartRequiresForce: false,
     ...overrides,

@@ -1,4 +1,8 @@
 import { describe, test, expect, vi } from 'vitest'
+
+vi.mock('solid-js', async () => await import('solid-js/dist/dev.js'))
+
+import { createSignal } from 'solid-js'
 import type { Plugin } from '@opencode/plugin/tui'
 import { resolveV2TuiProjectId, setupForgeTuiV2 } from '../../src/tui/v2'
 import tuiModule from '../../src/tui'
@@ -59,6 +63,7 @@ interface FakeV2TuiOptions {
   route?: { type: 'home' } | { type: 'session'; sessionID: string }
   sessions?: Array<{ id: string; location: { directory: string } }>
   worktrees?: { root: string; dirs: string[] } | { error: string }
+  version?: { version: string } | { error: string }
 }
 
 type DataHandler = (event: { data: Record<string, unknown> }) => void
@@ -72,10 +77,26 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const dataHandlers = new Map<string, DataHandler[]>()
   const navigations: unknown[] = []
   const prompts: Array<Record<string, unknown>> = []
-  let route = fakeOptions.route ?? { type: 'home' as const }
+  const [route, setRoute] = createSignal<{ type: 'home' } | { type: 'session'; sessionID: string }>(
+    fakeOptions.route ?? { type: 'home' as const },
+  )
 
   const sessionRemove = vi.fn(async (_input: { sessionID: string }) => {})
   const sessionList = vi.fn(async () => ({ data: [], cursor: {} }))
+
+  const worktrees = fakeOptions.worktrees ?? { root: forgeWorktreesRoot(resolveForgeDataDir()), dirs: [] }
+  const worktreesMock = vi.fn(async () => worktrees)
+  const loopSidebar = vi.fn(async () => ({ loops: [] }))
+  const hostSandboxState = vi.fn(async () => ({
+    configEnabled: true,
+    desired: null,
+    applied: null,
+    controller: null,
+  }))
+  const hostSandboxSet = vi.fn(async () => ({ revision: 'rev-1' }))
+  const autoApproveState = vi.fn(async () => ({ enabled: false, inherited: false }))
+  const autoApproveSet = vi.fn(async () => ({ enabled: true, inherited: false }))
+  const version = vi.fn(async () => fakeOptions.version ?? { version: VERSION })
 
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
@@ -83,9 +104,14 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
 
   const rpc = vi.fn((definition: unknown) => {
     rpcDefinitions.push(definition)
-    const worktrees = fakeOptions.worktrees ?? { root: forgeWorktreesRoot(resolveForgeDataDir()), dirs: [] }
     return {
-      worktrees: vi.fn(async () => worktrees),
+      worktrees: worktreesMock,
+      loopSidebar,
+      hostSandboxState,
+      hostSandboxSet,
+      autoApproveState,
+      autoApproveSet,
+      version,
       events: {
         on: vi.fn((
           name: string,
@@ -138,10 +164,10 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
         }),
       },
       router: {
-        current: () => route,
-        navigate: vi.fn((destination: typeof route) => {
+        current: () => route(),
+        navigate: vi.fn((destination: { type: 'home' } | { type: 'session'; sessionID: string }) => {
           navigations.push(destination)
-          route = destination
+          setRoute(destination)
         }),
       },
       dialog: {
@@ -161,7 +187,31 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     for (const handler of dataHandlers.get(type) ?? []) handler({ data })
   }
 
-  return { ctx, layers, slots, toasts, locationGet, sessionRemove, sessionList, rpc, rpcDefinitions, rpcSubscriptions, navigations, prompts, emit, dataHandlers }
+  return {
+    ctx,
+    layers,
+    slots,
+    toasts,
+    locationGet,
+    sessionRemove,
+    sessionList,
+    rpc,
+    rpcDefinitions,
+    rpcSubscriptions,
+    navigations,
+    prompts,
+    emit,
+    dataHandlers,
+    worktrees: worktreesMock,
+    loopSidebar,
+    hostSandboxState,
+    hostSandboxSet,
+    autoApproveState,
+    autoApproveSet,
+    version,
+    setRoute,
+    findRpcSubscription: (name: string) => rpcSubscriptions.find((subscription) => subscription.name === name),
+  }
 }
 
 function findCommand(fake: ReturnType<typeof createFakeV2TuiContext>, id: string): RecordedCommand {
@@ -225,7 +275,13 @@ describe('V2 TUI setup', () => {
 
     const cleanup = setupForgeTuiV2(fake.ctx)
 
-    expect(fake.rpcSubscriptions.map((subscription) => subscription.name)).toEqual(['toast', 'sessionDelete'])
+    expect(fake.rpcSubscriptions.map((subscription) => subscription.name)).toEqual([
+      'toast',
+      'sessionDelete',
+      'loopsChanged',
+      'autoApproveChanged',
+      'hostSandboxChanged',
+    ])
     fake.rpcSubscriptions[0]?.handler({
       data: { projectId: 'proj-1', title: 'Loop done', message: 'All sections passed', variant: 'success', duration: 4000 },
     })
@@ -276,6 +332,117 @@ describe('V2 TUI setup', () => {
     expect(signal?.aborted).toBe(false)
     cleanup()
     expect(signal?.aborted).toBe(true)
+  })
+
+  test('refetches the sidebar on loopsChanged for the current project only', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(1))
+
+    fake.findRpcSubscription('loopsChanged')?.handler({ data: { projectId: 'proj-2' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fake.loopSidebar).toHaveBeenCalledTimes(1)
+
+    fake.findRpcSubscription('loopsChanged')?.handler({ data: { projectId: 'proj-1' } })
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(2))
+    cleanup()
+  })
+
+  test('starts no recurring timers for the sidebar', () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    expect(setIntervalSpy).not.toHaveBeenCalled()
+    setIntervalSpy.mockRestore()
+    cleanup()
+  })
+
+  test('refetches auto-approve on autoApproveChanged and session change', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.version).toHaveBeenCalledTimes(1))
+    expect(fake.autoApproveState).toHaveBeenCalledTimes(0)
+
+    fake.findRpcSubscription('autoApproveChanged')?.handler({ data: { projectId: 'proj-2', sessionId: 'ses_other' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fake.autoApproveState).toHaveBeenCalledTimes(0)
+
+    fake.setRoute({ type: 'session', sessionID: 'ses_1' })
+    await vi.waitFor(() => expect(fake.autoApproveState).toHaveBeenCalledTimes(1))
+
+    fake.findRpcSubscription('autoApproveChanged')?.handler({ data: { projectId: 'proj-1', sessionId: 'ses_child' } })
+    await vi.waitFor(() => expect(fake.autoApproveState).toHaveBeenCalledTimes(2))
+    cleanup()
+  })
+
+  test('refetches host sandbox on hostSandboxChanged and loopsChanged', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+    fake.findRpcSubscription('hostSandboxChanged')?.handler({ data: { projectId: 'proj-1' } })
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(2))
+
+    fake.findRpcSubscription('loopsChanged')?.handler({ data: { projectId: 'proj-1' } })
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(3))
+    cleanup()
+  })
+
+  test('refetches every state on server.connected', async () => {
+    const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_1' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(fake.autoApproveState).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+    fake.emit('server.connected', {})
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(fake.autoApproveState).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(2))
+    cleanup()
+  })
+
+  test('warns once when the server version differs from the TUI', async () => {
+    const fake = createFakeV2TuiContext({ version: { version: '0.0.1' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    await vi.waitFor(() => expect(fake.toasts).toEqual([{
+      message: `Forge server plugin 0.0.1 differs from TUI ${VERSION}; restart the OpenCode server`,
+      variant: 'warning',
+      duration: 10_000,
+    }]))
+    cleanup()
+  })
+
+  test('warns when the server has no version method', async () => {
+    const fake = createFakeV2TuiContext({ version: { error: 'method not found' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    await vi.waitFor(() => expect(fake.toasts).toEqual([{
+      message: `Forge server plugin unknown (older than this TUI) differs from TUI ${VERSION}; restart the OpenCode server`,
+      variant: 'warning',
+      duration: 10_000,
+    }]))
+    cleanup()
+  })
+
+  test('does not warn when the server version matches the TUI', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.version).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fake.toasts).toEqual([])
+    cleanup()
   })
 
   test('registers the execute-plan, restart, and sandbox-build palette commands', () => {
@@ -329,6 +496,60 @@ describe('V2 TUI setup', () => {
 
     cleanup()
     expect(fake.dataHandlers.get('session.created')).toEqual([])
+  })
+
+  test('shares one worktrees lookup between startup cleanup and session follow', async () => {
+    const worktree = join(forgeWorktreesRoot(resolveForgeDataDir()), 'loop-a')
+    const fake = createFakeV2TuiContext({
+      route: { type: 'session', sessionID: 'ses_code' },
+      sessions: [{ id: 'ses_code', location: { directory: worktree } }],
+    })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.worktrees).toHaveBeenCalledTimes(1))
+
+    fake.emit('session.created', { sessionID: 'ses_audit', location: { directory: worktree } })
+    await vi.waitFor(() => expect(fake.navigations).toEqual([{ type: 'session', sessionID: 'ses_audit' }]))
+    expect(fake.worktrees).toHaveBeenCalledTimes(1)
+
+    cleanup()
+  })
+
+  test('negative-caches a failed worktrees lookup within the retry window', async () => {
+    const worktree = join(forgeWorktreesRoot(resolveForgeDataDir()), 'loop-a')
+    const fake = createFakeV2TuiContext({
+      route: { type: 'session', sessionID: 'ses_code' },
+      sessions: [{ id: 'ses_code', location: { directory: worktree } }],
+    })
+    fake.worktrees.mockResolvedValue({ error: 'rpc down' })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.worktrees).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    fake.emit('session.created', { sessionID: 'ses_audit', location: { directory: worktree } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fake.worktrees).toHaveBeenCalledTimes(1)
+    expect(fake.navigations).toEqual([])
+
+    cleanup()
+  })
+
+  test('re-fetches worktrees fresh before deleting an orphaned session', async () => {
+    const root = forgeWorktreesRoot(resolveForgeDataDir())
+    const spawned = join(root, 'spawned-loop')
+    const fake = createFakeV2TuiContext()
+    fake.sessionList.mockResolvedValue({ data: [{ id: 'ses_spawned', location: { directory: spawned } }], cursor: {} })
+    fake.worktrees
+      .mockResolvedValueOnce({ root, dirs: [] })
+      .mockResolvedValue({ root, dirs: [spawned] })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    await vi.waitFor(() => expect(fake.worktrees).toHaveBeenCalledTimes(2))
+    expect(fake.sessionRemove).not.toHaveBeenCalled()
+    cleanup()
   })
 
   test('resolves the project id from the current location directory', async () => {

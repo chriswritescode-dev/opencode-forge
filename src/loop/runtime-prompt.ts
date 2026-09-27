@@ -11,6 +11,7 @@ export interface PromptDispatchDeps {
   logger: Logger
   getConfig: () => PluginConfig
   loopService: LoopService
+  projectId: string
 }
 
 export interface SendPromptInput {
@@ -34,7 +35,7 @@ export interface PromptDispatch {
 }
 
 export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
-  const { client, logger, getConfig, loopService } = deps
+  const { client, logger, getConfig, loopService, projectId } = deps
 
   async function sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }> {
     const { loopName, sessionId, promptText, agent } = input
@@ -42,12 +43,12 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
     if (agent === 'auditor-loop') {
       const auditorModel = input.model != null ? input.model : undefined
       const { result, usedModel } = await sendLoopPrompt({
-        loopName, sessionId, agent: 'auditor-loop', logger,
+        projectId, loopName, sessionId, agent: 'auditor-loop', logger,
         primaryModel: auditorModel,
         performPrompt: async (model) => {
           const freshState = loopService.getActiveState(loopName)
           if (!freshState?.active) throw new Error('loop_cancelled')
-          markPromptSent(loopName, sessionId, logger)
+          markPromptSent(projectId, loopName, sessionId, logger)
           const r = await promptAuditSession(client, {
             sessionId,
             worktreeDir: freshState.worktreeDir,
@@ -63,13 +64,13 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
 
     const effectiveModel = input.model != null ? input.model : resolveLoopModel(getConfig(), loopService, loopName)
     const { result, usedModel } = await sendLoopPrompt({
-      loopName, sessionId, agent: 'code', logger,
+      projectId, loopName, sessionId, agent: 'code', logger,
       primaryModel: effectiveModel,
       fallbackModel: input.fallbackModel,
       performPrompt: async (model) => {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')
-        markPromptSent(loopName, sessionId, logger)
+        markPromptSent(projectId, loopName, sessionId, logger)
         try {
           await client.session.promptAsync({
             sessionID: sessionId,

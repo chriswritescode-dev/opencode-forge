@@ -1,7 +1,7 @@
 import { join } from 'path'
-import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { isRecord } from '../utils/is-record'
-import { forgeWorktreesRoot } from './forge-naming'
+import { listForgeWorktreeDirs } from './forge-naming'
 
 const FORGE_WORKSPACE_METADATA_DIR = '.forge'
 const FORGE_WORKSPACE_METADATA_FILENAME = 'workspace.json'
@@ -58,12 +58,9 @@ export function removeForgeWorkspaceMetadata(dir: string): void {
 }
 
 export function listForgeWorkspaceMetadata(dataDir: string): ForgeWorkspaceMetadata[] {
-  const root = forgeWorktreesRoot(dataDir)
-  if (!existsSync(root)) return []
   const records: ForgeWorkspaceMetadata[] = []
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const record = readForgeWorkspaceMetadata(join(root, entry.name))
+  for (const dir of listForgeWorktreeDirs(dataDir)) {
+    const record = readForgeWorkspaceMetadata(dir)
     if (record) records.push(record)
   }
   return records

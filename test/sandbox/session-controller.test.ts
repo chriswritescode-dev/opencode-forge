@@ -16,6 +16,8 @@ import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSan
 import type { ActiveSandbox } from '../../src/sandbox/manager'
 import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { emitTuiEvent, registerTuiEventEmitter } from '../../src/host/tui-events'
+import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 
 const PROJECT = 'project-a'
 const DIRECTORY = '/abs/path/to/worktree'
@@ -88,6 +90,7 @@ describe('SessionSandboxController', () => {
     getSessionIdentity?: (sid: string) => Promise<{ projectId: string; directory: string } | null>
     resolveActiveLoopForSession?: (sid: string) => Promise<{ active: boolean; sandbox?: boolean } | null>
     getParentSessionId?: (sid: string) => Promise<string | null>
+    onChange?: () => void
   } = {}) {
     return createSessionSandboxController({
       projectId: PROJECT,
@@ -98,6 +101,7 @@ describe('SessionSandboxController', () => {
       ...(overrides.getSessionDirectory ? { getSessionDirectory: overrides.getSessionDirectory } : {}),
       ...(overrides.getSessionIdentity ? { getSessionIdentity: overrides.getSessionIdentity } : {}),
       ...(overrides.resolveActiveLoopForSession ? { resolveActiveLoopForSession: overrides.resolveActiveLoopForSession } : {}),
+      ...(overrides.onChange ? { onChange: overrides.onChange } : {}),
       logger,
       ...(overrides.pollIntervalMs ? { pollIntervalMs: overrides.pollIntervalMs } : {}),
     })
@@ -148,6 +152,44 @@ describe('SessionSandboxController', () => {
     expect(applied?.error).toBeNull()
     expect(controller.getState()).toEqual(applied)
     await controller.dispose()
+  })
+
+  test('a controller created by a disposed instance emits through a surviving emitter', async () => {
+    const projectId = `proj-controller-registry-${Date.now()}`
+    const events: ForgeTuiEvent[] = []
+
+    // The controller is process-shared and outlives the instance that created it, so
+    // its change callback resolves a live emitter at call time.
+    const unregisterDisposed = registerTuiEventEmitter(projectId, () => {
+      throw new Error('the disposed instance emitter must never be used')
+    })
+    unregisterDisposed()
+    const unregisterSurviving = registerTuiEventEmitter(projectId, (event) => events.push(event))
+    try {
+      const controller = createController({
+        onChange: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
+      })
+      await controller.start()
+      expect(events).toContainEqual({ type: 'hostSandboxChanged', projectId })
+      await controller.dispose()
+    } finally {
+      unregisterSurviving()
+    }
+  })
+
+  test('notifies onChange after each applied and controller write', async () => {
+    repo.setDesired(PROJECT, makeDesired({ revision: 'r-notify' }))
+    const onChange = vi.fn()
+    const controller = createController({ onChange })
+    await controller.start()
+
+    // start writes the controller loading/ready phases and the applied ON row.
+    const phases = onChange.mock.calls.length
+    expect(phases).toBeGreaterThanOrEqual(3)
+    expect(repo.getApplied(PROJECT)?.enabled).toBe(true)
+
+    await controller.dispose()
+    expect(onChange.mock.calls.length).toBeGreaterThan(phases)
   })
 
   test('isIdle is true only while no session is bound to the host sandbox', async () => {

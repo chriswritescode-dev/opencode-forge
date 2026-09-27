@@ -169,14 +169,13 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
       }
     },
     async restartLoop(request) {
+      const { executionModel, executionVariant, force, expectedStartedAt, ...required } = request
       const input: ForgeLoopRestartInput = {
-        loopName: request.loopName,
-        auditorModel: request.auditorModel,
-        auditorVariant: request.auditorVariant,
-        ...(request.executionModel ? { executionModel: request.executionModel } : {}),
-        ...(request.executionVariant ? { executionVariant: request.executionVariant } : {}),
-        ...(request.force !== undefined ? { force: request.force } : {}),
-        ...(request.expectedStartedAt ? { expectedStartedAt: request.expectedStartedAt } : {}),
+        ...required,
+        ...(executionModel ? { executionModel } : {}),
+        ...(executionVariant ? { executionVariant } : {}),
+        ...(force !== undefined ? { force } : {}),
+        ...(expectedStartedAt ? { expectedStartedAt } : {}),
       }
       const result = await call((rpc, location) => rpc.loopRestart(input, location), readForgeLoopRestartOutput)
       if ('error' in result) throw new Error(result.error)

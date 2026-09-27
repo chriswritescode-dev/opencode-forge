@@ -13,3 +13,12 @@ export function processShared<T>(key: string, create: () => T): T {
   const symbol = Symbol.for(`opencode-forge.${key}`)
   return (scope[symbol] ??= create()) as T
 }
+
+/**
+ * Builds the key for process-shared state that is scoped to one loop. Loop names are only
+ * unique within a project, and one OpenCode process can host several projects, so shared
+ * maps must key entries by project AND loop name to keep same-named loops independent.
+ */
+export function projectLoopKey(projectId: string, loopName: string): string {
+  return `${projectId}\u0000${loopName}`
+}

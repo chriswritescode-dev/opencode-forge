@@ -1,4 +1,5 @@
-import { join, relative, isAbsolute } from 'path'
+import { join, relative, isAbsolute, sep } from 'path'
+import { readdirSync } from 'fs'
 import { slugify } from '../utils/logger'
 import { defaultGitService, type GitService } from '../utils/git-service'
 
@@ -28,12 +29,29 @@ export function forgeWorktreeDir(dataDir: string, loopName: string): string {
 }
 
 /**
+ * Absolute paths of every directory directly under `<dataDir>/worktrees`, or an
+ * empty list when that root does not exist. Other filesystem errors propagate to
+ * the caller.
+ */
+export function listForgeWorktreeDirs(dataDir: string): string[] {
+  const root = forgeWorktreesRoot(dataDir)
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(root, entry.name))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
+}
+
+/**
  * True when `directory` is `root` itself or any directory beneath it.
  */
 export function isWithinDir(root: string, directory: string): boolean {
   if (!root || !directory) return false
   const rel = relative(root, directory)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
 }
 
 /**

@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { createLoopsRepo, createPlansRepo, createSectionPlansRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
+import { createLoopsRepo, createPlansRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { LoopsRepo, LoopRow } from '../../src/storage/repos/loops-repo'
 import type { SessionSandboxDesiredState } from '../../src/storage'
 import type { Logger } from '../../src/types'
@@ -55,7 +55,6 @@ describe('createTuiRpcService', () => {
   let tempDir: string
   let db: Database
   let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let sandboxPreferences: ReturnType<typeof createSessionSandboxPreferencesRepo>
 
@@ -64,7 +63,6 @@ describe('createTuiRpcService', () => {
     db = new Database(join(tempDir, 'forge.db'))
     setupLoopsTestDb(db)
     loopsRepo = createLoopsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
     plansRepo = createPlansRepo(db)
     sandboxPreferences = createSessionSandboxPreferencesRepo(db)
   })
@@ -80,7 +78,6 @@ describe('createTuiRpcService', () => {
       dataDir: tempDir,
       config: {},
       loopsRepo,
-      sectionPlansRepo,
       plansRepo,
       sandboxPreferences,
       restartLoop: async () => ({ sessionId: 'ses-default' }),
@@ -90,18 +87,9 @@ describe('createTuiRpcService', () => {
   }
 
   describe('listLoops', () => {
-    test('maps loop rows with restartability and optional section views', () => {
+    test('maps loop rows with restartability', () => {
       loopsRepo.insert(loopRow({ loopName: 'loop-done' }), { lastAuditResult: null })
       loopsRepo.insert(loopRow({ loopName: 'loop-running', status: 'running', currentSessionId: 'session-running' }), { lastAuditResult: null })
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT,
-        loopName: 'loop-done',
-        sections: [
-          { index: 0, title: 'Phase one', content: 'body' },
-          { index: 1, title: 'Phase two', content: 'body' },
-        ],
-      })
-      sectionPlansRepo.setSummary(PROJECT, 'loop-done', 0, { done: 'a'.repeat(250), deviations: 'deviation', followUps: null })
 
       const result = createService().listLoops()
       if ('error' in result) throw new Error(result.error)
@@ -114,27 +102,19 @@ describe('createTuiRpcService', () => {
         iteration: 3,
         maxIterations: 10,
         sessionId: 'session-1',
-        active: false,
         restartable: true,
         restartRequiresForce: false,
-        worktreeDir: '/tmp/forge/worktrees/loop-1',
         executionModel: 'anthropic/claude',
         executionVariant: 'high',
         auditorModel: 'openai/gpt',
         auditorVariant: 'low',
-        workspaceId: 'ws-1',
-        hostSessionId: 'host-1',
-        finalAuditDone: false,
       })
       expect(done?.startedAt).toBe(new Date(1_700_000_000_000).toISOString())
-      expect(done?.completedAt).toBe(new Date(1_700_000_100_000).toISOString())
-      expect(done?.sections).toHaveLength(2)
-      expect(done?.sections?.[0]).toMatchObject({ index: 0, title: 'Phase one', attempts: 0 })
-      expect(done?.sections?.[0]?.summaryDone).toHaveLength(200)
-      expect(done?.sections?.[1]?.summaryDone).toBeNull()
+      expect(done).not.toHaveProperty('active')
+      expect(done).not.toHaveProperty('sections')
 
       const running = result.loops.find((loop) => loop.name === 'loop-running')
-      expect(running).toMatchObject({ active: true, restartable: true, restartRequiresForce: true })
+      expect(running).toMatchObject({ restartable: true, restartRequiresForce: true })
       expect(running?.sections).toBeUndefined()
     })
 
@@ -143,8 +123,6 @@ describe('createTuiRpcService', () => {
         loopName: 'loop-sparse',
         auditorVariant: null,
         executionVariant: null,
-        workspaceId: null,
-        hostSessionId: null,
         completedAt: null,
       }), { lastAuditResult: null })
 

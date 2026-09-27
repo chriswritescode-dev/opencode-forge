@@ -12,6 +12,8 @@ import {
 } from '../../src/loop/in-flight-guard'
 import type { Logger } from '../../src/types'
 
+const PROJECT_ID = 'test-project'
+
 function createMockLogger(): { logger: Logger; errorCalls: unknown[][] } {
   const errorCalls: unknown[][] = []
   const logger: Logger = {
@@ -28,11 +30,11 @@ describe('in-flight guard', () => {
   })
 
   test('rejects concurrent prompt for same loop with different session/agent', () => {
-    markPromptInFlight('loopA', 'sess-1', 'code')
+    markPromptInFlight(PROJECT_ID, 'loopA', 'sess-1', 'code')
     const { logger, errorCalls } = createMockLogger()
 
     expect(() =>
-      assertNoPromptInFlight('loopA', 'sess-2', 'auditor-loop', logger)
+      assertNoPromptInFlight(PROJECT_ID, 'loopA', 'sess-2', 'auditor-loop', logger)
     ).toThrow(ConcurrentPromptError)
 
     expect(errorCalls.length).toBe(1)
@@ -43,30 +45,30 @@ describe('in-flight guard', () => {
   })
 
   test('assertNoPromptInFlight returns without throwing after clear', () => {
-    markPromptInFlight('loopA', 'sess-1', 'code')
-    clearPromptInFlight('loopA')
+    markPromptInFlight(PROJECT_ID, 'loopA', 'sess-1', 'code')
+    clearPromptInFlight(PROJECT_ID, 'loopA')
 
     const { logger } = createMockLogger()
     expect(() =>
-      assertNoPromptInFlight('loopA', 'sess-2', 'auditor-loop', logger)
+      assertNoPromptInFlight(PROJECT_ID, 'loopA', 'sess-2', 'auditor-loop', logger)
     ).not.toThrow()
   })
 
   test('guards are per-loop (different loops are independent)', () => {
-    markPromptInFlight('loopB', 'sess-3', 'code')
+    markPromptInFlight(PROJECT_ID, 'loopB', 'sess-3', 'code')
 
     const { logger } = createMockLogger()
     expect(() =>
-      assertNoPromptInFlight('loopA', 'sess-4', 'auditor-loop', logger)
+      assertNoPromptInFlight(PROJECT_ID, 'loopA', 'sess-4', 'auditor-loop', logger)
     ).not.toThrow()
   })
 
   test('rejects concurrent prompt for same loop with same session and agent', () => {
-    markPromptInFlight('loopD', 'sess-7', 'auditor-loop')
+    markPromptInFlight(PROJECT_ID, 'loopD', 'sess-7', 'auditor-loop')
     const { logger, errorCalls } = createMockLogger()
 
     expect(() =>
-      assertNoPromptInFlight('loopD', 'sess-7', 'auditor-loop', logger)
+      assertNoPromptInFlight(PROJECT_ID, 'loopD', 'sess-7', 'auditor-loop', logger)
     ).toThrow(ConcurrentPromptError)
 
     expect(errorCalls.length).toBe(1)
@@ -78,11 +80,11 @@ describe('in-flight guard', () => {
   })
 
   test('logger.error is called exactly once with correct details before throwing', () => {
-    markPromptInFlight('loopC', 'sess-5', 'auditor-loop')
+    markPromptInFlight(PROJECT_ID, 'loopC', 'sess-5', 'auditor-loop')
     const { logger, errorCalls } = createMockLogger()
 
     try {
-      assertNoPromptInFlight('loopC', 'sess-6', 'code', logger)
+      assertNoPromptInFlight(PROJECT_ID, 'loopC', 'sess-6', 'code', logger)
       expect.fail('should have thrown')
     } catch {
       // expected
@@ -97,19 +99,19 @@ describe('in-flight guard', () => {
   })
 
   test('clearPromptInFlightIfMatches clears matching owner', () => {
-    markPromptInFlight('loopE', 'sess-9', 'code')
-    const result = clearPromptInFlightIfMatches('loopE', 'sess-9', 'code')
+    markPromptInFlight(PROJECT_ID, 'loopE', 'sess-9', 'code')
+    const result = clearPromptInFlightIfMatches(PROJECT_ID, 'loopE', 'sess-9', 'code')
     expect(result).toBe(true)
-    expect(getPromptInFlight('loopE')).toBeUndefined()
+    expect(getPromptInFlight(PROJECT_ID, 'loopE')).toBeUndefined()
   })
 
   test('clearPromptInFlightIfMatches preserves non-matching owner', () => {
-    markPromptInFlight('loopF', 'sess-10', 'auditor-loop')
-    const result = clearPromptInFlightIfMatches('loopF', 'sess-10', 'code')
+    markPromptInFlight(PROJECT_ID, 'loopF', 'sess-10', 'auditor-loop')
+    const result = clearPromptInFlightIfMatches(PROJECT_ID, 'loopF', 'sess-10', 'code')
     expect(result).toBe(false)
-    expect(getPromptInFlight('loopF')).toBeDefined()
-    expect(getPromptInFlight('loopF')!.sessionId).toBe('sess-10')
-    expect(getPromptInFlight('loopF')!.agent).toBe('auditor-loop')
+    expect(getPromptInFlight(PROJECT_ID, 'loopF')).toBeDefined()
+    expect(getPromptInFlight(PROJECT_ID, 'loopF')!.sessionId).toBe('sess-10')
+    expect(getPromptInFlight(PROJECT_ID, 'loopF')!.agent).toBe('auditor-loop')
   })
 })
 
@@ -119,22 +121,22 @@ describe('clearPromptInFlightBySession', () => {
   })
 
   test('clears entry when session matches (any agent)', () => {
-    markPromptInFlight('loopX', 'sess-A', 'auditor-loop')
-    const result = clearPromptInFlightBySession('loopX', 'sess-A')
+    markPromptInFlight(PROJECT_ID, 'loopX', 'sess-A', 'auditor-loop')
+    const result = clearPromptInFlightBySession(PROJECT_ID, 'loopX', 'sess-A')
     expect(result).toBe(true)
-    expect(getPromptInFlight('loopX')).toBeUndefined()
+    expect(getPromptInFlight(PROJECT_ID, 'loopX')).toBeUndefined()
   })
 
   test('preserves entry when session differs', () => {
-    markPromptInFlight('loopY', 'sess-A', 'code')
-    const result = clearPromptInFlightBySession('loopY', 'sess-B')
+    markPromptInFlight(PROJECT_ID, 'loopY', 'sess-A', 'code')
+    const result = clearPromptInFlightBySession(PROJECT_ID, 'loopY', 'sess-B')
     expect(result).toBe(false)
-    expect(getPromptInFlight('loopY')).toBeDefined()
-    expect(getPromptInFlight('loopY')!.sessionId).toBe('sess-A')
+    expect(getPromptInFlight(PROJECT_ID, 'loopY')).toBeDefined()
+    expect(getPromptInFlight(PROJECT_ID, 'loopY')!.sessionId).toBe('sess-A')
   })
 
   test('returns false when no entry exists', () => {
-    const result = clearPromptInFlightBySession('loopZ', 'sess-A')
+    const result = clearPromptInFlightBySession(PROJECT_ID, 'loopZ', 'sess-A')
     expect(result).toBe(false)
   })
 })
@@ -146,31 +148,31 @@ describe('withInFlightGuard', () => {
 
   test('passes through return value when no concurrent prompt is in-flight', async () => {
     const { logger } = createMockLogger()
-    const result = await withInFlightGuard('loopA', 'sess-1', 'code', logger, async () => 'ok')
+    const result = await withInFlightGuard(PROJECT_ID, 'loopA', 'sess-1', 'code', logger, async () => 'ok')
     expect(result).toEqual('ok')
-    expect(getPromptInFlight('loopA')).toBeUndefined()
+    expect(getPromptInFlight(PROJECT_ID, 'loopA')).toBeUndefined()
   })
 
   test('marks in-flight while fn runs, clears after', async () => {
     const { logger } = createMockLogger()
     let duringEntry: ReturnType<typeof getPromptInFlight> = undefined
-    await withInFlightGuard('loopB', 'sess-2', 'auditor-loop', logger, async () => {
-      duringEntry = getPromptInFlight('loopB')
+    await withInFlightGuard(PROJECT_ID, 'loopB', 'sess-2', 'auditor-loop', logger, async () => {
+      duringEntry = getPromptInFlight(PROJECT_ID, 'loopB')
       return 'done'
     })
     expect(duringEntry).toBeDefined()
     expect(duringEntry!.sessionId).toBe('sess-2')
     expect(duringEntry!.agent).toBe('auditor-loop')
-    expect(getPromptInFlight('loopB')).toBeUndefined()
+    expect(getPromptInFlight(PROJECT_ID, 'loopB')).toBeUndefined()
   })
 
   test('throws ConcurrentPromptError when a prior entry exists', async () => {
-    markPromptInFlight('loopC', 'sess-prior', 'code')
+    markPromptInFlight(PROJECT_ID, 'loopC', 'sess-prior', 'code')
     const { logger } = createMockLogger()
     await expect(
-      withInFlightGuard('loopC', 'sess-new', 'auditor-loop', logger, async () => 'value')
+      withInFlightGuard(PROJECT_ID, 'loopC', 'sess-new', 'auditor-loop', logger, async () => 'value')
     ).rejects.toBeInstanceOf(ConcurrentPromptError)
-    const entry = getPromptInFlight('loopC')
+    const entry = getPromptInFlight(PROJECT_ID, 'loopC')
     expect(entry).toBeDefined()
     expect(entry!.sessionId).toBe('sess-prior')
     expect(entry!.agent).toBe('code')
@@ -179,19 +181,19 @@ describe('withInFlightGuard', () => {
   test('clears in-flight when fn throws', async () => {
     const { logger } = createMockLogger()
     await expect(
-      withInFlightGuard('loopD', 'sess-3', 'auditor-loop', logger, async () => {
+      withInFlightGuard(PROJECT_ID, 'loopD', 'sess-3', 'auditor-loop', logger, async () => {
         throw new Error('boom')
       })
     ).rejects.toThrow('boom')
-    expect(getPromptInFlight('loopD')).toBeUndefined()
+    expect(getPromptInFlight(PROJECT_ID, 'loopD')).toBeUndefined()
   })
 
   test('does not clear in-flight if a different owner replaced it mid-flight', async () => {
     const { logger } = createMockLogger()
-    await withInFlightGuard('loopE', 'sess-4', 'code', logger, async () => {
-      markPromptInFlight('loopE', 'other-sess', 'auditor-loop')
+    await withInFlightGuard(PROJECT_ID, 'loopE', 'sess-4', 'code', logger, async () => {
+      markPromptInFlight(PROJECT_ID, 'loopE', 'other-sess', 'auditor-loop')
     })
-    const entry = getPromptInFlight('loopE')
+    const entry = getPromptInFlight(PROJECT_ID, 'loopE')
     expect(entry).toBeDefined()
     expect(entry!.sessionId).toBe('other-sess')
     expect(entry!.agent).toBe('auditor-loop')

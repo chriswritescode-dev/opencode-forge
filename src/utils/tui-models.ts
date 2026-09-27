@@ -39,43 +39,23 @@ export interface ModelSortOptions {
   recents?: string[]
   connectedProviderIds?: string[]
   configuredProviderIds?: string[]
-}export type LoopInfo = {
+}
+
+export type LoopInfo = {
   name: string
   status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
   phase: string
   iteration: number
   maxIterations: number
   sessionId: string
-  active: boolean
   restartable: boolean
   restartRequiresForce: boolean
   restartBlockedMessage?: string
   startedAt?: string
-  completedAt?: string
-  terminationReason?: string
-  worktreeBranch?: string
-  worktree?: boolean
-  worktreeDir?: string
   executionModel?: string
   executionVariant?: string
   auditorModel?: string
   auditorVariant?: string
-  workspaceId?: string
-  hostSessionId?: string
-  currentSectionIndex?: number
-  totalSections?: number
-  sections?: Array<{
-    index: number
-    title: string
-    status: string
-    attempts: number
-    startedAt?: number | null
-    completedAt?: number | null
-    summaryDone: string | null
-    summaryDeviations: string | null
-    summaryFollowUps: string | null
-  }>
-  finalAuditDone?: boolean
 }
 
 /**

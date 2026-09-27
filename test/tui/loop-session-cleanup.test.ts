@@ -3,7 +3,8 @@ import type { Plugin } from '@opencode/plugin/tui'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { removeOrphanedLoopSessions } from '../../src/tui/loop-session-cleanup'
+import { removeOrphanedLoopSessions, type LoadForgeWorktrees } from '../../src/tui/loop-session-cleanup'
+import type { ForgeWorktreesOutput } from '../../src/host/forge-rpc'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
 
 type ListedSession = { id: string; location: { directory: string } }
@@ -16,6 +17,11 @@ function contextWithPages(pages: ListedSession[][]) {
   const remove = vi.fn(async (_input: { sessionID: string }) => {})
   const ctx = { client: { session: { list, remove } } } as unknown as Plugin.Context
   return { ctx, list, remove }
+}
+
+function worktreesLoader(...snapshots: ForgeWorktreesOutput[]) {
+  let index = 0
+  return vi.fn<LoadForgeWorktrees>(async () => snapshots[Math.min(index++, snapshots.length - 1)]!)
 }
 
 describe('removeOrphanedLoopSessions', () => {
@@ -41,7 +47,7 @@ describe('removeOrphanedLoopSessions', () => {
       { id: 'ses_gone_audit', location: { directory: gone } },
     ]])
 
-    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', { root, dirs: [live] }, new AbortController().signal)
+    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', worktreesLoader({ root, dirs: [live] }), new AbortController().signal)
 
     expect(removed).toBe(2)
     expect(remove.mock.calls.map(([input]) => input.sessionID)).toEqual(['ses_gone_code', 'ses_gone_audit'])
@@ -54,7 +60,7 @@ describe('removeOrphanedLoopSessions', () => {
       { id: 'ses_nested_gone', location: { directory: join(root, 'finished-loop', 'src') } },
     ]])
 
-    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', { root, dirs: [live] }, new AbortController().signal)
+    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', worktreesLoader({ root, dirs: [live] }), new AbortController().signal)
 
     expect(removed).toBe(1)
     expect(remove.mock.calls.map(([input]) => input.sessionID)).toEqual(['ses_nested_gone'])
@@ -63,7 +69,7 @@ describe('removeOrphanedLoopSessions', () => {
   test('never removes a session whose directory is the worktrees root itself', async () => {
     const { ctx, remove } = contextWithPages([[{ id: 'ses_root', location: { directory: root } }]])
 
-    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', { root, dirs: [] }, new AbortController().signal)
+    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', worktreesLoader({ root, dirs: [] }), new AbortController().signal)
 
     expect(removed).toBe(0)
     expect(remove).not.toHaveBeenCalled()
@@ -75,7 +81,7 @@ describe('removeOrphanedLoopSessions', () => {
       { id: 'ses_sibling', location: { directory: `${root}-archive/x` } },
     ]])
 
-    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', { root, dirs: [] }, new AbortController().signal)
+    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', worktreesLoader({ root, dirs: [] }), new AbortController().signal)
 
     expect(removed).toBe(0)
     expect(remove).not.toHaveBeenCalled()
@@ -86,9 +92,52 @@ describe('removeOrphanedLoopSessions', () => {
     const fullPage = Array.from({ length: 100 }, (_, index) => ({ id: `ses_${index}`, location: { directory: gone } }))
     const { ctx, list, remove } = contextWithPages([fullPage, [{ id: 'ses_last', location: { directory: gone } }]])
 
-    await removeOrphanedLoopSessions(ctx, 'proj-1', { root, dirs: [] }, new AbortController().signal)
+    await removeOrphanedLoopSessions(ctx, 'proj-1', worktreesLoader({ root, dirs: [] }), new AbortController().signal)
 
     expect(list.mock.calls).toEqual([[{ project: 'proj-1', limit: 100 }], [{ cursor: 'cursor-1' }]])
     expect(remove).toHaveBeenCalledTimes(101)
+  })
+
+  test('keeps a session whose worktree appears between the first and second worktree fetch', async () => {
+    const live = join(root, 'live-loop')
+    const spawned = join(root, 'spawned-loop')
+    const gone = join(root, 'finished-loop')
+    const { ctx, remove } = contextWithPages([[
+      { id: 'ses_spawned', location: { directory: spawned } },
+      { id: 'ses_gone', location: { directory: gone } },
+    ]])
+    const loadWorktrees = worktreesLoader({ root, dirs: [live] }, { root, dirs: [live, spawned] })
+
+    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', loadWorktrees, new AbortController().signal)
+
+    expect(loadWorktrees).toHaveBeenCalledTimes(2)
+    expect(removed).toBe(1)
+    expect(remove.mock.calls.map(([input]) => input.sessionID)).toEqual(['ses_gone'])
+  })
+
+  test('deletes nothing when the second worktree fetch fails', async () => {
+    const gone = join(root, 'finished-loop')
+    const { ctx, remove } = contextWithPages([[{ id: 'ses_gone', location: { directory: gone } }]])
+
+    const removed = await removeOrphanedLoopSessions(
+      ctx,
+      'proj-1',
+      worktreesLoader({ root, dirs: [] }, { error: 'rpc down' }),
+      new AbortController().signal,
+    )
+
+    expect(removed).toBe(0)
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  test('deletes nothing when the first worktree fetch fails', async () => {
+    const gone = join(root, 'finished-loop')
+    const { ctx, list, remove } = contextWithPages([[{ id: 'ses_gone', location: { directory: gone } }]])
+
+    const removed = await removeOrphanedLoopSessions(ctx, 'proj-1', worktreesLoader({ error: 'rpc down' }), new AbortController().signal)
+
+    expect(removed).toBe(0)
+    expect(list).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
   })
 })

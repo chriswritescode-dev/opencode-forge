@@ -82,13 +82,13 @@ export function v2EventDirectory(event: V2Event): string | undefined {
   return event.location?.directory
 }
 
-function v2EventSessionId(event: V2Event): string | undefined {
+export function v2EventSessionId(event: V2Event): string | undefined {
   const data = (event as { data?: { sessionID?: unknown } }).data
   return typeof data?.sessionID === 'string' ? data.sessionID : undefined
 }
 
 export interface V2InboxEvent {
-  kind: 'enqueued' | 'settled'
+  kind: 'enqueued' | 'delivered' | 'cancelled'
   sessionId: string
   inboxId: string
 }
@@ -115,10 +115,13 @@ export function readV2InboxEvent(event: V2Event): V2InboxEvent | null {
       const data = readInboxEventData(event)
       return data ? { kind: 'enqueued', ...data } : null
     }
-    case V2_EVENT_TYPES.sessionInboxDelivered:
+    case V2_EVENT_TYPES.sessionInboxDelivered: {
+      const data = readInboxEventData(event)
+      return data ? { kind: 'delivered', ...data } : null
+    }
     case V2_EVENT_TYPES.sessionInboxCancelled: {
       const data = readInboxEventData(event)
-      return data ? { kind: 'settled', ...data } : null
+      return data ? { kind: 'cancelled', ...data } : null
     }
     default:
       return null
@@ -201,7 +204,11 @@ export function mapV2Error(error: { type: string; message: string; status?: numb
   }
 }
 
-function idleEvents(sessionID: string): ForgeEvent[] {
+/**
+ * Builds the normalized events a session emits when it goes idle. The inbox-cancel
+ * replay path reuses these so a replayed idle is byte-identical to a real one.
+ */
+export function v2IdleEvents(sessionID: string): ForgeEvent[] {
   return [
     {
       type: FORGE_EVENT_TYPES.sessionStatus,
@@ -243,14 +250,14 @@ export function normalizeV2Event(event: V2Event): ForgeEvent[] {
         properties: { sessionID: event.data.sessionID, status: { type: 'busy' } },
       }]
     case V2_EVENT_TYPES.sessionExecutionSucceeded:
-      return idleEvents(event.data.sessionID)
+      return v2IdleEvents(event.data.sessionID)
     case V2_EVENT_TYPES.sessionExecutionFailed:
       return [
         {
           type: FORGE_EVENT_TYPES.sessionError,
           properties: { sessionID: event.data.sessionID, error: mapV2Error(event.data.error) },
         },
-        ...idleEvents(event.data.sessionID),
+        ...v2IdleEvents(event.data.sessionID),
       ]
     case V2_EVENT_TYPES.sessionExecutionInterrupted:
       if (event.data.reason === 'shutdown') return []
@@ -266,10 +273,10 @@ export function normalizeV2Event(event: V2Event): ForgeEvent[] {
               },
             },
           },
-          ...idleEvents(event.data.sessionID),
+          ...v2IdleEvents(event.data.sessionID),
         ]
       }
-      return idleEvents(event.data.sessionID)
+      return v2IdleEvents(event.data.sessionID)
     case V2_EVENT_TYPES.sessionRetryScheduled:
       return [{
         type: FORGE_EVENT_TYPES.sessionStatus,

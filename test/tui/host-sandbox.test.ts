@@ -12,6 +12,7 @@ describe('createHostSandboxToggle', () => {
 
   afterEach(() => {
     for (const toggle of toggles.splice(0)) toggle.dispose()
+    vi.useRealTimers()
   })
 
   interface SetupOptions {
@@ -86,11 +87,13 @@ describe('createHostSandboxToggle', () => {
     expect(toggle.preference()).toBeNull()
   })
 
-  test('requests ON for the current session and reports the server acknowledgement', async () => {
-    const { toasts, toggle, acknowledge } = setup({ sessionId: 'ses_1' })
+  test('requests ON for the current session and reports an event-triggered acknowledgement', async () => {
+    const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
 
     const pending = toggle.toggle()
-    setTimeout(() => acknowledge(), 50)
+    await vi.waitFor(() => expect(setState).toHaveBeenCalled())
+    acknowledge()
+    toggle.refresh()
     await pending
 
     expect(toggle.preference()?.desired).toMatchObject({ enabled: true, sessionId: 'ses_1' })
@@ -99,16 +102,49 @@ describe('createHostSandboxToggle', () => {
   })
 
   test('a second toggle on the same session requests OFF', async () => {
-    const { toggle, acknowledge } = setup({ sessionId: 'ses_1' })
+    const { toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
 
     const on = toggle.toggle()
-    setTimeout(() => acknowledge(), 50)
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
     await on
+
     const off = toggle.toggle()
-    setTimeout(() => acknowledge(), 50)
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(2))
+    acknowledge()
+    toggle.refresh()
     await off
 
     expect(toggle.preference()?.desired).toMatchObject({ enabled: false, sessionId: 'ses_1' })
+  })
+
+  test('times out when no event-triggered acknowledgement arrives', async () => {
+    vi.useFakeTimers()
+    const { toasts, toggle, setState } = setup({ sessionId: 'ses_1' })
+
+    const pending = toggle.toggle()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await pending
+
+    expect(setState).toHaveBeenCalledTimes(1)
+    expect(toasts.at(-1)?.message).toContain('Timed out waiting for sandbox acknowledgement')
+  })
+
+  test('a superseding toggle cancels the previous waiter without an error toast', async () => {
+    const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
+
+    const first = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    const second = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(2))
+    acknowledge()
+    toggle.refresh()
+    await second
+    await first
+
+    expect(toasts.some((toast) => toast.variant === 'error')).toBe(false)
+    expect(toggle.preference()?.desired).toMatchObject({ sessionId: 'ses_1' })
   })
 
   test('surfaces a read error and keeps the preference unavailable', async () => {

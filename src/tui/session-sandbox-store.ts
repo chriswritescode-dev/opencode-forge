@@ -13,8 +13,7 @@ export interface SessionSandboxPreference {
   /**
    * True when the preference read could not reach the server or the server could
    * not resolve it. This lets callers distinguish "no persisted state" from "the
-   * read failed" so they can keep polling instead of permanently treating a
-   * transient failure as OFF.
+   * read failed" so a transient failure is not permanently treated as OFF.
    */
   unavailable?: boolean
   /** Why the read was unavailable, for the failure toast. */
@@ -60,7 +59,7 @@ export function deriveSessionSandboxAcknowledged(
 
 /**
  * Returns true when the preference pair has reached a terminal state and no
- * further polling is needed: either no desired state is persisted, or the
+ * acknowledgement is pending: either no desired state is persisted, or the
  * applied row carries the desired revision (regardless of enabled/error). A
  * pair is pending only while a desired state awaits its matching applied
  * acknowledgement.
@@ -73,12 +72,6 @@ export function isSessionSandboxPreferenceSettled(pref: SessionSandboxPreference
 }
 
 export type SessionSandboxDisplayStatus = 'enabled' | 'disabled' | 'loading' | 'failed'
-
-export function deriveSandboxPollDelayMs(pref: SessionSandboxPreference): number {
-  if (pref.unavailable) return 5000
-  if (!isSessionSandboxPreferenceSettled(pref)) return 1500
-  return pref.desired ? 10_000 : 5000
-}
 
 export function deriveSessionSandboxDisplayStatus(
   pref: SessionSandboxPreference | null,
@@ -110,50 +103,3 @@ export function deriveSessionSandboxDisplayStatus(
   return 'disabled'
 }
 
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('Sandbox state request cancelled'))
-      return
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    const onAbort = (): void => {
-      clearTimeout(timer)
-      reject(new Error('Sandbox state request cancelled'))
-    }
-    signal?.addEventListener('abort', onAbort)
-  })
-}
-
-/**
- * Polls the async reader until the applied row carries the requested revision.
- * Returns the applied state. Throws on a matching `error`, on timeout, or when
- * cancelled via `signal`. Stale applied revisions are ignored.
- */
-export async function awaitSessionSandboxState(
-  read: () => Promise<SessionSandboxPreference>,
-  revision: string,
-  opts: { timeoutMs: number; pollMs: number; signal?: AbortSignal },
-): Promise<SessionSandboxAppliedState> {
-  const start = Date.now()
-  while (true) {
-    // Check cancellation before each read so an already-aborted waiter never returns an existing
-    // acknowledgement; cancellation is only meaningful at read boundaries, not only while sleeping.
-    if (opts.signal?.aborted) throw new Error('Sandbox state request cancelled')
-    const { applied } = await read()
-    if (applied && applied.revision === revision) {
-      // A non-null error — including an empty string — rejects the request.
-      if (applied.error !== null) throw new Error(applied.error)
-      return applied
-    }
-    // Read before declaring timeout so any matching acknowledgement present by the deadline
-    // (including one that arrives during the final sleep) resolves successfully.
-    const elapsed = Date.now() - start
-    if (elapsed >= opts.timeoutMs) break
-    await abortableSleep(Math.min(opts.pollMs, opts.timeoutMs - elapsed), opts.signal)
-  }
-  throw new Error(`Timed out waiting for sandbox acknowledgement after ${opts.timeoutMs}ms`)
-}

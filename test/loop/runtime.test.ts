@@ -12,7 +12,7 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
-import { sessionsAwaitingBusy, AWAITING_BUSY_TIMEOUT_MS, isAwaitingBusyExpired, recordInboxEnqueued, recordInboxSettled, __resetQueuedPrompts } from '../../src/loop/idle-gate'
+import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
   clearPromptInFlight,
@@ -81,8 +81,7 @@ describe('Loop Runtime', () => {
       sectionPlansRepo,
     )
 
-    sessionsAwaitingBusy.clear()
-    __resetQueuedPrompts()
+    __resetIdleGate()
     __resetInFlightGuard()
     __resetLoopRuntimeSharedState()
   })
@@ -98,8 +97,7 @@ describe('Loop Runtime', () => {
     } catch {
       // ignore cleanup errors
     }
-    sessionsAwaitingBusy.clear()
-    __resetQueuedPrompts()
+    __resetIdleGate()
     vi.useRealTimers()
   })
 
@@ -1878,7 +1876,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
   describe('in-flight prompt guard', () => {
     test('rejects audit prompt while code prompt in-flight', async () => {
-      markPromptInFlight('test-loop', 'other-session-id', 'code')
+      markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
 
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -1909,14 +1907,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       )
       expect(hasGuardError).toBe(true)
 
-      const prior = getPromptInFlight('test-loop')
+      const prior = getPromptInFlight(PROJECT_ID, 'test-loop')
       expect(prior).toBeDefined()
       expect(prior!.sessionId).toBe('other-session-id')
       expect(prior!.agent).toBe('code')
     })
 
     test('rejects duplicate auditor prompt for same audit session', async () => {
-      markPromptInFlight('test-loop', 'sess', 'auditor-loop')
+      markPromptInFlight(PROJECT_ID, 'test-loop', 'sess', 'auditor-loop')
 
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -1950,7 +1948,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
       expect(auditorCalls).toHaveLength(0)
 
-      const prior = getPromptInFlight('test-loop')
+      const prior = getPromptInFlight(PROJECT_ID, 'test-loop')
       expect(prior).toBeDefined()
       expect(prior!.sessionId).toBe('sess')
       expect(prior!.agent).toBe('auditor-loop')
@@ -1958,7 +1956,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('clears in-flight after busy event', async () => {
       const state = makeState({ phase: 'coding' })
-      markPromptInFlight('test-loop', state.sessionId, 'code')
+      markPromptInFlight(PROJECT_ID, 'test-loop', state.sessionId, 'code')
 
       const { loop } = createRuntime()
       loopService.setState(state.loopName, state)
@@ -1971,11 +1969,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      expect(getPromptInFlight('test-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, 'test-loop')).toBeUndefined()
     })
 
     test('busy event from non-owning session does not clear in-flight', async () => {
-      markPromptInFlight('test-loop', 'sess-owner', 'auditor-loop')
+      markPromptInFlight(PROJECT_ID, 'test-loop', 'sess-owner', 'auditor-loop')
 
       const { loop } = createRuntime()
       const state = makeState({ phase: 'coding' })
@@ -1990,7 +1988,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      const entry = getPromptInFlight('test-loop')
+      const entry = getPromptInFlight(PROJECT_ID, 'test-loop')
       expect(entry).toBeDefined()
       expect(entry!.sessionId).toBe('sess-owner')
       expect(entry!.agent).toBe('auditor-loop')
@@ -2026,7 +2024,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      expect(getPromptInFlight('test-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, 'test-loop')).toBeUndefined()
     })
 
     test('clears in-flight on prompt completion', async () => {
@@ -2054,11 +2052,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      expect(getPromptInFlight('test-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, 'test-loop')).toBeUndefined()
     })
 
     test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
-      markPromptInFlight('test-loop', 'other-session-id', 'code')
+      markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
 
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -2088,7 +2086,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(true)
 
-      const prior = getPromptInFlight('test-loop')
+      const prior = getPromptInFlight(PROJECT_ID, 'test-loop')
       expect(prior).toBeDefined()
       expect(prior!.sessionId).toBe('other-session-id')
       expect(prior!.agent).toBe('code')
@@ -4574,13 +4572,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
-
-      // The awaiting-busy marker is already expired, so only the queued check can suppress.
-      sessionsAwaitingBusy.set(state.loopName, {
-        sessionId: state.sessionId,
-        sentAt: Date.now() - AWAITING_BUSY_TIMEOUT_MS - 1,
-      })
-      expect(isAwaitingBusyExpired(state.loopName)).toBe(true)
 
       recordInboxEnqueued(state.sessionId, 'inbox-1')
       await loop.tick({

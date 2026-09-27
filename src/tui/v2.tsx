@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { Plugin } from '@opencode/plugin/tui'
 import { existsSync } from 'fs'
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor } from 'solid-js'
+import { For, Show, createEffect, createMemo, createRoot, createSignal, onCleanup, type Accessor } from 'solid-js'
 import { createDashboardLauncher } from '../dashboard/launch'
 import { isSandboxConfigEnabled } from '../sandbox/context'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
@@ -9,12 +9,17 @@ import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
 import { resolveForgeDbPath } from '../storage'
 import {
   FORGE_RPC,
+  readForgeAutoApproveChangedEvent,
   readForgeAutoApproveState,
+  readForgeHostSandboxChangedEvent,
   readForgeHostSandboxSetOutput,
   readForgeHostSandboxState,
   readForgeLoopSidebar,
+  readForgeLoopsChangedEvent,
+  readForgeVersion,
   readForgeWorktrees,
   type ForgeToastEvent,
+  type ForgeWorktreesOutput,
 } from '../host/forge-rpc'
 import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
@@ -26,17 +31,19 @@ import { createV2TuiHost } from './host'
 import { createForgePlanCommands } from './plan-commands'
 import { openSandboxBuildDialog } from './sandbox-build-dialog'
 import { attachV2LoopSessionFollower } from './session-follow'
-import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort } from './loop-session-cleanup'
-import { createForgeRpcCaller, createV2ForgeProjectClient, type ForgeRpcCall } from './v2-client'
+import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort, type ForgeWorktreeList } from './loop-session-cleanup'
+import { createForgeRpcCaller, createV2ForgeProjectClient } from './v2-client'
 import { createHostSandboxToggle } from './host-sandbox'
+import { createLoopSidebarStore, type LoopSidebarStore } from './loop-sidebar'
 import { createSessionAutoApproveToggle } from './session-auto-approve'
 import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
-
-/** Sidebar refresh cadence; loop rows are cheap server reads. */
-const LOOP_REFRESH_INTERVAL_MS = 2000
+import { VERSION } from '../version'
 
 /** Most recent loops shown in the sidebar. */
 const SIDEBAR_LOOP_LIMIT = 3
+
+/** A failed worktrees lookup is remembered briefly so a flapping RPC is not retried on every session. */
+const WORKTREES_NEGATIVE_CACHE_MS = 5000
 
 /** Current location directory, or null when neither the context nor its default resolves. */
 function resolveV2TuiDirectory(context: Plugin.Context): string | null {
@@ -112,46 +119,8 @@ function ForgeLoopsSidebar(props: {
   sandboxPreference: Accessor<SessionSandboxPreference | null>
   autoApprove: Accessor<boolean>
   currentSessionId: () => string | null
-  call: ForgeRpcCall
+  loops: Accessor<LoopSidebarRow[]>
 }) {
-  const [loops, setLoops] = createSignal<LoopSidebarRow[]>([])
-  const [sessionId, setSessionId] = createSignal<string | null>(null)
-  let disposed = false
-  let polling = false
-  let signature = ''
-
-  const load = async () => {
-    setSessionId(props.currentSessionId())
-    if (disposed || polling) return
-    polling = true
-    try {
-      const result = await props.call(
-        (rpc, location) => rpc.loopSidebar({ limit: SIDEBAR_LOOP_LIMIT }, location),
-        readForgeLoopSidebar,
-      )
-      if (disposed || 'error' in result) return
-      const next = result.loops
-      const nextSignature = next
-        .map((loop) => `${loop.loopName}|${loop.status}|${loop.iteration}|${loop.maxIterations}`)
-        .join('\n')
-      if (nextSignature !== signature) {
-        signature = nextSignature
-        setLoops(next)
-      }
-    } finally {
-      polling = false
-    }
-  }
-
-  createEffect(() => {
-    void load()
-    const timer = setInterval(() => { void load() }, LOOP_REFRESH_INTERVAL_MS)
-    onCleanup(() => {
-      disposed = true
-      clearInterval(timer)
-    })
-  })
-
   const theme = () => props.context.theme
   const statusColor = (status: LoopSidebarRow['status']) => {
     const { text } = theme()
@@ -169,14 +138,14 @@ function ForgeLoopsSidebar(props: {
           <b>{formatForgeTitle(props.showVersion)}</b>
         </text>
         <Show when={props.sandboxPreference()}>
-          <SandboxStatusText context={props.context} preference={props.sandboxPreference} sessionId={sessionId} />
+          <SandboxStatusText context={props.context} preference={props.sandboxPreference} sessionId={props.currentSessionId} />
         </Show>
         <Show when={props.autoApprove()}>
           <text fg={theme().text.feedback.warning.base}>· AUTO</text>
         </Show>
       </box>
-      <Show when={loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
-        <For each={loops()}>
+      <Show when={props.loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
+        <For each={props.loops()}>
           {(loop) => (
             <box flexDirection="row" gap={1}>
               <text flexShrink={0} fg={statusColor(loop.status)}>•</text>
@@ -257,18 +226,42 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
 
   const call = createForgeRpcCaller(context, () => resolveV2TuiDirectory(context))
 
-  let worktreesRoot: string | null = null
-  let worktreesRequest: Promise<string | null> | null = null
-  const loadWorktreesRoot = (): Promise<string | null> => {
-    if (worktreesRoot !== null) return Promise.resolve(worktreesRoot)
-    worktreesRequest ??= call((rpc, location) => rpc.worktrees({}, location), readForgeWorktrees)
+  let worktreesCache: ForgeWorktreeList | null = null
+  let worktreesFailure: { at: number; error: string } | null = null
+  let worktreesRequest: Promise<ForgeWorktreesOutput> | null = null
+
+  /**
+   * The single worktrees lookup for this TUI. A success is cached for the TUI
+   * lifetime; a failure is remembered for {@link WORKTREES_NEGATIVE_CACHE_MS}.
+   * `fresh` bypasses both caches so a caller that must observe a worktree created
+   * mid-operation reads the live list.
+   */
+  const loadWorktrees = (options?: { fresh?: boolean }): Promise<ForgeWorktreesOutput> => {
+    if (!options?.fresh) {
+      if (worktreesCache) return Promise.resolve(worktreesCache)
+      if (worktreesFailure && Date.now() - worktreesFailure.at < WORKTREES_NEGATIVE_CACHE_MS) {
+        return Promise.resolve({ error: worktreesFailure.error })
+      }
+      if (worktreesRequest) return worktreesRequest
+    }
+    const request = call((rpc, location) => rpc.worktrees({}, location), readForgeWorktrees)
       .then((result) => {
-        if ('error' in result) return null
-        worktreesRoot = result.root
-        return result.root
+        if ('error' in result) {
+          worktreesFailure = { at: Date.now(), error: result.error }
+          return result
+        }
+        worktreesCache = result
+        worktreesFailure = null
+        return result
       })
-      .finally(() => { worktreesRequest = null })
+    if (options?.fresh) return request
+    worktreesRequest = request.finally(() => { worktreesRequest = null })
     return worktreesRequest
+  }
+
+  const loadWorktreesRoot = async (): Promise<string | null> => {
+    const result = await loadWorktrees()
+    return 'error' in result ? null : result.root
   }
 
   const planCommands = createForgePlanCommands({
@@ -296,6 +289,31 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
     toast: (input) => host.toast(input),
   })
+
+  let loopSidebar: LoopSidebarStore | null = null
+  if (opts.sidebar) {
+    const sidebar = createLoopSidebarStore({
+      readLoops: () => call(
+        (rpc, location) => rpc.loopSidebar({ limit: SIDEBAR_LOOP_LIMIT }, location),
+        readForgeLoopSidebar,
+      ),
+    })
+    loopSidebar = sidebar
+    context.ui.slot({
+      append: 'sidebar.content',
+      render: () => (
+        <ForgeLoopsSidebar
+          context={context}
+          showVersion={opts.showVersion}
+          sandboxPreference={hostSandbox.preference}
+          autoApprove={autoApprove.enabled}
+          currentSessionId={currentSessionId}
+          loops={sidebar.loops}
+        />
+      ),
+    })
+  }
+
   const detachSessionFollower = attachV2LoopSessionFollower(context, async (directory) => {
     const root = await loadWorktreesRoot()
     return root !== null && isWithinDir(root, directory)
@@ -375,35 +393,27 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     },
   })
 
-  if (opts.sidebar) {
-    context.ui.slot({
-      append: 'sidebar.content',
-      render: () => (
-        <ForgeLoopsSidebar
-          context={context}
-          showVersion={opts.showVersion}
-          sandboxPreference={hostSandbox.preference}
-          autoApprove={autoApprove.enabled}
-          currentSessionId={currentSessionId}
-          call={call}
-        />
-      ),
+  const eventController = new AbortController()
+  let eventProjectId: Promise<string | null> | null = null
+
+  const withProjectId = (handler: (projectId: string) => void): void => {
+    eventProjectId ??= resolveV2TuiProjectId(context)
+    void eventProjectId.then((projectId) => {
+      if (eventController.signal.aborted || !projectId) return
+      handler(projectId)
     })
   }
-
-  const toastController = new AbortController()
-  let toastProjectId: Promise<string | null> | null = null
 
   try {
     if (typeof context.client.rpc !== 'function') {
       throw new Error('context.client.rpc is unavailable')
     }
-    context.client.rpc(FORGE_RPC).events.on('toast', (event) => {
+    const rpcEvents = context.client.rpc(FORGE_RPC).events
+    rpcEvents.on('toast', (event) => {
       const toast = readForgeToast(event.data)
       if (!toast) return
-      toastProjectId ??= resolveV2TuiProjectId(context)
-      void toastProjectId.then((projectId) => {
-        if (toastController.signal.aborted || !projectId || toast.projectId !== projectId) return
+      withProjectId((projectId) => {
+        if (toast.projectId !== projectId) return
         context.ui.toast.show({
           title: toast.title,
           message: toast.message,
@@ -411,23 +421,74 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           duration: toast.duration,
         })
       })
-    }, { signal: toastController.signal })
-    context.client.rpc(FORGE_RPC).events.on('sessionDelete', (event) => {
+    }, { signal: eventController.signal })
+    rpcEvents.on('sessionDelete', (event) => {
       const sessionID = readForgeSessionDelete(event.data)
       if (sessionID) void removeSessionBestEffort(context, sessionID)
-    }, { signal: toastController.signal })
+    }, { signal: eventController.signal })
+    rpcEvents.on('loopsChanged', (event) => {
+      const changed = readForgeLoopsChangedEvent(event.data)
+      if (!changed) return
+      withProjectId((projectId) => {
+        if (changed.projectId !== projectId) return
+        loopSidebar?.refresh()
+        hostSandbox.refresh()
+      })
+    }, { signal: eventController.signal })
+    rpcEvents.on('autoApproveChanged', (event) => {
+      const changed = readForgeAutoApproveChangedEvent(event.data)
+      if (!changed) return
+      withProjectId((projectId) => {
+        if (changed.projectId !== projectId) return
+        autoApprove.refresh()
+      })
+    }, { signal: eventController.signal })
+    rpcEvents.on('hostSandboxChanged', (event) => {
+      const changed = readForgeHostSandboxChangedEvent(event.data)
+      if (!changed) return
+      withProjectId((projectId) => {
+        if (changed.projectId !== projectId) return
+        hostSandbox.refresh()
+      })
+    }, { signal: eventController.signal })
   } catch (err) {
     console.error('[forge] failed to subscribe to Forge RPC events', err)
   }
 
+  const detachConnected = context.data.on('server.connected', () => {
+    loopSidebar?.refresh()
+    autoApprove.refresh()
+    hostSandbox.refresh()
+  })
+
+  let sessionChangeSeen = false
+  const disposeSessionChange = createRoot((dispose) => {
+    createEffect(() => {
+      currentSessionId()
+      if (!sessionChangeSeen) {
+        sessionChangeSeen = true
+        return
+      }
+      autoApprove.refresh()
+      hostSandbox.refresh()
+    })
+    return dispose
+  })
+
+  void call((rpc, location) => rpc.version({}, location), readForgeVersion).then((result) => {
+    if (lifecycle.signal.aborted) return
+    const serverVersion = 'error' in result ? null : result.version
+    if (serverVersion === VERSION) return
+    context.ui.toast.show({
+      message: `Forge server plugin ${serverVersion ?? 'unknown (older than this TUI)'} differs from TUI ${VERSION}; restart the OpenCode server`,
+      variant: 'warning',
+      duration: 10_000,
+    })
+  })
+
   void resolveV2TuiProjectId(context).then(async (projectId) => {
     if (!projectId || lifecycle.signal.aborted) return
-    const worktrees = await call((rpc, location) => rpc.worktrees({}, location), readForgeWorktrees)
-    if ('error' in worktrees) {
-      console.error('[forge] failed to load server worktrees for orphan cleanup', worktrees.error)
-      return
-    }
-    await removeOrphanedLoopSessions(context, projectId, worktrees, lifecycle.signal)
+    await removeOrphanedLoopSessions(context, projectId, loadWorktrees, lifecycle.signal)
   }).catch((err: unknown) => {
     console.error('[forge] failed to remove orphaned loop sessions', err)
   })
@@ -436,8 +497,11 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     lifecycle.abort()
     hostSandbox.dispose()
     autoApprove.dispose()
+    loopSidebar?.dispose()
     detachSessionFollower()
-    toastController.abort()
+    detachConnected()
+    disposeSessionChange()
+    eventController.abort()
     dashboard.dispose()
   }
 }

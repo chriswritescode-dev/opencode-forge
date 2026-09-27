@@ -320,8 +320,7 @@ export function createLoopWatchdog(input: {
         if (!stallReady) return
 
         if (input.isPromptQueued?.(state.sessionId)) {
-          resetActivity(loopName, 'status:queued')
-          input.logger.debug(`Loop watchdog: queued prompt pending for ${loopName}, resetting timer`)
+          input.logger.debug(`Loop watchdog: queued prompt pending for ${loopName}, skipping stall tick`)
           return
         }
 

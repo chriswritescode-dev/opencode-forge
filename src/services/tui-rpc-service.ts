@@ -1,14 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { readdirSync } from 'fs'
-import { join } from 'path'
 import type { PluginConfig, Logger } from '../types'
 import type { LoopsRepo, LoopRow } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
-import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import type { SessionSandboxPreferencesRepo } from '../storage/repos/session-sandbox-preferences-repo'
 import { getRestartability } from '../loop/restartability'
-import { forgeWorktreesRoot, loopBranchExists } from '../workspace/forge-naming'
+import { forgeWorktreesRoot, listForgeWorktreeDirs, loopBranchExists } from '../workspace/forge-naming'
 import { isSandboxConfigEnabled } from '../sandbox/context'
+import { errorMessage } from '../utils/error-message'
 import type { LoopInfo } from '../utils/tui-models'
 import {
   FORGE_HOST_SANDBOX_DISABLED_ERROR,
@@ -28,10 +26,11 @@ export interface TuiRpcServiceDeps {
   dataDir: string
   config: PluginConfig
   loopsRepo: LoopsRepo
-  sectionPlansRepo: SectionPlansRepo
   plansRepo: PlansRepo
   sandboxPreferences: SessionSandboxPreferencesRepo
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
+  /** Notified after the desired host-sandbox revision is written. */
+  onHostSandboxChanged?: () => void
   logger: Logger
 }
 
@@ -45,28 +44,7 @@ export interface TuiRpcService {
   requestHostSandbox(sessionId: string, enabled: boolean): ForgeHostSandboxSetOutput
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
-const cap200 = (s: string | null | undefined): string | null =>
-  s ? (s.length > 200 ? s.slice(0, 200) : s) : null
-
-function buildSectionViews(rows: SectionPlanRow[]): NonNullable<LoopInfo['sections']> {
-  return rows.map((sp) => ({
-    index: sp.sectionIndex,
-    title: sp.title,
-    status: sp.status,
-    attempts: sp.attempts,
-    startedAt: sp.startedAt,
-    completedAt: sp.completedAt,
-    summaryDone: cap200(sp.summaryDone),
-    summaryDeviations: cap200(sp.summaryDeviations),
-    summaryFollowUps: cap200(sp.summaryFollowUps),
-  }))
-}
-
-function rowToLoopInfo(row: LoopRow, sectionPlans?: SectionPlanRow[]): LoopInfo {
+function rowToLoopInfo(row: LoopRow): LoopInfo {
   const restartability = getRestartability({
     loopName: row.loopName,
     status: row.status,
@@ -77,48 +55,29 @@ function rowToLoopInfo(row: LoopRow, sectionPlans?: SectionPlanRow[]): LoopInfo 
   }, {
     branchExists: () => loopBranchExists(row, row.projectDir),
   })
-  const base: LoopInfo = {
+  return {
     name: row.loopName,
     status: row.status,
     phase: row.phase,
     iteration: row.iteration,
     maxIterations: row.maxIterations,
     sessionId: row.currentSessionId,
-    active: row.status === 'running',
     restartable: restartability.restartable,
     restartRequiresForce: restartability.restartRequiresForce,
     restartBlockedMessage: restartability.restartBlockedMessage,
     startedAt: new Date(row.startedAt).toISOString(),
-    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
-    terminationReason: row.terminationReason ?? undefined,
-    worktree: row.worktree || undefined,
-    worktreeDir: row.worktreeDir,
-    worktreeBranch: row.worktreeBranch ?? undefined,
     executionModel: row.executionModel ?? undefined,
+    executionVariant: row.executionVariant ?? undefined,
     auditorModel: row.auditorModel ?? undefined,
     auditorVariant: row.auditorVariant ?? undefined,
-    executionVariant: row.executionVariant ?? undefined,
-    workspaceId: row.workspaceId ?? undefined,
-    hostSessionId: row.hostSessionId ?? undefined,
-    currentSectionIndex: row.currentSectionIndex,
-    totalSections: row.totalSections,
-    finalAuditDone: !!row.finalAuditDone,
   }
-  if (sectionPlans && sectionPlans.length > 0) {
-    return { ...base, sections: buildSectionViews(sectionPlans) }
-  }
-  return base
 }
 
 export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
   return {
     listLoops(): ForgeLoopsOutput {
       try {
-        const loops = deps.loopsRepo.listAll(deps.projectId).map((row) => {
-          const plans = deps.sectionPlansRepo.list(deps.projectId, row.loopName)
-          return rowToLoopInfo(row, plans.length > 0 ? plans : undefined)
-        })
-        return { loops }
+        return { loops: deps.loopsRepo.listAll(deps.projectId).map((row) => rowToLoopInfo(row)) }
       } catch (err) {
         return { error: errorMessage(err) }
       }
@@ -135,12 +94,8 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
     listWorktrees(): ForgeWorktreesOutput {
       const root = forgeWorktreesRoot(deps.dataDir)
       try {
-        const dirs = readdirSync(root, { withFileTypes: true })
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => join(root, entry.name))
-        return { root, dirs }
+        return { root, dirs: listForgeWorktreeDirs(deps.dataDir) }
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { root, dirs: [] }
         return { error: errorMessage(err) }
       }
     },
@@ -185,8 +140,9 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
       if (!isSandboxConfigEnabled(deps.config)) {
         return { error: FORGE_HOST_SANDBOX_DISABLED_ERROR }
       }
+      let revision: string
       try {
-        const revision = randomUUID()
+        revision = randomUUID()
         deps.sandboxPreferences.setDesired(deps.projectId, {
           version: 1,
           revision,
@@ -194,10 +150,11 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
           sessionId,
           requestedAt: Date.now(),
         })
-        return { revision }
       } catch (err) {
         return { error: errorMessage(err) }
       }
+      deps.onHostSandboxChanged?.()
+      return { revision }
     },
   }
 }

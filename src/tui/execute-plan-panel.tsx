@@ -7,6 +7,7 @@ import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type LoopInfo, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
+import type { ForgeLoopRestartInput } from '../host/forge-rpc'
 import type { ForgeProjectClient } from './project-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import { withBusyGuard } from '../utils/busy-guard'
@@ -38,7 +39,7 @@ export interface ExecutePlanPanelProps {
   onSelectionChanged: (args: ExecutionSelection) => void
   restart?: {
     loops: LoopInfo[]
-    onRestart(request: { loopName: string; auditorModel: string; auditorVariant: string; executionModel: string; executionVariant: string; force: boolean; expectedStartedAt?: string }): Promise<void>
+    onRestart(request: Omit<ForgeLoopRestartInput, 'executionModel' | 'executionVariant' | 'force'> & Required<Pick<ForgeLoopRestartInput, 'executionModel' | 'executionVariant' | 'force'>>): Promise<void>
   }
 }
 

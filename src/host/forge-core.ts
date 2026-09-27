@@ -50,9 +50,11 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState } from './forge-rpc'
+import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
 import { processShared } from '../utils/process-shared'
+import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
+import { errorMessage } from '../utils/error-message'
 
 /**
  * Host-supplied inputs the core needs to run, built by the host adapter from its plugin
@@ -64,6 +66,11 @@ export interface ForgeHostInput {
   projectRoot: string
   client: ForgeClient
   registerWorkspaceAdapter: (adapter: ForgeWorkspaceAdapter) => void
+  /**
+   * Host push channel for TUI refresh events. Fire-and-forget: it must never
+   * throw into the core, and a failed publish is the host's to log.
+   */
+  publishTuiEvent?: (event: ForgeTuiEvent) => void
 }
 
 /**
@@ -365,6 +372,24 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
 
   const dataDir = resolveForgeDataDir(config.dataDir)
 
+  // Live TUI emitter for this instance. The host sandbox controller is process-shared and may
+  // outlive its creator, so it emits through the registry rather than a captured reference.
+  const unregisterTuiEventEmitter = host.publishTuiEvent
+    ? registerTuiEventEmitter(projectId, host.publishTuiEvent)
+    : null
+
+  // Bursts of loop-row writes (phase rotation, section advance, error bookkeeping) collapse to a
+  // single loopsChanged per microtask so the TUI re-reads once instead of once per write.
+  let loopsChangedScheduled = false
+  const publishLoopsChanged = (): void => {
+    if (loopsChangedScheduled) return
+    loopsChangedScheduled = true
+    queueMicrotask(() => {
+      loopsChangedScheduled = false
+      emitTuiEvent(projectId, { type: 'loopsChanged', projectId })
+    })
+  }
+
   const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox as unknown)
   for (const warning of legacySandboxWarnings) {
     logger.log(warning)
@@ -488,7 +513,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
           })
         }
       } catch (err: unknown) {
-        logger.log(`Sandbox image check: ${err instanceof Error ? err.message : String(err)}`)
+        logger.log(`Sandbox image check: ${errorMessage(err)}`)
       }
     })()
   }
@@ -534,7 +559,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       autoApproveRepo.touch(projectId, sessionID, now)
       autoApproveFlagTouchCache.set(sessionID, now)
     } catch (err) {
-      logger.debug(`[auto-approve] touch failed for ${sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+      logger.debug(`[auto-approve] touch failed for ${sessionID}: ${errorMessage(err)}`)
     }
   }
 
@@ -582,6 +607,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         logger.error(`[notifyLoopChange] groupOrchestrator.onLoopTerminated failed for loop=${loopName}:`, err as Error)
       })
     }
+
+    publishLoopsChanged()
   }
 
   const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory, defaultGitService, loopAttemptsRepo)
@@ -609,6 +636,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       process.removeListener('exit', handleExit)
       process.removeListener('SIGINT', handleSigint)
       process.removeListener('SIGTERM', handleSigterm)
+      unregisterTuiEventEmitter?.()
 
       logger.log('Loop: active loops preserved during plugin cleanup')
       
@@ -695,13 +723,18 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     getSessionDirectory: sessionDirectoryLookup,
     logger,
   })
-  const resolveAutoApproveFlag = (sessionID: string) =>
-    resolveSessionAutoApproveFlag({
+  const resolveAutoApproveFlag = async (sessionID: string) => {
+    const flag = await resolveSessionAutoApproveFlag({
       sessionID,
       isEnabled: (id) => autoApproveRepo.isEnabled(projectId, id, Date.now()),
       getParentId: parentSessionLookup,
       isInActiveLoop: async (id) => (await sessionLoopResolver.resolveActiveLoopForSession(id)) !== null,
     })
+    if (!flag.enabled && flag.error !== undefined) {
+      logger.log(`[auto-approve] session flag lookup failed for ${sessionID}: ${errorMessage(flag.error)}`)
+    }
+    return flag
+  }
   const loopPermissionPatcher = createLoopPermissionPatcher({
     client: forgeClient,
     sessionLoopResolver,
@@ -739,6 +772,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         getSessionDirectory: forwarding.getSessionDirectory,
         getSessionIdentity: forwarding.getSessionIdentity,
         resolveActiveLoopForSession: forwarding.resolveActiveLoopForSession,
+        onChange: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
         logger,
       }),
     }
@@ -829,7 +863,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     dataDir,
     config,
     loopsRepo,
-    sectionPlansRepo,
     plansRepo,
     sandboxPreferences: createSessionSandboxPreferencesRepo(db),
     async restartLoop(request) {
@@ -850,6 +883,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         ? { sessionId: response.data.sessionId }
         : { error: response.error.message }
     },
+    onHostSandboxChanged: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
     logger,
   })
 
@@ -1087,9 +1121,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       return { enabled: true, ownerSessionId: flag.flagOwnerId, inherited: flag.flagOwnerId !== sessionID }
     }
     if (flag.error !== undefined) {
-      const message = flag.error instanceof Error ? flag.error.message : String(flag.error)
-      logger.log(`[auto-approve] session flag lookup failed for ${sessionID}: ${message}`)
-      return { error: `Could not resolve auto-approve state: ${message}` }
+      return { error: `Could not resolve auto-approve state: ${errorMessage(flag.error)}` }
     }
     return { enabled: false, inherited: false }
   }
@@ -1105,21 +1137,22 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       try {
         activeLoop = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
       } catch (err) {
-        return { error: `Could not verify that this session is not in a loop: ${err instanceof Error ? err.message : String(err)}` }
+        return { error: `Could not verify that this session is not in a loop: ${errorMessage(err)}` }
       }
       if (activeLoop) return { error: 'Loop sessions already auto-approve everything not denied' }
       try {
         autoApproveRepo.enable(projectId, sessionID, Date.now())
       } catch (err) {
-        return { error: `Auto-approve toggle failed: ${err instanceof Error ? err.message : String(err)}` }
+        return { error: `Auto-approve toggle failed: ${errorMessage(err)}` }
       }
     } else {
       try {
         autoApproveRepo.disable(projectId, sessionID)
       } catch (err) {
-        return { error: `Auto-approve toggle failed: ${err instanceof Error ? err.message : String(err)}` }
+        return { error: `Auto-approve toggle failed: ${errorMessage(err)}` }
       }
     }
+    emitTuiEvent(projectId, { type: 'autoApproveChanged', projectId, sessionId: sessionID })
     return getSessionAutoApproveState(sessionID)
   }
 
@@ -1157,7 +1190,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       try {
         resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
       } catch (err) {
-        logger.debug(`[tool-before] loop resolution failed for session ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        logger.debug(`[tool-before] loop resolution failed for session ${input.sessionID}: ${errorMessage(err)}`)
       }
       if (resolved) {
         logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
@@ -1174,7 +1207,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       try {
         resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
       } catch (err) {
-        logger.debug(`[tool-after] loop resolution failed for session ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        logger.debug(`[tool-after] loop resolution failed for session ${input.sessionID}: ${errorMessage(err)}`)
       }
       if (resolved) {
         logger.log(`[tool-after] ${input.tool} callID=${input.callID} output=${output.output?.slice(0, 200)}`)
@@ -1198,9 +1231,6 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     resolveShellSandbox,
     autoApprovesPermissions: async (sessionID) => {
       const flag = await resolveAutoApproveFlag(sessionID)
-      if (!flag.enabled && flag.error !== undefined) {
-        logger.log(`[auto-approve] session flag lookup failed for ${sessionID}: ${flag.error instanceof Error ? flag.error.message : String(flag.error)}`)
-      }
       if (flag.enabled) {
         touchAutoApproveFlag(flag.flagOwnerId)
         return true
@@ -1209,7 +1239,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       try {
         return (await resolveShellSandbox(sessionID)) !== null
       } catch (err) {
-        logger.log(`[sandbox] permission auto-approval skipped for ${sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+        logger.log(`[sandbox] permission auto-approval skipped for ${sessionID}: ${errorMessage(err)}`)
         return false
       }
     },

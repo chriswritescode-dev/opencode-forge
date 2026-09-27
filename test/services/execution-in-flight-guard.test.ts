@@ -149,7 +149,7 @@ describe('execution in-flight guard', () => {
         client,
       })
 
-      markPromptInFlight('guard-loop', 'other-prompt-sess', 'code')
+      markPromptInFlight(PROJECT_ID, 'guard-loop', 'other-prompt-sess', 'code')
 
       const result = await service.dispatch(
         { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -163,7 +163,7 @@ describe('execution in-flight guard', () => {
         expect.fail('Expected promptAsync not to be called while guard is active')
       }
 
-      const remaining = getPromptInFlight('guard-loop')
+      const remaining = getPromptInFlight(PROJECT_ID, 'guard-loop')
       expect(remaining).toBeDefined()
       expect(remaining!.sessionId).toBe('other-prompt-sess')
       expect(remaining!.agent).toBe('code')
@@ -280,7 +280,7 @@ describe('execution in-flight guard', () => {
 
       expect(result.ok).toBe(true)
       expect(promptCallCount).toBe(3)
-      expect(getPromptInFlight('retry-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, 'retry-loop')).toBeUndefined()
     })
 
     test('configured-model restart prompt failure clears guard after each attempt', async () => {
@@ -385,7 +385,7 @@ describe('execution in-flight guard', () => {
 
       expect(result.ok).toBe(true)
       expect(promptCallCount).toBe(2)
-      expect(getPromptInFlight('cleanup-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, 'cleanup-loop')).toBeUndefined()
     })
   })
 })

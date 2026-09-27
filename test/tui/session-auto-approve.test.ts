@@ -72,18 +72,22 @@ describe('createSessionAutoApproveToggle', () => {
     expect(writes).toEqual([])
   })
 
-  test('refuses to toggle an inherited flag and points at the owner', async () => {
-    const { toasts, writes, toggle } = setup({
+  test('surfaces the server refusal when toggling an inherited flag', async () => {
+    const setState = vi.fn(async (): Promise<ForgeAutoApproveState> => ({
+      error: 'Auto-approve is inherited from parent session ses_parent; toggle it there',
+    }))
+    const { toasts, toggle } = setup({
       sessionId: 'ses_child',
       readState: async () => ({ enabled: true, inherited: true, ownerSessionId: 'ses_parent' }),
+      setState,
     })
 
     await toggle.toggle()
 
-    expect(writes).toEqual([])
+    expect(setState).toHaveBeenCalledWith('ses_child', false)
     expect(toasts.at(-1)).toMatchObject({
       message: 'Auto-approve is inherited from parent session ses_parent; toggle it there',
-      variant: 'info',
+      variant: 'warning',
       duration: 5000,
     })
   })
@@ -161,7 +165,7 @@ describe('createSessionAutoApproveToggle', () => {
     expect(toggle.enabled()).toBe(false)
   })
 
-  test('reflects an inherited enabled state from the poll', async () => {
+  test('reflects an inherited enabled state from the startup read', async () => {
     const { toggle } = setup({
       sessionId: 'ses_1',
       readState: async () => ({ enabled: true, inherited: true, ownerSessionId: 'ses_parent' }),
@@ -170,18 +174,41 @@ describe('createSessionAutoApproveToggle', () => {
     await vi.waitFor(() => expect(toggle.enabled()).toBe(true))
   })
 
-  test('ignores a poll result once the route has changed', async () => {
+  test('refresh re-reads the flag for the current session', async () => {
+    const { toggle, setState } = setup({ sessionId: 'ses_1' })
+
+    await vi.waitFor(() => expect(toggle.enabled()).toBe(false))
+    setState({ enabled: true, inherited: false })
+    toggle.refresh()
+
+    await vi.waitFor(() => expect(toggle.enabled()).toBe(true))
+  })
+
+  test('starts no recurring timer', () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+    setup({ sessionId: 'ses_1' })
+
+    expect(setIntervalSpy).not.toHaveBeenCalled()
+    setIntervalSpy.mockRestore()
+  })
+
+  test('ignores a refresh result once the route has changed', async () => {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
     const reads: string[] = []
     const { toggle, setSessionId } = setup({
       sessionId: 'ses_1',
       readState: async (id) => {
         reads.push(id)
+        await gate
         return { enabled: true, inherited: false }
       },
     })
 
-    setSessionId('ses_2')
     await vi.waitFor(() => expect(reads).toEqual(['ses_1']))
+    setSessionId('ses_2')
+    release?.()
+    await Promise.resolve()
     await Promise.resolve()
 
     expect(toggle.enabled()).toBe(false)

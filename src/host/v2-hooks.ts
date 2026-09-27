@@ -8,6 +8,7 @@ import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client
 import { findLastIndex } from '../utils/array'
 import { resolveAutoApproveDecision, type PermissionEffectLike } from '../utils/auto-approve-policy'
 import { isRecord } from '../utils/is-record'
+import { processShared } from '../utils/process-shared'
 
 const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
 
@@ -38,7 +39,7 @@ const SHELL_MARKER_PATTERN = /^(forge-sandbox-required-[0-9a-f-]{36}) && /
  * Sandboxes awaiting their shell, keyed by the one-off marker the shell tool wrapper prefixed
  * to the command. Process-wide because every plugin instance in the process may run the hook.
  */
-const pendingShellSandboxes = new Map<string, SandboxContext>()
+const pendingShellSandboxes = processShared('pending-shell-sandboxes.v1', () => new Map<string, SandboxContext>())
 
 /**
  * Wraps the built-in shell tool so a call from a sandboxed session reaches the shell hook

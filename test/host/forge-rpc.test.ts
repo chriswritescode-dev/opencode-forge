@@ -2,17 +2,20 @@ import { describe, test, expect } from 'vitest'
 import {
   FORGE_EXECUTION_MODES,
   FORGE_RPC,
+  readForgeAutoApproveChangedEvent,
   readForgeAutoApproveState,
   readForgeExecutePlanOutput,
+  readForgeHostSandboxChangedEvent,
   readForgeHostSandboxSetOutput,
   readForgeHostSandboxState,
   readForgeLoopRestartOutput,
   readForgeLoopSidebar,
   readForgeLoops,
+  readForgeLoopsChangedEvent,
   readForgeSessionPlan,
+  readForgeVersion,
   readForgeWorktrees,
-  writeForgeHostSandboxState,
-  writeForgeSessionPlan,
+  toForgeRpcJson,
 } from '../../src/host/forge-rpc'
 import { FORGE_PLUGIN_ID } from '../../src/constants/plugin'
 
@@ -30,6 +33,7 @@ describe('FORGE_RPC', () => {
       'hostSandboxState',
       'hostSandboxSet',
       'worktrees',
+      'version',
     ])
   })
 
@@ -69,6 +73,59 @@ describe('FORGE_RPC', () => {
     expect(readForgeAutoApproveState(null)).toEqual({ error: 'Forge returned an invalid auto-approve state' })
   })
 
+  test('declares the version method with an empty input and a version output', () => {
+    const method = FORGE_RPC.methods.version
+    expect(method.input).toEqual({ type: 'object', properties: {}, additionalProperties: false })
+    expect(method.output.properties.version).toEqual({ type: 'string' })
+    expect(method.output.additionalProperties).toBe(false)
+  })
+
+  test('readForgeVersion keeps a version and surfaces errors', () => {
+    expect(readForgeVersion({ version: '1.1.1' })).toEqual({ version: '1.1.1' })
+    expect(readForgeVersion({ error: 'no server' })).toEqual({ error: 'no server' })
+    expect(readForgeVersion({})).toEqual({ error: 'Forge returned an invalid version' })
+    expect(readForgeVersion(null)).toEqual({ error: 'Forge returned an invalid version' })
+  })
+
+  test('declares the three TUI push event schemas keyed by projectId', () => {
+    expect(FORGE_RPC.events.loopsChanged.schema).toEqual({
+      type: 'object',
+      properties: { projectId: { type: 'string' } },
+      required: ['projectId'],
+      additionalProperties: false,
+    })
+    expect(FORGE_RPC.events.autoApproveChanged.schema).toEqual({
+      type: 'object',
+      properties: { projectId: { type: 'string' }, sessionId: { type: 'string' } },
+      required: ['projectId', 'sessionId'],
+      additionalProperties: false,
+    })
+    expect(FORGE_RPC.events.hostSandboxChanged.schema).toEqual({
+      type: 'object',
+      properties: { projectId: { type: 'string' } },
+      required: ['projectId'],
+      additionalProperties: false,
+    })
+  })
+
+  test('readForgeLoopsChangedEvent keeps a projectId and rejects a malformed payload', () => {
+    expect(readForgeLoopsChangedEvent({ projectId: 'proj_1' })).toEqual({ projectId: 'proj_1' })
+    expect(readForgeLoopsChangedEvent({})).toBeNull()
+    expect(readForgeLoopsChangedEvent({ projectId: 1 })).toBeNull()
+  })
+
+  test('readForgeAutoApproveChangedEvent keeps a projectId and sessionId, and rejects a partial payload', () => {
+    expect(readForgeAutoApproveChangedEvent({ projectId: 'proj_1', sessionId: 'ses_1' }))
+      .toEqual({ projectId: 'proj_1', sessionId: 'ses_1' })
+    expect(readForgeAutoApproveChangedEvent({ projectId: 'proj_1' })).toBeNull()
+    expect(readForgeAutoApproveChangedEvent({ sessionId: 'ses_1' })).toBeNull()
+  })
+
+  test('readForgeHostSandboxChangedEvent keeps a projectId and rejects a malformed payload', () => {
+    expect(readForgeHostSandboxChangedEvent({ projectId: 'proj_1' })).toEqual({ projectId: 'proj_1' })
+    expect(readForgeHostSandboxChangedEvent({})).toBeNull()
+  })
+
   test('declares a toast event schema keyed by projectId and message', () => {
     expect(FORGE_RPC.events.toast.schema).toEqual({
       type: 'object',
@@ -84,10 +141,21 @@ describe('FORGE_RPC', () => {
     })
   })
 
-  test('readForgeLoops keeps loop rows and surfaces errors', () => {
-    const loops = [{ name: 'loop-a', status: 'running', restartable: true }]
+  test('readForgeLoops keeps trimmed loop rows and surfaces errors', () => {
+    const loops = [{
+      name: 'loop-a',
+      status: 'running',
+      phase: 'coding',
+      iteration: 2,
+      maxIterations: 5,
+      sessionId: 'ses_1',
+      restartable: true,
+      restartRequiresForce: false,
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }]
     expect(readForgeLoops({ loops })).toEqual({ loops })
-    expect(readForgeLoops({ loops: [{ name: 'loop-a' }] })).toEqual({ error: 'Forge returned an invalid loop list' })
+    expect(readForgeLoops({ loops: [{ name: 'loop-a', status: 'running', restartable: true }] }))
+      .toEqual({ error: 'Forge returned an invalid loop list' })
     expect(readForgeLoops({ error: 'no db' })).toEqual({ error: 'no db' })
     expect(readForgeLoops(null)).toEqual({ error: 'Forge returned an invalid loop list' })
   })
@@ -100,9 +168,9 @@ describe('FORGE_RPC', () => {
     expect(readForgeLoopSidebar({ error: 'no db' })).toEqual({ error: 'no db' })
   })
 
-  test('writeForgeSessionPlan omits a null plan and readForgeSessionPlan restores it', () => {
-    expect(writeForgeSessionPlan(null)).toEqual({})
-    expect(writeForgeSessionPlan('# Plan')).toEqual({ plan: '# Plan' })
+  test('toForgeRpcJson omits a top-level null plan and readForgeSessionPlan restores it', () => {
+    expect(toForgeRpcJson({ plan: null })).toEqual({})
+    expect(toForgeRpcJson({ plan: '# Plan' })).toEqual({ plan: '# Plan' })
 
     expect(readForgeSessionPlan({ plan: '# Plan' })).toEqual({ plan: '# Plan' })
     expect(readForgeSessionPlan({})).toEqual({ plan: null })
@@ -117,10 +185,10 @@ describe('FORGE_RPC', () => {
     expect(readForgeLoopRestartOutput(null)).toEqual({ error: 'Forge returned an invalid loop restart result' })
   })
 
-  test('writeForgeHostSandboxState omits null rows and readForgeHostSandboxState restores them', () => {
-    expect(writeForgeHostSandboxState({ configEnabled: true, desired: null, applied: null, controller: null }))
+  test('toForgeRpcJson omits top-level null rows and readForgeHostSandboxState restores them', () => {
+    expect(toForgeRpcJson({ configEnabled: true, desired: null, applied: null, controller: null }))
       .toEqual({ configEnabled: true })
-    expect(writeForgeHostSandboxState({
+    expect(toForgeRpcJson({
       configEnabled: true,
       desired: { version: 1, revision: 'rev-1', enabled: true, sessionId: 'ses_1', requestedAt: 1 },
       applied: null,

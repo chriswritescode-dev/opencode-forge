@@ -73,7 +73,7 @@ Host-neutral core plus the thin adapter that maps the OpenCode V2 plugin context
 | `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
 | `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
 | `v2-events.ts` | Normalizes V2 events into Forge's event shape; busy, idle, and retry derive only from `session.execution.*` and `session.retry.scheduled` |
-| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`) and the `toast`/`sessionDelete` events the V2 server emits and the V2 TUI shows |
+| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `version`) and the `toast`/`sessionDelete`/`loopsChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
 | `v2-hooks.ts` | Registers the core handlers through V2's hook API |
 | `v2-tools.ts` | Registers the shared Forge tools on V2 |
 | `v2-config.ts` | Resolves and registers agents and commands on V2 |
@@ -301,7 +301,7 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
 | `group-orchestrator.ts` | Feature-group scheduling and per-feature loop launch |
 | `group-scheduler.ts` | Ordering and concurrency cap for a group's features |
-| `tui-rpc-service.ts` | Server-side TUI RPC service: loop list/sidebar, session plan, single-flight loop restart, and host-sandbox desired/applied state |
+| `tui-rpc-service.ts` | Server-side TUI RPC service: loop list/sidebar, session plan, loop restart (rejected when the loop was restarted after the dialog read it, checked under the shared loop lock), host-sandbox desired/applied state, and the worktree list |
 | `worktree-log.ts` | Log worktree completions |
 
 ### Key Interfaces

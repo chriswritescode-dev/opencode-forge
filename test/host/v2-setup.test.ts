@@ -4,7 +4,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { FORGE_EVENT_TYPES, V2_EVENT_TYPES } from '../../src/host/v2-events'
 import { FORGE_RPC } from '../../src/host/forge-rpc'
-import { isPromptQueued, __resetQueuedPrompts } from '../../src/loop/idle-gate'
+import { VERSION } from '../../src/version'
+import { isPromptQueued, hasSuppressedIdle, recordSuppressedIdle, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { ForgeClient } from '../../src/client/port'
 import { createFakeV2Context } from '../helpers/fake-v2-context'
 import { useTempConfigHome } from '../helpers/temp-config'
@@ -115,7 +116,7 @@ describe('V2 server setup', () => {
   beforeEach(() => {
     coreEvents.received.length = 0
     coreEvents.clients.length = 0
-    __resetQueuedPrompts()
+    __resetIdleGate()
     const dataHome = mkdtempSync(join(tmpdir(), 'forge-v2-setup-data-'))
     dataHomes.push(dataHome)
     process.env['XDG_DATA_HOME'] = dataHome
@@ -125,7 +126,7 @@ describe('V2 server setup', () => {
     for (const cleanup of cleanups.splice(0)) {
       await cleanup().catch(() => {})
     }
-    __resetQueuedPrompts()
+    __resetIdleGate()
     delete process.env['XDG_DATA_HOME']
     for (const dir of dataHomes.splice(0)) {
       rmSync(dir, { recursive: true, force: true })
@@ -177,7 +178,7 @@ describe('V2 server setup', () => {
       duration: 4000,
     })
 
-    expect(fake.rpc.emitted).toEqual([{
+    expect(fake.rpc.emitted).toContainEqual({
       event: 'toast',
       data: {
         projectId: 'proj_fake',
@@ -186,7 +187,32 @@ describe('V2 server setup', () => {
         variant: 'success',
         duration: 4000,
       },
-    }])
+    })
+  })
+
+  test('the version RPC returns the generated package version', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      version: () => Promise<Record<string, unknown>>
+    }
+
+    await expect(handlers.version()).resolves.toEqual({ version: VERSION })
+  })
+
+  test('bridges host sandbox changes to the hostSandboxChanged RPC event', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      hostSandboxSet: (input: { sessionId: string; enabled: boolean }) => Promise<Record<string, unknown>>
+    }
+
+    const result = await handlers.hostSandboxSet({ sessionId: 'ses_host', enabled: true })
+    expect(typeof result.revision).toBe('string')
+    expect(fake.rpc.emitted).toContainEqual({
+      event: 'hostSandboxChanged',
+      data: { projectId: 'proj_fake' },
+    })
   })
 
   test('bridges client session deletes to the sessionDelete RPC event', async () => {
@@ -196,7 +222,7 @@ describe('V2 server setup', () => {
 
     await lastClient().session.delete({ sessionID: 'ses_retired', directory: '/tmp/forge-project' })
 
-    expect(fake.rpc.emitted).toEqual([{ event: 'sessionDelete', data: { sessionID: 'ses_retired' } }])
+    expect(fake.rpc.emitted).toContainEqual({ event: 'sessionDelete', data: { sessionID: 'ses_retired' } })
   })
 
   test('the executePlan RPC runs execute-here and new-session through the execution service', async () => {
@@ -403,6 +429,106 @@ describe('V2 server setup', () => {
       data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
     })
     await waitFor(() => !isPromptQueued('ses_loop'))
+  })
+
+  test('a cancelled inbox event replays the suppressed idle once in the owning instance only', async () => {
+    const stream = createV2EventStream()
+    const sessionGet = async (input: { sessionID: string }) => ({
+      id: input.sessionID,
+      projectID: 'proj_fake',
+      location: { directory: '/project-worktree' },
+      time: { created: 1, updated: 1 },
+    })
+    const host = createFakeV2Context({
+      location: { directory: '/project-host' },
+      event: { subscribe: stream.subscribe },
+      session: { get: sessionGet },
+    })
+    const worktree = createFakeV2Context({
+      location: { directory: '/project-worktree' },
+      event: { subscribe: stream.subscribe },
+      session: { get: sessionGet },
+    })
+    cleanups.push(await pluginModule.setup(host.ctx))
+    cleanups.push(await pluginModule.setup(worktree.ctx))
+
+    stream.push({
+      id: 'evt_inbox_enqueued',
+      type: V2_EVENT_TYPES.sessionInboxEnqueued,
+      data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
+    })
+    await waitFor(() => isPromptQueued('ses_loop'))
+
+    recordSuppressedIdle('ses_loop')
+
+    stream.push({
+      id: 'evt_inbox_cancelled',
+      type: V2_EVENT_TYPES.sessionInboxCancelled,
+      data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
+    })
+    await waitFor(() => receivedFor('/project-worktree').some(
+      (event) => event.type === FORGE_EVENT_TYPES.sessionIdle && event.properties.sessionID === 'ses_loop',
+    ))
+
+    const worktreeIdles = receivedFor('/project-worktree').filter(
+      (event) => event.type === FORGE_EVENT_TYPES.sessionIdle && event.properties.sessionID === 'ses_loop',
+    )
+    expect(worktreeIdles).toHaveLength(1)
+    expect(receivedFor('/project-host').some((event) => event.properties.sessionID === 'ses_loop')).toBe(false)
+    expect(hasSuppressedIdle('ses_loop')).toBe(false)
+  })
+
+  test('a delivered inbox event clears the suppressed idle without replaying', async () => {
+    const stream = createV2EventStream()
+    const fake = createFakeV2Context({
+      location: { directory: '/project-worktree' },
+      event: { subscribe: stream.subscribe },
+    })
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    stream.push({
+      id: 'evt_inbox_enqueued',
+      type: V2_EVENT_TYPES.sessionInboxEnqueued,
+      data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
+    })
+    await waitFor(() => isPromptQueued('ses_loop'))
+    recordSuppressedIdle('ses_loop')
+
+    stream.push({
+      id: 'evt_inbox_delivered',
+      type: V2_EVENT_TYPES.sessionInboxDelivered,
+      data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
+    })
+    await waitFor(() => !isPromptQueued('ses_loop'))
+
+    expect(hasSuppressedIdle('ses_loop')).toBe(false)
+    expect(receivedFor('/project-worktree').some((event) => event.type === FORGE_EVENT_TYPES.sessionIdle)).toBe(false)
+  })
+
+  test('a session.deleted event clears queued entries and the suppressed idle', async () => {
+    const stream = createV2EventStream()
+    const fake = createFakeV2Context({
+      location: { directory: '/project-a' },
+      event: { subscribe: stream.subscribe },
+    })
+    cleanups.push(await pluginModule.setup(fake.ctx))
+
+    stream.push({
+      id: 'evt_inbox_enqueued',
+      type: V2_EVENT_TYPES.sessionInboxEnqueued,
+      data: { sessionID: 'ses_loop', inboxID: 'inbox_1' },
+    })
+    await waitFor(() => isPromptQueued('ses_loop'))
+    recordSuppressedIdle('ses_loop')
+
+    stream.push({
+      id: 'evt_deleted',
+      type: V2_EVENT_TYPES.sessionDeleted,
+      data: { sessionID: 'ses_loop' },
+    })
+    await waitFor(() => !isPromptQueued('ses_loop'))
+
+    expect(hasSuppressedIdle('ses_loop')).toBe(false)
   })
 
   test('a foreign location shutdown leaves this location running and reusable', async () => {

@@ -1047,7 +1047,7 @@ describe('createLoopWatchdog', () => {
     watchdog.stop(loopName)
   })
 
-  it('resets activity instead of counting a stall while the current session has a queued prompt', async () => {
+  it('does not count a stall while the current session has a queued prompt', async () => {
     const stateRef = { current: createState() }
     const recoverCalls: unknown[] = []
 
@@ -1076,6 +1076,52 @@ describe('createLoopWatchdog', () => {
     expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
 
     watchdog.stop(loopName)
+  })
+
+  it('does not reset activity or the stall count while a prompt is queued', async () => {
+    const stateRef = { current: createState() }
+    const recoverCalls: unknown[] = []
+    let queued = false
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getStallTimeoutMs: () => 10,
+        }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
+      logger,
+      nudge: vi.fn(),
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+      isPromptQueued: () => queued,
+    })
+
+    const loopName = 'test-loop'
+    vi.useFakeTimers()
+    try {
+      watchdog.start(loopName)
+      await vi.advanceTimersByTimeAsync(12)
+      expect(recoverCalls.length).toBe(1)
+      expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(1)
+
+      queued = true
+      await vi.advanceTimersByTimeAsync(50)
+      expect(recoverCalls.length).toBe(1)
+      expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(1)
+
+      queued = false
+      await vi.advanceTimersByTimeAsync(12)
+      expect(recoverCalls.length).toBe(2)
+      expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(2)
+    } finally {
+      watchdog.stop(loopName)
+      vi.useRealTimers()
+    }
   })
 
   it('counts a non-busy stall again once no prompt is queued', async () => {

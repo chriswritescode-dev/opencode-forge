@@ -19,6 +19,21 @@ export type ForgeToastInput = {
 
 export type ForgeToastEvent = ForgeToastInput & { projectId: string }
 
+/** Server push: the project's loop rows changed and the TUI must re-read them. */
+export type ForgeLoopsChangedEvent = { projectId: string }
+
+/** Server push: one session's per-session auto-approve flag changed. */
+export type ForgeAutoApproveChangedEvent = { projectId: string; sessionId: string }
+
+/** Server push: the project's host-sandbox desired/applied/controller state changed. */
+export type ForgeHostSandboxChangedEvent = { projectId: string }
+
+/** Host-neutral push event the server publishes to the TUI through the RPC registration. */
+export type ForgeTuiEvent =
+  | { type: 'loopsChanged'; projectId: string }
+  | { type: 'autoApproveChanged'; projectId: string; sessionId: string }
+  | { type: 'hostSandboxChanged'; projectId: string }
+
 export const FORGE_EXECUTION_MODES = ['new-session', 'execute-here', 'loop'] as const
 
 export type ForgeExecutionMode = (typeof FORGE_EXECUTION_MODES)[number]
@@ -92,7 +107,38 @@ const EMPTY_INPUT = { type: 'object', properties: {}, additionalProperties: fals
 
 const OBJECT = { type: 'object' } as const
 
+const LOOP_INFO_SCHEMA = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    status: { type: 'string' },
+    phase: { type: 'string' },
+    iteration: { type: 'integer' },
+    maxIterations: { type: 'integer' },
+    sessionId: { type: 'string' },
+    restartable: { type: 'boolean' },
+    restartRequiresForce: { type: 'boolean' },
+    restartBlockedMessage: OPTIONAL_STRING,
+    startedAt: OPTIONAL_STRING,
+    executionModel: OPTIONAL_STRING,
+    executionVariant: OPTIONAL_STRING,
+    auditorModel: OPTIONAL_STRING,
+    auditorVariant: OPTIONAL_STRING,
+  },
+  required: ['name', 'status', 'phase', 'iteration', 'maxIterations', 'sessionId', 'restartable', 'restartRequiresForce', 'startedAt'],
+  additionalProperties: false,
+} as const
+
 const LOOPS_OUTPUT = {
+  type: 'object',
+  properties: {
+    loops: { type: 'array', items: LOOP_INFO_SCHEMA },
+    error: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
+
+const LOOP_SIDEBAR_OUTPUT = {
   type: 'object',
   properties: {
     loops: { type: 'array', items: OBJECT },
@@ -190,7 +236,7 @@ export const FORGE_RPC = {
         required: ['limit'],
         additionalProperties: false,
       },
-      output: LOOPS_OUTPUT,
+      output: LOOP_SIDEBAR_OUTPUT,
     },
     sessionPlan: {
       input: {
@@ -272,6 +318,17 @@ export const FORGE_RPC = {
       input: EMPTY_INPUT,
       output: WORKTREES_OUTPUT,
     },
+    version: {
+      input: EMPTY_INPUT,
+      output: {
+        type: 'object',
+        properties: {
+          version: OPTIONAL_STRING,
+          error: OPTIONAL_STRING,
+        },
+        additionalProperties: false,
+      },
+    },
   },
   events: {
     toast: {
@@ -298,30 +355,85 @@ export const FORGE_RPC = {
         additionalProperties: false,
       },
     },
+    loopsChanged: {
+      schema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string' },
+        },
+        required: ['projectId'],
+        additionalProperties: false,
+      },
+    },
+    autoApproveChanged: {
+      schema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string' },
+          sessionId: { type: 'string' },
+        },
+        required: ['projectId', 'sessionId'],
+        additionalProperties: false,
+      },
+    },
+    hostSandboxChanged: {
+      schema: {
+        type: 'object',
+        properties: {
+          projectId: { type: 'string' },
+        },
+        required: ['projectId'],
+        additionalProperties: false,
+      },
+    },
   },
 } as const satisfies Rpc.PortableDefinition
 
-export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutput {
-  if (!isRecord(value)) return { error: 'Forge returned an invalid plan execution result' }
+/** Envelope every TUI-side reader returns: a validated result or a server-reported error. */
+type ForgeRpcResult<T> = T | ForgeRpcError
+
+/**
+ * Shared envelope handling for the TUI-side Forge RPC readers. A non-record payload
+ * and a `null` from `parse` both become the same invalid-result error, while a
+ * server-reported `{ error }` passes through unchanged.
+ */
+function readForgeRpcResult<T>(
+  value: unknown,
+  label: string,
+  parse: (record: Record<string, unknown>) => T | ForgeRpcError | null,
+): ForgeRpcResult<T> {
+  if (!isRecord(value)) return { error: `Forge returned an invalid ${label}` }
   if (typeof value.error === 'string') return { error: value.error }
-  if (typeof value.sessionId !== 'string') return { error: 'Forge returned no session for the plan execution' }
-  const optional = (key: 'loopName' | 'worktreeDir' | 'workspaceId') =>
-    typeof value[key] === 'string' ? { [key]: value[key] as string } : {}
-  return { sessionId: value.sessionId, ...optional('loopName'), ...optional('worktreeDir'), ...optional('workspaceId') }
+  return parse(value) ?? { error: `Forge returned an invalid ${label}` }
+}
+
+export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutput {
+  return readForgeRpcResult(value, 'plan execution result', (record) => {
+    if (typeof record.sessionId !== 'string') return { error: 'Forge returned no session for the plan execution' }
+    const optional = (key: 'loopName' | 'worktreeDir' | 'workspaceId') =>
+      typeof record[key] === 'string' ? { [key]: record[key] as string } : {}
+    return { sessionId: record.sessionId, ...optional('loopName'), ...optional('worktreeDir'), ...optional('workspaceId') }
+  })
 }
 
 function readLoopRows<T>(value: unknown, label: string, isRow: (row: Record<string, unknown>) => boolean): { loops: T[] } | ForgeRpcError {
-  if (!isRecord(value)) return { error: `Forge returned an invalid ${label}` }
-  if (typeof value.error === 'string') return { error: value.error }
-  if (!Array.isArray(value.loops) || !value.loops.every((row) => isRecord(row) && isRow(row))) {
-    return { error: `Forge returned an invalid ${label}` }
-  }
-  return { loops: value.loops as T[] }
+  return readForgeRpcResult(value, label, (record) =>
+    !Array.isArray(record.loops) || !record.loops.every((row) => isRecord(row) && isRow(row))
+      ? null
+      : { loops: record.loops as T[] })
 }
 
 export function readForgeLoops(value: unknown): ForgeLoopsOutput {
   return readLoopRows<LoopInfo>(value, 'loop list', (row) =>
-    typeof row.name === 'string' && typeof row.status === 'string' && typeof row.restartable === 'boolean')
+    typeof row.name === 'string'
+    && typeof row.status === 'string'
+    && typeof row.phase === 'string'
+    && typeof row.iteration === 'number'
+    && typeof row.maxIterations === 'number'
+    && typeof row.sessionId === 'string'
+    && typeof row.restartable === 'boolean'
+    && typeof row.restartRequiresForce === 'boolean'
+    && typeof row.startedAt === 'string')
 }
 
 export function readForgeLoopSidebar(value: unknown): ForgeLoopSidebarOutput {
@@ -336,78 +448,88 @@ export function readForgeLoopSidebar(value: unknown): ForgeLoopSidebarOutput {
  * JSON form of an RPC result. OpenCode validates handler output before
  * serializing it and rejects `undefined` ("Expected JSON value"), which optional
  * fields such as `LoopInfo.auditorVariant` carry; a JSON round trip drops them.
+ * Top-level `null` properties are dropped too, because the RPC schema has no null,
+ * so a result that omits a null row reads the same as an explicit writer's.
  */
 export function toForgeRpcJson<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
-}
-
-/** Wire form of a session plan: the RPC schema has no null, so an absent plan is omitted. */
-export function writeForgeSessionPlan(plan: string | null): { plan?: string } {
-  return plan === null ? {} : { plan }
+  const source = isRecord(value)
+    ? Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== null))
+    : value
+  return JSON.parse(JSON.stringify(source)) as T
 }
 
 export function readForgeSessionPlan(value: unknown): ForgeSessionPlanOutput {
-  if (!isRecord(value)) return { error: 'Forge returned an invalid session plan' }
-  if (typeof value.error === 'string') return { error: value.error }
-  return { plan: typeof value.plan === 'string' ? value.plan : null }
+  return readForgeRpcResult(value, 'session plan', (record) => ({
+    plan: typeof record.plan === 'string' ? record.plan : null,
+  }))
 }
 
 export function readForgeLoopRestartOutput(value: unknown): ForgeLoopRestartOutput {
-  if (!isRecord(value)) return { error: 'Forge returned an invalid loop restart result' }
-  if (typeof value.error === 'string') return { error: value.error }
-  if (typeof value.sessionId !== 'string') return { error: 'Loop restart completed without a session' }
-  return { sessionId: value.sessionId }
-}
-
-/** Wire form of a host sandbox state: the RPC schema has no null, so null rows are omitted. */
-export function writeForgeHostSandboxState(state: ForgeHostSandboxState): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(state).filter(([, entry]) => entry !== null && entry !== undefined))
+  return readForgeRpcResult(value, 'loop restart result', (record) =>
+    typeof record.sessionId === 'string'
+      ? { sessionId: record.sessionId }
+      : { error: 'Loop restart completed without a session' })
 }
 
 export function readForgeHostSandboxState(value: unknown): ForgeHostSandboxStateOutput {
-  if (!isRecord(value)) return { error: 'Forge returned an invalid host sandbox state' }
-  if (typeof value.error === 'string') return { error: value.error }
-  if (typeof value.configEnabled !== 'boolean') return { error: 'Forge returned an invalid host sandbox state' }
-  const row = <T>(key: 'desired' | 'applied' | 'controller', field: 'revision' | 'phase'): T | null => {
-    const entry = value[key]
-    return isRecord(entry) && typeof entry[field] === 'string' ? entry as T : null
-  }
-  const loops = value.activeLoopSandboxes
-  return {
-    configEnabled: value.configEnabled,
-    desired: row<SessionSandboxDesiredState>('desired', 'revision'),
-    applied: row<SessionSandboxAppliedState>('applied', 'revision'),
-    controller: row<SessionSandboxControllerState>('controller', 'phase'),
-    ...(isRecord(loops) && Object.values(loops).every((entry) => typeof entry === 'boolean')
-      ? { activeLoopSandboxes: loops as Record<string, boolean> }
-      : {}),
-  }
+  return readForgeRpcResult(value, 'host sandbox state', (record) => {
+    if (typeof record.configEnabled !== 'boolean') return null
+    const row = <T>(key: 'desired' | 'applied' | 'controller', field: 'revision' | 'phase'): T | null => {
+      const entry = record[key]
+      return isRecord(entry) && typeof entry[field] === 'string' ? entry as T : null
+    }
+    const loops = record.activeLoopSandboxes
+    return {
+      configEnabled: record.configEnabled,
+      desired: row<SessionSandboxDesiredState>('desired', 'revision'),
+      applied: row<SessionSandboxAppliedState>('applied', 'revision'),
+      controller: row<SessionSandboxControllerState>('controller', 'phase'),
+      ...(isRecord(loops) && Object.values(loops).every((entry) => typeof entry === 'boolean')
+        ? { activeLoopSandboxes: loops as Record<string, boolean> }
+        : {}),
+    }
+  })
 }
 
 export function readForgeHostSandboxSetOutput(value: unknown): ForgeHostSandboxSetOutput {
-  if (!isRecord(value)) return { error: 'Forge returned an invalid host sandbox result' }
-  if (typeof value.error === 'string') return { error: value.error }
-  if (typeof value.revision !== 'string') return { error: 'Forge returned an invalid host sandbox result' }
-  return { revision: value.revision }
+  return readForgeRpcResult(value, 'host sandbox result', (record) =>
+    typeof record.revision === 'string' ? { revision: record.revision } : null)
 }
 
 export function readForgeAutoApproveState(value: unknown): ForgeAutoApproveState {
-  if (!isRecord(value)) return { error: 'Forge returned an invalid auto-approve state' }
-  if (typeof value.error === 'string') return { error: value.error }
-  if (typeof value.enabled !== 'boolean') return { error: 'Forge returned an invalid auto-approve state' }
-  return {
-    enabled: value.enabled,
-    inherited: value.inherited === true,
-    ...(typeof value.ownerSessionId === 'string' ? { ownerSessionId: value.ownerSessionId } : {}),
-  }
+  return readForgeRpcResult(value, 'auto-approve state', (record) => {
+    if (typeof record.enabled !== 'boolean') return null
+    return {
+      enabled: record.enabled,
+      inherited: record.inherited === true,
+      ...(typeof record.ownerSessionId === 'string' ? { ownerSessionId: record.ownerSessionId } : {}),
+    }
+  })
 }
 
 export function readForgeWorktrees(value: unknown): ForgeWorktreesOutput {
-  if (!isRecord(value)) return { error: 'Forge returned an invalid worktree list' }
-  if (typeof value.error === 'string') return { error: value.error }
-  if (typeof value.root !== 'string') return { error: 'Forge returned an invalid worktree list' }
-  if (!Array.isArray(value.dirs) || !value.dirs.every((dir) => typeof dir === 'string')) {
-    return { error: 'Forge returned an invalid worktree list' }
-  }
-  return { root: value.root, dirs: value.dirs as string[] }
+  return readForgeRpcResult(value, 'worktree list', (record) => {
+    if (typeof record.root !== 'string') return null
+    if (!Array.isArray(record.dirs) || !record.dirs.every((dir) => typeof dir === 'string')) return null
+    return { root: record.root, dirs: record.dirs as string[] }
+  })
+}
+
+export function readForgeVersion(value: unknown): { version: string } | ForgeRpcError {
+  return readForgeRpcResult(value, 'version', (record) =>
+    typeof record.version === 'string' ? { version: record.version } : null)
+}
+
+export function readForgeLoopsChangedEvent(data: Readonly<Record<string, unknown>>): ForgeLoopsChangedEvent | null {
+  return typeof data.projectId === 'string' ? { projectId: data.projectId } : null
+}
+
+export function readForgeAutoApproveChangedEvent(data: Readonly<Record<string, unknown>>): ForgeAutoApproveChangedEvent | null {
+  return typeof data.projectId === 'string' && typeof data.sessionId === 'string'
+    ? { projectId: data.projectId, sessionId: data.sessionId }
+    : null
+}
+
+export function readForgeHostSandboxChangedEvent(data: Readonly<Record<string, unknown>>): ForgeHostSandboxChangedEvent | null {
+  return typeof data.projectId === 'string' ? { projectId: data.projectId } : null
 }
