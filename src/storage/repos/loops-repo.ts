@@ -1,4 +1,6 @@
 import type { Database } from 'bun:sqlite'
+import type { LoopSandboxSettings } from '../../types'
+import { readLoopSandboxSettings } from '../../sandbox/loop-settings'
 import { findPartialMatch } from '../../utils/partial-match'
 
 export interface LoopRow {
@@ -37,6 +39,8 @@ export interface LoopRow {
   auditorVariant: string | null
   /** Discriminator between plan-backed loops and goal loops. Defaults to 'plan'. */
   kind: 'plan' | 'goal'
+  /** Per-loop sandbox overrides; null when the loop uses config defaults. */
+  sandboxSettings?: LoopSandboxSettings | null
 }
 
 export interface LoopLargeFields {
@@ -51,6 +55,12 @@ export interface LoopSidebarRow {
   status: LoopRow['status']
   iteration: number
   maxIterations: number
+  startedAt: number
+  phase: LoopRow['phase']
+  /** When the current phase began: the latest phase change of this run, else `startedAt`. */
+  phaseStartedAt: number
+  currentSectionIndex: number
+  totalSections: number
 }
 
 export interface LoopsRepo {
@@ -189,6 +199,16 @@ function mapRow(row: LoopRowRaw): LoopRow {
     auditorVariant: row.auditor_variant,
     kind: (row.loop_kind === 'goal' ? 'goal' : 'plan') as LoopRow['kind'],
     auditorFallbackIndex: row.auditor_fallback_index ?? 0,
+    sandboxSettings: parseSandboxSettings(row.sandbox_settings),
+  }
+}
+
+function parseSandboxSettings(value: string | null): LoopSandboxSettings | null {
+  if (!value) return null
+  try {
+    return readLoopSandboxSettings(JSON.parse(value)) ?? null
+  } catch {
+    return null
   }
 }
 
@@ -225,6 +245,7 @@ interface LoopRowRaw {
   auditor_variant: string | null
   loop_kind: string | null
   auditor_fallback_index: number
+  sandbox_settings: string | null
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
@@ -233,7 +254,7 @@ const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktre
   model_failed, sandbox, sandbox_container, started_at, completed_at,
   termination_reason, completion_summary, workspace_id, host_session_id,
   executor_session_id, current_section_index, total_sections, final_audit_done,
-  execution_variant, auditor_variant, loop_kind, auditor_fallback_index`
+  execution_variant, auditor_variant, loop_kind, auditor_fallback_index, sandbox_settings`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
 
@@ -276,13 +297,22 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND status IN
   `
 
-  const listSidebarRowsStmt = db.prepare(`
-    SELECT loop_name, status, iteration, max_iterations
-    FROM loops
-    WHERE project_id = ?
-    ORDER BY status = 'running' DESC, started_at DESC
+  /** Prepared on first use: it reads loop_transitions, which databases opened without migrations may lack. */
+  const listSidebarRowsSql = `
+    SELECT l.loop_name, l.status, l.iteration, l.max_iterations, l.started_at, l.phase,
+           l.current_section_index, l.total_sections,
+           (
+             SELECT MAX(t.created_at)
+             FROM loop_transitions t
+             WHERE t.project_id = l.project_id AND t.loop_name = l.loop_name
+               AND t.event_type != 'restart' AND t.to_phase IS NOT NULL AND t.created_at >= l.started_at
+           ) AS phase_changed_at
+    FROM loops l
+    WHERE l.project_id = ?
+    ORDER BY l.status = 'running' DESC, l.started_at DESC
     LIMIT ?
-  `)
+  `
+  let listSidebarRowsStmt: ReturnType<Database['prepare']> | null = null
 
   const updatePhaseStmt = db.prepare(`
     UPDATE loops SET phase = ? WHERE project_id = ? AND loop_name = ?
@@ -443,7 +473,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       sandbox_container = ?, started_at = ?, completed_at = ?, termination_reason = ?,
       completion_summary = ?, workspace_id = ?, host_session_id = ?, executor_session_id = ?,
       current_section_index = ?, total_sections = ?, final_audit_done = ?,
-      execution_variant = ?, auditor_variant = ?, loop_kind = ?, auditor_fallback_index = ?
+      execution_variant = ?, auditor_variant = ?, loop_kind = ?, auditor_fallback_index = ?,
+      sandbox_settings = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -492,6 +523,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       row.auditorVariant ?? null,
       row.kind ?? 'plan',
       row.auditorFallbackIndex ?? 0,
+      row.sandboxSettings ? JSON.stringify(row.sandboxSettings) : null,
     ]
   }
 
@@ -568,17 +600,28 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     listSidebarRows(projectId: string, limit: number): LoopSidebarRow[] {
+      listSidebarRowsStmt ??= db.prepare(listSidebarRowsSql)
       const rows = listSidebarRowsStmt.all(projectId, limit) as Array<{
         loop_name: string
         status: string
         iteration: number
         max_iterations: number
+        started_at: number
+        phase: string
+        current_section_index: number
+        total_sections: number
+        phase_changed_at: number | null
       }>
       return rows.map((row) => ({
         loopName: row.loop_name,
         status: row.status as LoopRow['status'],
         iteration: row.iteration,
         maxIterations: row.max_iterations,
+        startedAt: row.started_at,
+        phase: row.phase as LoopRow['phase'],
+        phaseStartedAt: row.phase_changed_at ?? row.started_at,
+        currentSectionIndex: row.current_section_index,
+        totalSections: row.total_sections,
       }))
     },
 

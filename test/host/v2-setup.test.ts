@@ -200,6 +200,21 @@ describe('V2 server setup', () => {
     await expect(handlers.version()).resolves.toEqual({ version: VERSION })
   })
 
+  test('the loopDefaults RPC returns the core loop-setting defaults', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      loopDefaults: () => Promise<Record<string, unknown>>
+    }
+
+    const result = await handlers.loopDefaults()
+    expect(typeof result.maxIterations).toBe('number')
+    expect(result.sandbox).toEqual({
+      available: true,
+      resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+    })
+  })
+
   test('bridges host sandbox changes to the hostSandboxChanged RPC event', async () => {
     const fake = createFakeV2Context()
     cleanups.push(await pluginModule.setup(fake.ctx))

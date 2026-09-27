@@ -279,6 +279,8 @@ The mount is read-only because the setting exists to grant read access. To make 
 | `sandbox.resources.dockerDisk` | `"16g"` | `msb create --mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>` |
 | `sandbox.resources.cacheDisk` | `"16g"` | `msb create --mount-named <sandbox>-cache-data:/opt/forge/cache:kind=disk,size=<size>` |
 
+The TUI execution dialog can override these for a single loop when launching in Loop mode, and can turn the sandbox off for that loop. The overrides are persisted on the loop row and read back whenever its sandbox is (re)created, so a restarted loop keeps its resources and a loop launched with the sandbox off stays off. They apply only when the sandbox is created — msb cannot resize an existing sandbox — and a per-loop setting can turn the sandbox off, never on when the server has `sandbox.enabled: false`. See [TUI → Loop Settings](tui.md#loop-settings).
+
 `memory` and `cpus` are exactly what the guest gets, for its whole life. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
 
 msb's `--max-memory`/`--max-cpus` ceilings are deliberately not exposed. They only reserve hotplug capacity that must be claimed explicitly with `msb modify --memory <size>` from the **host**; agents run inside the sandbox and cannot call `msb`, so a ceiling never rescues a failing in-sandbox build.

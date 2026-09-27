@@ -581,6 +581,7 @@ function loopPhaseState(
     lp.completedAt,
     lp.completedAt === null ? now() : 0,
     lp.phase,
+    loop.transitionsCapped,
   )
 }
 

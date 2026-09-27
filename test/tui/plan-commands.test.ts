@@ -20,7 +20,7 @@ function loop(overrides: Partial<LoopInfo> = {}): LoopInfo {
 }
 
 describe('createForgePlanCommands', () => {
-  function setup(loadLoops: ForgeProjectClient['loadLoops']) {
+  function setup(loadLoops: ForgeProjectClient['loadLoops'], sessionId: string | null = 'ses_1') {
     const toasts: Array<{ message: string; variant?: string }> = []
     const host = {
       toast: (input: { message: string; variant?: string }) => toasts.push(input),
@@ -32,7 +32,7 @@ describe('createForgePlanCommands', () => {
     const commands = createForgePlanCommands({
       host,
       pluginConfig: {} as PluginConfig,
-      currentSessionId: () => 'ses_1',
+      currentSessionId: () => sessionId,
       ensureClient: async () => client,
       cache: () => null,
     })
@@ -63,5 +63,15 @@ describe('createForgePlanCommands', () => {
     await commands.restartLoop()
 
     expect(toasts.at(-1)).toMatchObject({ message: 'Loop is still running', variant: 'info' })
+  })
+
+  test('executePlan without a session opens restart and asks for a session when nothing is restartable', async () => {
+    const loadLoops = vi.fn(async () => ({ loops: [] }))
+    const { commands, toasts } = setup(loadLoops, null)
+
+    await commands.executePlan()
+
+    expect(loadLoops).toHaveBeenCalledTimes(1)
+    expect(toasts.at(-1)).toMatchObject({ message: 'Open a session to execute a plan', variant: 'info' })
   })
 })

@@ -1,5 +1,6 @@
 import type { Logger, SandboxResources, SandboxSecretConfig } from '../types'
 import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
+import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS } from './loop-settings'
 
 export function sanitizeMsbName(raw: string): string {
   const name = raw
@@ -39,10 +40,6 @@ export function buildMsbExecArgs(name: string, command: string, opts?: BuildMsbE
   args.push('--', 'sh', '-c', command)
   return args
 }
-
-const MSB_SIZE_RE = /^\d+(\.\d+)?[kmg]b?$/i
-const MSB_DOCKER_DISK_DEFAULT = '16g'
-const MSB_CACHE_DISK_DEFAULT = '16g'
 
 export const SANDBOX_CACHE_DIR = '/opt/forge/cache'
 
@@ -218,9 +215,9 @@ export function buildMsbCreateArgs(
   for (const ws of workspaces) {
     args.push('-v', ws.readOnly ? `${ws.hostDir}:${ws.containerDir}:ro` : `${ws.hostDir}:${ws.containerDir}`)
   }
-  const dockerDisk = opts.dockerDisk || MSB_DOCKER_DISK_DEFAULT
+  const dockerDisk = opts.dockerDisk || SANDBOX_RESOURCE_DEFAULTS.dockerDisk
   args.push('--mount-named', `${dockerDataVolumeName(name)}:/var/lib/docker:kind=disk,size=${dockerDisk}`)
-  const cacheDisk = opts.cacheDisk || MSB_CACHE_DISK_DEFAULT
+  const cacheDisk = opts.cacheDisk || SANDBOX_RESOURCE_DEFAULTS.cacheDisk
   args.push('--mount-named', `${cacheDiskVolumeName(name)}:${SANDBOX_CACHE_DIR}:kind=disk,size=${cacheDisk}`)
   const restrictEgress =
     opts.restrictEgress === true || (opts.networkAllow ?? []).some((host) => host.trim() !== '')

@@ -155,7 +155,7 @@ describe('createTuiRpcService', () => {
       if ('error' in result) throw new Error(result.error)
 
       expect(result.loops.map((row) => row.loopName)).toEqual(['loop-running', 'loop-done'])
-      expect(result.loops[0]).toEqual({ loopName: 'loop-running', status: 'running', iteration: 3, maxIterations: 10 })
+      expect(result.loops[0]).toEqual({ loopName: 'loop-running', status: 'running', iteration: 3, maxIterations: 10, startedAt: 200, phase: 'coding', phaseStartedAt: 200, currentSectionIndex: 0, totalSections: 1 })
     })
   })
 

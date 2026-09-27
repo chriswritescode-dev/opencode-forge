@@ -1,5 +1,6 @@
 import type { SandboxRuntime, SandboxWorkspace } from './msb'
 import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
+import { resolveSandboxResources } from './loop-settings'
 import type { Logger, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
 import { mkdirSync, existsSync } from 'fs'
@@ -10,6 +11,13 @@ import { formatTemplateBuildCommands } from './template'
 export interface SandboxManagerConfig {
   image: string
   resources?: SandboxResources
+  /**
+   * Looks up a loop's persisted resource overrides. Used when a sandbox is (re)created without an
+   * explicit override (e.g. from `ensureRunning`/`restore`), so a loop launched with per-loop
+   * resources still gets them after a restart. Ignored when the sandbox already exists, because msb
+   * cannot resize a live sandbox.
+   */
+  resolveLoopResources?: (worktreeName: string) => SandboxResources | undefined
   sourceProjectDir?: string
   mountProjectReadonly?: boolean
   customMounts?: SandboxMountConfig[]
@@ -35,11 +43,6 @@ export interface SandboxManagerConfig {
    * sandbox to deny-by-default with one allow rule per validated host.
    */
   network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[] }
-}
-
-const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus'>> = {
-  memory: '8g',
-  cpus: '4',
 }
 
 function normalizeContainerPath(path: string): string {
@@ -140,7 +143,7 @@ export interface ActiveSandbox {
 
 export interface SandboxManager {
   runtime: SandboxRuntime
-  start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }>
+  start(worktreeName: string, projectDir: string, startedAt?: string, resources?: SandboxResources): Promise<{ containerName: string }>
   stop(worktreeName: string): Promise<void>
   getActive(worktreeName: string): ActiveSandbox | null
   isActive(worktreeName: string): boolean
@@ -476,7 +479,7 @@ export function createSandboxManager(
     preparedCacheDisks.add(containerName)
   }
 
-  async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
+  async function start(worktreeName: string, projectDir: string, startedAt?: string, resources?: SandboxResources): Promise<{ containerName: string }> {
     await ensureRuntimeAvailable()
     await ensureTemplate()
 
@@ -504,19 +507,15 @@ export function createSandboxManager(
 
     const { mounts } = buildMountPlan(absoluteProjectDir)
     const workspaces = buildSandboxWorkspaces(mounts, logger)
-    const resources: SandboxResources = {
-      memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
-      cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
-      dockerDisk: config.resources?.dockerDisk,
-      cacheDisk: config.resources?.cacheDisk,
-    }
+    const override = resources ?? config.resolveLoopResources?.(worktreeName)
+    const effectiveResources = resolveSandboxResources(config.resources, override)
     // Secret destinations are unioned into the egress allow-list: msb's proxy is deny-by-default
     // at the sandbox level, so a secrets-only configuration would otherwise never reach its hosts.
     const secrets = resolveSandboxSecrets()
-    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} workspaces=${workspaces.length})`)
+    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${effectiveResources.memory} cpus=${effectiveResources.cpus} workspaces=${workspaces.length})`)
     await runtime.createSandbox(containerName, workspaces, {
       image: config.image,
-      resources,
+      resources: effectiveResources,
       networkAllow: buildNetworkAllow(config.network?.allow, secrets, logger),
       restrictEgress: egressRestrictionRequested(config.network?.allow, secrets),
       env: resolvePassthroughEnv(),

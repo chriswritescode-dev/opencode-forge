@@ -422,5 +422,13 @@ export const migrations: Migration[] = [
     description: 'Ensure loop_attempts exists after historical migration ID collision',
     apply: createLoopAttemptsTable,
   },
-
+  {
+    id: '149',
+    description: 'Add sandbox_settings column to loops for per-loop sandbox overrides',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'sandbox_settings')) return
+      db.run('ALTER TABLE loops ADD COLUMN sandbox_settings TEXT')
+    },
+  },
 ]

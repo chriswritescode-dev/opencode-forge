@@ -1,4 +1,5 @@
-import type { ForgeExecutionMode, ForgeLoopRestartInput } from '../host/forge-rpc'
+import type { ForgeExecutionMode, ForgeLoopDefaults, ForgeLoopRestartInput } from '../host/forge-rpc'
+import type { LoopSandboxSettings } from '../types'
 import type { ExecutionPreferences } from '../utils/tui-execution-preferences'
 import type { LoopInfo, SessionForRecents, WorkspaceForRecents } from '../utils/tui-models'
 
@@ -22,6 +23,8 @@ export interface ExecutionContext {
   openCodeFavorites: string[]
   /** The user's default model, surfaced last in the layered recents list. */
   openCodeDefault: string | undefined
+  /** Server-side loop-setting defaults; absent when the server could not report them. */
+  loopDefaults?: ForgeLoopDefaults
 }
 
 export interface ExecutePlanRequest {
@@ -34,6 +37,10 @@ export interface ExecutePlanRequest {
   executionVariant?: string
   auditorVariant?: string
   targetSessionId?: string
+  /** Loop mode only: overrides the server's `loop.defaultMaxIterations`. */
+  maxIterations?: number
+  /** Loop mode only: per-loop sandbox overrides. */
+  sandbox?: LoopSandboxSettings
 }
 
 export interface ForgeProjectClient {

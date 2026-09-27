@@ -2437,6 +2437,7 @@ describe('handleLoopRestart restartability rules', () => {
     executorSessionId: string | null
     goal: string | null
     startedAt: number
+    sandboxSettings: { enabled?: boolean; resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string } } | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -2457,6 +2458,7 @@ describe('handleLoopRestart restartability rules', () => {
       executorSessionId: null as string | null,
       goal: null as string | null,
       startedAt: Date.now(),
+      sandboxSettings: null as { enabled?: boolean; resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string } } | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -2491,6 +2493,7 @@ describe('handleLoopRestart restartability rules', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
+      sandboxSettings: opts.sandboxSettings,
     }, { lastAuditResult: null, goal: opts.goal })
   }
 
@@ -2931,12 +2934,47 @@ describe('handleLoopRestart restartability rules', () => {
     if (!result.ok) return
 
     // Sandbox started with the recreated worktree directory, not the pruned one.
-    expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp')
+    expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp', undefined, undefined)
 
     // And only after the worktree workspace was recreated.
     expect(client.workspace.create).toHaveBeenCalled()
     expect(Math.min(...sandboxStartSpy.mock.invocationCallOrder))
       .toBeGreaterThan(Math.min(...(client.workspace.create as any).mock.invocationCallOrder))
+  })
+
+  test('restart of a loop that opted out of the sandbox does not start it and keeps sandbox=false', async () => {
+    const loopName = 'sandbox-optout-loop'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+      sandboxSettings: { enabled: false },
+    })
+
+    const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
+    const sandboxManager = {
+      start: sandboxStartSpy,
+      runtime: { sandboxContainerName: () => 'forge-sandbox' },
+    }
+
+    const { service } = await createMockService({ sandboxManager })
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.data.sandbox).toBe(false)
+    expect(sandboxStartSpy).not.toHaveBeenCalled()
+
+    const newState = loopService.getActiveState(loopName)
+    expect(newState?.active).toBe(true)
+    expect(newState?.sandbox).toBe(false)
+    expect(newState?.sandboxSettings).toEqual({ enabled: false })
   })
 
   test('retries a transient "Session not found" on restart prompt instead of rolling back', async () => {

@@ -6,6 +6,7 @@ import type {
   SessionSandboxControllerState,
   SessionSandboxDesiredState,
 } from '../storage/repos/session-sandbox-preferences-repo'
+import type { LoopSandboxSettings, SandboxResources } from '../types'
 import { isRecord } from '../utils/is-record'
 import { TOAST_VARIANTS, type ToastVariant } from '../utils/toast'
 import type { LoopInfo } from '../utils/tui-models'
@@ -48,11 +49,29 @@ export interface ForgeExecutePlanInput {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
+  /** Maximum loop iterations for a loop launch; omitted falls back to the server's `loop.defaultMaxIterations`. */
+  maxIterations?: number
+  /** Per-loop sandbox overrides; omitted fields fall back to the `sandbox` config. */
+  sandbox?: LoopSandboxSettings
 }
 
 export type ForgeExecutePlanOutput =
   | { sessionId: string; loopName?: string; worktreeDir?: string; workspaceId?: string }
   | { error: string }
+
+/**
+ * Server-side defaults the execution dialog shows for loop settings. `available` is false when the
+ * server has no usable sandbox, so the per-loop sandbox rows are hidden.
+ */
+export interface ForgeLoopDefaults {
+  maxIterations: number
+  sandbox: {
+    available: boolean
+    resources: Required<SandboxResources>
+  }
+}
+
+export type ForgeLoopDefaultsOutput = ForgeLoopDefaults | ForgeRpcError
 
 export type ForgeAutoApproveState =
   | { enabled: boolean; ownerSessionId?: string; inherited: boolean }
@@ -102,6 +121,26 @@ export type ForgeHostSandboxStateOutput = ForgeHostSandboxState | ForgeRpcError
 export type ForgeHostSandboxSetOutput = { revision: string } | ForgeRpcError
 
 const OPTIONAL_STRING = { type: 'string' } as const
+
+const SANDBOX_RESOURCES_SCHEMA = {
+  type: 'object',
+  properties: {
+    memory: OPTIONAL_STRING,
+    cpus: OPTIONAL_STRING,
+    dockerDisk: OPTIONAL_STRING,
+    cacheDisk: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
+
+const SANDBOX_SETTINGS_SCHEMA = {
+  type: 'object',
+  properties: {
+    enabled: { type: 'boolean' },
+    resources: SANDBOX_RESOURCES_SCHEMA,
+  },
+  additionalProperties: false,
+} as const
 
 const EMPTY_INPUT = { type: 'object', properties: {}, additionalProperties: false } as const
 
@@ -168,6 +207,23 @@ const WORKTREES_OUTPUT = {
   additionalProperties: false,
 } as const
 
+const LOOP_DEFAULTS_OUTPUT = {
+  type: 'object',
+  properties: {
+    maxIterations: { type: 'integer' },
+    sandbox: {
+      type: 'object',
+      properties: {
+        available: { type: 'boolean' },
+        resources: SANDBOX_RESOURCES_SCHEMA,
+      },
+      additionalProperties: false,
+    },
+    error: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
+
 export const FORGE_RPC = {
   id: FORGE_PLUGIN_ID,
   methods: {
@@ -184,6 +240,8 @@ export const FORGE_RPC = {
           auditorModel: OPTIONAL_STRING,
           executionVariant: OPTIONAL_STRING,
           auditorVariant: OPTIONAL_STRING,
+          maxIterations: { type: 'integer', minimum: 0 },
+          sandbox: SANDBOX_SETTINGS_SCHEMA,
         },
         required: ['sessionId', 'mode', 'title', 'plan'],
         additionalProperties: false,
@@ -199,6 +257,10 @@ export const FORGE_RPC = {
         },
         additionalProperties: false,
       },
+    },
+    loopDefaults: {
+      input: EMPTY_INPUT,
+      output: LOOP_DEFAULTS_OUTPUT,
     },
     autoApproveState: {
       input: {
@@ -441,7 +503,36 @@ export function readForgeLoopSidebar(value: unknown): ForgeLoopSidebarOutput {
     typeof row.loopName === 'string'
     && typeof row.status === 'string'
     && typeof row.iteration === 'number'
-    && typeof row.maxIterations === 'number')
+    && typeof row.maxIterations === 'number'
+    && typeof row.startedAt === 'number'
+    && typeof row.phase === 'string'
+    && typeof row.phaseStartedAt === 'number'
+    && typeof row.currentSectionIndex === 'number'
+    && typeof row.totalSections === 'number')
+}
+
+export function readForgeLoopDefaults(value: unknown): ForgeLoopDefaultsOutput {
+  return readForgeRpcResult(value, 'loop defaults', (record) => {
+    if (typeof record.maxIterations !== 'number' || !Number.isInteger(record.maxIterations)) return null
+    const sandbox = record.sandbox
+    if (!isRecord(sandbox) || typeof sandbox.available !== 'boolean') return null
+    const resources = sandbox.resources
+    if (!isRecord(resources)) return null
+    const fields = ['memory', 'cpus', 'dockerDisk', 'cacheDisk'] as const
+    if (!fields.every((field) => typeof resources[field] === 'string')) return null
+    return {
+      maxIterations: record.maxIterations,
+      sandbox: {
+        available: sandbox.available,
+        resources: {
+          memory: resources.memory as string,
+          cpus: resources.cpus as string,
+          dockerDisk: resources.dockerDisk as string,
+          cacheDisk: resources.cacheDisk as string,
+        },
+      },
+    }
+  })
 }
 
 /**

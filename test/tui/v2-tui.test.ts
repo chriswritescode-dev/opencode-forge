@@ -106,6 +106,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     rpcDefinitions.push(definition)
     return {
       worktrees: worktreesMock,
+      loops: vi.fn(async () => ({ loops: [] })),
       loopSidebar,
       hostSandboxState,
       hostSandboxSet,
@@ -245,7 +246,7 @@ describe('V2 TUI setup', () => {
     expect(fake.layers[0]?.mode).toBe('global')
     const dashboard = fake.layers[0]?.commands?.find((command) => command.id === 'forge.dashboard')
     expect(dashboard).toMatchObject({
-      title: 'Open dashboard',
+      title: 'Open web dashboard',
       group: 'Forge',
       palette: true,
     })
@@ -445,36 +446,39 @@ describe('V2 TUI setup', () => {
     cleanup()
   })
 
-  test('registers the execute-plan, restart, and sandbox-build palette commands', () => {
+  test('registers one execute-plan command that also covers pasting and restarting', () => {
     const fake = createFakeV2TuiContext({ options: { keybinds: { executePlan: '<leader>x' } } })
 
     const cleanup = setupForgeTuiV2(fake.ctx)
 
-    for (const id of ['forge.plan.execute', 'forge.plan.executePasted', 'forge.loop.restart', 'forge.sandbox.toggleHost', 'forge.sandbox.buildImage']) {
+    for (const id of ['forge.plan.execute', 'forge.sandbox.toggleHost', 'forge.sandbox.buildImage']) {
       expect(findCommand(fake, id)).toMatchObject({ group: 'Forge', palette: true })
     }
+    expect(() => findCommand(fake, 'forge.plan.executePasted')).toThrow()
+    expect(() => findCommand(fake, 'forge.loop.restart')).toThrow()
     expect(findCommand(fake, 'forge.plan.execute').bind).toBe('<leader>x')
     cleanup()
   })
 
-  test('execute plan asks for a session when none is open', async () => {
+  test('execute plan without a session falls back to restart and asks for a session when nothing is restartable', async () => {
     const fake = createFakeV2TuiContext()
 
     const cleanup = setupForgeTuiV2(fake.ctx)
     await findCommand(fake, 'forge.plan.execute').run?.()
 
-    expect(fake.toasts).toContainEqual(expect.objectContaining({ message: 'Open a session first' }))
+    await vi.waitFor(() => expect(fake.toasts).toContainEqual(expect.objectContaining({ message: 'Open a session to execute a plan' })))
     cleanup()
   })
 
-  test('execute plan falls back to the paste dialog when the session has no stored plan', async () => {
+  test('execute plan opens the dialog without prompting when the session has no stored plan', async () => {
     const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_architect' } })
 
     const cleanup = setupForgeTuiV2(fake.ctx)
     findCommand(fake, 'forge.plan.execute').run?.()
 
-    await vi.waitFor(() => expect(fake.prompts).toEqual([expect.objectContaining({ title: 'Paste plan' })]))
-    expect(fake.toasts).toContainEqual(expect.objectContaining({ message: 'No plan in current session — paste one to execute' }))
+    const dialog = (fake.ctx.ui as unknown as { dialog: { show: ReturnType<typeof vi.fn> } }).dialog
+    await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledTimes(1))
+    expect(fake.prompts).toEqual([])
     cleanup()
   })
 

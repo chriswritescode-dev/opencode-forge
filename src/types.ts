@@ -151,6 +151,17 @@ export interface SandboxResources {
 }
 
 /**
+ * Per-loop sandbox overrides chosen at launch and persisted on the loop row. Unset fields fall
+ * back to the `sandbox` config, so a loop launched without overrides behaves exactly as before.
+ */
+export interface LoopSandboxSettings {
+  /** `false` runs this loop worktree-only even though the sandbox is enabled in config. */
+  enabled?: boolean
+  /** Resource overrides for this loop's sandbox; applied only when the sandbox is created. */
+  resources?: SandboxResources
+}
+
+/**
  * A single custom mount for the msb sandbox. `msb` always mounts a workspace
  * at its identical host path, so only the host path is specified.
  */

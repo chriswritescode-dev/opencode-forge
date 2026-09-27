@@ -55,7 +55,7 @@ Source: [src/index.ts](../src/index.ts)
 The TUI plugin entry, providing the sidebar widget and dialog system. It talks to the server plugin through the V2 plugin RPC port.
 
 - Exports `{ id: 'oc-forge', setup: setupForgeTuiV2 }`
-- Registers commands: `Execute plan`, `Execute pasted plan`, `Restart loop`, `Open dashboard`, `Build sandbox template`, and `Toggle host sandbox`
+- Registers commands: `Execute plan`, `Open web dashboard`, `Build sandbox template`, and `Toggle host sandbox`
 - Provides the loop sidebar, session-rotation following, and the missing-build-context toast
 
 Source: [src/tui.tsx](../src/tui.tsx), [src/tui/v2.tsx](../src/tui/v2.tsx)
@@ -73,7 +73,7 @@ Host-neutral core plus the thin adapter that maps the OpenCode V2 plugin context
 | `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
 | `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
 | `v2-events.ts` | Normalizes V2 events into Forge's event shape; busy, idle, and retry derive only from `session.execution.*` and `session.retry.scheduled` |
-| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `version`) and the `toast`/`sessionDelete`/`loopsChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
+| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `loopDefaults`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `version`) and the `toast`/`sessionDelete`/`loopsChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
 | `v2-hooks.ts` | Registers the core handlers through V2's hook API |
 | `v2-tools.ts` | Registers the shared Forge tools on V2 |
 | `v2-config.ts` | Resolves and registers agents and commands on V2 |
@@ -346,6 +346,7 @@ Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 | `exec-fs.ts` | Filesystem operations through `msb exec` |
 | `shell-shim.ts` | Generated shim routing the native `shell` tool through `msb exec` |
 | `session-controller.ts` | Per-project host sandbox selection and ownership |
+| `loop-settings.ts` | Per-loop sandbox overrides: validation, workspace `extra` carrier, and the effective-resource resolver shared by creation and the TUI |
 | `env-probe.ts` | Bounded environment probe for the container note |
 
 ### SandboxRuntime Interface
@@ -419,7 +420,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–143; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–149; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 

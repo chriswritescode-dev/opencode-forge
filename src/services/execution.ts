@@ -5,7 +5,7 @@
  * Provides a unified interface for internal tools, API, and TUI surfaces.
  */
 
-import type { PluginConfig, Logger } from '../types'
+import type { PluginConfig, Logger, LoopSandboxSettings } from '../types'
 import type { ForgeClient } from '../client/port'
 import { publishToast } from '../utils/toast'
 
@@ -24,6 +24,7 @@ import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolve
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
+import { loopSandboxWorkspaceExtra } from '../sandbox/loop-settings'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast, deleteSessionBestEffort } from '../utils/loop-session'
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { resolveForgeDbPath } from '../utils/opencode-paths'
@@ -118,6 +119,8 @@ export interface AttachLoopInput {
   maxIterations: number
   sandboxEnabled: boolean
   sandboxContainer?: string
+  /** Per-loop sandbox overrides persisted with the loop so restart and re-attach honor them. */
+  sandboxSettings?: LoopSandboxSettings
   planText: string
   /** Loop kind. Goal loops skip plan decomposition and prompt with the goal continuation prompt. */
   kind?: 'plan' | 'goal'
@@ -182,6 +185,8 @@ export interface StartLoopCommand {
   executionVariant?: string
   auditorVariant?: string
   hostSessionId?: string
+  /** Per-loop sandbox overrides; omitted fields fall back to the `sandbox` config. */
+  sandbox?: LoopSandboxSettings
   lifecycle?: {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
@@ -205,6 +210,7 @@ export interface BuildStartLoopCommandInput {
   executionVariant?: string
   auditorVariant?: string
   hostSessionId?: string
+  sandbox?: LoopSandboxSettings
   lifecycle?: StartLoopCommand['lifecycle']
 }
 
@@ -220,6 +226,7 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     executionVariant: input.executionVariant,
     auditorVariant: input.auditorVariant,
     hostSessionId: input.hostSessionId,
+    sandbox: input.sandbox,
     lifecycle: input.lifecycle,
   }
 }
@@ -550,6 +557,7 @@ export async function attachLoopToSession(
     maxIterations,
     sandboxEnabled,
     sandboxContainer,
+    sandboxSettings,
     planText,
     startWatchdog,
     sendInitialPrompt = true,
@@ -614,6 +622,7 @@ export async function attachLoopToSession(
       worktree: true,
       sandbox: sandboxEnabled,
       sandboxContainer: sandboxContainer ?? undefined,
+      sandboxSettings,
       executionModel,
       auditorModel,
       executionVariant,
@@ -1052,6 +1061,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
+        extra: loopSandboxWorkspaceExtra(command.sandbox),
       }, deps.logger)
       if (!wsResult.ok) {
         deps.logger.error(`handleStartLoop: failed to create builtin worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
@@ -1064,7 +1074,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       createdWorkspaceId = ws.workspaceId
 
       // Build permissions
-      const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
+      const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager) && command.sandbox?.enabled !== false
       sandboxEnabledForLoop = sandboxEnabled
 
       const permissionRuleset = buildLoopPermissionRuleset(resolveLoopPermissionOptions(deps.config))
@@ -1105,7 +1115,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         } else {
           try {
             sandboxStartAttempted = true
-            const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!)
+            const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!, undefined, command.sandbox?.resources)
             sandboxStarted = true
             sandboxContainer = result.containerName
             deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
@@ -1134,6 +1144,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         maxIterations,
         sandboxEnabled: sandboxEnabledForLoop,
         sandboxContainer: sandboxContainer ?? undefined,
+        sandboxSettings: command.sandbox,
         planText,
         startWatchdog: command.lifecycle?.startWatchdog,
         abortSourceSessionOnSuccess: command.lifecycle?.abortSourceSessionOnSuccess,
@@ -1612,7 +1623,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return fail('conflict', 409, restartability.restartBlockedMessage!)
     }
 
-    const restartSandbox = isSandboxEnabled(deps.config, deps.sandboxManager)
+    const restartSandbox = isSandboxEnabled(deps.config, deps.sandboxManager) && stoppedState.sandboxSettings?.enabled !== false
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
@@ -1756,10 +1767,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const previousEntry = stoppedState.workspaceId
           ? await getForgeWorkspaceEntry(deps.client, stoppedState.workspaceId).catch(() => undefined)
           : undefined
+        const mergedExtra = {
+          ...(previousEntry?.extra ?? {}),
+          ...loopSandboxWorkspaceExtra(stoppedState.sandboxSettings),
+        }
         const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
-          extra: previousEntry?.extra ?? undefined,
+          extra: Object.keys(mergedExtra).length > 0 ? mergedExtra : undefined,
         }, deps.logger)
         if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
         const ws = wsResult.workspace
@@ -1770,7 +1785,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (restartSandbox && deps.sandboxManager) {
         try {
-          const sandboxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir)
+          const sandboxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir, undefined, stoppedState.sandboxSettings?.resources)
           deps.logger.log(`loop-restart: started sandbox container ${sandboxResult.containerName}`)
         } catch (err) {
           deps.logger.error('loop-restart: failed to start sandbox container', err)
@@ -1849,6 +1864,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         worktree: stoppedState.worktree,
         sandbox: restartSandbox,
         sandboxContainer: restartSandbox ? deps.sandboxManager?.runtime.sandboxContainerName(stoppedState.loopName) : undefined,
+        sandboxSettings: stoppedState.sandboxSettings,
         executionModel: stoppedState.executionModel,
         auditorModel: stoppedState.auditorModel,
         executionVariant: stoppedState.executionVariant,

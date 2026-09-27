@@ -323,6 +323,33 @@ describe('createForgeCore', () => {
 
     expect(built.core.autoApproveDenyRules).toEqual([])
   })
+
+  test('loopDefaults reports the configured max iterations and resolved sandbox resources', async () => {
+    const built = await buildCore({
+      loop: { defaultMaxIterations: 7 },
+      sandbox: { resources: { memory: '2g' } },
+    })
+
+    expect(built.core.loopDefaults()).toEqual({
+      maxIterations: 7,
+      sandbox: {
+        available: true,
+        resources: { memory: '2g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+      },
+    })
+  })
+
+  test('loopDefaults hides sandbox rows when the sandbox is disabled', async () => {
+    const built = await buildCore({ sandbox: { enabled: false } })
+
+    expect(built.core.loopDefaults()).toEqual({
+      maxIterations: 0,
+      sandbox: {
+        available: false,
+        resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+      },
+    })
+  })
 })
 
 describe('resolveSessionAutoApproveFlag', () => {

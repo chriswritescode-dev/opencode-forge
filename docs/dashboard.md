@@ -1,6 +1,6 @@
 # Dashboard
 
-Forge includes an observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only).
+Forge includes an observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open web dashboard`) or via `pnpm dashboard` (source checkouts only).
 
 By default it binds loopback only. On a loopback bind it can edit the loop's persisted model columns and delete unexecuted session-scoped plans; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only. Set `dashboard.host` / `dashboard.port` in `forge-config.jsonc` to expose it on a LAN or VPN — see [Configuration → Dashboard](configuration.md#dashboard).
 

@@ -19,7 +19,7 @@ The loop system provides autonomous iterative development with automatic code au
 
 ### Restart Semantics
 
-- Restart preserves loop identity, plan, worktree path, section progress, and review findings.
+- Restart preserves loop identity, plan, worktree path, section progress, review findings, and per-loop sandbox settings (a loop launched with the sandbox off stays off; its resource overrides apply if the sandbox is recreated).
 - Restart resets iteration count and error budget.
 - Restart creates a fresh session and resumes from the persisted phase and section index.
 - Restarts into section coding with outstanding bug findings for the current section use the continuation prompt, including full finding details and the shared remediation policy; without current-section bugs, they use the initial section prompt.
@@ -115,6 +115,8 @@ Each iteration runs in a **fresh session** to keep context small and prioritize 
    - Original task prompt
    - Current iteration number
    - Audit findings (if any)
+
+Rotated sessions are deleted from the OpenCode server right after their usage is captured, so a running loop has exactly one session: the current one. When a loop completes and its worktree is removed, its final session is deleted too, and the TUI removes any loop session whose worktree directory no longer exists. Loop sessions therefore drop out of OpenCode's session list once the loop moves on; loop history lives in `loop-status` and the [Dashboard](dashboard.md). A TUI can briefly keep showing deleted loop sessions from its local cache or tabs until it next refreshes the list from the server.
 
 ```typescript
 function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {

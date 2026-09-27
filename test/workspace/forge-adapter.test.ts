@@ -248,7 +248,7 @@ describe('createForgeWorkspaceAdapter', () => {
       await adapter.create(configured, {})
 
       expect(existsSync(configured.directory)).toBe(true)
-      expect(sandboxManager.start).toHaveBeenCalledWith('sandbox-loop', configured.directory, expect.any(String))
+      expect(sandboxManager.start).toHaveBeenCalledWith('sandbox-loop', configured.directory, expect.any(String), undefined)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }
@@ -275,6 +275,62 @@ describe('createForgeWorkspaceAdapter', () => {
 
       expect(existsSync(configured.directory)).toBe(true)
       expect(sandboxManager.start).not.toHaveBeenCalled()
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create skips sandbox provisioning when extra.loopSandbox.enabled is false', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-loop-sandbox-optout-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockRejectedValue(new Error('sandbox must not be provisioned')),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const info = makeInfo('loop-sandbox-optout', tmpRepo)
+      info.extra = { ...info.extra, loopSandbox: { enabled: false } }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      expect(existsSync(configured.directory)).toBe(true)
+      expect(sandboxManager.start).not.toHaveBeenCalled()
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create forwards extra.loopSandbox.resources to sandbox start', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-loop-sandbox-resources-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'forge-loop-sandbox-resources' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const info = makeInfo('loop-sandbox-resources', tmpRepo)
+      info.extra = { ...info.extra, loopSandbox: { resources: { memory: '4g', cpus: '2' } } }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      expect(sandboxManager.start).toHaveBeenCalledWith(
+        'loop-sandbox-resources',
+        configured.directory,
+        expect.any(String),
+        { memory: '4g', cpus: '2' },
+      )
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

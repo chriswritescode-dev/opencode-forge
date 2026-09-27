@@ -23,6 +23,8 @@ import {
 } from '../host/forge-rpc'
 import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
+import { formatDuration } from '../utils/duration'
+import { phaseLabel } from '../utils/phase-label'
 import { isToastVariant } from '../utils/toast'
 import { isWithinDir } from '../workspace/forge-naming'
 import type { ForgeProjectClient } from './project-client'
@@ -113,6 +115,37 @@ function SandboxStatusText(props: {
   )
 }
 
+function formatElapsed(ms: number): string {
+  return formatDuration(Math.max(0, Math.floor(ms / 1000)))
+}
+
+/**
+ * Detail of an expanded running loop: current phase with its elapsed time, then
+ * section and total elapsed time. The row data arrives only with the
+ * `loopsChanged`-driven refresh; the local clock only advances the displayed
+ * times and stops when the row collapses.
+ */
+function LoopRunDetail(props: { context: Plugin.Context; loop: LoopSidebarRow }) {
+  const theme = () => props.context.theme
+  const [now, setNow] = createSignal(Date.now())
+  const timer = setInterval(() => setNow(Date.now()), 1000)
+  onCleanup(() => clearInterval(timer))
+  const progress = () => {
+    const total = `${formatElapsed(now() - props.loop.startedAt)} total`
+    return props.loop.totalSections > 0
+      ? `Section ${props.loop.currentSectionIndex + 1}/${props.loop.totalSections} · ${total}`
+      : total
+  }
+  return (
+    <box flexDirection="column" paddingLeft={2}>
+      <text fg={theme().text.feedback.info.base}>
+        {`${phaseLabel(props.loop.phase)} · ${formatElapsed(now() - props.loop.phaseStartedAt)}`}
+      </text>
+      <text fg={theme().text.muted}>{progress()}</text>
+    </box>
+  )
+}
+
 function ForgeLoopsSidebar(props: {
   context: Plugin.Context
   showVersion: boolean
@@ -122,6 +155,12 @@ function ForgeLoopsSidebar(props: {
   loops: Accessor<LoopSidebarRow[]>
 }) {
   const theme = () => props.context.theme
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
+  const toggleExpanded = (loopName: string) => setExpanded((current) => {
+    const next = new Set(current)
+    if (!next.delete(loopName)) next.add(loopName)
+    return next
+  })
   const statusColor = (status: LoopSidebarRow['status']) => {
     const { text } = theme()
     if (status === 'running') return text.feedback.info.base
@@ -146,22 +185,32 @@ function ForgeLoopsSidebar(props: {
       </box>
       <Show when={props.loops().length > 0} fallback={<text fg={theme().text.muted}>No loops</text>}>
         <For each={props.loops()}>
-          {(loop) => (
-            <box flexDirection="row" gap={1}>
-              <text flexShrink={0} fg={statusColor(loop.status)}>•</text>
-              <text
-                flexGrow={1}
-                flexShrink={1}
-                wrapMode="none"
-                truncate
-                fg={loop.status === 'running' ? theme().text.base : theme().text.muted}
-              >
-                {loop.loopName}
-              </text>
-              <text flexShrink={0} fg={statusColor(loop.status)}>{loop.status}</text>
-              <text flexShrink={0} fg={theme().text.muted}>{`${loop.iteration}/${loop.maxIterations}`}</text>
-            </box>
-          )}
+          {(loop) => {
+            const running = loop.status === 'running'
+            const isExpanded = () => running && expanded().has(loop.loopName)
+            const marker = () => (!running ? '•' : isExpanded() ? '▾' : '▸')
+            return (
+              <box flexDirection="column">
+                <box flexDirection="row" gap={1} onMouseUp={() => { if (running) toggleExpanded(loop.loopName) }}>
+                  <text flexShrink={0} fg={statusColor(loop.status)}>{marker()}</text>
+                  <text
+                    flexGrow={1}
+                    flexShrink={1}
+                    wrapMode="none"
+                    truncate
+                    fg={loop.status === 'running' ? theme().text.base : theme().text.muted}
+                  >
+                    {loop.loopName}
+                  </text>
+                  <text flexShrink={0} fg={statusColor(loop.status)}>{loop.status}</text>
+                  <text flexShrink={0} fg={theme().text.muted}>{`${loop.iteration}/${loop.maxIterations}`}</text>
+                </box>
+                <Show when={isExpanded()}>
+                  <LoopRunDetail context={props.context} loop={loop} />
+                </Show>
+              </box>
+            )
+          }}
         </For>
       </Show>
     </box>
@@ -169,7 +218,7 @@ function ForgeLoopsSidebar(props: {
 }
 
 /**
- * V2 TUI surface: the dashboard, execute-plan, restart-loop, and sandbox-build
+ * V2 TUI surface: the dashboard, execute-plan (which also pastes plans and restarts loops), and sandbox-build
  * commands, loop session auto-follow, a loop sidebar, and the missing-build-context
  * toast. Returns the cleanup for all of them.
  */
@@ -339,27 +388,11 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           {
             id: 'forge.plan.execute',
             title: 'Execute plan',
-            description: 'Open the execution dialog for the current session plan, or paste one if none is found',
+            description: 'Run the session plan or a pasted plan with loop settings, or restart a loop',
             group: 'Forge',
             palette: true,
             ...(opts.keybinds.executePlan ? { bind: opts.keybinds.executePlan } : {}),
             run: () => { void planCommands.executePlan() },
-          },
-          {
-            id: 'forge.plan.executePasted',
-            title: 'Execute pasted plan',
-            description: 'Paste a marked or unmarked plan and open the execution dialog',
-            group: 'Forge',
-            palette: true,
-            run: () => { void planCommands.executePastedPlan() },
-          },
-          {
-            id: 'forge.loop.restart',
-            title: 'Restart loop',
-            description: 'Change the execution and auditor models and restart a running or stopped loop from persisted progress',
-            group: 'Forge',
-            palette: true,
-            run: () => { void planCommands.restartLoop() },
           },
           {
             id: 'forge.sandbox.toggleHost',

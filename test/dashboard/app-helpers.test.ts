@@ -1251,11 +1251,19 @@ describe('computePhaseSpans', () => {
     expect(spans[1].durationMs).toBe(0)
   })
 
-  test('truncated is true when the first transition landed more than one second after startedAt', () => {
+  test('truncated is true when a capped window starts more than one second after startedAt', () => {
     const startedAt = 1700000000000
     const t1 = makeTransition({ createdAt: startedAt + 5000 })
-    const { truncated } = computePhaseSpans([t1], startedAt, null, startedAt + 10000)
+    const { truncated } = computePhaseSpans([t1], startedAt, null, startedAt + 10000, 'coding', true)
     expect(truncated).toBe(true)
+  })
+
+  test('an uncapped window keeps a long first phase attributed instead of truncating it', () => {
+    const startedAt = 1700000000000
+    const t1 = makeTransition({ createdAt: startedAt + 5000, fromPhase: 'coding', toPhase: 'auditing' })
+    const { spans, truncated } = computePhaseSpans([t1], startedAt, null, startedAt + 10000)
+    expect(truncated).toBe(false)
+    expect(spans[0]).toMatchObject({ phase: 'coding', durationMs: 5000 })
   })
 
   test('truncated is false when the first transition lands within one second of startedAt', () => {
@@ -1283,7 +1291,7 @@ describe('computePhaseSpans', () => {
     const t1 = makeTransition({ id: 1, createdAt: startedAt + 5000, fromPhase: 'coding', toPhase: 'auditing' })
     const t2 = makeTransition({ id: 2, createdAt: startedAt + 8000, fromPhase: 'auditing', toPhase: 'final_auditing' })
     const now = startedAt + 12000
-    const { spans, truncated } = computePhaseSpans([t1, t2], startedAt, null, now)
+    const { spans, truncated } = computePhaseSpans([t1, t2], startedAt, null, now, 'coding', true)
     expect(truncated).toBe(true)
     expect(spans).toHaveLength(3)
     // The leading span covers unknown pre-window history; its phase is cleared
@@ -1300,7 +1308,7 @@ describe('computePhaseSpans', () => {
     const t1 = makeTransition({ id: 1, createdAt: startedAt + 5000, fromPhase: 'coding', toPhase: 'auditing' })
     const t2 = makeTransition({ id: 2, createdAt: startedAt + 8000, fromPhase: 'auditing', toPhase: 'final_auditing' })
     const now = startedAt + 12000
-    const { spans } = computePhaseSpans([t1, t2], startedAt, null, now)
+    const { spans } = computePhaseSpans([t1, t2], startedAt, null, now, 'coding', true)
     const totals = summarizePhaseTotals(spans)
     // coding only appears in the unknown leading span, so it must not be totalled.
     expect(totals['coding']).toBeUndefined()

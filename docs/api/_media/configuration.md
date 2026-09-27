@@ -48,7 +48,7 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | Option | Default | Description |
 |---|---:|---|
 | `loop.enabled` | `true` | Enable iterative loops. |
-| `loop.defaultMaxIterations` | `15` | Default max iterations. `0` means unlimited. |
+| `loop.defaultMaxIterations` | `15` | Default max iterations. `0` means unlimited. The TUI execution dialog can override this per loop. |
 | `loop.cleanupWorktree` | `false` | Auto-remove worktree on cancel. |
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
@@ -162,7 +162,7 @@ The TUI surface reads `tui.sidebar`, `tui.showVersion`, and the `tui.keybinds` e
 
 ## Dashboard
 
-`dashboard` controls the bind address of the observability dashboard, served by both `pnpm dashboard` and the TUI `Open dashboard` command. The default binds loopback only. On a loopback bind the dashboard can edit the loop's persisted model columns and delete unexecuted session-scoped plans; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only.
+`dashboard` controls the bind address of the observability dashboard, served by both `pnpm dashboard` and the TUI `Open web dashboard` command. The default binds loopback only. On a loopback bind the dashboard can edit the loop's persisted model columns and delete unexecuted session-scoped plans; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only.
 
 | Option | Default | Description |
 |---|---:|---|
@@ -217,6 +217,8 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. Restriction is opt-in: an empty list, or a list containing the `*`/`**` allow-all wildcard, passes no network flags and msb's default allows all public egress; configuring any concrete host flips the sandbox to deny-by-default (`--net-default deny`) with one `--net-rule allow@<host>` per validated host. |
 | `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
 | `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. The named variable must be exported in the environment that launches opencode — a bound secret with a missing variable breaks every sandboxed shell command. |
+
+The TUI execution dialog can override `sandbox.resources.*` per loop when launching in Loop mode; the overrides are persisted on the loop row and applied when its sandbox is created (msb cannot resize an existing sandbox). See [TUI → Loop Settings](tui.md#loop-settings).
 
 ### Sandbox network egress
 

@@ -191,7 +191,7 @@ describe('createV2ForgeProjectClient', () => {
 describe('createForgeRpcCaller', () => {
   test('reads the loop sidebar RPC at the resolved location', async () => {
     const loopSidebar = vi.fn(async () => ({
-      loops: [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5 }],
+      loops: [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5, startedAt: 1, phase: 'coding', phaseStartedAt: 1, currentSectionIndex: 0, totalSections: 0 }],
     }))
     const rpc = vi.fn(() => ({ loopSidebar }))
     const context = { client: { rpc } } as unknown as Plugin.Context
@@ -202,7 +202,7 @@ describe('createForgeRpcCaller', () => {
       readForgeLoopSidebar,
     )
 
-    expect(result).toEqual({ loops: [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5 }] })
+    expect(result).toEqual({ loops: [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5, startedAt: 1, phase: 'coding', phaseStartedAt: 1, currentSectionIndex: 0, totalSections: 0 }] })
     expect(loopSidebar).toHaveBeenCalledWith({ limit: 3 }, { location: { directory: '/work/project' } })
   })
 

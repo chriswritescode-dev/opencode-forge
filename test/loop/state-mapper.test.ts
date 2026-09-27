@@ -298,6 +298,25 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
   })
 })
 
+describe('sandboxSettings mapping', () => {
+  it('maps row sandboxSettings to state and back', () => {
+    const settings = { enabled: true, resources: { cpus: '2', memory: '16g' } }
+    const state = loopRowToState(makeRow({ sandboxSettings: settings }))
+    expect(state.sandboxSettings).toEqual(settings)
+
+    const row = loopStateToRow(state, 'proj-1')
+    expect(row.sandboxSettings).toEqual(settings)
+  })
+
+  it('maps null row sandboxSettings to undefined and back to null', () => {
+    const state = loopRowToState(makeRow({ sandboxSettings: null }))
+    expect(state.sandboxSettings).toBeUndefined()
+
+    const row = loopStateToRow(state, 'proj-1')
+    expect(row.sandboxSettings).toBeNull()
+  })
+})
+
 // Helper to convert a row through our mapping (simulating what the existing code does)
 function loopRowToRow_backwardCompat(row: LoopRow): LoopState {
   return loopRowToState(row)

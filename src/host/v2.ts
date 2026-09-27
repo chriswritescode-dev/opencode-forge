@@ -94,6 +94,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     const registration = await ctx.rpc.register(FORGE_RPC, withJsonOutput({
       executePlan: async (input) => withCore(core, (active) =>
         active.executeTuiPlan(input as ForgeExecutePlanInput)),
+      loopDefaults: async () => withCore(core, (active) => active.loopDefaults()),
       autoApproveState: async (input) => withCore(core, (active) =>
         active.getSessionAutoApproveState((input as { sessionId: string }).sessionId)),
       autoApproveSet: async (input) => {

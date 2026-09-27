@@ -1,7 +1,8 @@
 import { mkdir } from 'fs/promises'
 import { existsSync, readFileSync, appendFileSync } from 'fs'
-import type { Logger } from '../types'
+import type { Logger, LoopSandboxSettings } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
+import { LOOP_SANDBOX_EXTRA_KEY, readLoopSandboxSettings } from '../sandbox/loop-settings'
 import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
@@ -84,11 +85,22 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
   }
 
   /**
-   * Whether this workspace's loop explicitly opted out of the sandbox
-   * (`extra.forgeLoop.sandboxEnabled === false`). Provisioning must honor the
-   * per-loop flag even when the config has the sandbox enabled.
+   * Reads this workspace's per-loop sandbox settings from `extra.loopSandbox`, validating the
+   * untrusted payload through the shared reader. Returns undefined when nothing valid is present.
+   */
+  function readLoopSandbox(info: ForgeWorkspaceInfo): LoopSandboxSettings | undefined {
+    const extra = (info.extra ?? {}) as Record<string, unknown>
+    return readLoopSandboxSettings(extra[LOOP_SANDBOX_EXTRA_KEY])
+  }
+
+  /**
+   * Whether this workspace's loop explicitly opted out of the sandbox, via the per-loop settings
+   * (`extra.loopSandbox.enabled === false`) or the legacy flag (`extra.forgeLoop.sandboxEnabled
+   * === false`). Provisioning must honor the per-loop flag even when the config has the sandbox
+   * enabled.
    */
   function isLoopSandboxOptedOut(info: ForgeWorkspaceInfo): boolean {
+    if (readLoopSandbox(info)?.enabled === false) return true
     const forgeLoop = ((info.extra ?? {}) as { forgeLoop?: unknown }).forgeLoop
     if (typeof forgeLoop !== 'object' || forgeLoop === null) return false
     return (forgeLoop as { sandboxEnabled?: unknown }).sandboxEnabled === false
@@ -268,7 +280,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
       } else if (sandboxManager) {
         try {
           const startedAt = new Date().toISOString()
-          const sandbox = await sandboxManager.start(info.name, info.directory, startedAt)
+          const sandbox = await sandboxManager.start(info.name, info.directory, startedAt, readLoopSandbox(info)?.resources)
           logger.log(`forge-adapter: sandbox container ${sandbox.containerName} started for ${info.name}`)
         } catch (err) {
           logger.error(`forge-adapter: sandbox provisioning failed for ${info.name}`, err)
