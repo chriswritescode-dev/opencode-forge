@@ -1,7 +1,6 @@
 import type { PluginConfig } from '../types'
 import type { ExecutionContextCache } from '../utils/tui-execution-context-cache'
 import type { ForgeProjectClient } from './project-client'
-import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { openExecutionDialog } from './execute-plan-panel'
 import type { ForgeTuiHost } from './host'
 
@@ -14,112 +13,84 @@ export interface ForgePlanCommandsDeps {
 }
 
 export interface ForgePlanCommands {
+  /**
+   * Opens the execution dialog for the current session's stored plan (or an empty plan the user
+   * pastes from the dialog). Without a session, only a restart is possible, so it opens the
+   * restart dialog instead.
+   */
   executePlan(): Promise<void>
-  executePastedPlan(): Promise<void>
-  restartLoop(): Promise<void>
+  /** Opens the execution dialog in restart mode for the project's restartable loops. */
+  restartLoop(options?: { emptyMessage?: string }): Promise<void>
 }
 
 export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanCommands {
   const { host } = deps
 
-  const requireSessionId = (): string | null => {
-    const sessionId = deps.currentSessionId()
-    if (!sessionId) host.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
-    return sessionId
-  }
+  async function restartLoop(options?: { emptyMessage?: string }): Promise<void> {
+    const client = await deps.ensureClient()
+    if (!client) return
+    const result = await client.loadLoops()
+    if ('error' in result) {
+      host.toast({ message: `Could not list loops: ${result.error}`, variant: 'warning', duration: 5000 })
+      return
+    }
+    const loops = result.loops
+    const restartable = loops.filter((loop) => loop.restartable)
+    if (restartable.length === 0) {
+      const reason = loops.find((loop) => loop.restartBlockedMessage)?.restartBlockedMessage
+      host.toast({ message: options?.emptyMessage ?? reason ?? 'No restartable loops', variant: 'info', duration: 5000 })
+      return
+    }
 
-  const openPlanDialog = (client: ForgeProjectClient, sessionId: string, planContent: string) => {
+    const currentSessionId = deps.currentSessionId()
+    const currentLoop = restartable.find((loop) => loop.sessionId === currentSessionId) ?? restartable[0]
     openExecutionDialog({
       host,
       client,
       cache: deps.cache(),
       pluginConfig: deps.pluginConfig,
-      planContent,
-      sessionId,
+      planContent: '',
+      sessionId: currentSessionId ?? '',
+      initial: {
+        loopName: currentLoop.name,
+        auditorModel: currentLoop.auditorModel,
+        auditorVariant: currentLoop.auditorVariant,
+        executionModel: currentLoop.executionModel,
+        executionVariant: currentLoop.executionVariant,
+      },
+      restart: {
+        loops,
+        async onRestart(request) {
+          const auditorModel = request.auditorModel || host.defaultModel()
+          if (!auditorModel) throw new Error('Select an auditor model before restarting')
+          const executionModel = request.executionModel || host.defaultModel()
+          if (!executionModel) throw new Error('Select an execution model before restarting')
+          const restarted = await client.restartLoop({ ...request, auditorModel, executionModel })
+          await client.selectSession(restarted.sessionId)
+        },
+      },
     })
-  }
-
-  const openPastePlanDialog = async (client: ForgeProjectClient, sessionId: string): Promise<void> => {
-    const pasted = await host.prompt({ title: 'Paste plan', placeholder: 'Paste a marked or unmarked implementation plan', value: '' })
-    if (pasted === undefined) return
-    const normalized = normalizePastedPlanText(pasted)
-    if (!normalized.ok) {
-      host.toast({
-        message: normalized.reason === 'empty' ? 'Paste a plan before executing' : `Invalid plan markers: ${normalized.reason}`,
-        variant: 'error',
-        duration: 4000,
-      })
-      await openPastePlanDialog(client, sessionId)
-      return
-    }
-    openPlanDialog(client, sessionId, normalized.planText)
   }
 
   return {
     async executePlan() {
-      const sessionId = requireSessionId()
-      if (!sessionId) return
+      const sessionId = deps.currentSessionId()
+      if (!sessionId) {
+        await restartLoop({ emptyMessage: 'Open a session to execute a plan' })
+        return
+      }
       const client = await deps.ensureClient()
       if (!client) return
-
-      const planText = await client.loadLatestPlan(sessionId)
-      if (!planText) {
-        host.toast({ message: 'No plan in current session — paste one to execute', variant: 'info', duration: 4000 })
-        await openPastePlanDialog(client, sessionId)
-        return
-      }
-      openPlanDialog(client, sessionId, planText)
-    },
-
-    async executePastedPlan() {
-      const sessionId = requireSessionId()
-      if (!sessionId) return
-      const client = await deps.ensureClient()
-      if (client) await openPastePlanDialog(client, sessionId)
-    },
-
-    async restartLoop() {
-      const client = await deps.ensureClient()
-      if (!client) return
-      const result = await client.loadLoops()
-      if ('error' in result) {
-        host.toast({ message: `Could not list loops: ${result.error}`, variant: 'warning', duration: 5000 })
-        return
-      }
-      const loops = result.loops
-      const restartable = loops.filter((loop) => loop.restartable)
-      if (restartable.length === 0) {
-        const reason = loops.find((loop) => loop.restartBlockedMessage)?.restartBlockedMessage
-        host.toast({ message: reason ?? 'No restartable loops', variant: 'info', duration: 5000 })
-        return
-      }
-
-      const currentSessionId = deps.currentSessionId()
-      const currentLoop = restartable.find((loop) => loop.sessionId === currentSessionId) ?? restartable[0]
       openExecutionDialog({
         host,
         client,
         cache: deps.cache(),
         pluginConfig: deps.pluginConfig,
-        planContent: '',
-        sessionId: currentSessionId ?? '',
-          initialLoopName: currentLoop.name,
-        initialAuditorModel: currentLoop.auditorModel,
-        initialAuditorVariant: currentLoop.auditorVariant,
-        initialExecutionModel: currentLoop.executionModel,
-        initialExecutionVariant: currentLoop.executionVariant,
-        restart: {
-          loops,
-          async onRestart(request) {
-            const auditorModel = request.auditorModel || host.defaultModel()
-            if (!auditorModel) throw new Error('Select an auditor model before restarting')
-            const executionModel = request.executionModel || host.defaultModel()
-            if (!executionModel) throw new Error('Select an execution model before restarting')
-            const result = await client.restartLoop({ ...request, auditorModel, executionModel })
-            await client.selectSession(result.sessionId)
-          },
-        },
+        planContent: (await client.loadLatestPlan(sessionId)) ?? '',
+        sessionId,
+        onOpenRestart: () => restartLoop(),
       })
     },
+    restartLoop,
   }
 }

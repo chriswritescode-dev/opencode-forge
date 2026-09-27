@@ -1,4 +1,5 @@
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
+import type { LoopSandboxSettings } from '../types'
 
 interface LoopStateBase {
   active: boolean
@@ -40,6 +41,8 @@ interface LoopStateBase {
   kind?: 'plan' | 'goal'
   /** Goal text for goal loops. Undefined for plan loops. */
   goal?: string
+  /** Per-loop sandbox overrides; undefined when the loop uses config defaults. */
+  sandboxSettings?: LoopSandboxSettings
 }
 
 export interface CodingState extends LoopStateBase {
@@ -106,6 +109,7 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     auditorVariant: row.auditorVariant ?? undefined,
     kind: row.kind,
     goal: large?.goal ?? undefined,
+    sandboxSettings: row.sandboxSettings ?? undefined,
   }
 
   switch (row.phase) {
@@ -165,5 +169,6 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     executionVariant: state.executionVariant ?? null,
     auditorVariant: state.auditorVariant ?? null,
     kind: state.kind ?? 'plan',
+    sandboxSettings: state.sandboxSettings ?? null,
   }
 }

@@ -6,7 +6,7 @@
 
 # Interface: CompactionConfig
 
-Defined in: [types.ts:201](https://github.com/chriswritescode-dev/opencode-forge/blob/5994c33c8b9d96c39f1d46b0d5780d10a976c662/src/types.ts#L201)
+Defined in: [types.ts:212](https://github.com/chriswritescode-dev/opencode-forge/blob/c92a61ba43356b64321b0a517bb48a29c04e85ec/src/types.ts#L212)
 
 Configuration for session compaction behavior.
 
@@ -16,7 +16,7 @@ Configuration for session compaction behavior.
 
 > `optional` **customPrompt?**: `boolean`
 
-Defined in: [types.ts:203](https://github.com/chriswritescode-dev/opencode-forge/blob/5994c33c8b9d96c39f1d46b0d5780d10a976c662/src/types.ts#L203)
+Defined in: [types.ts:214](https://github.com/chriswritescode-dev/opencode-forge/blob/c92a61ba43356b64321b0a517bb48a29c04e85ec/src/types.ts#L214)
 
 Use a custom compaction prompt.
 
@@ -26,6 +26,6 @@ Use a custom compaction prompt.
 
 > `optional` **maxContextTokens?**: `number`
 
-Defined in: [types.ts:205](https://github.com/chriswritescode-dev/opencode-forge/blob/5994c33c8b9d96c39f1d46b0d5780d10a976c662/src/types.ts#L205)
+Defined in: [types.ts:216](https://github.com/chriswritescode-dev/opencode-forge/blob/c92a61ba43356b64321b0a517bb48a29c04e85ec/src/types.ts#L216)
 
 Maximum context tokens for compaction.

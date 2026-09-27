@@ -61,7 +61,7 @@ Forge ships two plugin entrypoints plus standalone management surfaces:
 - **Server plugin** — enabled through the `plugins` array in `opencode.json`. Provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support.
 - **TUI plugin** — the sidebar, execution dialog, and loop restart dialog. It loads from the server plugin entry, or from the `cli.json` `plugins` array.
 - **Installer CLI** — installs/upgrades bundled prompts and skills, and registers the plugin in opencode's config directory (`--link`/`--vendor`/`--unlink`).
-- **Dashboard** — an observability interface launchable from the TUI command palette (`Open dashboard`) or via `pnpm dashboard` (source checkouts only).
+- **Dashboard** — an observability interface launchable from the TUI command palette (`Open web dashboard`) or via `pnpm dashboard` (source checkouts only).
 
 For a quick tour of the loop itself, see [Loop Flow](#loop-flow) below.
 

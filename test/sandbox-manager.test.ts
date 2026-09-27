@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi } from 'vitest'
 import { mkdtempSync, realpathSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
@@ -678,6 +678,90 @@ describe('SandboxManager', () => {
 
       expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(1)
       expect(mockRuntime.getCreateSandboxCalls()[0][0]).toBe('forge-test')
+    })
+  })
+
+  describe('resource resolution', () => {
+    test('an explicit resources argument wins over config for the create args', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest', resources: { memory: '8g', cpus: '4' } },
+        logger
+      )
+
+      await manager.start('test', '/path', undefined, { memory: '2g', cpus: '1' })
+
+      const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
+      expect(resources).toEqual(expect.objectContaining({ memory: '2g', cpus: '1' }))
+    })
+
+    test('config fills the fields the explicit override leaves unset', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest', resources: { cpus: '6', dockerDisk: '32g' } },
+        logger
+      )
+
+      await manager.start('test', '/path', undefined, { memory: '2g' })
+
+      const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
+      expect(resources).toEqual(expect.objectContaining({ memory: '2g', cpus: '6', dockerDisk: '32g' }))
+    })
+
+    test('resolveLoopResources supplies the override when no explicit resources are passed', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const resolveLoopResources = vi.fn(() => ({ memory: '3g', cpus: '2' }))
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest', resolveLoopResources },
+        logger
+      )
+
+      await manager.start('test', '/path')
+
+      expect(resolveLoopResources).toHaveBeenCalledWith('test')
+      const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
+      expect(resources).toEqual(expect.objectContaining({ memory: '3g', cpus: '2' }))
+    })
+
+    test('an explicit resources argument wins over resolveLoopResources', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const resolveLoopResources = vi.fn(() => ({ memory: '3g' }))
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest', resolveLoopResources },
+        logger
+      )
+
+      await manager.start('test', '/path', undefined, { memory: '2g' })
+
+      expect(resolveLoopResources).not.toHaveBeenCalled()
+      const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
+      expect(resources).toEqual(expect.objectContaining({ memory: '2g' }))
+    })
+
+    test('the adopt path ignores resource overrides because msb cannot resize an existing sandbox', async () => {
+      const mockRuntime = createMockSandboxRuntime()
+      const logger = createMockLogger()
+      const resolveLoopResources = vi.fn(() => ({ memory: '3g' }))
+      const manager = createSandboxManager(
+        mockRuntime,
+        { image: 'oc-forge-sandbox:latest', resolveLoopResources },
+        logger
+      )
+      mockRuntime.setSandboxState('forge-test', 'running')
+
+      await manager.start('test', '/path', undefined, { memory: '2g' })
+
+      expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
+      expect(resolveLoopResources).not.toHaveBeenCalled()
+      expect(manager.isActive('test')).toBe(true)
     })
   })
 

@@ -1348,3 +1348,42 @@ test('migration 148 repair failure rolls back and leaves migration unrecorded', 
 
   db2.close()
 })
+
+test('migration 149 adds nullable sandbox_settings to loops and is idempotent', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
+  const col = cols.find((c) => c.name === 'sandbox_settings')
+  expect(col).toBeDefined()
+  // Nullable JSON text with no default so legacy rows hydrate as "no overrides".
+  expect(col!.notnull).toBe(0)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-sandbox', 'running', 'sess-sandbox', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  const row = db.prepare("SELECT sandbox_settings FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-sandbox'").get() as { sandbox_settings: string | null }
+  expect(row.sandbox_settings).toBeNull()
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('149') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 149 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+  const cols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'sandbox_settings').length).toBe(1)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('149') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})

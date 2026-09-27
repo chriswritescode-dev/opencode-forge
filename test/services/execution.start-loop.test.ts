@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
@@ -1442,5 +1442,165 @@ describe('handlePlanNewSession workspace forwarding', () => {
     )
 
     db.close()
+  })
+})
+
+describe('handleStartLoop per-loop sandbox settings', () => {
+  let db: Database
+  let loopsRepo: LoopsRepo
+  let plansRepo: PlansRepo
+  let reviewFindingsRepo: ReviewFindingsRepo
+  let sectionPlansRepo: SectionPlansRepo
+  let loopService: LoopService
+
+  const noopFn = () => {}
+
+  beforeEach(() => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-loop-sandbox-test-'))
+    db = new Database(join(tempDir, 'test.db'))
+    setupLoopsTestDb(db)
+
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
+  })
+
+  afterEach(() => {
+    try { db.close() } catch {}
+  })
+
+  function createSandboxManager() {
+    return {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+  }
+
+  async function buildService(sandboxManager: ReturnType<typeof createSandboxManager>) {
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_sandbox',
+          directory: '/tmp/wt/sandbox',
+          branch: 'opencode/sandbox',
+          type: 'worktree',
+          name: 'opencode/sandbox',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+      },
+      session: {
+        create: async () => ({ id: 'sess-sandbox' }),
+        get: async () => ({}),
+      },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+        service: loopService,
+        listActive: (...args: any[]) => loopService.listActive(...args),
+        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+        registerSessionReverseIndex: () => {},
+        unregisterSessionReverseIndex: () => {},
+        handleAuditorProviderLimit: async () => false,
+      } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      sandboxManager: sandboxManager as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns,
+    })
+
+    return { service, client }
+  }
+
+  test('sandbox: { enabled: false } skips sandbox start, persists sandbox=false, and carries loopSandbox on the workspace extra', async () => {
+    const sandboxManager = createSandboxManager()
+    const { service, client } = await buildService(sandboxManager)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nOpted-out sandbox.' },
+        sandbox: { enabled: false },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(sandboxManager.start).not.toHaveBeenCalled()
+
+    expect(client.workspace.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extra: expect.objectContaining({ loopSandbox: { enabled: false } }),
+      }),
+    )
+
+    const state = loopService.getActiveState(result.data.loopName)
+    expect(state).not.toBeNull()
+    expect(state!.sandbox).toBe(false)
+    expect(state!.sandboxSettings).toEqual({ enabled: false })
+  })
+
+  test('sandbox resources are persisted on the loop and forwarded to sandbox start', async () => {
+    const sandboxManager = createSandboxManager()
+    const { service, client } = await buildService(sandboxManager)
+
+    const resources = { memory: '4g', cpus: '2' }
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nCustom resources.' },
+        sandbox: { resources },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(client.workspace.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extra: expect.objectContaining({ loopSandbox: { resources } }),
+      }),
+    )
+
+    expect(sandboxManager.start).toHaveBeenCalledWith(result.data.loopName, '/tmp/wt/sandbox', undefined, resources)
+
+    const state = loopService.getActiveState(result.data.loopName)
+    expect(state).not.toBeNull()
+    expect(state!.sandboxSettings).toEqual({ resources })
   })
 })

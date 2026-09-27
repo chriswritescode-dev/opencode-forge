@@ -58,6 +58,7 @@ function makeLoop(over: Record<string, any> = {}): any {
     findings: [],
     usage: null,
     duration: null,
+    transitionsCapped: false,
     ...over,
   }
   return {
@@ -3707,6 +3708,7 @@ describe('dashboard App timeline tab', () => {
           { fromPhase: 'coding', toPhase: 'auditing', createdAt: startedAt + 5000 },
           { fromPhase: 'auditing', toPhase: 'final_auditing', createdAt: startedAt + 8000 },
         ]),
+        transitionsCapped: true,
       },
       loop: { startedAt, phase: 'final_auditing', status: 'running', completedAt: null },
     })
@@ -3802,6 +3804,7 @@ describe('dashboard App timeline tab', () => {
           { fromPhase: 'coding', toPhase: 'auditing', createdAt: startedAt + 5000 },
           { fromPhase: 'auditing', toPhase: 'final_auditing', createdAt: startedAt + 8000 },
         ]),
+        transitionsCapped: true,
       },
       loop: { startedAt, phase: 'final_auditing', status: 'running', completedAt: null },
     })
@@ -3865,6 +3868,7 @@ describe('dashboard App timeline tab', () => {
           { fromPhase: 'coding', toPhase: 'auditing', createdAt: startedAt + 5000 },
           { fromPhase: 'auditing', toPhase: 'final_auditing', createdAt: startedAt + 8000 },
         ]),
+        transitionsCapped: true,
       },
       loop: { startedAt, phase: 'final_auditing', status: 'running', completedAt: null },
     })

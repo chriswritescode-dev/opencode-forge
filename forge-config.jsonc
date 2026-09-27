@@ -181,7 +181,7 @@
     }
   },
 
-  // Dashboard HTTP server bind address (`pnpm dashboard` and the TUI "Open dashboard" command).
+  // Dashboard HTTP server bind address (`pnpm dashboard` and the TUI "Open web dashboard" command).
   // Defaults to loopback only. Use "0.0.0.0" to listen on all interfaces so the dashboard is
   // reachable from other devices on a LAN or VPN.
   // WARNING: the dashboard has NO authentication. A non-loopback bind exposes every loop plan,

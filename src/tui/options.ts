@@ -30,8 +30,8 @@ export type TuiOptionOverrides = {
 
 export const FORGE_DASHBOARD_COMMAND = {
   id: 'forge.dashboard',
-  title: 'Open dashboard',
-  description: 'Start the Forge dashboard server and open it in the browser',
+  title: 'Open web dashboard',
+  description: 'Start the Forge web dashboard server and open it in the browser',
   group: 'Forge',
 } as const
 

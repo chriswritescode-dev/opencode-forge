@@ -8,12 +8,11 @@ See also: [Dashboard](dashboard.md), [Workflow](workflow.md), [Configuration →
 
 The TUI surface provides:
 
-- the [Execution Dialog](#execution-dialog) (`Execute plan`, `tui.keybinds.executePlan`, and `Execute pasted plan`) with model, variant, and loop-name selection. It launches through the server plugin's `executePlan` RPC method, which runs the same execution service as the `execute-plan` tool.
-- `Restart loop`, opening the same execution dialog with restart parameters; the restart is dispatched through the server's `loopRestart` RPC
+- the [Execution Dialog](#execution-dialog) (`Execute plan`, `tui.keybinds.executePlan`) with plan, model, variant, loop-name, and loop-settings selection. It launches through the server plugin's `executePlan` RPC method, which runs the same execution service as the `execute-plan` tool, and restarts a loop through the server's `loopRestart` RPC
 - `Build sandbox template`
 - auto-follow of replacement code and auditor sessions when a loop you are viewing rotates. Subagent sessions and sessions outside the loop worktree are not followed.
-- the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing up to three loops — running loops first, then the most recent finished ones — each as a status-colored bullet with the truncated loop name, status, and `iteration/max`, read through the `loopSidebar` RPC and refreshed every couple of seconds
-- the `Open dashboard` palette command (and `tui.keybinds.dashboard`)
+- the loop sidebar (`tui.sidebar`, `tui.showVersion`), scoped to the current project, listing up to three loops — running loops first, then the most recent finished ones — each as a status-colored bullet with the truncated loop name, status, and `iteration/max`, read through the `loopSidebar` RPC on every `loopsChanged` push. A running loop shows `▸` instead of the bullet; clicking its row expands it to the current phase and how long it has been in it, then the section (`Section n/total`, when the loop has sections) and the loop's total elapsed time. The phase and start times come from the server with the rows; while a loop is expanded the TUI only advances the clocks locally
+- the `Open web dashboard` palette command (and `tui.keybinds.dashboard`)
 - the `Toggle auto-approve` palette command (and `tui.keybinds.toggleAutoApprove`), which turns per-session auto-approve on or off for the current session and its Task subagents
 - a warning toast when sandboxing is enabled but the bundled build context is missing
 - Forge's server toasts (loop completion, workspace, sandbox, and permission warnings), delivered from the server plugin over the V2 plugin RPC event bus and shown only for the current project
@@ -22,7 +21,7 @@ Everything the TUI reads or changes lives on the OpenCode server, reached throug
 
 Options come from forge-config `tui`; plugin options set on the `cli.json` entry override them, with keybinds merged per key.
 
-When no stored plan exists, `Execute plan` opens the paste dialog instead of recovering a plan from chat history. The dialog's last-used models come from the project's most recent loop rather than from workspace metadata.
+`Execute plan` opens the dialog for the current session's stored plan; with no stored plan the dialog opens with `Plan: none` and a plan is pasted from the dialog's `Plan` row rather than recovered from chat history. With no open session it opens in restart mode instead. The dialog's last-used models come from the project's most recent loop rather than from workspace metadata.
 
 ## Sidebar
 
@@ -39,11 +38,11 @@ When auto-approve is on for the current session, including when it is inherited 
 | `Toggle host sandbox` | Enable or disable sandbox for the current session |
 | `Toggle auto-approve` | Turn per-session auto-approve on or off for the current session |
 | `Build sandbox template` | Build, save, and load the sandbox template image |
-| `Open dashboard` | Start the Forge dashboard and open it in a browser |
+| `Open web dashboard` | Start the Forge web dashboard and open it in a browser |
 
 ## Execution Dialog
 
-Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. When no stored plan exists, a toast prompts the user and the dialog falls back to a paste-input prompt so a plan can be entered manually. A separate command, `Execute pasted plan`, opens the paste dialog directly.
+Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. With no stored plan the dialog opens with `Plan: none`; the `Plan` row pastes a plan, which is also how a plan is entered manually. With no open session the dialog opens in restart mode instead (a toast when nothing is restartable).
 
 The dialog provides full control over execution parameters.
 
@@ -62,6 +61,17 @@ Two model selectors are available:
 **Auditor Model** — the same model selection interface. Defaults to `config.auditorModel`, then `config.executionModel`, then the most recent Forge loop's auditor or execution model, then the platform default.
 
 Models are sorted with recently used first (last 10, derived from the OpenCode session list, recent Forge loops, OpenCode favorites, and the global default), then connected providers, then configured providers, then the remaining models alphabetically by provider and model name. Recent models are grouped under a `Recent` header, and the rest under their provider name; each entry shows the model name and, as its description, the provider name or a `Reasoning` marker. A **"Use default"** option sits at the top. Recently used models are derived from server-side data each time the dialog opens, so they reflect the latest state across all hosts you have used.
+
+### Loop Settings
+
+The `Loop settings` row opens a submenu of per-loop overrides that apply to **Loop** mode only; `New session` and `Execute here` ignore them. Defaults come from the attached server's `loopDefaults` RPC, so they are correct even for a remote server, and are marked `(default)`.
+
+- **Max iterations** — empty uses the server's `loop.defaultMaxIterations`; `0` runs until the plan completes.
+- **Sandbox** — turn the sandbox off for this loop. It can only be turned off, never on when the server has `sandbox.enabled: false`, and the sandbox rows are hidden entirely when the attached server has no usable sandbox.
+- **CPUs**, **Memory**, **Docker disk**, **Cache disk** — per-loop resource overrides, shown only while the sandbox is on. Values are validated (CPUs a positive integer; sizes such as `8g` or `1024m`) and an invalid value is rejected with a toast. Overrides apply only when the sandbox is created — msb cannot resize an existing sandbox.
+- **Reset to defaults** — clears every override.
+
+The overrides are persisted on the loop row and read back whenever its sandbox is (re)created, so a restarted loop keeps its resources and a loop launched with the sandbox off stays off.
 
 ### Persistence
 

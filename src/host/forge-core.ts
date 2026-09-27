@@ -11,7 +11,8 @@ import { createLogger, slugify } from '../utils/logger'
 import { createMsbRuntime, describeMsbUnavailable } from '../sandbox/msb'
 import { collectLegacySandboxConfigWarnings } from '../sandbox/config-warnings'
 import { defaultGitService } from '../utils/git-service'
-import { resolveSandboxContextForLoop, isSandboxConfigEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled, resolveSandboxMountConfigs, type SandboxContext } from '../sandbox/context'
+import { readLoopSandboxSettings, resolveSandboxResources } from '../sandbox/loop-settings'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
 import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
 import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
@@ -50,7 +51,7 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeTuiEvent } from './forge-rpc'
+import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
 import { processShared } from '../utils/process-shared'
 import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
@@ -88,6 +89,8 @@ export interface ForgeCore {
   compacting(input: { sessionID: string }, output: { context: string[]; prompt?: string }): Promise<void>
   architectReminderFor(agent: string | undefined): string | null
   executeTuiPlan(input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput>
+  /** Server-side loop-setting defaults the execution dialog shows before a loop is launched. */
+  loopDefaults(): ForgeLoopDefaults
   resolveSandboxForDirectory(directory: string, opts?: { throwOnRestoreError?: boolean }): Promise<SandboxContext | null>
   /**
    * Sandbox for a shell tool call in `sessionID`, or null to run it on the host. Returns null
@@ -455,6 +458,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
         buildContextDir: resolveBundledContainerDir(),
         ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
+        resolveLoopResources: (worktreeName) => loopsRepo.get(projectId, worktreeName)?.sandboxSettings?.resources,
       }, logger, defaultGitService)
       logger.log('Sandbox manager initialized')
     } catch (err) {
@@ -1082,12 +1086,13 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       source,
       title: input.title,
       loopName: input.loopName?.trim() ? slugify(input.loopName) : undefined,
-      maxIterations: config.loop?.defaultMaxIterations ?? 0,
+      maxIterations: input.maxIterations ?? config.loop?.defaultMaxIterations ?? 0,
       executionModel,
       auditorModel: input.auditorModel || undefined,
       executionVariant,
       auditorVariant: input.auditorVariant || undefined,
       hostSessionId: input.sessionId || undefined,
+      sandbox: readLoopSandboxSettings(input.sandbox),
       lifecycle: { startWatchdog: true },
     }))
     if (!response.ok) return { error: response.error.message }
@@ -1098,6 +1103,14 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       ...(response.data.workspaceId ? { workspaceId: response.data.workspaceId } : {}),
     }
   }
+
+  const loopDefaults = (): ForgeLoopDefaults => ({
+    maxIterations: config.loop?.defaultMaxIterations ?? 0,
+    sandbox: {
+      available: isSandboxEnabled(config, sandboxManager),
+      resources: resolveSandboxResources(config.sandbox?.resources),
+    },
+  })
 
   const resolveSandboxForDirectory = async (
     targetDirectory: string,
@@ -1227,6 +1240,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
     architectReminderFor,
     executeTuiPlan,
+    loopDefaults,
     resolveSandboxForDirectory,
     resolveShellSandbox,
     autoApprovesPermissions: async (sessionID) => {

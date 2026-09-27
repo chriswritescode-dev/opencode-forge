@@ -8,6 +8,7 @@ import {
   readForgeHostSandboxChangedEvent,
   readForgeHostSandboxSetOutput,
   readForgeHostSandboxState,
+  readForgeLoopDefaults,
   readForgeLoopRestartOutput,
   readForgeLoopSidebar,
   readForgeLoops,
@@ -24,6 +25,7 @@ describe('FORGE_RPC', () => {
     expect(FORGE_RPC.id).toBe(FORGE_PLUGIN_ID)
     expect(Object.keys(FORGE_RPC.methods)).toEqual([
       'executePlan',
+      'loopDefaults',
       'autoApproveState',
       'autoApproveSet',
       'loops',
@@ -50,6 +52,73 @@ describe('FORGE_RPC', () => {
     expect(readForgeExecutePlanOutput({ error: 'Loops are disabled' })).toEqual({ error: 'Loops are disabled' })
     expect(readForgeExecutePlanOutput({})).toEqual({ error: 'Forge returned no session for the plan execution' })
     expect(readForgeExecutePlanOutput(null)).toEqual({ error: 'Forge returned an invalid plan execution result' })
+  })
+
+  test('executePlan accepts loop settings and loopDefaults declares an empty input', () => {
+    const input = FORGE_RPC.methods.executePlan.input
+    expect(input.properties.maxIterations).toEqual({ type: 'integer', minimum: 0 })
+    expect(input.properties.sandbox).toEqual({
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean' },
+        resources: {
+          type: 'object',
+          properties: {
+            memory: { type: 'string' },
+            cpus: { type: 'string' },
+            dockerDisk: { type: 'string' },
+            cacheDisk: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    })
+
+    const method = FORGE_RPC.methods.loopDefaults
+    expect(method.input).toEqual({ type: 'object', properties: {}, additionalProperties: false })
+    expect(method.output.properties.maxIterations).toEqual({ type: 'integer' })
+    expect(method.output.properties.sandbox).toEqual({
+      type: 'object',
+      properties: {
+        available: { type: 'boolean' },
+        resources: {
+          type: 'object',
+          properties: {
+            memory: { type: 'string' },
+            cpus: { type: 'string' },
+            dockerDisk: { type: 'string' },
+            cacheDisk: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    })
+    expect(method.output.additionalProperties).toBe(false)
+  })
+
+  test('readForgeLoopDefaults keeps defaults and rejects invalid payloads', () => {
+    const defaults = {
+      maxIterations: 10,
+      sandbox: {
+        available: true,
+        resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+      },
+    }
+    expect(readForgeLoopDefaults(defaults)).toEqual(defaults)
+    expect(readForgeLoopDefaults({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeLoopDefaults(null)).toEqual({ error: 'Forge returned an invalid loop defaults' })
+    expect(readForgeLoopDefaults({ maxIterations: 10 }))
+      .toEqual({ error: 'Forge returned an invalid loop defaults' })
+    expect(readForgeLoopDefaults({ maxIterations: 10, sandbox: { available: true } }))
+      .toEqual({ error: 'Forge returned an invalid loop defaults' })
+    expect(readForgeLoopDefaults({
+      maxIterations: 10,
+      sandbox: { available: true, resources: { memory: '8g', cpus: '4', dockerDisk: '16g' } },
+    })).toEqual({ error: 'Forge returned an invalid loop defaults' })
+    expect(readForgeLoopDefaults({ maxIterations: 1.5, sandbox: defaults.sandbox }))
+      .toEqual({ error: 'Forge returned an invalid loop defaults' })
   })
 
   test('autoApproveState requires a session and autoApproveSet requires a session and enabled', () => {
@@ -161,9 +230,12 @@ describe('FORGE_RPC', () => {
   })
 
   test('readForgeLoopSidebar keeps sidebar rows and surfaces errors', () => {
-    const loops = [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5 }]
+    const loops = [{
+      loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5,
+      startedAt: 100, phase: 'auditing', phaseStartedAt: 150, currentSectionIndex: 1, totalSections: 3,
+    }]
     expect(readForgeLoopSidebar({ loops })).toEqual({ loops })
-    expect(readForgeLoopSidebar({ loops: [{ loopName: 'loop-a' }] }))
+    expect(readForgeLoopSidebar({ loops: [{ loopName: 'loop-a', status: 'running', iteration: 1, maxIterations: 5, startedAt: 100 }] }))
       .toEqual({ error: 'Forge returned an invalid loop sidebar' })
     expect(readForgeLoopSidebar({ error: 'no db' })).toEqual({ error: 'no db' })
   })

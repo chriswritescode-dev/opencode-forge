@@ -1,6 +1,7 @@
 import type { DashboardPayload, DashboardProject, DashboardLoop, LoopTransitionRow } from './types'
 import { formatDuration, computeElapsedSeconds } from '../../utils/duration'
 import { slugifyText } from '../../utils/format'
+import { phaseLabel } from '../../utils/phase-label'
 import { USAGE_ROLE_ORDER } from '../../loop/token-usage'
 import type { UsageRole } from '../../loop/token-usage'
 
@@ -617,12 +618,20 @@ export interface PhaseSpan {
   endedAt: number | null
   durationMs: number
   open: boolean
-}export function computePhaseSpans(
+}
+
+/**
+ * Phase spans of a loop's current run. `windowCapped` says the transition fetch
+ * hit its row limit; only then can a first transition well after `startedAt`
+ * mean older rows were cut off, and the leading span is marked unknown.
+ */
+export function computePhaseSpans(
   transitions: LoopTransitionRow[],
   startedAt: number,
   completedAt: number | null,
   now: number,
   initialPhase: string = 'coding',
+  windowCapped: boolean = false,
 ): { spans: PhaseSpan[]; truncated: boolean } {
   const spans: PhaseSpan[] = []
   const firstCurrentIdx = transitions.findIndex(t => t.createdAt >= startedAt)
@@ -680,8 +689,8 @@ export interface PhaseSpan {
     })
   }
 
-  const truncated = transitions.length > 0
-    && transitions[0].createdAt >= startedAt
+  const truncated = windowCapped
+    && transitions.length > 0
     && transitions[0].createdAt > startedAt + 1000
   if (truncated && spans.length > 0) {
     spans[0] = { ...spans[0], phase: '' }
@@ -698,19 +707,7 @@ export function summarizePhaseTotals(spans: PhaseSpan[]): Record<string, number>
   return out
 }
 
-/** Single source of human phase display text; unknown phases pass through. */
-const PHASE_LABELS: Record<string, string> = {
-  coding: 'Coding',
-  auditing: 'Auditing',
-  final_auditing: 'Final audit',
-  final_audit_fix: 'Final audit fix',
-  post_action: 'Post-action',
-}
-
-export function phaseLabel(phase: string): string {
-  if (phase === '') return 'Unknown'
-  return PHASE_LABELS[phase] ?? phase
-}
+export { phaseLabel }
 
 export interface PhaseLegendRow {
   phase: string

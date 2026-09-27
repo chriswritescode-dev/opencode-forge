@@ -15,12 +15,6 @@ export interface LoopSidebarStore {
   dispose(): void
 }
 
-function loopSignature(loops: ReadonlyArray<LoopSidebarRow>): string {
-  return loops
-    .map((loop) => `${loop.loopName}|${loop.status}|${loop.iteration}|${loop.maxIterations}`)
-    .join('\n')
-}
-
 /**
  * The sidebar's loop rows, read once at startup and on every `loopsChanged` push.
  * The row signature suppresses a re-render when a refetch returns identical rows.
@@ -32,7 +26,7 @@ export function createLoopSidebarStore(deps: LoopSidebarStoreDeps): LoopSidebarS
     const result = await deps.readLoops()
     if ('error' in result) return
     const next = result.loops
-    const nextSignature = loopSignature(next)
+    const nextSignature = JSON.stringify(next)
     if (nextSignature === signature) return
     signature = nextSignature
     setLoops(next)

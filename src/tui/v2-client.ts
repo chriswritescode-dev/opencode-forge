@@ -3,6 +3,7 @@ import { toProviderListFromV2 } from '../client/v2-adapter'
 import {
   FORGE_RPC,
   readForgeExecutePlanOutput,
+  readForgeLoopDefaults,
   readForgeLoopRestartOutput,
   readForgeLoops,
   readForgeSessionPlan,
@@ -130,6 +131,8 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
           ...(req.auditorModel ? { auditorModel: req.auditorModel } : {}),
           ...(req.executionVariant ? { executionVariant: req.executionVariant } : {}),
           ...(req.auditorVariant ? { auditorVariant: req.auditorVariant } : {}),
+          ...(req.maxIterations !== undefined ? { maxIterations: req.maxIterations } : {}),
+          ...(req.sandbox ? { sandbox: req.sandbox } : {}),
         }
         return call(
           async (rpc, location) => {
@@ -156,7 +159,10 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
     async loadExecutionContext() {
       const { defaultModel, ...models } = await loadModels(context, directory)
       options.onDefaultModel(defaultModel)
-      const loopsResult = await call((rpc, location) => rpc.loops({}, location), readForgeLoops)
+      const [loopsResult, loopDefaults] = await Promise.all([
+        call((rpc, location) => rpc.loops({}, location), readForgeLoops),
+        call((rpc, location) => rpc.loopDefaults({}, location), readForgeLoopDefaults),
+      ])
       const loops = 'error' in loopsResult ? [] : loopsResult.loops
       const workspaces = loopsToWorkspacesForRecents(projectId, loops)
       return {
@@ -166,6 +172,7 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
         workspaces,
         openCodeFavorites: [],
         openCodeDefault: defaultModel || undefined,
+        ...('error' in loopDefaults ? {} : { loopDefaults }),
       }
     },
     async restartLoop(request) {

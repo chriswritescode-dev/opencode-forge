@@ -3,23 +3,40 @@ import type { SelectRenderable } from '@opentui/core'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { claimFocusOnMount } from './focus'
 import type { ForgeTuiHost } from './host'
-import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
-import { extractPlanExecutionMetadata } from '../utils/plan-execution'
+import { PLAN_EXECUTION_LABELS, extractPlanExecutionMetadata, type PlanExecutionLabel } from '../utils/plan-execution'
+import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type LoopInfo, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
-import type { ForgeLoopRestartInput } from '../host/forge-rpc'
+import type { ForgeExecutionMode, ForgeLoopDefaults, ForgeLoopRestartInput } from '../host/forge-rpc'
 import type { ForgeProjectClient } from './project-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import { withBusyGuard } from '../utils/busy-guard'
 import type { PluginConfig } from '../types'
+import { editLoopSettings, formatLoopSettingsSummary, toLoopLaunchRequest, type LoopLaunchSettings } from './loop-settings-dialog'
 
-/** Selection state reported back to the wrapper dialog after every picker round-trip. */
+/** Dialog state carried across every picker round-trip, which closes and reopens the dialog. */
 export interface ExecutionSelection {
   executionModel: string
   auditorModel: string
   executionVariant: string
   auditorVariant: string
   loopName: string
+  planContent: string
+  loopSettings: LoopLaunchSettings
+}
+
+type ModelRole = 'execution' | 'auditor'
+
+const MODE_API: Record<PlanExecutionLabel, ForgeExecutionMode> = {
+  'New session': 'new-session',
+  'Execute here': 'execute-here',
+  Loop: 'loop',
+}
+
+const MODE_DESCRIPTIONS: Record<PlanExecutionLabel, string> = {
+  'New session': 'Create a new session and send the plan to the code agent',
+  'Execute here': 'Execute the plan in the current session using the code agent',
+  Loop: 'Run an iterative coding/auditing loop in an isolated git worktree, using the loop settings above',
 }
 
 export interface ExecutePlanPanelProps {
@@ -29,14 +46,11 @@ export interface ExecutePlanPanelProps {
   pluginConfig: PluginConfig
   planContent: string
   sessionId: string
-  initialExecutionModel?: string
-  initialAuditorModel?: string
-  initialExecutionVariant?: string
-  initialAuditorVariant?: string
-  initialLoopName?: string
-  onBack: () => void
+  initial?: Partial<Omit<ExecutionSelection, 'planContent'>>
   onExecuted?: () => void | Promise<void>
-  onSelectionChanged: (args: ExecutionSelection) => void
+  onSelectionChanged: (selection: ExecutionSelection) => void
+  /** Execute mode only: switches to the restart dialog. */
+  onOpenRestart?: () => void | Promise<void>
   restart?: {
     loops: LoopInfo[]
     onRestart(request: Omit<ForgeLoopRestartInput, 'executionModel' | 'executionVariant' | 'force'> & Required<Pick<ForgeLoopRestartInput, 'executionModel' | 'executionVariant' | 'force'>>): Promise<void>
@@ -46,90 +60,70 @@ export interface ExecutePlanPanelProps {
 export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const cache = untrack(() => props.cache)
   const pluginConfig = untrack(() => props.pluginConfig)
+  const initial = untrack(() => props.initial) ?? {}
+  const planContent = untrack(() => props.planContent)
   const colors = () => props.host.colors()
-
   const openCodeDefaultModel = () => props.host.defaultModel()
 
   const initialSnapshot = cache?.snapshot() ?? null
   const initialDefaults = initialSnapshot?.defaults
     ?? resolveExecutionDialogDefaults(pluginConfig, initialSnapshot?.preferences ?? null)
 
-  const hasInitialOverrides = () => props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
-
   let selectRef: SelectRenderable | undefined
   claimFocusOnMount(() => selectRef)
 
-  const [executionModel, setExecutionModel] = createSignal(
-    props.initialExecutionModel ?? initialDefaults.executionModel,
-  )
-  const [auditorModel, setAuditorModel] = createSignal(
-    props.initialAuditorModel ?? initialDefaults.auditorModel,
-  )
-  const [executionVariant, setExecutionVariant] = createSignal(
-    props.initialExecutionVariant ?? initialDefaults.executionVariant,
-  )
-  const [auditorVariant, setAuditorVariant] = createSignal(
-    props.initialAuditorVariant ?? initialDefaults.auditorVariant,
-  )
+  const [executionModel, setExecutionModel] = createSignal(initial.executionModel ?? initialDefaults.executionModel)
+  const [auditorModel, setAuditorModel] = createSignal(initial.auditorModel ?? initialDefaults.auditorModel)
+  const [executionVariant, setExecutionVariant] = createSignal(initial.executionVariant ?? initialDefaults.executionVariant)
+  const [auditorVariant, setAuditorVariant] = createSignal(initial.auditorVariant ?? initialDefaults.auditorVariant)
   const [models, setModels] = createSignal<ModelInfo[]>(initialSnapshot?.models ?? [])
   const [recents, setRecents] = createSignal<string[]>(initialSnapshot?.recents ?? [])
   const [modelsError, setModelsError] = createSignal<string | undefined>(initialSnapshot?.modelsError)
   const [modelsLoaded, setModelsLoaded] = createSignal(!!initialSnapshot)
+  const [loopDefaults, setLoopDefaults] = createSignal<ForgeLoopDefaults | null>(initialSnapshot?.loopDefaults ?? null)
   const [busy, setBusy] = createSignal(false)
-  const [loopName] = createSignal(
-    props.initialLoopName ?? extractPlanExecutionMetadata(untrack(() => props.planContent)).executionName,
-  )
+  const loopName = initial.loopName ?? (planContent ? extractPlanExecutionMetadata(planContent).executionName : '')
+  const loopSettings = initial.loopSettings ?? {}
   const isRestart = () => props.restart !== undefined
-  const selectedLoop = () => props.restart?.loops.find(loop => loop.name === loopName())
+  const selectedLoop = () => props.restart?.loops.find(loop => loop.name === loopName)
 
-  /** Current picker selections, with per-dialog overrides layered on top. */
   const currentSelection = (overrides: Partial<ExecutionSelection> = {}): ExecutionSelection => ({
     executionModel: executionModel(),
     auditorModel: auditorModel(),
     executionVariant: executionVariant(),
     auditorVariant: auditorVariant(),
-    loopName: loopName(),
+    loopName,
+    planContent,
+    loopSettings,
     ...overrides,
   })
 
-  const selectedModelInfo = (target: 'execution' | 'auditor') => {
-    const selected = target === 'execution' ? executionModel() : auditorModel()
-    const fallback = openCodeDefaultModel()
-    const fullName = selected || fallback
-    return models().find(m => m.fullName === fullName) ?? null
-  }
+  const reopenWith = (overrides?: Partial<ExecutionSelection>) => props.onSelectionChanged(currentSelection(overrides))
 
-  const applyDefaults = (defaults: { executionModel: string; auditorModel: string; executionVariant?: string; auditorVariant?: string }) => {
-    if (!hasInitialOverrides() && !props.initialExecutionModel && !executionModel()) {
-      setExecutionModel(defaults.executionModel)
-    }
-    if (!hasInitialOverrides() && !props.initialAuditorModel && !auditorModel()) {
-      setAuditorModel(defaults.auditorModel)
-    }
-    if (props.initialExecutionVariant === undefined && !executionVariant()) {
-      setExecutionVariant(defaults.executionVariant ?? '')
-    }
-    if (props.initialAuditorVariant === undefined && !auditorVariant()) {
-      setAuditorVariant(defaults.auditorVariant ?? '')
-    }
-  }
+  const modelOf = (role: ModelRole) => role === 'execution' ? executionModel() : auditorModel()
+  const variantOf = (role: ModelRole) => role === 'execution' ? executionVariant() : auditorVariant()
+  const modelInfoFor = (fullName: string) => models().find(m => m.fullName === (fullName || openCodeDefaultModel())) ?? null
+
+  const hasInitialModels = initial.executionModel !== undefined || initial.auditorModel !== undefined
 
   const applySnapshot = (snap: ExecutionContextSnapshot) => {
-    applyDefaults(snap.defaults)
+    if (!hasInitialModels && !executionModel()) setExecutionModel(snap.defaults.executionModel)
+    if (!hasInitialModels && !auditorModel()) setAuditorModel(snap.defaults.auditorModel)
+    if (initial.executionVariant === undefined && !executionVariant()) setExecutionVariant(snap.defaults.executionVariant ?? '')
+    if (initial.auditorVariant === undefined && !auditorVariant()) setAuditorVariant(snap.defaults.auditorVariant ?? '')
     setModels(snap.models)
     setRecents(snap.recents)
     setModelsError(snap.modelsError)
+    setLoopDefaults(snap.loopDefaults)
     setModelsLoaded(true)
-    // Normalize variants against loaded models
-    setExecutionVariant(normalizeVariantForModel(executionVariant(), selectedModelInfo('execution')))
-    setAuditorVariant(normalizeVariantForModel(auditorVariant(), selectedModelInfo('auditor')))
+    setExecutionVariant(normalizeVariantForModel(executionVariant(), modelInfoFor(executionModel())))
+    setAuditorVariant(normalizeVariantForModel(auditorVariant(), modelInfoFor(auditorModel())))
   }
 
   const loadInline = async () => {
     try {
       const ctx = await props.client.loadExecutionContext()
-      const snap = buildExecutionContextSnapshot(props.client.projectId, pluginConfig, ctx)
-      applySnapshot(snap)
+      applySnapshot(buildExecutionContextSnapshot(props.client.projectId, pluginConfig, ctx))
     } catch (err) {
       setModelsError(err instanceof Error ? err.message : 'Failed to load models')
       setModelsLoaded(true)
@@ -137,186 +131,156 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   }
 
   createEffect(() => {
-    if (cache) {
-      const unsub = cache.onChange((snap) => untrack(() => applySnapshot(snap)))
-      onCleanup(unsub)
-      const existing = cache.snapshot()
-      if (existing) {
-        applySnapshot(existing)
-      } else {
-        void cache.ensureLoaded().catch(() => { void untrack(() => loadInline()) })
-      }
-    } else {
+    if (!cache) {
       void loadInline()
+      return
     }
+    const unsub = cache.onChange((snap) => untrack(() => applySnapshot(snap)))
+    onCleanup(unsub)
+    const existing = cache.snapshot()
+    if (existing) applySnapshot(existing)
+    else void cache.ensureLoaded().catch(() => { void untrack(() => loadInline()) })
   })
 
-  const reopenWith = (overrides: Partial<ExecutionSelection> | undefined) => {
-    props.onSelectionChanged(currentSelection(overrides ?? {}))
-  }
-
-  const openModelDialog = async (which: 'execution' | 'auditor') => {
+  const openModelDialog = async (role: ModelRole) => {
     if (!modelsLoaded()) return
-
-    const currentModels = models()
-    if (modelsError() || currentModels.length === 0) {
+    if (modelsError() || models().length === 0) {
       props.host.toast({ message: modelsError() || 'No models available', variant: 'error', duration: 3000 })
       return
     }
-
-    const selectedModel = await props.host.select({
-      title: which === 'execution' ? 'Execution Model' : 'Auditor Model',
-      options: buildDialogSelectOptions(currentModels, recents()),
-      current: (which === 'execution' ? executionModel() : auditorModel()) || '',
+    const selected = await props.host.select({
+      title: role === 'execution' ? 'Execution Model' : 'Auditor Model',
+      options: buildDialogSelectOptions(models(), recents()),
+      current: modelOf(role) || '',
     })
-    if (selectedModel === undefined) {
-      reopenWith(undefined)
-      return
-    }
-    const effectiveModelName = selectedModel || openCodeDefaultModel()
-    const effectiveModelInfo = models().find(m => m.fullName === effectiveModelName) ?? null
-    const normalizedVariant = normalizeVariantForModel(
-      which === 'execution' ? executionVariant() : auditorVariant(),
-      effectiveModelInfo,
-    )
-    reopenWith(which === 'execution'
-      ? { executionModel: selectedModel, executionVariant: normalizedVariant }
-      : { auditorModel: selectedModel, auditorVariant: normalizedVariant })
+    if (selected === undefined) return reopenWith()
+    const variant = normalizeVariantForModel(variantOf(role), modelInfoFor(selected))
+    reopenWith(role === 'execution'
+      ? { executionModel: selected, executionVariant: variant }
+      : { auditorModel: selected, auditorVariant: variant })
   }
 
-  const openVariantDialog = async (which: 'execution' | 'auditor') => {
+  const openVariantDialog = async (role: ModelRole) => {
     if (!modelsLoaded()) return
-
-    const availableVariants = getAvailableModelVariants(selectedModelInfo(which))
-    if (availableVariants.length === 0) {
+    const variants = getAvailableModelVariants(modelInfoFor(modelOf(role)))
+    if (variants.length === 0) {
       props.host.toast({ message: 'No variants available for this model', variant: 'info', duration: 3000 })
       return
     }
-
-    const selectedVariant = await props.host.select({
-      title: which === 'execution' ? 'Execution Variant' : 'Auditor Variant',
+    const selected = await props.host.select({
+      title: role === 'execution' ? 'Execution Variant' : 'Auditor Variant',
       options: [
         { title: 'Use default', value: '', description: 'Use OpenCode/model default variant' },
-        ...availableVariants.map(v => ({ title: v.label, value: v.id, description: v.description })),
+        ...variants.map(v => ({ title: v.label, value: v.id, description: v.description })),
       ],
-      current: (which === 'execution' ? executionVariant() : auditorVariant()) || '',
+      current: variantOf(role) || '',
     })
-    if (selectedVariant === undefined) {
-      reopenWith(undefined)
-      return
-    }
-    reopenWith(which === 'execution' ? { executionVariant: selectedVariant } : { auditorVariant: selectedVariant })
+    if (selected === undefined) return reopenWith()
+    reopenWith(role === 'execution' ? { executionVariant: selected } : { auditorVariant: selected })
+  }
+
+  const openRestartLoopPicker = async (loops: LoopInfo[]) => {
+    const name = await props.host.select({
+      title: 'Loop',
+      options: loops.filter(loop => loop.restartable).map(loop => ({
+        title: loop.name,
+        value: loop.name,
+        description: `${loop.status} · ${loop.phase} · iteration ${loop.iteration}/${loop.maxIterations}`,
+      })),
+      current: loopName,
+    })
+    const selected = loops.find(loop => loop.name === name)
+    if (!selected) return reopenWith()
+    reopenWith({
+      loopName: selected.name,
+      executionModel: selected.executionModel ?? executionModel(),
+      executionVariant: selected.executionModel ? selected.executionVariant ?? '' : executionVariant(),
+      auditorModel: selected.auditorModel ?? auditorModel(),
+      auditorVariant: selected.auditorModel ? selected.auditorVariant ?? '' : auditorVariant(),
+    })
   }
 
   const openLoopNameDialog = async () => {
-    const restart = props.restart
-    if (restart) {
-      const name = await props.host.select({
-        title: 'Loop',
-        options: restart.loops.filter(loop => loop.restartable).map(loop => ({
-          title: loop.name,
-          value: loop.name,
-          description: `${loop.status} · ${loop.phase} · iteration ${loop.iteration}/${loop.maxIterations}`,
-        })),
-        current: loopName(),
-      })
-      const selected = restart.loops.find(loop => loop.name === name)
-      reopenWith(selected
-        ? {
-            loopName: selected.name,
-            executionModel: selected.executionModel ?? executionModel(),
-            executionVariant: selected.executionModel ? selected.executionVariant ?? '' : executionVariant(),
-            auditorModel: selected.auditorModel ?? auditorModel(),
-            auditorVariant: selected.auditorModel ? selected.auditorVariant ?? '' : auditorVariant(),
-          }
-        : undefined)
-      return
-    }
-    const name = await props.host.prompt({ title: 'Loop name', placeholder: 'my-feature-loop', value: loopName() })
+    const name = await props.host.prompt({ title: 'Loop name', placeholder: 'my-feature-loop', value: loopName })
     const trimmed = name?.trim()
     reopenWith(trimmed ? { loopName: trimmed } : undefined)
   }
 
-  function getModeDescription(label: string): string {
-    switch (label) {
-      case 'New session':
-        return 'Create a new session and send the plan to the code agent'
-      case 'Execute here':
-        return 'Execute the plan in the current session using the code agent'
-      case 'Loop':
-        return 'Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)'
-      default:
-        return ''
+  const openPastePlanDialog = async () => {
+    const pasted = await props.host.prompt({ title: 'Paste plan', placeholder: 'Paste a marked or unmarked implementation plan', value: '' })
+    if (pasted === undefined) return reopenWith()
+    const normalized = normalizePastedPlanText(pasted)
+    if (!normalized.ok) {
+      props.host.toast({
+        message: normalized.reason === 'empty' ? 'Paste a plan before executing' : `Invalid plan markers: ${normalized.reason}`,
+        variant: 'error',
+        duration: 4000,
+      })
+      return reopenWith()
     }
+    reopenWith({ planContent: normalized.planText, loopName: extractPlanExecutionMetadata(normalized.planText).executionName })
   }
 
-  /**
-   * Shared launch tail: surface errors, record recent
-   * models, toast success, and notify the host. Returns false on error so
-   * callers can stop.
-   */
-  async function completeLaunch(
-    outcome: { error: string } | { message: string },
-    execModel?: string,
-    auditModel?: string,
-  ): Promise<boolean> {
-    if ('error' in outcome) {
-      props.host.toast({ message: outcome.error, variant: 'error', duration: 10000 })
-      return false
-    }
-    cache?.recordRecent(execModel || '')
-    cache?.recordRecent(auditModel || '')
-    props.host.toast({ message: outcome.message, variant: 'success', duration: 5000 })
-    await props.onExecuted?.()
-    return true
+  const openLoopSettingsDialog = async () => {
+    reopenWith({ loopSettings: await editLoopSettings(props.host, loopSettings, loopDefaults()) })
   }
 
-  async function runExecuteMode(mode: string, execModel?: string, auditModel?: string, execVariant?: string, auditVariant?: string): Promise<void> {
-    const planText = props.planContent
-    const { title } = extractPlanExecutionMetadata(planText)
-
-    const normalizedMode = mode.toLowerCase()
-    const matchedLabel = PLAN_EXECUTION_LABELS.find(
-      label => normalizedMode === label.toLowerCase() || normalizedMode.startsWith(label.toLowerCase())
-    ) ?? null
-
-    const apiMode: import('../host/forge-rpc').ForgeExecutionMode = matchedLabel === 'Execute here'
-      ? 'execute-here'
-      : matchedLabel === 'Loop'
-        ? 'loop'
-        : 'new-session'
-
+  async function runExecuteMode(label: PlanExecutionLabel): Promise<void> {
+    if (!planContent) {
+      props.host.toast({ message: 'Paste a plan before executing', variant: 'info', duration: 3000 })
+      await openPastePlanDialog()
+      return
+    }
+    const mode = MODE_API[label]
+    const execModel = executionModel()
+    const auditModel = auditorModel()
     props.host.clearDialog()
     props.host.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
     const result = await props.client.plan.execute(props.sessionId, {
-      mode: apiMode,
-      title,
-      loopName: loopName(),
-      plan: planText,
+      mode,
+      title: extractPlanExecutionMetadata(planContent).title,
+      loopName,
+      plan: planContent,
       executionModel: execModel,
       auditorModel: auditModel,
-      executionVariant: execVariant,
-      auditorVariant: auditVariant,
+      executionVariant: executionVariant(),
+      auditorVariant: auditorVariant(),
       targetSessionId: props.sessionId,
+      ...(mode === 'loop' ? toLoopLaunchRequest(loopSettings, loopDefaults()) : {}),
     })
-
     if (!result) {
       props.host.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
       return
     }
-
     if ('error' in result) {
-      await completeLaunch(result)
+      props.host.toast({ message: result.error, variant: 'error', duration: 10000 })
       return
     }
+    cache?.recordRecent(execModel)
+    cache?.recordRecent(auditModel)
+    props.host.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 5000 })
+    await props.onExecuted?.()
+    if (result.sessionId && mode !== 'execute-here') await props.client.selectSession(result.sessionId)
+  }
 
-    await completeLaunch(
-      { message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started' },
-      execModel,
-      auditModel,
-    )
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop')) {
-      await props.client.selectSession(result.sessionId)
+  const runRestart = async () => {
+    if (!props.restart || !loopName) return
+    try {
+      await props.restart.onRestart({
+        loopName,
+        auditorModel: auditorModel(),
+        auditorVariant: auditorVariant(),
+        executionModel: executionModel(),
+        executionVariant: executionVariant(),
+        force: !!selectedLoop()?.restartRequiresForce,
+        expectedStartedAt: selectedLoop()?.startedAt,
+      })
+      cache?.recordRecent(auditorModel())
+      cache?.recordRecent(executionModel())
+      props.host.toast({ message: `Loop restarted: ${loopName}`, variant: 'success', duration: 5000 })
+      props.host.clearDialog()
+    } catch (err) {
+      props.host.toast({ message: err instanceof Error ? err.message : 'Failed to restart loop', variant: 'error', duration: 5000 })
     }
   }
 
@@ -327,94 +291,58 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     onBusy: () => props.host.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
   })
 
-  const runRestart = async () => {
-    if (!props.restart || !loopName()) return
-    try {
-      await props.restart.onRestart({
-        loopName: loopName(),
-        auditorModel: auditorModel(),
-        auditorVariant: auditorVariant(),
-        executionModel: executionModel(),
-        executionVariant: executionVariant(),
-        force: !!selectedLoop()?.restartRequiresForce,
-        expectedStartedAt: selectedLoop()?.startedAt,
-      })
-      cache?.recordRecent(auditorModel())
-      cache?.recordRecent(executionModel())
-      props.host.toast({ message: `Loop restarted: ${loopName()}`, variant: 'success', duration: 5000 })
-      props.host.clearDialog()
-    } catch (err) {
-      props.host.toast({ message: err instanceof Error ? err.message : 'Failed to restart loop', variant: 'error', duration: 5000 })
-    }
+  // eslint-disable-next-line solid/reactivity
+  const handleRestart = withBusyGuard(runRestart, {
+    isBusy: busy,
+    setBusy,
+    onBusy: () => props.host.toast({ message: 'Loop restart already in progress...', variant: 'info', duration: 2000 }),
+  })
+
+  const actions: Record<string, () => void> = {
+    'plan': () => { void openPastePlanDialog() },
+    'model:execution': () => { void openModelDialog('execution') },
+    'variant:execution': () => { void openVariantDialog('execution') },
+    'model:auditor': () => { void openModelDialog('auditor') },
+    'variant:auditor': () => { void openVariantDialog('auditor') },
+    'loop-name': () => { void (props.restart ? openRestartLoopPicker(props.restart.loops) : openLoopNameDialog()) },
+    'loop-settings': () => { void openLoopSettingsDialog() },
+    'action:restart': () => { handleRestart() },
+    'action:open-restart': () => { void props.onOpenRestart?.() },
+    ...Object.fromEntries(PLAN_EXECUTION_LABELS.map(label => [`mode:${label}`, () => { handleExecuteMode(label) }])),
   }
 
-  const options = () => isRestart()
-    ? [
-        {
-          name: `Loop: ${loopName()}`,
-          description: 'Press enter to choose a restartable loop',
-          value: 'loop-name',
-        },
-        {
-          name: `Execution model: ${getModelDisplayLabel(executionModel(), models(), openCodeDefaultModel())}`,
-          description: 'Press enter to change',
-          value: 'model:execution',
-        },
-        {
-          name: `Execution variant: ${getVariantDisplayLabel(executionVariant(), selectedModelInfo('execution'))}`,
-          description: 'Press enter to change',
-          value: 'variant:execution',
-        },
-        {
-          name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,
-          description: 'Press enter to change',
-          value: 'model:auditor',
-        },
-        {
-          name: `Auditor variant: ${getVariantDisplayLabel(auditorVariant(), selectedModelInfo('auditor'))}`,
-          description: 'Press enter to change',
-          value: 'variant:auditor',
-        },
-        {
-          name: selectedLoop()?.restartRequiresForce ? 'Force restart loop' : 'Restart loop',
-          description: selectedLoop()?.restartRequiresForce
-            ? 'Stops the running session first and resumes persisted progress'
-            : 'Resumes from persisted progress',
-          value: 'action:restart',
-        },
-      ]
-    : [
-        {
-          name: `Execution model: ${getModelDisplayLabel(executionModel(), models(), openCodeDefaultModel())}`,
-          description: 'Press enter to change',
-          value: 'model:execution',
-        },
-        {
-          name: `Execution variant: ${getVariantDisplayLabel(executionVariant(), selectedModelInfo('execution'))}`,
-          description: 'Press enter to change',
-          value: 'variant:execution',
-        },
-        {
-          name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,
-          description: 'Press enter to change',
-          value: 'model:auditor',
-        },
-        {
-          name: `Auditor variant: ${getVariantDisplayLabel(auditorVariant(), selectedModelInfo('auditor'))}`,
-          description: 'Press enter to change',
-          value: 'variant:auditor',
-        },
-        {
-          name: `Loop name: ${loopName()}`,
-          description: 'Press enter to edit the loop name used when launching',
-          value: 'loop-name',
-        },
-        ...PLAN_EXECUTION_LABELS.map(label => ({
-          name: label,
-          description: getModeDescription(label),
-          value: `mode:${label}`,
-        })),
-      ]
+  const modelRows = () => (['execution', 'auditor'] as const).flatMap(role => {
+    const label = role === 'execution' ? 'Execution' : 'Auditor'
+    return [
+      { name: `${label} model: ${getModelDisplayLabel(modelOf(role), models(), openCodeDefaultModel())}`, description: 'Press enter to change', value: `model:${role}` },
+      { name: `${label} variant: ${getVariantDisplayLabel(variantOf(role), modelInfoFor(modelOf(role)))}`, description: 'Press enter to change', value: `variant:${role}` },
+    ]
+  })
+
+  const restartRows = () => [
+    { name: `Loop: ${loopName}`, description: 'Press enter to choose a restartable loop', value: 'loop-name' },
+    ...modelRows(),
+    {
+      name: selectedLoop()?.restartRequiresForce ? 'Force restart loop' : 'Restart loop',
+      description: selectedLoop()?.restartRequiresForce
+        ? 'Stops the running session first and resumes persisted progress'
+        : 'Resumes from persisted progress',
+      value: 'action:restart',
+    },
+  ]
+
+  const executeRows = () => [
+    {
+      name: planContent ? `Plan: ${extractPlanExecutionMetadata(planContent).title}` : 'Plan: none',
+      description: planContent ? 'Press enter to paste a different plan' : 'Press enter to paste a plan',
+      value: 'plan',
+    },
+    ...modelRows(),
+    { name: `Loop name: ${loopName || '(from plan)'}`, description: 'Press enter to edit the loop name used when launching', value: 'loop-name' },
+    { name: `Loop settings: ${formatLoopSettingsSummary(loopSettings, loopDefaults())}`, description: 'Press enter to change iterations and sandbox settings for Loop mode', value: 'loop-settings' },
+    ...PLAN_EXECUTION_LABELS.map(label => ({ name: label, description: MODE_DESCRIPTIONS[label], value: `mode:${label}` })),
+    ...(props.onOpenRestart ? [{ name: 'Restart a loop…', description: 'Resume a stopped or running loop from persisted progress', value: 'action:open-restart' }] : []),
+  ]
 
   return (
     <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">
@@ -425,41 +353,9 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         ref={(el) => { selectRef = el }}
         focused={true}
         selectedIndex={0}
-        options={options()}
+        options={isRestart() ? restartRows() : executeRows()}
         onSelect={(_, option) => {
-          if (option?.value) {
-            if (option.value === 'model:execution') {
-              void openModelDialog('execution')
-              return
-            }
-            if (option.value === 'model:auditor') {
-              void openModelDialog('auditor')
-              return
-            }
-            if (option.value === 'variant:execution') {
-              void openVariantDialog('execution')
-              return
-            }
-            if (option.value === 'variant:auditor') {
-              void openVariantDialog('auditor')
-              return
-            }
-            if (option.value === 'loop-name') {
-              void openLoopNameDialog()
-              return
-            }
-            if (typeof option.value === 'string' && option.value.startsWith('mode:')) {
-              handleExecuteMode(option.value.slice(5), executionModel(), auditorModel(), executionVariant(), auditorVariant())
-              return
-            }
-            if (option.value === 'action:restart') {
-              void withBusyGuard(runRestart, {
-                isBusy: busy,
-                setBusy,
-                onBusy: () => props.host.toast({ message: 'Loop restart already in progress...', variant: 'info', duration: 2000 }),
-              })()
-            }
-          }
+          if (typeof option?.value === 'string') actions[option.value]?.()
         }}
         showDescription={true}
         itemSpacing={1}
@@ -475,7 +371,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   )
 }
 
-export type ExecutionDialogOptions = Omit<ExecutePlanPanelProps, 'onBack' | 'onExecuted' | 'onSelectionChanged'>
+export type ExecutionDialogOptions = Omit<ExecutePlanPanelProps, 'onExecuted' | 'onSelectionChanged'>
 
 function ExecutionDialog(props: { options: ExecutionDialogOptions; onSelectionChanged: (selection: ExecutionSelection) => void }) {
   const colors = () => props.options.host.colors()
@@ -489,7 +385,7 @@ function ExecutionDialog(props: { options: ExecutionDialogOptions; onSelectionCh
         </text>
       </box>
 
-      <ExecutePlanPanel {...props.options} onBack={close} onSelectionChanged={props.onSelectionChanged} />
+      <ExecutePlanPanel {...props.options} onSelectionChanged={props.onSelectionChanged} />
 
       <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
         <text fg={colors().textMuted} onMouseUp={close}>Close (esc)</text>
@@ -498,6 +394,7 @@ function ExecutionDialog(props: { options: ExecutionDialogOptions; onSelectionCh
   )
 }
 
+/** Opens the execution dialog; every picker round-trip reopens it with the carried selection. */
 export function openExecutionDialog(options: ExecutionDialogOptions): void {
   const reopen = (selection: ExecutionSelection) => {
     if (!options.restart) {
@@ -508,14 +405,8 @@ export function openExecutionDialog(options: ExecutionDialogOptions): void {
         auditorVariant: selection.auditorVariant,
       })
     }
-    openExecutionDialog({
-      ...options,
-      initialExecutionModel: selection.executionModel,
-      initialAuditorModel: selection.auditorModel,
-      initialExecutionVariant: selection.executionVariant,
-      initialAuditorVariant: selection.auditorVariant,
-      initialLoopName: selection.loopName,
-    })
+    const { planContent, ...initial } = selection
+    openExecutionDialog({ ...options, planContent, initial })
   }
   options.host.showDialog('xlarge', () => <ExecutionDialog options={options} onSelectionChanged={reopen} />)
 }

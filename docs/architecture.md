@@ -64,11 +64,11 @@ The TUI plugin provides:
 
 - A sidebar listing the project's loops (up to three: running first, then most recent finished)
 - The current session's msb state next to the Forge title when sandboxing is configured
-- An execution dialog with mode, model, and variant selection, also used to restart a loop
-- Command palette integration (`Execute plan`, `Execute pasted plan`, `Restart loop`, `Open dashboard`, `Build sandbox template`, `Toggle host sandbox`)
+- An execution dialog with plan paste, mode, model, variant, and per-loop settings (iterations, sandbox on/off, resources), also used to restart a loop
+- Command palette integration (`Execute plan`, `Open web dashboard`, `Build sandbox template`, `Toggle host sandbox`)
 - Model selection with recent-model tracking
 
-The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches and `autoApproveState`/`autoApproveSet` for per-session auto-approve (served by the core in `src/host/forge-core.ts`), and, served by `src/services/tui-rpc-service.ts`, `loops`/`loopSidebar` for the loop list and sidebar, `sessionPlan` for the stored plan, `loopRestart` for loop restarts, `hostSandboxState`/`hostSandboxSet` for the host-session sandbox, and `worktrees` for the server's Forge worktree directories; `version` reports the server plugin version. The server pushes `toast`, `sessionDelete`, `loopsChanged`, `autoApproveChanged`, and `hostSandboxChanged` events; the TUI never polls — it fetches at startup, when one of these events arrives for its project, when the open session changes, and on `server.connected` after a reconnect. The TUI holds no Forge database of its own — its only `forge.db` reference is the path handed to the local dashboard launcher — so it works attached to a remote OpenCode server running Forge.
+The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches, `loopDefaults` for the execution dialog's default iterations and sandbox resources, and `autoApproveState`/`autoApproveSet` for per-session auto-approve (served by the core in `src/host/forge-core.ts`), and, served by `src/services/tui-rpc-service.ts`, `loops`/`loopSidebar` for the loop list and sidebar, `sessionPlan` for the stored plan, `loopRestart` for loop restarts, `hostSandboxState`/`hostSandboxSet` for the host-session sandbox, and `worktrees` for the server's Forge worktree directories; `version` reports the server plugin version. The server pushes `toast`, `sessionDelete`, `loopsChanged`, `autoApproveChanged`, and `hostSandboxChanged` events; the TUI never polls — it fetches at startup, when one of these events arrives for its project, when the open session changes, and on `server.connected` after a reconnect. The TUI holds no Forge database of its own — its only `forge.db` reference is the path handed to the local dashboard launcher — so it works attached to a remote OpenCode server running Forge.
 
 ## Module Layout
 
@@ -82,12 +82,12 @@ The codebase is organized into these module groups under `src/`:
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects, group orchestrator) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `group-orchestrator.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `group-orchestrator.ts`, `group-scheduler.ts`, `tui-rpc-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
-| `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts` |
+| `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts`, `loop-settings.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
 | `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `plan-adjust.ts`, `section-read.ts`, `group.ts`, `tool.ts` |
 | `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `forge-naming.ts`, `forge-workspace-metadata.ts`, `pending-teardown.ts`, `worktree-commit.ts`, `worktree-opencode-config.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
 | `utils/` | Shared utility modules (~40 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, `git-service.ts`, `toast.ts`, etc. |
-| `tui/` | TUI-specific components | `v2.tsx`, `host.tsx`, `execute-plan-panel.tsx`, `plan-commands.ts`, `host-sandbox.ts`, `session-sandbox-store.ts`, `sandbox-build-dialog.tsx`, `session-follow.ts`, `project-client.ts`, `v2-client.ts`, `options.ts` |
+| `tui/` | TUI-specific components | `v2.tsx`, `host.tsx`, `execute-plan-panel.tsx`, `plan-commands.ts`, `loop-settings-dialog.ts`, `host-sandbox.ts`, `session-sandbox-store.ts`, `sandbox-build-dialog.tsx`, `session-follow.ts`, `project-client.ts`, `v2-client.ts`, `options.ts` |
 
 All external consumers import through barrel files (`index.ts`) where available. See [Modules](modules.md) for full details.
 
@@ -212,7 +212,7 @@ OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is 
 - `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
 - `closeDatabase()` - Closes database connections on shutdown
 - `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
-- Migrations are registered explicitly in execution order (ids 100-143; not every id ships a SQL file) and tracked in a `migrations` table
+- Migrations are registered explicitly in execution order (ids 100-149; not every id ships a SQL file) and tracked in a `migrations` table
 
 ### Repository Pattern
 

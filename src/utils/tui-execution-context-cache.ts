@@ -18,6 +18,7 @@ import type { ModelInfo } from './tui-models'
 import { deriveRecentModels, flattenProviders, sortModelsByPriority } from './tui-models'
 import { resolveExecutionDialogDefaults } from './tui-execution-preferences'
 import type { ExecutionContext } from '../tui/project-client'
+import type { ForgeLoopDefaults } from '../host/forge-rpc'
 
 export interface ExecutionContextSnapshot {
   preferences: ExecutionPreferences | null
@@ -26,6 +27,8 @@ export interface ExecutionContextSnapshot {
   connectedProviderIds: string[]
   configuredProviderIds: string[]
   recents: string[]
+  /** Server-side loop-setting defaults; null when the server could not report them. */
+  loopDefaults: ForgeLoopDefaults | null
   defaults: {
     executionModel: string
     auditorModel: string
@@ -67,6 +70,7 @@ export function buildExecutionContextSnapshot(
     connectedProviderIds: result.models.connectedProviderIds || [],
     configuredProviderIds: result.models.configuredProviderIds || [],
     recents,
+    loopDefaults: result.loopDefaults ?? null,
     defaults,
   }
 }

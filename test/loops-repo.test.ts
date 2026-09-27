@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { createLoopsRepo, type LoopRow, type LoopLargeFields } from '../src/storage/repos/loops-repo'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -54,6 +54,7 @@ describe('LoopsRepo', () => {
       loop_kind            TEXT NOT NULL DEFAULT 'plan',
       executor_session_id  TEXT,
       auditor_fallback_index INTEGER NOT NULL DEFAULT 0,
+      sandbox_settings     TEXT,
       PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -300,6 +301,18 @@ describe('LoopsRepo', () => {
   })
 
   describe('listSidebarRows', () => {
+    beforeEach(() => {
+      db.run(readFileSync(new URL('../src/storage/migrations/142_create_loop_transitions.sql', import.meta.url), 'utf8'))
+    })
+
+    const insertTransition = (loopName: string, eventType: string, toPhase: string | null, createdAt: number) => {
+      db.run(
+        `INSERT INTO loop_transitions (project_id, loop_name, event_type, transition_kind, from_phase, to_phase, iteration, created_at)
+         VALUES (?, ?, ?, 'phase', 'coding', ?, 1, ?)`,
+        [testRow.projectId, loopName, eventType, toPhase, createdAt],
+      )
+    }
+
     const insertLoop = (loopName: string, status: LoopRow['status'], startedAt: number, projectId = testRow.projectId) => {
       repo.insert(
         {
@@ -345,8 +358,24 @@ describe('LoopsRepo', () => {
 
       expect(rows).toHaveLength(2)
       for (const row of rows) {
-        expect(Object.keys(row).sort()).toEqual(['iteration', 'loopName', 'maxIterations', 'status'])
+        expect(Object.keys(row).sort()).toEqual([
+          'currentSectionIndex', 'iteration', 'loopName', 'maxIterations', 'phase', 'phaseStartedAt', 'startedAt', 'status', 'totalSections',
+        ])
       }
+    })
+
+    test('phaseStartedAt is the latest phase change of the current run, else startedAt', () => {
+      insertLoop('fresh', 'running', 1000)
+      insertLoop('advanced', 'running', 1000)
+      insertTransition('advanced', 'audit-clear', 'auditing', 900)
+      insertTransition('advanced', 'coding-idle-complete', 'auditing', 4000)
+      insertTransition('advanced', 'restart', 'coding', 6000)
+      insertTransition('advanced', 'shutdown', null, 7000)
+
+      const rows = repo.listSidebarRows(testRow.projectId, 5)
+      const byName = Object.fromEntries(rows.map((row) => [row.loopName, row.phaseStartedAt]))
+
+      expect(byName).toEqual({ fresh: 1000, advanced: 4000 })
     })
 
     test('scopes rows to the requested project', () => {
@@ -875,6 +904,64 @@ describe('LoopsRepo', () => {
       // The previously-cleared post-action report is restored through the
       // shared upsertLargeStmt path.
       expect(large.postActionReport).toBe('post-action report body')
+    })
+  })
+
+  describe('sandboxSettings', () => {
+    const restartOpts = () => ({
+      sessionId: 'restart-session',
+      phase: 'coding' as const,
+      iteration: 0,
+      auditCount: 0,
+      sandbox: false,
+      sandboxContainer: null,
+      workspaceId: null,
+      auditorModel: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      startedAt: Date.now(),
+      executorSessionId: null,
+    })
+
+    test('insert + get round-trips sandboxSettings', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'loop-sandbox-settings',
+        currentSessionId: 'session-sandbox-settings',
+        sandboxSettings: { enabled: false, resources: { cpus: '8', memory: '16g' } },
+      }
+      repo.insert(row, testLarge)
+
+      const retrieved = repo.get(row.projectId, row.loopName)
+      expect(retrieved!.sandboxSettings).toEqual({ enabled: false, resources: { cpus: '8', memory: '16g' } })
+    })
+
+    test('defaults to null when not provided', () => {
+      repo.insert(testRow, testLarge)
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.sandboxSettings).toBeNull()
+    })
+
+    test('restart preserves sandboxSettings', () => {
+      repo.insert({ ...testRow, sandboxSettings: { enabled: false } }, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts())
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.sandboxSettings).toEqual({ enabled: false })
+    })
+
+    test('restore writes sandboxSettings', () => {
+      repo.insert(testRow, testLarge)
+
+      repo.restore(
+        { ...testRow, sandboxSettings: { resources: { cpus: '2', cacheDisk: '4g' } } },
+        testLarge,
+      )
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.sandboxSettings).toEqual({
+        resources: { cpus: '2', cacheDisk: '4g' },
+      })
     })
   })
 })

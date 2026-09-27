@@ -21,6 +21,9 @@ import { summarizeAmendmentSnapshots, type AmendmentChangeSummary } from './amen
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { extractPlanTitle } from '../utils/plan-execution'
 
+/** Newest transitions shipped per loop; the dashboard's "100-row fetch window". */
+const DASHBOARD_TRANSITIONS_WINDOW = 100
+
 export type { LoopRow, LoopTransitionRow }
 
 const PRD_PREVIEW_MAX = 400
@@ -54,6 +57,8 @@ export interface DashboardLoop {
   usage: LoopUsageAggregate | null
   duration: string | null
   transitions: LoopTransitionRow[]
+  /** Whether `transitions` filled the fetch window, so older rows may be missing. */
+  transitionsCapped: boolean
   /**
    * Per-amendment change counts. The multi-KB section snapshots stay in
    * `plan_amendments` and are fetched on demand via the diff endpoint.
@@ -197,7 +202,7 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
     const sectionCounts = sectionPlansRepo.countsByLoop(projectId)
     const bugCounts = reviewFindingsRepo.bugCountsByLoop(projectId)
     const transitionsByLoop = inScopedProject && loopTransitionsRepo
-      ? loopTransitionsRepo.listForProject(projectId, 100)
+      ? loopTransitionsRepo.listForProject(projectId, DASHBOARD_TRANSITIONS_WINDOW)
       : null
 
     const dashboardLoops: DashboardLoop[] = sortedLoops.map(loop => {
@@ -220,6 +225,7 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       const usage = inScopedProject ? loopSessionUsageRepo.getAggregate(projectId, loopName) : null
 
       const transitions = transitionsByLoop?.get(loopName) ?? []
+      const transitionsCapped = transitions.length >= DASHBOARD_TRANSITIONS_WINDOW
 
       const amendments = isScopedLoop && amendmentsRepo
         ? amendmentsRepo.listForLoop(projectId, loopName).map(({ sectionsBefore, sectionsAfter, ...rest }) => ({
@@ -238,7 +244,7 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       return {
         id: loopName, loop: loopRow, lastAuditResult, postActionReport, goal,
         plan, hasPlan, sections, sectionCount,
-        findings, bugCount, usage, duration, transitions, amendments,
+        findings, bugCount, usage, duration, transitions, transitionsCapped, amendments,
       }
     })
 
