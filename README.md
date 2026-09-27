@@ -59,7 +59,7 @@ Loop worktrees use OpenCode 2's native worktree and location model: no environme
 Forge ships two plugin entrypoints plus standalone management surfaces:
 
 - **Server plugin** — enabled through the `plugins` array in `opencode.json`. Provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support.
-- **TUI plugin** — the sidebar, execution dialog, and loop restart dialog. It loads from the server plugin entry, or from the `cli.json` `plugins` array.
+- **TUI plugin** — the loop sidebar, the unified execution dialog (launch, restart, and per-loop launch settings), and the per-session host-sandbox and auto-approve toggles. It loads from the server plugin entry, or from the `cli.json` `plugins` array, and reads and changes Forge state over the server's RPC surface, so it also works attached to a remote OpenCode server.
 - **Installer CLI** — installs/upgrades bundled prompts and skills, and registers the plugin in opencode's config directory (`--link`/`--vendor`/`--unlink`).
 - **Dashboard** — an observability interface launchable from the TUI command palette (`Open web dashboard`) or via `pnpm dashboard` (source checkouts only).
 
@@ -71,6 +71,7 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 
 - **Subtask commands** — `review` and `review-plan` run inline in the invoking session instead of spawning a subtask. Every Forge command runs its turn as the command's agent, then Forge switches the session back to the agent it had before.
 - **Session transcripts** — OpenCode 2 exposes a session's history only from its latest compaction onward. Loop usage totals stay exact because Forge reconciles them against the session's cumulative cost and tokens, attributing the pre-compaction share to the session's model.
+- **TUI/server version** — the TUI reads and changes Forge state over the server's RPC surface, so it must run the same Forge version as the server plugin. On a mismatch it warns, and a restart requested by a TUI older than the RPC is not handled; restart the OpenCode server after upgrading.
 
 ## Features
 
@@ -78,7 +79,7 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 - **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; grouped execution launches features from a PRD as parallel loops
 - **Loops** — iterative coding/auditing with an isolated git worktree and optional msb sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
-- **TUI** — sidebar and execution dialog
+- **TUI** — loop sidebar, a unified execution dialog with model, variant, and per-loop launch settings, and per-session host-sandbox and auto-approve toggles
 - **Dashboard** — a repo shell for loops, groups, findings, and plans, with loop state
 
 ## Documentation
@@ -87,7 +88,7 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 - [Planning and Execution Workflow](docs/workflow.md) — how the architect authors plans, the three execution modes, variants, and grouped execution.
 - [Tools Reference](docs/tools.md) — full arguments, section-scoping behavior, restart options, and sandbox shell details.
 - [Loop System](docs/loop-system.md) — phases, section lifecycle, review findings, session rotation, stall detection, model configuration, and termination.
-- [TUI Plugin](docs/tui.md) — sidebar, palette commands, the execution dialog, model selection, and setup.
+- [TUI Plugin](docs/tui.md) — sidebar, palette commands, the execution dialog, per-loop launch settings, per-session auto-approve, model selection, and setup.
 - [Dashboard](docs/dashboard.md) — views, hash deep links, and the HTTP API.
 - [Workspace Integration](docs/workspaces.md) — OpenCode workspace registration, requirements, and failure behavior.
 - [Sandbox](docs/sandbox.md) — host requirements, image building and loading, network access, secrets, bind mounts, and resource defaults.
@@ -98,9 +99,17 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 
 ## Screenshots
 
-Execution flow dialog with mode and model selection:
+The unified execution dialog — plan, execution model and variant, and auditor model and variant selection:
 
-![Execution Flow](docs/images/execution.webp)
+![Execution dialog](docs/images/execution-dialog.webp)
+
+The rest of the dialog — loop name, the per-loop settings summary, and the launch modes:
+
+![Execution options](docs/images/execution-options.webp)
+
+The per-loop settings submenu — max iterations and sandbox resource overrides:
+
+![Loop settings](docs/images/loop-settings.webp)
 
 ## Loop Flow
 
