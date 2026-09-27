@@ -1,4 +1,4 @@
-export const SESSION_AUTO_APPROVE_MAX_ANCESTOR_HOPS = 20
+import { findSessionAncestor } from './session-ancestry'
 
 export type SessionAutoApproveFlagResult =
   | { enabled: true; flagOwnerId: string }
@@ -12,27 +12,22 @@ export interface ResolveSessionAutoApproveFlagInput {
 }
 
 /**
- * Resolves whether per-session auto-approve is on for `sessionID` or any ancestor, walking up at
- * most `SESSION_AUTO_APPROVE_MAX_ANCESTOR_HOPS` hops and stopping on a cycle. A session inside an
- * active loop never qualifies. Any lookup failure answers disabled so callers fail closed; the error is
- * returned for the caller to log.
+ * Resolves whether per-session auto-approve is on for `sessionID` or any ancestor, walking the
+ * ancestry chain through the shared `findSessionAncestor` helper (which stops on a cycle). The flag
+ * lookup runs first — the session itself, then its ancestors — and only a resolved flag owner is
+ * checked against the active-loop rule. Any lookup failure answers disabled so callers fail closed;
+ * the error is returned for the caller to log.
  */
 export async function resolveSessionAutoApproveFlag(
   input: ResolveSessionAutoApproveFlagInput,
 ): Promise<SessionAutoApproveFlagResult> {
   try {
+    const ownerId = (await input.isEnabled(input.sessionID))
+      ? input.sessionID
+      : await findSessionAncestor(input.sessionID, input.getParentId, async (id) => ((await input.isEnabled(id)) ? id : null))
+    if (!ownerId) return { enabled: false }
     if (await input.isInActiveLoop(input.sessionID)) return { enabled: false }
-
-    const visited = new Set<string>()
-    let currentId: string | null = input.sessionID
-    for (let hop = 0; currentId && hop < SESSION_AUTO_APPROVE_MAX_ANCESTOR_HOPS; hop++) {
-      if (visited.has(currentId)) break
-      visited.add(currentId)
-      if (await input.isEnabled(currentId)) return { enabled: true, flagOwnerId: currentId }
-      currentId = await input.getParentId(currentId)
-    }
-
-    return { enabled: false }
+    return { enabled: true, flagOwnerId: ownerId }
   } catch (error) {
     return { enabled: false, error }
   }

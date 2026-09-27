@@ -32,7 +32,22 @@ export type ForgeExecutePlanOutput =
   | { sessionId: string; loopName?: string; worktreeDir?: string; workspaceId?: string }
   | { error: string }
 
+export type ForgeAutoApproveState =
+  | { enabled: boolean; ownerSessionId?: string; inherited: boolean }
+  | { error: string }
+
 const OPTIONAL_STRING = { type: 'string' } as const
+
+const AUTO_APPROVE_OUTPUT = {
+  type: 'object',
+  properties: {
+    enabled: { type: 'boolean' },
+    ownerSessionId: OPTIONAL_STRING,
+    inherited: { type: 'boolean' },
+    error: OPTIONAL_STRING,
+  },
+  additionalProperties: false,
+} as const
 
 export const FORGE_RPC = {
   id: FORGE_PLUGIN_ID,
@@ -65,6 +80,29 @@ export const FORGE_RPC = {
         },
         additionalProperties: false,
       },
+    },
+    autoApproveState: {
+      input: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+        },
+        required: ['sessionId'],
+        additionalProperties: false,
+      },
+      output: AUTO_APPROVE_OUTPUT,
+    },
+    autoApproveSet: {
+      input: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string' },
+          enabled: { type: 'boolean' },
+        },
+        required: ['sessionId', 'enabled'],
+        additionalProperties: false,
+      },
+      output: AUTO_APPROVE_OUTPUT,
     },
   },
   events: {
@@ -102,4 +140,15 @@ export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutp
   const optional = (key: 'loopName' | 'worktreeDir' | 'workspaceId') =>
     typeof value[key] === 'string' ? { [key]: value[key] as string } : {}
   return { sessionId: value.sessionId, ...optional('loopName'), ...optional('worktreeDir'), ...optional('workspaceId') }
+}
+
+export function readForgeAutoApproveState(value: unknown): ForgeAutoApproveState {
+  if (!isRecord(value)) return { error: 'Forge returned an invalid auto-approve state' }
+  if (typeof value.error === 'string') return { error: value.error }
+  if (typeof value.enabled !== 'boolean') return { error: 'Forge returned an invalid auto-approve state' }
+  return {
+    enabled: value.enabled,
+    inherited: value.inherited === true,
+    ...(typeof value.ownerSessionId === 'string' ? { ownerSessionId: value.ownerSessionId } : {}),
+  }
 }

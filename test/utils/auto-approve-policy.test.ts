@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   matchPermissionWildcard,
   findLastMatchingRule,
+  parseAutoApproveDenyRules,
   resolveAutoApproveDecision,
   type PermissionRuleLike,
 } from '../../src/utils/auto-approve-policy'
@@ -53,6 +54,43 @@ describe('findLastMatchingRule', () => {
     const rules: PermissionRuleLike[] = [{ action: 'shell', resource: 'git *', effect: 'ask' }]
     expect(findLastMatchingRule('read', 'git push', rules)).toBeUndefined()
     expect(findLastMatchingRule('shell', 'git push', [])).toBeUndefined()
+  })
+})
+
+describe('parseAutoApproveDenyRules', () => {
+  test('returns no rules and no warnings for undefined and null', () => {
+    expect(parseAutoApproveDenyRules(undefined)).toEqual({ rules: [], warnings: [] })
+    expect(parseAutoApproveDenyRules(null)).toEqual({ rules: [], warnings: [] })
+  })
+
+  test('warns and returns no rules when the value is not an array', () => {
+    expect(parseAutoApproveDenyRules({ action: 'shell', resource: '*' })).toEqual({
+      rules: [],
+      warnings: ['autoApprove.deny is ignored: expected an array of { action, resource } rules'],
+    })
+  })
+
+  test('keeps valid entries and ignores invalid ones with indexed warnings', () => {
+    const result = parseAutoApproveDenyRules([
+      { action: 'shell', resource: 'rm -rf *' },
+      { action: '', resource: '*' },
+      { action: 'shell' },
+      'not-an-object',
+    ])
+    expect(result.rules).toEqual([{ action: 'shell', resource: 'rm -rf *' }])
+    expect(result.warnings).toEqual([
+      'autoApprove.deny entry 1 is ignored: expected non-empty string "action" and "resource"',
+      'autoApprove.deny entry 2 is ignored: expected non-empty string "action" and "resource"',
+      'autoApprove.deny entry 3 is ignored: expected non-empty string "action" and "resource"',
+    ])
+  })
+
+  test('points a "pattern" key at "resource"', () => {
+    const result = parseAutoApproveDenyRules([{ action: 'shell', pattern: 'rm -rf *' }])
+    expect(result.rules).toEqual([])
+    expect(result.warnings).toEqual([
+      'autoApprove.deny entry 0 is ignored: expected non-empty string "action" and "resource" (use "resource", not "pattern")',
+    ])
   })
 })
 

@@ -107,8 +107,8 @@
     "image": "oc-forge-sandbox:latest"
     // Mount the source project directory read-only at its identical host path. Defaults to true.
     // "mountProjectReadonly": true,
-    // Auto-approve permission prompts in sessions whose shell runs in a sandbox (e.g. after
-    // `Toggle host sandbox`). Configured deny rules still apply. Defaults to true.
+    // Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox (e.g.
+    // after `Toggle host sandbox`), using the auto-approve policy. Defaults to true.
     // "autoApprovePermissions": true,
     // Network access configuration. msb egress is allow-by-default: with no hosts configured,
     // forge passes no network flags and all PUBLIC egress is allowed. Restriction is opt-in —

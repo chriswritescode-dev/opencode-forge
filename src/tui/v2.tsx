@@ -7,7 +7,7 @@ import { isSandboxConfigEnabled } from '../sandbox/context'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
 import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
 import { resolveForgeDbPath } from '../storage'
-import { FORGE_RPC, type ForgeToastEvent } from '../host/forge-rpc'
+import { FORGE_RPC, readForgeAutoApproveState, type ForgeAutoApproveState, type ForgeToastEvent } from '../host/forge-rpc'
 import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
 import {
   openLoopSidebarReader,
@@ -264,19 +264,25 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   })
 
   const dataDir = resolveForgeDataDir(pluginConfig.dataDir)
-  const isLoopSession = async (sessionId: string): Promise<boolean> => {
+  const forgeRpcClient = () => context.client.rpc(FORGE_RPC)
+  const callAutoApprove = async (
+    call: (
+      rpc: ReturnType<typeof forgeRpcClient>,
+      options: { location: { directory: string } },
+    ) => Promise<unknown>,
+  ): Promise<ForgeAutoApproveState> => {
+    const directory = resolveV2TuiDirectory(context)
+    if (!directory) return { error: 'no Forge location for this TUI' }
     try {
-      const session = await context.client.session.get({ sessionID: sessionId })
-      return isForgeWorktreeDir(dataDir, session.location.directory)
-    } catch {
-      return false
+      return readForgeAutoApproveState(await call(forgeRpcClient(), { location: { directory } }))
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
     }
   }
   const autoApprove = createSessionAutoApproveToggle({
-    dbPath: forgeDbPath,
-    resolveProjectId: () => resolveV2TuiProjectId(context),
     currentSessionId,
-    isLoopSession,
+    readState: (sessionId) => callAutoApprove((rpc, location) => rpc.autoApproveState({ sessionId }, location)),
+    setState: (sessionId, enabled) => callAutoApprove((rpc, location) => rpc.autoApproveSet({ sessionId, enabled }, location)),
     isSandboxedSession: (id) => deriveSessionSandboxDisplayStatus(hostSandbox.preference(), id) === 'enabled',
     toast: (input) => host.toast(input),
   })

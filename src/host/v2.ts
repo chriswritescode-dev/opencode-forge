@@ -66,6 +66,13 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       executePlan: async (input) => core
         ? core.executeTuiPlan(input as ForgeExecutePlanInput)
         : { error: 'Forge is still starting; retry in a moment' },
+      autoApproveState: async (input) => core
+        ? core.getSessionAutoApproveState((input as { sessionId: string }).sessionId)
+        : { error: 'Forge is still starting; retry in a moment' },
+      autoApproveSet: async (input) => {
+        const { sessionId, enabled } = input as { sessionId: string; enabled: boolean }
+        return core ? core.setSessionAutoApprove(sessionId, enabled) : { error: 'Forge is still starting; retry in a moment' }
+      },
     })
     publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })
     requestSessionDelete = (sessionID) => registration.events.emit('sessionDelete', { sessionID })

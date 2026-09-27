@@ -6,7 +6,7 @@ import { canonicalizePath } from '../sandbox/path'
 import { SHIM_ENV_CONTAINER } from '../sandbox/shell-shim'
 import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client/v2-adapter'
 import { findLastIndex } from '../utils/array'
-import { resolveAutoApproveDecision } from '../utils/auto-approve-policy'
+import { resolveAutoApproveDecision, type PermissionEffectLike } from '../utils/auto-approve-policy'
 import { isRecord } from '../utils/is-record'
 
 const V2_TO_V1_TOOL_NAME_TABLE = invertRenameTable(V1_TO_V2_TOOL_NAMES)
@@ -76,7 +76,7 @@ interface AutoApprovePermissionEvent {
   agent?: string
   action: string
   resources: ReadonlyArray<string>
-  effect: 'allow' | 'deny' | 'ask'
+  effect: PermissionEffectLike
   message?: string
 }
 

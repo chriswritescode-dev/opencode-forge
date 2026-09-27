@@ -22,7 +22,8 @@ import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, type ResolveActiveLoopForSession, type SessionSandboxController } from '../sandbox/session-controller'
-import type { PluginConfig, CompactionConfig } from '../types'
+import type { PluginConfig, CompactionConfig, AutoApproveDenyRule } from '../types'
+import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
 import { createTools } from '../tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from '../hooks/sandbox-tools'
@@ -49,7 +50,7 @@ import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import type { ForgeExecutePlanInput, ForgeExecutePlanOutput } from './forge-rpc'
+import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState } from './forge-rpc'
 import { createTuiLoopRestartController, type TuiLoopRestartController } from '../services/tui-loop-restart-controller'
 
 /**
@@ -93,8 +94,16 @@ export interface ForgeCore {
    * Any resolution failure answers false so the prompt is still shown.
    */
   autoApprovesPermissions(sessionID: string): Promise<boolean>
+  /** Resolves whether per-session auto-approve is on for `sessionID`, whether that is inherited, and the session that owns the flag. */
+  getSessionAutoApproveState(sessionID: string): Promise<ForgeAutoApproveState>
+  /**
+   * Turns per-session auto-approve on or off for `sessionID`. Refuses to toggle a flag inherited from
+   * an ancestor, and refuses to enable it inside an active loop. Resolves to the resulting state, or
+   * an error when the toggle could not be applied.
+   */
+  setSessionAutoApprove(sessionID: string, enabled: boolean): Promise<ForgeAutoApproveState>
   /** Extra deny rules applied while auto-approve is on, from `autoApprove.deny`. */
-  autoApproveDenyRules: ReadonlyArray<{ action: string; resource: string }>
+  autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule>
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -380,6 +389,23 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
   })
 
+  const parsedAutoApproveDeny = parseAutoApproveDenyRules(config.autoApprove?.deny)
+  for (const warning of parsedAutoApproveDeny.warnings) {
+    logger.log(warning)
+  }
+  if (parsedAutoApproveDeny.warnings.length > 0 && !isForgeWorktreeDir(dataDir, directory)) {
+    publishToast({
+      client: forgeClient,
+      directory,
+      logger,
+      title: 'Forge auto-approve config',
+      message: parsedAutoApproveDeny.warnings.join(' '),
+      variant: 'warning',
+      duration: 10_000,
+    })
+  }
+  const autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule> = parsedAutoApproveDeny.rules
+
   let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
   const runtime = createMsbRuntime(logger)
   if (!isSandboxConfigEnabled(config)) {
@@ -491,9 +517,19 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     logger.error('Failed to purge expired session auto-approve flags', err)
   }
 
-  const autoApproveDenyRules: ReadonlyArray<{ action: string; resource: string }> = (config.autoApprove?.deny ?? []).filter(
-    (rule) => typeof rule?.action === 'string' && rule.action.length > 0 && typeof rule?.resource === 'string' && rule.resource.length > 0,
-  )
+  const autoApproveFlagTouchCache = new LRUCache<number>(1000)
+  const AUTO_APPROVE_FLAG_TOUCH_INTERVAL_MS = 60 * 60 * 1000
+  const touchAutoApproveFlag = (sessionID: string): void => {
+    const now = Date.now()
+    const lastTouched = autoApproveFlagTouchCache.get(sessionID)
+    if (lastTouched !== undefined && now - lastTouched < AUTO_APPROVE_FLAG_TOUCH_INTERVAL_MS) return
+    try {
+      autoApproveRepo.touch(projectId, sessionID, now)
+      autoApproveFlagTouchCache.set(sessionID, now)
+    } catch (err) {
+      logger.debug(`[auto-approve] touch failed for ${sessionID}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
   const loopsRepo = createLoopsRepo(db)
   const plansRepo = createPlansRepo(db)
@@ -653,6 +689,13 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     getSessionDirectory: sessionDirectoryLookup,
     logger,
   })
+  const resolveAutoApproveFlag = (sessionID: string) =>
+    resolveSessionAutoApproveFlag({
+      sessionID,
+      isEnabled: (id) => autoApproveRepo.isEnabled(projectId, id, Date.now()),
+      getParentId: parentSessionLookup,
+      isInActiveLoop: async (id) => (await sessionLoopResolver.resolveActiveLoopForSession(id)) !== null,
+    })
   const loopPermissionPatcher = createLoopPermissionPatcher({
     client: forgeClient,
     sessionLoopResolver,
@@ -1031,15 +1074,53 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return resolveSandboxForSession(sessionID, { throwOnRestoreError: true })
   }
 
+  const getSessionAutoApproveState = async (sessionID: string): Promise<ForgeAutoApproveState> => {
+    const flag = await resolveAutoApproveFlag(sessionID)
+    if (flag.enabled) {
+      return { enabled: true, ownerSessionId: flag.flagOwnerId, inherited: flag.flagOwnerId !== sessionID }
+    }
+    if (flag.error !== undefined) {
+      const message = flag.error instanceof Error ? flag.error.message : String(flag.error)
+      logger.log(`[auto-approve] session flag lookup failed for ${sessionID}: ${message}`)
+      return { error: `Could not resolve auto-approve state: ${message}` }
+    }
+    return { enabled: false, inherited: false }
+  }
+
+  const setSessionAutoApprove = async (sessionID: string, enabled: boolean): Promise<ForgeAutoApproveState> => {
+    const state = await getSessionAutoApproveState(sessionID)
+    if ('error' in state) return state
+    if (state.enabled && state.inherited) {
+      return { error: `Auto-approve is inherited from parent session ${state.ownerSessionId}; toggle it there` }
+    }
+    if (enabled) {
+      let activeLoop: Awaited<ReturnType<typeof sessionLoopResolver.resolveActiveLoopForSession>>
+      try {
+        activeLoop = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+      } catch (err) {
+        return { error: `Could not verify that this session is not in a loop: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      if (activeLoop) return { error: 'Loop sessions already auto-approve everything not denied' }
+      try {
+        autoApproveRepo.enable(projectId, sessionID, Date.now())
+      } catch (err) {
+        return { error: `Auto-approve toggle failed: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    } else {
+      try {
+        autoApproveRepo.disable(projectId, sessionID)
+      } catch (err) {
+        return { error: `Auto-approve toggle failed: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    return getSessionAutoApproveState(sessionID)
+  }
+
   return {
     tools,
     applyConfig: createConfigHandler(agents, config.agents, promptsDir),
     chatMessage: async (input, output) => {
-      try {
-        autoApproveRepo.touch(projectId, input.sessionID, Date.now())
-      } catch (err) {
-        logger.debug(`[auto-approve] touch failed for ${input.sessionID}: ${err instanceof Error ? err.message : String(err)}`)
-      }
+      touchAutoApproveFlag(input.sessionID)
       await forgeSessionMessageAttachHook(input)
       // Fallback for filtered session.created events: subagent sessions inside
       // loops must carry the loop ruleset before their first LLM step.
@@ -1109,21 +1190,12 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     resolveSandboxForDirectory,
     resolveShellSandbox,
     autoApprovesPermissions: async (sessionID) => {
-      const flag = await resolveSessionAutoApproveFlag({
-        sessionID,
-        isEnabled: (id) => autoApproveRepo.isEnabled(projectId, id, Date.now()),
-        getParentId: parentSessionLookup,
-        isInActiveLoop: async (id) => (await sessionLoopResolver.resolveActiveLoopForSession(id)) !== null,
-      })
+      const flag = await resolveAutoApproveFlag(sessionID)
       if (!flag.enabled && flag.error !== undefined) {
         logger.log(`[auto-approve] session flag lookup failed for ${sessionID}: ${flag.error instanceof Error ? flag.error.message : String(flag.error)}`)
       }
       if (flag.enabled) {
-        try {
-          autoApproveRepo.touch(projectId, flag.flagOwnerId, Date.now())
-        } catch (err) {
-          logger.debug(`[auto-approve] touch failed for ${flag.flagOwnerId}: ${err instanceof Error ? err.message : String(err)}`)
-        }
+        touchAutoApproveFlag(flag.flagOwnerId)
         return true
       }
       if (config.sandbox?.autoApprovePermissions === false) return false
@@ -1134,6 +1206,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         return false
       }
     },
+    getSessionAutoApproveState,
+    setSessionAutoApprove,
     autoApproveDenyRules,
     cleanup,
     shellShimPath,

@@ -70,7 +70,7 @@ OpenCode `deny` rules still apply: they settle before the hook runs. Loop sessio
 
 The same allow/deny policy also applies to the per-session `Toggle auto-approve`, which works whether or not a sandbox is on — see [TUI → Sidebar](tui.md#sidebar).
 
-File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbox, but the [file-tool boundary](#file-tool-boundary) refuses any path the sandbox cannot see, so auto-approval never reaches host files outside the mounts. To keep prompting while sandboxed, disable it:
+File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbox, but the [file-tool boundary](#file-tool-boundary) refuses any path the sandbox cannot see, so auto-approval never reaches host files outside the mounts. To keep prompting while sandboxed, disable it. This does not turn off a per-session `Toggle auto-approve`:
 
 ```jsonc
 {

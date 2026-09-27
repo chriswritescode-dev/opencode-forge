@@ -13,7 +13,7 @@ import type { SessionSandboxAppliedState, SessionSandboxControllerState, Session
  * integrity recovery); the TUI only applies `busy_timeout` and never runs
  * migrations or bootstrap.
  */
-export function openForgeDb(dbPathOverride?: string): Database | null {
+function openForgeDb(dbPathOverride?: string): Database | null {
   const dbPath = dbPathOverride || resolveForgeDbPath()
   if (!existsSync(dbPath)) return null
   // `readwrite` must be set explicitly: bun:sqlite derives its open flags from these options, and

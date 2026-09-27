@@ -1,4 +1,8 @@
 import { findLastIndex } from './array'
+import { isRecord } from './is-record'
+import type { AutoApproveDenyRule } from '../types'
+
+export type { AutoApproveDenyRule }
 
 /** Permission effect as OpenCode models it. */
 export type PermissionEffectLike = 'allow' | 'ask' | 'deny'
@@ -8,12 +12,6 @@ export interface PermissionRuleLike {
   action: string
   resource: string
   effect: PermissionEffectLike
-}
-
-/** An extra deny rule applied only while auto-approve is on. */
-export interface AutoApproveDenyRule {
-  action: string
-  resource: string
 }
 
 /** The outcome of auto-approving a request: always allow or deny, never a prompt. */
@@ -43,7 +41,8 @@ function matchesRule(
   return matchPermissionWildcard(action, rule.action) && matchPermissionWildcard(resource, rule.resource)
 }
 
-function findLastMatching<T extends { action: string; resource: string }>(
+/** Returns the last rule whose action and resource both match, or undefined when none match. */
+export function findLastMatchingRule<T extends { action: string; resource: string }>(
   action: string,
   resource: string,
   rules: readonly T[],
@@ -52,13 +51,34 @@ function findLastMatching<T extends { action: string; resource: string }>(
   return index === -1 ? undefined : rules[index]
 }
 
-/** Returns the last rule whose action and resource both match, or undefined when none match. */
-export function findLastMatchingRule(
-  action: string,
-  resource: string,
-  rules: readonly PermissionRuleLike[],
-): PermissionRuleLike | undefined {
-  return findLastMatching(action, resource, rules)
+/**
+ * Parses the `autoApprove.deny` config value into usable rules. Every entry that is not a record
+ * with a non-empty string `action` and `resource` is dropped and reported as a warning rather than
+ * throwing, so a malformed config never blocks plugin startup.
+ */
+export function parseAutoApproveDenyRules(raw: unknown): { rules: AutoApproveDenyRule[]; warnings: string[] } {
+  if (raw === undefined || raw === null) return { rules: [], warnings: [] }
+  if (!Array.isArray(raw)) {
+    return { rules: [], warnings: ['autoApprove.deny is ignored: expected an array of { action, resource } rules'] }
+  }
+
+  const rules: AutoApproveDenyRule[] = []
+  const warnings: string[] = []
+  raw.forEach((entry, i) => {
+    const valid =
+      isRecord(entry) &&
+      typeof entry.action === 'string' &&
+      entry.action.length > 0 &&
+      typeof entry.resource === 'string' &&
+      entry.resource.length > 0
+    if (!valid) {
+      const patternHint = isRecord(entry) && 'pattern' in entry ? ' (use "resource", not "pattern")' : ''
+      warnings.push(`autoApprove.deny entry ${i} is ignored: expected non-empty string "action" and "resource"${patternHint}`)
+      return
+    }
+    rules.push({ action: entry.action as string, resource: entry.resource as string })
+  })
+  return { rules, warnings }
 }
 
 /**
@@ -85,7 +105,7 @@ export function resolveAutoApproveDecision(input: {
   }
 
   for (const resource of resources) {
-    const denyRule = findLastMatching(action, resource, denyRules)
+    const denyRule = findLastMatchingRule(action, resource, denyRules)
     if (denyRule) {
       return {
         effect: 'deny',

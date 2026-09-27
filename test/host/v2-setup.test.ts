@@ -240,6 +240,31 @@ describe('V2 server setup', () => {
       .resolves.toEqual({ error: 'Execute here requires a current session' })
   })
 
+  test('the autoApprove RPC reads and toggles the per-session flag', async () => {
+    const fake = createFakeV2Context()
+    cleanups.push(await pluginModule.setup(fake.ctx))
+    const handlers = fake.rpc.registrations[0]?.handlers as {
+      autoApproveState: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+      autoApproveSet: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+    }
+
+    await expect(handlers.autoApproveState({ sessionId: 'ses_auto' })).resolves.toEqual({ enabled: false, inherited: false })
+    await expect(handlers.autoApproveSet({ sessionId: 'ses_auto', enabled: true })).resolves.toEqual({
+      enabled: true,
+      ownerSessionId: 'ses_auto',
+      inherited: false,
+    })
+    await expect(handlers.autoApproveState({ sessionId: 'ses_auto' })).resolves.toEqual({
+      enabled: true,
+      ownerSessionId: 'ses_auto',
+      inherited: false,
+    })
+    await expect(handlers.autoApproveSet({ sessionId: 'ses_auto', enabled: false })).resolves.toEqual({
+      enabled: false,
+      inherited: false,
+    })
+  })
+
   test('a registration failure does not reject setup and drops toasts', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const fake = createFakeV2Context({

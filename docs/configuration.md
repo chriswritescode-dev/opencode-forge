@@ -213,7 +213,7 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.resources.cacheDisk` | `"16g"` | Size of the dedicated block device backing the sandbox's tool/package cache directory (`/opt/forge/cache` — the pnpm store, npm, uv, pip, uv-managed Pythons, cargo/rustup, go modules; `--mount-named ...:kind=disk,size=<size>`). Sparse like `dockerDisk`, and it keeps unbounded caches off the small root filesystem. Reclaim it with `forge-cache-prune` inside the sandbox, which clears caches while preserving installed toolchains. |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
-| `sandbox.autoApprovePermissions` | `true` | Approve permission prompts automatically in sessions whose shell runs in a sandbox, including a session sandboxed with `Toggle host sandbox`. Configured `deny` rules still apply. Set `false` to keep prompting. See [Sandbox](sandbox.md#permission-auto-approval). |
+| `sandbox.autoApprovePermissions` | `true` | Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox, including a session sandboxed with `Toggle host sandbox`, using the same policy as per-session auto-approve (explicit `ask` rules and `autoApprove.deny` matches are denied). Set `false` to keep prompting in sandboxed sessions; a per-session `Toggle auto-approve` still applies. See [Sandbox](sandbox.md#permission-auto-approval). |
 | `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. Restriction is opt-in: an empty list, or a list containing the `*`/`**` allow-all wildcard, passes no network flags and msb's default allows all public egress; configuring any concrete host flips the sandbox to deny-by-default (`--net-default deny`) with one `--net-rule allow@<host>` per validated host. |
 | `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
 | `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. The named variable must be exported in the environment that launches opencode — a bound secret with a missing variable breaks every sandboxed shell command. |
@@ -254,7 +254,7 @@ Adopting an existing sandbox (for example after a plugin restart) converges the 
 
 | Option | Default | Description |
 |---|---:|---|
-| `autoApprove.deny` | `[]` | Extra rules denied while auto-approving, using OpenCode permission `action`/`resource` wildcard syntax. A request matching any entry is denied. Explicit OpenCode `ask` rules are denied regardless; OpenCode `deny` rules still apply. |
+| `autoApprove.deny` | `[]` | Extra rules denied while auto-approving, using OpenCode permission `action`/`resource` wildcard syntax. A request matching any entry is denied. Explicit OpenCode `ask` rules are denied regardless; OpenCode `deny` rules still apply. Entries without a non-empty string `action` and `resource` (or a non-array value) are ignored with a startup warning. |
 
 ```jsonc
 {
