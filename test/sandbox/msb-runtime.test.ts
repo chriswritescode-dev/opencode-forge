@@ -17,6 +17,8 @@ import {
   parseMsbImageList,
   msbImageMatches,
   parseMsbInspectSecretNames,
+  parseMsbInspectRuntimeSettings,
+  msbSizeToMib,
   checkMsbAvailability,
   describeMsbUnavailable,
   createMsbRuntime,
@@ -119,6 +121,19 @@ describe('create args', () => {
       '--mount-named',
       'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
     ])
+  })
+
+  test('LAN access adds the private group alongside public, or to an allow-list', () => {
+    const ws = [{ hostDir: '/a', containerDir: '/a' }]
+    const open = buildMsbCreateArgs('forge-c', ws, { image: 'img', allowLan: true })
+    expect(open.slice(open.indexOf('--net'), open.indexOf('--net') + 2)).toEqual(['--net', 'public,private'])
+    expect(open).not.toContain('--net-default')
+
+    const restricted = buildMsbCreateArgs('forge-c', ws, { image: 'img', allowLan: true, networkAllow: ['registry.npmjs.org'] })
+    expect(restricted.join(' ')).toContain('--net-default deny --net-rule allow@registry.npmjs.org --net-rule allow@private')
+    expect(restricted).not.toContain('--net')
+
+    expect(buildMsbCreateArgs('forge-c', ws, { image: 'img' }).join(' ')).not.toMatch(/--net|private/)
   })
 
   test('never emits the allow@dns rule that msb 0.6.8 rejects', () => {
@@ -798,6 +813,49 @@ describe('inspect secret parsing', () => {
   })
 })
 
+describe('inspect runtime settings parsing', () => {
+  const resources = { cpus: 2, max_cpus: 2, memory_mib: 4096, max_memory_mib: 4096 }
+  const hostDns = { action: 'allow', destination: { group: 'host' }, direction: 'egress', ports: [{ start: 53, end: 53 }], protocols: ['udp', 'tcp'] }
+  const allowPrivate = { action: 'allow', destination: { group: 'private' }, direction: 'egress', ports: [], protocols: [] }
+
+  test('a sandbox without a network policy uses msb\'s LAN-blocking default', () => {
+    const stdout = JSON.stringify({ config: { resources, network: { enabled: true, ports: [] } } })
+    expect(parseMsbInspectRuntimeSettings(stdout)).toEqual({ cpus: 2, memoryMib: 4096, allowLan: false })
+  })
+
+  test('an allow egress rule for the private group means LAN access (--net public,private)', () => {
+    const stdout = JSON.stringify({
+      config: {
+        resources,
+        network: { policy: { default_egress: 'deny', rules: [hostDns, { ...allowPrivate, destination: { group: 'public' } }, allowPrivate] } },
+      },
+    })
+    expect(parseMsbInspectRuntimeSettings(stdout)).toEqual({ cpus: 2, memoryMib: 4096, allowLan: true })
+  })
+
+  test('an ingress-only or deny rule for private is not LAN egress', () => {
+    const rules = [{ ...allowPrivate, direction: 'ingress' }, { ...allowPrivate, action: 'deny' }]
+    const stdout = JSON.stringify({ config: { resources, network: { policy: { rules } } } })
+    expect(parseMsbInspectRuntimeSettings(stdout)?.allowLan).toBe(false)
+  })
+
+  test('returns null when resources are missing or the payload is malformed', () => {
+    expect(parseMsbInspectRuntimeSettings('not json')).toBeNull()
+    expect(parseMsbInspectRuntimeSettings('{"config":{}}')).toBeNull()
+    expect(parseMsbInspectRuntimeSettings(JSON.stringify({ config: { resources: { cpus: '2', memory_mib: 4096 } } }))).toBeNull()
+  })
+})
+
+describe('msbSizeToMib', () => {
+  test('reads k/m/g as binary units with an optional b suffix', () => {
+    expect(msbSizeToMib('8g')).toBe(8192)
+    expect(msbSizeToMib('1.5GB')).toBe(1536)
+    expect(msbSizeToMib('512m')).toBe(512)
+    expect(msbSizeToMib('2048k')).toBe(2)
+    expect(msbSizeToMib('lots')).toBeUndefined()
+  })
+})
+
 describe('availability', () => {
   test('a passing doctor check yields available', async () => {
     const fake: CommandRunner = async () => ({ stdout: 'ok\n', stderr: '', exitCode: 0 })
@@ -1279,6 +1337,32 @@ describe('runtime', () => {
         : { stdout: '', stderr: '', exitCode: 0 },
     )
   }
+
+  test('resizeSandbox restarts the sandbox with the normalized CPUs and memory', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await rt.resizeSandbox('forge-c', { cpus: '6', memory: '12GB' })
+
+    expect(calls[0].args).toEqual(['modify', 'forge-c', '--restart', '--cpus', '6', '--memory', '12g'])
+    expect(calls[0].opts?.timeout).toBe(MSB_DEFAULT_TIMEOUT)
+  })
+
+  test('resizeSandbox rejects when msb refuses and skips an empty change', async () => {
+    const { calls, runner } = recordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 }))
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(rt.resizeSandbox('forge-c', { cpus: '2' })).rejects.toThrow('Failed to resize sandbox forge-c: boom')
+    await rt.resizeSandbox('forge-c', {})
+    expect(calls).toHaveLength(1)
+  })
+
+  test('readSandboxSettings returns null instead of rejecting on a failed inspect', async () => {
+    const failing = createMsbRuntime(logger, { run: recordingRunner(() => ({ stdout: '', stderr: 'x', exitCode: 1 })).runner })
+    await expect(failing.readSandboxSettings('forge-c')).resolves.toBeNull()
+    const throwing = createMsbRuntime(logger, { run: async () => { throw new Error('spawn') } })
+    await expect(throwing.readSandboxSettings('forge-c')).resolves.toBeNull()
+  })
 
   test('refreshSandboxSecrets reads the bound set and converges msb modify to the desired set', async () => {
     const { calls, runner } = refreshRunner(['STALE_TOKEN', 'KEEP'])

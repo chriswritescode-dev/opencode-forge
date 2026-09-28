@@ -55,6 +55,29 @@ describe('SessionSandboxPreferencesRepo', () => {
       expect(repo.getDesired(PROJECT_A)).toEqual(state)
     })
 
+    test('round-trips validated overrides on desired and applied rows and drops invalid fields', () => {
+      repo.setDesired(PROJECT_A, makeDesired({ overrides: { resources: { cpus: '6', memory: 'lots' }, allowLan: true } }))
+      repo.setApplied(PROJECT_A, makeApplied({ overrides: { allowLan: false } }))
+
+      expect(repo.getDesired(PROJECT_A)?.overrides).toEqual({ resources: { cpus: '6' }, allowLan: true })
+      expect(repo.getApplied(PROJECT_A)?.overrides).toEqual({ allowLan: false })
+    })
+
+    test('a row written before overrides existed reads back without them', () => {
+      repo.setDesired(PROJECT_A, makeDesired())
+      expect(repo.getDesired(PROJECT_A)).not.toHaveProperty('overrides')
+    })
+
+    test('updateDesired builds the new row from the current one', () => {
+      repo.setDesired(PROJECT_A, makeDesired({ overrides: { allowLan: true } }))
+
+      const next = repo.updateDesired(PROJECT_A, (current) => makeDesired({ revision: 'rev-2', enabled: false, overrides: current?.overrides }))
+
+      expect(next.revision).toBe('rev-2')
+      expect(repo.getDesired(PROJECT_A)).toEqual(makeDesired({ revision: 'rev-2', enabled: false, overrides: { allowLan: true } }))
+      expect(repo.updateDesired(PROJECT_B, (current) => makeDesired({ sessionId: current?.sessionId ?? 'fresh' })).sessionId).toBe('fresh')
+    })
+
     test('round-trips nullable sessionId', () => {
       const state = makeDesired({ sessionId: null })
       repo.setDesired(PROJECT_A, state)

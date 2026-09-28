@@ -80,6 +80,46 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(resolveSandboxForSession).toHaveBeenCalledWith('ses_1', { throwOnRestoreError: true })
   })
 
+  test('reports the sandbox settings on every request and a restart or recreation exactly once', async () => {
+    const base = { ...context, instanceId: 'i-1', settings: { cpus: 4, memoryMib: 8192, allowLan: false } } as SandboxContext
+    let state: SandboxContext = base
+    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
+    const request = async () => {
+      const output = { system: ['base'] }
+      await hook({ sessionID: 'ses_1' }, output)
+      return systemText(output)
+    }
+
+    const first = await request()
+    expect(first).toContain('[Sandbox] Resources: 4 CPUs, 8 GiB memory. LAN (private network) access: blocked.')
+    expect(first).not.toMatch(/restarted|recreated/)
+
+    state = { ...base, settings: { cpus: 6, memoryMib: 12288, allowLan: false } }
+    const resized = await request()
+    expect(resized).toContain('The sandbox was restarted to apply new resource settings')
+    expect(resized).toContain('Resources: 6 CPUs, 12 GiB memory')
+    expect(await request()).not.toContain('was restarted')
+
+    state = { ...base, instanceId: 'i-2', settings: { cpus: 6, memoryMib: 12288, allowLan: true } }
+    const recreated = await request()
+    expect(recreated).toContain('The sandbox was recreated')
+    expect(recreated).toContain('LAN (private network) access: allowed.')
+    expect(recreated).not.toContain('was restarted')
+    expect(await request()).not.toContain('was recreated')
+  })
+
+  test('a different sandbox name is a new sandbox, not a change to the previous one', async () => {
+    let state = { ...context, instanceId: 'i-1' } as SandboxContext
+    const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
+    await hook({ sessionID: 'ses_1' }, { system: [] })
+
+    state = { ...context, containerName: 'forge-other', instanceId: 'i-2' } as SandboxContext
+    const output = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, output)
+
+    expect(systemText(output)).not.toContain('was recreated')
+  })
+
   test('merges the sandbox-off note exactly once per sandboxed -> unsandboxed transition', async () => {
     let state: SandboxContext | null = context
     const hook = createSandboxMessageHook({

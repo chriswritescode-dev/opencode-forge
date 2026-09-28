@@ -1,6 +1,8 @@
 import { SANDBOX_CACHE_DIR, type SandboxRuntime } from './msb'
 import type { PluginConfig, SandboxMountConfig } from '../types'
 import type { SandboxMount } from './path'
+import type { ActiveSandbox } from './manager'
+import type { SandboxRuntimeSettings } from './loop-settings'
 import { resolveLoopAllowedDirectories } from '../constants/loop'
 
 export interface SandboxContext {
@@ -8,6 +10,22 @@ export interface SandboxContext {
   containerName: string
   hostDir: string
   mounts: SandboxMount[]
+  /** Identifies this creation of the sandbox; changes when it is recreated under the same name. */
+  instanceId?: string
+  /** Known CPUs, memory, and LAN access of the sandbox. */
+  settings?: SandboxRuntimeSettings
+}
+
+/** The single mapping from a manager's active sandbox to the context tool routing and notes use. */
+export function sandboxContextFromActive(runtime: SandboxRuntime, active: ActiveSandbox): SandboxContext {
+  return {
+    runtime,
+    containerName: active.containerName,
+    hostDir: active.projectDir,
+    mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
+    instanceId: active.instanceId,
+    ...(active.settings ? { settings: active.settings } : {}),
+  }
 }
 
 /**
@@ -51,14 +69,55 @@ function formatTransitionLine(
   return `[Sandbox] Environment changed: ${from ? `${fromLabel} (${from})` : `${fromLabel} (unknown)`} -> ${to ? `${toLabel} (${to})` : `${toLabel} (unknown)`}.`
 }
 
+/** How the sandbox a session was already using changed since its previous request. */
+export type SandboxChange = 'restarted' | 'recreated'
+
+const SANDBOX_CHANGE_NOTES: Readonly<Record<SandboxChange, string>> = {
+  restarted: '[Sandbox] The sandbox was restarted to apply new resource settings. Its files and disks are unchanged, but processes started earlier (including the Docker daemon and any containers) are no longer running; restart the ones you still need.',
+  recreated: '[Sandbox] The sandbox was recreated. Anything outside the mounted directories from before is gone, including installed packages, Docker data, and caches, and processes started earlier are no longer running; reinstall and restart what you still need.',
+}
+
+function formatMemory(mib: number): string {
+  return mib >= 1024 && mib % 1024 === 0 ? `${mib / 1024} GiB` : `${mib} MiB`
+}
+
+/** One-line description of a sandbox's CPUs, memory, and LAN access. */
+export function formatSandboxSettingsLine(settings: SandboxRuntimeSettings): string {
+  const cpus = `${settings.cpus} CPU${settings.cpus === 1 ? '' : 's'}`
+  const lan = settings.allowLan ? 'allowed' : 'blocked'
+  return `[Sandbox] Resources: ${cpus}, ${formatMemory(settings.memoryMib)} memory. LAN (private network) access: ${lan}.`
+}
+
+/**
+ * Compares the sandbox a session saw on its previous request with the current one. Only the same
+ * sandbox name counts: a different name is a different sandbox, not a change to this one.
+ */
+export function detectSandboxChange(previous: SandboxContext | undefined, next: SandboxContext): SandboxChange | undefined {
+  if (!previous || previous.containerName !== next.containerName) return undefined
+  if (previous.instanceId && next.instanceId && previous.instanceId !== next.instanceId) return 'recreated'
+  const before = previous.settings
+  const after = next.settings
+  if (before && after && (before.cpus !== after.cpus || before.memoryMib !== after.memoryMib)) return 'restarted'
+  return undefined
+}
+
 /**
  * The container note, led by the concrete host -> container environment change when both sides
- * could be probed. Falls back to `SANDBOX_CONTEXT_NOTE` verbatim when neither is known, so an
- * unprobeable environment never degrades the guidance itself.
+ * could be probed, then the sandbox's known settings and, once, how it changed. Falls back to
+ * `SANDBOX_CONTEXT_NOTE` verbatim when none of these are known, so an unprobeable environment
+ * never degrades the guidance itself.
  */
-export function buildSandboxContextNote(transition?: SandboxEnvironmentTransition): string {
-  const line = formatTransitionLine(transition, 'host', 'container')
-  return line ? `${line}\n${SANDBOX_CONTEXT_NOTE}` : SANDBOX_CONTEXT_NOTE
+export function buildSandboxContextNote(
+  transition?: SandboxEnvironmentTransition,
+  sandbox?: { settings?: SandboxRuntimeSettings; change?: SandboxChange },
+): string {
+  const lines = [
+    formatTransitionLine(transition, 'host', 'container'),
+    sandbox?.change ? SANDBOX_CHANGE_NOTES[sandbox.change] : null,
+    sandbox?.settings ? formatSandboxSettingsLine(sandbox.settings) : null,
+    SANDBOX_CONTEXT_NOTE,
+  ]
+  return lines.filter((line): line is string => line !== null).join('\n')
 }
 
 /** The host note, led by the concrete container -> host environment change. */
@@ -77,7 +136,7 @@ export interface SandboxLoopContextState {
 export interface SandboxContextManager {
   runtime: SandboxRuntime
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
-  getActive(worktreeName: string): { containerName: string; projectDir: string; mounts: SandboxMount[] } | null
+  getActive(worktreeName: string): ActiveSandbox | null
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
@@ -101,12 +160,7 @@ export async function resolveSandboxContextForLoop(
 
   const active = sandboxManager.getActive(state.loopName)
   if (!active) return null
-  return {
-    runtime: sandboxManager.runtime,
-    containerName: active.containerName,
-    hostDir: active.projectDir,
-    mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
-  }
+  return sandboxContextFromActive(sandboxManager.runtime, active)
 }
 
 /**

@@ -1,6 +1,6 @@
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
-import { buildSandboxContextNote, buildSandboxOffNote } from '../sandbox/context'
+import { buildSandboxContextNote, buildSandboxOffNote, detectSandboxChange } from '../sandbox/context'
 import type { EnvironmentProbe } from '../sandbox/env-probe'
 import type { ResolveSandboxForSessionOpts } from '../services/unified-sandbox-resolver'
 import { LRUCache } from '../utils/lru-cache'
@@ -72,7 +72,9 @@ type SystemTransformOutput = { system: string[] }
  * Both notes lead with the concrete environment change, probed from the two environments
  * themselves rather than described in the abstract: host -> container while sandboxed (repeated on
  * every request, so it stands for as long as the toggle is on) and container -> host on the single
- * request that observes the toggle going off.
+ * request that observes the toggle going off. The container note also carries the sandbox's known
+ * CPUs, memory, and LAN access, and on the first request after the same sandbox is restarted
+ * (a resize) or recreated (a LAN change, or an off/on toggle between requests) it says so once.
  *
  * This uses `experimental.chat.system.transform` rather than `chat.message` because a loop is
  * driven entirely by programmatic `promptAsync` calls (and subagents via the Task tool) — there is
@@ -86,8 +88,11 @@ type SystemTransformOutput = { system: string[] }
 export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
   const { resolveSandboxForSession, probe, logger } = deps
 
-  /** Session -> descriptor of the container it is in, retained so the off note can name it. */
-  const sandboxedSessions = new LRUCache<string | null>(SANDBOX_TRACKED_SESSION_LIMIT)
+  /**
+   * Session -> the sandbox it was in on its previous request and that container's descriptor,
+   * retained so the off note can name it and a restart or recreation is reported once.
+   */
+  const sandboxedSessions = new LRUCache<{ sandbox: SandboxContext; env: string | null }>(SANDBOX_TRACKED_SESSION_LIMIT)
 
   return async (input: SystemTransformInput, output: SystemTransformOutput): Promise<void> => {
     const sessionID = input?.sessionID
@@ -106,8 +111,12 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
         probe ? probe.describeHost() : null,
         probe ? probe.describeSandbox(sandbox) : null,
       ])
-      sandboxedSessions.set(sessionID, containerEnv)
-      applySandboxSystemNote(output.system, buildSandboxContextNote({ from: hostEnv, to: containerEnv }))
+      const change = detectSandboxChange(sandboxedSessions.get(sessionID)?.sandbox, sandbox)
+      sandboxedSessions.set(sessionID, { sandbox, env: containerEnv })
+      applySandboxSystemNote(
+        output.system,
+        buildSandboxContextNote({ from: hostEnv, to: containerEnv }, { settings: sandbox.settings, change }),
+      )
       return
     }
 
@@ -115,7 +124,7 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
       applySandboxSystemNote(output.system, null)
       return
     }
-    const containerEnv = sandboxedSessions.get(sessionID) ?? null
+    const containerEnv = sandboxedSessions.get(sessionID)?.env ?? null
     sandboxedSessions.delete(sessionID)
     applySandboxSystemNote(
       output.system,

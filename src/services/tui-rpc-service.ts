@@ -6,10 +6,12 @@ import type { SessionSandboxPreferencesRepo } from '../storage/repos/session-san
 import { getRestartability } from '../loop/restartability'
 import { forgeWorktreesRoot, listForgeWorktreeDirs, loopBranchExists } from '../workspace/forge-naming'
 import { isSandboxConfigEnabled } from '../sandbox/context'
+import { readSandboxOverrides } from '../sandbox/loop-settings'
 import { errorMessage } from '../utils/error-message'
 import type { LoopInfo } from '../utils/tui-models'
 import {
   FORGE_HOST_SANDBOX_DISABLED_ERROR,
+  type ForgeHostSandboxSetInput,
   type ForgeHostSandboxSetOutput,
   type ForgeHostSandboxState,
   type ForgeHostSandboxStateOutput,
@@ -41,7 +43,7 @@ export interface TuiRpcService {
   getSessionPlan(sessionId: string): ForgeSessionPlanOutput
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
   getHostSandboxState(): ForgeHostSandboxStateOutput
-  requestHostSandbox(sessionId: string, enabled: boolean): ForgeHostSandboxSetOutput
+  requestHostSandbox(request: ForgeHostSandboxSetInput): ForgeHostSandboxSetOutput
 }
 
 function rowToLoopInfo(row: LoopRow): LoopInfo {
@@ -136,19 +138,28 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
       }
     },
 
-    requestHostSandbox(sessionId: string, enabled: boolean): ForgeHostSandboxSetOutput {
+    requestHostSandbox(request: ForgeHostSandboxSetInput): ForgeHostSandboxSetOutput {
       if (!isSandboxConfigEnabled(deps.config)) {
         return { error: FORGE_HOST_SANDBOX_DISABLED_ERROR }
+      }
+      if (request.enabled === undefined && request.overrides === undefined) {
+        return { error: 'Host sandbox request changes nothing: pass enabled or overrides' }
       }
       let revision: string
       try {
         revision = randomUUID()
-        deps.sandboxPreferences.setDesired(deps.projectId, {
-          version: 1,
-          revision,
-          enabled,
-          sessionId,
-          requestedAt: Date.now(),
+        deps.sandboxPreferences.updateDesired(deps.projectId, (current) => {
+          const binding = request.enabled !== undefined
+            ? { enabled: request.enabled, sessionId: request.sessionId }
+            : { enabled: current?.enabled ?? false, sessionId: current?.sessionId ?? request.sessionId }
+          const overrides = request.overrides !== undefined ? readSandboxOverrides(request.overrides) : current?.overrides
+          return {
+            version: 1,
+            revision,
+            ...binding,
+            requestedAt: Date.now(),
+            ...(overrides ? { overrides } : {}),
+          }
         })
       } catch (err) {
         return { error: errorMessage(err) }

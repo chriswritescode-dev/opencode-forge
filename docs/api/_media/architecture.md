@@ -65,7 +65,7 @@ The TUI plugin provides:
 - A sidebar listing the project's loops (up to three: running first, then most recent finished)
 - The current session's msb state next to the Forge title when sandboxing is configured
 - An execution dialog with plan paste, mode, model, variant, and per-loop settings (iterations, sandbox on/off, resources), also used to restart a loop
-- Command palette integration (`Execute plan`, `Open web dashboard`, `Build sandbox template`, `Toggle host sandbox`)
+- Command palette integration (`Execute plan`, `Open web dashboard`, `Build sandbox template`, `Host sandbox`)
 - Model selection with recent-model tracking
 
 The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches, `loopDefaults` for the execution dialog's default iterations and sandbox resources, and `autoApproveState`/`autoApproveSet` for per-session auto-approve (served by the core in `src/host/forge-core.ts`), and, served by `src/services/tui-rpc-service.ts`, `loops`/`loopSidebar` for the loop list and sidebar, `sessionPlan` for the stored plan, `loopRestart` for loop restarts, `hostSandboxState`/`hostSandboxSet` for the host-session sandbox, and `worktrees` for the server's Forge worktree directories; `version` reports the server plugin version. The server pushes `toast`, `sessionDelete`, `loopsChanged`, `autoApproveChanged`, and `hostSandboxChanged` events; the TUI never polls — it fetches at startup, when one of these events arrives for its project, when the open session changes, and on `server.connected` after a reconnect. The TUI holds no Forge database of its own — its only `forge.db` reference is the path handed to the local dashboard launcher — so it works attached to a remote OpenCode server running Forge.

@@ -244,7 +244,7 @@ describe('createForgeCore', () => {
     const events: ForgeTuiEvent[] = []
     const built = await buildCore({}, undefined, { publishTuiEvent: (event) => events.push(event) })
 
-    const result = built.core.tui.requestHostSandbox('ses_host_1', true)
+    const result = built.core.tui.requestHostSandbox({ sessionId: 'ses_host_1', enabled: true })
     expect('revision' in result).toBe(true)
     expect(events.filter((event) => event.type === 'hostSandboxChanged').at(-1))
       .toEqual({ type: 'hostSandboxChanged', projectId: built.projectId })
@@ -327,7 +327,7 @@ describe('createForgeCore', () => {
   test('loopDefaults reports the configured max iterations and resolved sandbox resources', async () => {
     const built = await buildCore({
       loop: { defaultMaxIterations: 7 },
-      sandbox: { resources: { memory: '2g' } },
+      sandbox: { resources: { memory: '2g' }, network: { allowLan: true } },
     })
 
     expect(built.core.loopDefaults()).toEqual({
@@ -335,6 +335,7 @@ describe('createForgeCore', () => {
       sandbox: {
         available: true,
         resources: { memory: '2g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+        allowLan: true,
       },
     })
   })
@@ -347,6 +348,7 @@ describe('createForgeCore', () => {
       sandbox: {
         available: false,
         resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+        allowLan: false,
       },
     })
   })

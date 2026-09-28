@@ -280,7 +280,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
       } else if (sandboxManager) {
         try {
           const startedAt = new Date().toISOString()
-          const sandbox = await sandboxManager.start(info.name, info.directory, startedAt, readLoopSandbox(info)?.resources)
+          const sandbox = await sandboxManager.start(info.name, info.directory, startedAt, readLoopSandbox(info))
           logger.log(`forge-adapter: sandbox container ${sandbox.containerName} started for ${info.name}`)
         } catch (err) {
           logger.error(`forge-adapter: sandbox provisioning failed for ${info.name}`, err)

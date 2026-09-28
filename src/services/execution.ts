@@ -1115,7 +1115,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         } else {
           try {
             sandboxStartAttempted = true
-            const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!, undefined, command.sandbox?.resources)
+            const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!, undefined, command.sandbox)
             sandboxStarted = true
             sandboxContainer = result.containerName
             deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
@@ -1785,7 +1785,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (restartSandbox && deps.sandboxManager) {
         try {
-          const sandboxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir, undefined, stoppedState.sandboxSettings?.resources)
+          const sandboxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir, undefined, stoppedState.sandboxSettings)
           deps.logger.log(`loop-restart: started sandbox container ${sandboxResult.containerName}`)
         } catch (err) {
           deps.logger.error('loop-restart: failed to start sandbox container', err)

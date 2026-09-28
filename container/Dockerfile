@@ -42,7 +42,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
 # pnpm installed globally at build time so the container never downloads a package
 # manager at runtime. Node stopped shipping corepack in v25, so npm is the install
 # path; the resulting /usr/local tree is readable by an arbitrary host UID.
-RUN npm install -g pnpm@latest
+#
+# Pinned exactly instead of @latest: pnpm 12 removed the --global-bin-dir flag the
+# fallow install below relies on, so a floating tag silently breaks the image build
+# the moment the next major lands. An exact pin keeps the build reproducible; the
+# flag is guaranteed for the whole 11.x line.
+RUN npm install -g pnpm@11.28.1
 
 # bun installed to a world-accessible location. The default installer targets
 # /root/.bun, which is unreadable (mode 0700) when the container runs as a

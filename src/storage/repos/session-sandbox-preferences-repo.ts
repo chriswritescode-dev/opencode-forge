@@ -1,4 +1,7 @@
 import type { Database } from 'bun:sqlite'
+import type { SandboxOverrides } from '../../types'
+import { readSandboxOverrides } from '../../sandbox/loop-settings'
+import { runImmediateTransaction } from '../sqlite-open'
 
 export const SESSION_SANDBOX_DESIRED_KEY = 'session-sandbox.desired'
 export const SESSION_SANDBOX_APPLIED_KEY = 'session-sandbox.applied'
@@ -10,6 +13,8 @@ export interface SessionSandboxDesiredState {
   enabled: boolean
   sessionId: string | null
   requestedAt: number
+  /** Project-level overrides for the host sandbox (CPUs, memory, LAN access); unset uses config. */
+  overrides?: SandboxOverrides
 }
 
 export interface SessionSandboxAppliedState {
@@ -19,6 +24,13 @@ export interface SessionSandboxAppliedState {
   sessionId: string | null
   error: string | null
   appliedAt: number
+  /** The desired overrides this acknowledgement applied. */
+  overrides?: SandboxOverrides
+}
+
+function withOverrides<T extends object>(state: T, raw: unknown): T & { overrides?: SandboxOverrides } {
+  const overrides = readSandboxOverrides(raw)
+  return overrides ? { ...state, overrides } : state
 }
 
 export interface SessionSandboxControllerState {
@@ -31,6 +43,14 @@ export interface SessionSandboxControllerState {
 export interface SessionSandboxPreferencesRepo {
   getDesired(projectId: string): SessionSandboxDesiredState | null
   setDesired(projectId: string, state: SessionSandboxDesiredState): void
+  /**
+   * Replaces the desired row with `build(current)` in one write transaction, so a merge of the
+   * current row (e.g. keeping its overrides across an on/off toggle) cannot lose a concurrent write.
+   */
+  updateDesired(
+    projectId: string,
+    build: (current: SessionSandboxDesiredState | null) => SessionSandboxDesiredState,
+  ): SessionSandboxDesiredState
   getApplied(projectId: string): SessionSandboxAppliedState | null
   setApplied(projectId: string, state: SessionSandboxAppliedState): void
   getControllerState(projectId: string): SessionSandboxControllerState | null
@@ -52,13 +72,13 @@ function parseDesired(data: unknown): SessionSandboxDesiredState | null {
   if (typeof o.enabled !== 'boolean') return null
   if (o.sessionId !== null && (typeof o.sessionId !== 'string' || o.sessionId.trim() === '')) return null
   if (typeof o.requestedAt !== 'number' || !Number.isFinite(o.requestedAt)) return null
-  return {
-    version: 1,
+  return withOverrides({
+    version: 1 as const,
     revision: o.revision,
     enabled: o.enabled,
     sessionId: o.sessionId as string | null,
     requestedAt: o.requestedAt,
-  }
+  }, o.overrides)
 }
 
 function parseApplied(data: unknown): SessionSandboxAppliedState | null {
@@ -70,14 +90,14 @@ function parseApplied(data: unknown): SessionSandboxAppliedState | null {
   if (o.sessionId !== null && (typeof o.sessionId !== 'string' || o.sessionId.trim() === '')) return null
   if (o.error !== null && typeof o.error !== 'string') return null
   if (typeof o.appliedAt !== 'number' || !Number.isFinite(o.appliedAt)) return null
-  return {
-    version: 1,
+  return withOverrides({
+    version: 1 as const,
     revision: o.revision,
     enabled: o.enabled,
     sessionId: o.sessionId as string | null,
     error: o.error as string | null,
     appliedAt: o.appliedAt,
-  }
+  }, o.overrides)
 }
 
 function parseControllerState(data: unknown): SessionSandboxControllerState | null {
@@ -144,6 +164,14 @@ export function createSessionSandboxPreferencesRepo(db: Database): SessionSandbo
     setDesired(projectId: string, state: SessionSandboxDesiredState): void {
       const ts = now()
       upsertStmt.run(projectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(state), ts)
+    },
+
+    updateDesired(projectId, build) {
+      return runImmediateTransaction(db, () => {
+        const next = build(readDesired(projectId))
+        upsertStmt.run(projectId, SESSION_SANDBOX_DESIRED_KEY, JSON.stringify(next), now())
+        return next
+      })
     },
 
     getApplied: readApplied,

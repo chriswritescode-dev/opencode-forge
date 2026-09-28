@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import type { SandboxRuntime, SandboxWorkspace } from './msb'
-import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
-import { resolveSandboxResources } from './loop-settings'
-import type { Logger, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
+import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, msbSizeToMib, normalizeMsbSize, parseMsbCpus, SANDBOX_CACHE_DIR, type MsbAvailability } from './msb'
+import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
+import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
 import { mkdirSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
@@ -12,12 +13,12 @@ export interface SandboxManagerConfig {
   image: string
   resources?: SandboxResources
   /**
-   * Looks up a loop's persisted resource overrides. Used when a sandbox is (re)created without an
-   * explicit override (e.g. from `ensureRunning`/`restore`), so a loop launched with per-loop
-   * resources still gets them after a restart. Ignored when the sandbox already exists, because msb
-   * cannot resize a live sandbox.
+   * Looks up a sandbox's persisted overrides by manager key: a loop row's settings, or the host
+   * session sandbox's desired row. Used whenever a sandbox is (re)created without an explicit
+   * override (e.g. from `ensureRunning`/`restore`), so persisted overrides survive restarts, and by
+   * `applyOverrides` to converge an existing sandbox.
    */
-  resolveLoopResources?: (worktreeName: string) => SandboxResources | undefined
+  resolveOverrides?: (worktreeName: string) => SandboxOverrides | undefined
   sourceProjectDir?: string
   mountProjectReadonly?: boolean
   customMounts?: SandboxMountConfig[]
@@ -42,7 +43,7 @@ export interface SandboxManagerConfig {
    * is empty msb's own allow-public default applies, and configuring any host switches the
    * sandbox to deny-by-default with one allow rule per validated host.
    */
-  network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[] }
+  network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
 }
 
 function normalizeContainerPath(path: string): string {
@@ -139,11 +140,18 @@ export interface ActiveSandbox {
   projectDir: string
   startedAt: string
   mounts: SandboxMount[]
+  /** Changes whenever the sandbox is created anew, so observers can tell a recreation from a restart. */
+  instanceId: string
+  /** Last known CPUs, memory, and LAN access; undefined until created here or read back from msb. */
+  settings?: SandboxRuntimeSettings
 }
+
+/** How {@link SandboxManager.applyOverrides} converged a sandbox. */
+export type ApplyOverridesOutcome = 'unchanged' | 'resized' | 'recreated'
 
 export interface SandboxManager {
   runtime: SandboxRuntime
-  start(worktreeName: string, projectDir: string, startedAt?: string, resources?: SandboxResources): Promise<{ containerName: string }>
+  start(worktreeName: string, projectDir: string, startedAt?: string, overrides?: SandboxOverrides): Promise<{ containerName: string }>
   stop(worktreeName: string): Promise<void>
   getActive(worktreeName: string): ActiveSandbox | null
   isActive(worktreeName: string): boolean
@@ -151,6 +159,13 @@ export interface SandboxManager {
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
+  /**
+   * Converges an existing sandbox to its effective settings (persisted overrides over config).
+   * A CPU or memory change restarts the sandbox in place, keeping its disks; a LAN access change
+   * recreates it, because msb fixes network policy at create time. Rejects when the current
+   * settings cannot be read, so a LAN restriction is never assumed to hold.
+   */
+  applyOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome>
 }
 
 function dropConflictingMounts(mounts: SandboxMount[], logger: Logger): SandboxMount[] {
@@ -201,6 +216,7 @@ export function createSandboxManager(
   const convergedSecrets = new Set<string>()
   const preparedCacheDisks = new Set<string>()
   const handledSecretEnvs = new Map<string, Set<string>>()
+  const settingsLookups = new Set<string>()
   const warnedUnsetSecretEnv = new Set<string>()
   let runtimeAvailableCache: { value: MsbAvailability; at: number } | null = null
   let imageReady = false
@@ -373,16 +389,55 @@ export function createSandboxManager(
    * Single point that records a usable sandbox in the active map, shared by the create and
    * adopt paths in `start` and by `resolveUsableSandbox`. An existing entry's `startedAt` wins
    * so adopting a sandbox never resets the time it actually came up. A precomputed mount plan
-   * is reused when provided so the create path does not run it twice.
+   * is reused when provided so the create path does not run it twice. Re-registering the same
+   * container keeps its instance id and known settings; a create passes `created` to reset both.
    */
-  function registerActiveSandbox(worktreeName: string, containerName: string, projectDir: string, startedAt?: string, mounts?: SandboxMount[]): void {
+  function registerActiveSandbox(
+    worktreeName: string,
+    containerName: string,
+    projectDir: string,
+    startedAt?: string,
+    mounts?: SandboxMount[],
+    created?: { settings?: SandboxRuntimeSettings },
+  ): void {
     const active = activeSandboxes.get(worktreeName)
+    const same = !created && active?.containerName === containerName ? active : undefined
+    const settings = created ? created.settings : same?.settings
     activeSandboxes.set(worktreeName, {
       containerName,
       projectDir: resolve(projectDir),
       startedAt: active?.startedAt ?? startedAt ?? new Date().toISOString(),
       mounts: mounts ?? buildMountPlan(projectDir).mounts,
+      instanceId: same?.instanceId ?? randomUUID(),
+      ...(settings ? { settings } : {}),
     })
+  }
+
+  /**
+   * Reads an adopted sandbox's settings back from msb once per instance, so the agent's sandbox
+   * note can report them. Best-effort: an unreadable sandbox keeps unknown settings and is not
+   * re-queried on every liveness recheck.
+   */
+  async function learnSettings(worktreeName: string): Promise<void> {
+    const active = activeSandboxes.get(worktreeName)
+    if (!active || active.settings || settingsLookups.has(active.instanceId)) return
+    settingsLookups.add(active.instanceId)
+    const settings = await runtime.readSandboxSettings(active.containerName)
+    const current = activeSandboxes.get(worktreeName)
+    if (settings && current?.containerName === active.containerName) current.settings = settings
+  }
+
+  /** The settings a sandbox should have: persisted overrides over config over defaults. */
+  function resolveTargetSettings(worktreeName: string, override?: SandboxOverrides) {
+    const overrides = override ?? config.resolveOverrides?.(worktreeName)
+    const resources = resolveSandboxResources(config.resources, overrides?.resources)
+    const cpus = parseMsbCpus(resources.cpus, logger)
+    const memory = normalizeMsbSize(resources.memory, logger)
+    const memoryMib = memory === undefined ? undefined : msbSizeToMib(memory)
+    const allowLan = resolveSandboxAllowLan(config.network?.allowLan, overrides)
+    const settings: SandboxRuntimeSettings | undefined =
+      cpus !== undefined && memoryMib !== undefined ? { cpus, memoryMib, allowLan } : undefined
+    return { overrides, resources, cpus, memoryMib, allowLan, settings }
   }
 
   /**
@@ -479,7 +534,7 @@ export function createSandboxManager(
     preparedCacheDisks.add(containerName)
   }
 
-  async function start(worktreeName: string, projectDir: string, startedAt?: string, resources?: SandboxResources): Promise<{ containerName: string }> {
+  async function start(worktreeName: string, projectDir: string, startedAt?: string, overrides?: SandboxOverrides): Promise<{ containerName: string }> {
     await ensureRuntimeAvailable()
     await ensureTemplate()
 
@@ -502,29 +557,30 @@ export function createSandboxManager(
       }
       await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
+      await learnSettings(worktreeName)
       return { containerName }
     }
 
     const { mounts } = buildMountPlan(absoluteProjectDir)
     const workspaces = buildSandboxWorkspaces(mounts, logger)
-    const override = resources ?? config.resolveLoopResources?.(worktreeName)
-    const effectiveResources = resolveSandboxResources(config.resources, override)
+    const target = resolveTargetSettings(worktreeName, overrides)
     // Secret destinations are unioned into the egress allow-list: msb's proxy is deny-by-default
     // at the sandbox level, so a secrets-only configuration would otherwise never reach its hosts.
     const secrets = resolveSandboxSecrets()
-    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${effectiveResources.memory} cpus=${effectiveResources.cpus} workspaces=${workspaces.length})`)
+    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${target.resources.memory} cpus=${target.resources.cpus} lan=${target.allowLan} workspaces=${workspaces.length})`)
     await runtime.createSandbox(containerName, workspaces, {
       image: config.image,
-      resources: effectiveResources,
+      resources: target.resources,
       networkAllow: buildNetworkAllow(config.network?.allow, secrets, logger),
       restrictEgress: egressRestrictionRequested(config.network?.allow, secrets),
       env: resolvePassthroughEnv(),
       secrets,
+      allowLan: target.allowLan,
     })
     await prepareCacheDisk(containerName)
     convergedSecrets.add(containerName)
     recordHandledSecretEnvs(containerName, secrets)
-    registerActiveSandbox(worktreeName, containerName, projectDir, startedAt, mounts)
+    registerActiveSandbox(worktreeName, containerName, projectDir, startedAt, mounts, { settings: target.settings })
     logger.log(`Sandbox ${containerName} started`)
 
     return { containerName }
@@ -683,6 +739,7 @@ export function createSandboxManager(
       }
       await prepareCacheDisk(containerName)
       registerActiveSandbox(worktreeName, containerName, projectDir, startedAt)
+      await learnSettings(worktreeName)
       lastLivenessCheck.set(worktreeName, Date.now())
       return containerName
     }
@@ -717,6 +774,55 @@ export function createSandboxManager(
     return pending
   }
 
+  async function convergeOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome> {
+    await resolveUsableSandbox(worktreeName, projectDir)
+    const active = activeSandboxes.get(worktreeName)
+    if (!active) throw new Error(`Sandbox for ${worktreeName} is not active; cannot apply its settings`)
+    const current = active.settings ?? await runtime.readSandboxSettings(active.containerName)
+    if (!current) throw new Error(`Could not read the current settings of sandbox ${active.containerName}`)
+    const target = resolveTargetSettings(worktreeName)
+
+    if (current.allowLan !== target.allowLan) {
+      logger.log(`Sandbox ${active.containerName}: LAN access ${target.allowLan ? 'on' : 'off'} requires recreating the sandbox`)
+      await stop(worktreeName)
+      await start(worktreeName, projectDir, active.startedAt, target.overrides)
+      lastLivenessCheck.set(worktreeName, Date.now())
+      return 'recreated'
+    }
+
+    const cpus = target.cpus ?? current.cpus
+    const memoryMib = target.memoryMib ?? current.memoryMib
+    if (cpus === current.cpus && memoryMib === current.memoryMib) {
+      active.settings = current
+      return 'unchanged'
+    }
+    logger.log(`Sandbox ${active.containerName}: resizing to cpus=${cpus} memory=${memoryMib}MiB (restarts the sandbox)`)
+    await runtime.resizeSandbox(active.containerName, { cpus: target.resources.cpus, memory: target.resources.memory })
+    active.settings = { cpus, memoryMib, allowLan: current.allowLan }
+    lastLivenessCheck.set(worktreeName, Date.now())
+    return 'resized'
+  }
+
+  /**
+   * Shares the per-sandbox single-flight slot with `ensureRunning`, so a tool call arriving while
+   * the sandbox is recreated waits for the new sandbox instead of creating a second one.
+   */
+  async function applyOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome> {
+    for (let inFlight = ensureRunningInFlight.get(worktreeName); inFlight; inFlight = ensureRunningInFlight.get(worktreeName)) {
+      await inFlight.catch(() => undefined)
+    }
+    let outcome: ApplyOverridesOutcome = 'unchanged'
+    const pending = convergeOverrides(worktreeName, projectDir)
+      .then((result) => {
+        outcome = result
+        return activeSandboxes.get(worktreeName)?.containerName ?? runtime.sandboxContainerName(worktreeName)
+      })
+      .finally(() => ensureRunningInFlight.delete(worktreeName))
+    ensureRunningInFlight.set(worktreeName, pending)
+    await pending
+    return outcome
+  }
+
   return {
     runtime,
     start,
@@ -727,5 +833,6 @@ export function createSandboxManager(
     cleanupOrphans,
     restore,
     ensureRunning,
+    applyOverrides,
   }
 }

@@ -268,13 +268,13 @@ describe('createTuiRpcService', () => {
     test('refuses to write when sandboxing is disabled by config', () => {
       const service = createService({ config: { sandbox: { enabled: false } } })
 
-      expect(service.requestHostSandbox('session-1', true))
+      expect(service.requestHostSandbox({ sessionId: 'session-1', enabled: true }))
         .toEqual({ error: 'Host sandbox is disabled by config (sandbox.enabled: false)' })
       expect(sandboxPreferences.getDesired(PROJECT)).toBeNull()
     })
 
     test('writes a fresh desired revision when sandboxing is enabled', () => {
-      const result = createService().requestHostSandbox('session-1', true)
+      const result = createService().requestHostSandbox({ sessionId: 'session-1', enabled: true })
       if ('error' in result) throw new Error(result.error)
 
       expect(typeof result.revision).toBe('string')
@@ -284,6 +284,38 @@ describe('createTuiRpcService', () => {
         enabled: true,
         sessionId: 'session-1',
       })
+    })
+
+    test('an on/off change keeps the saved overrides', () => {
+      const service = createService()
+      service.requestHostSandbox({ sessionId: 'session-1', enabled: true, overrides: { resources: { cpus: '6' }, allowLan: true } })
+
+      service.requestHostSandbox({ sessionId: 'session-1', enabled: false })
+
+      expect(sandboxPreferences.getDesired(PROJECT)).toMatchObject({
+        enabled: false,
+        overrides: { resources: { cpus: '6' }, allowLan: true },
+      })
+    })
+
+    test('an overrides change keeps the binding, validates, and {} resets', () => {
+      const service = createService()
+      service.requestHostSandbox({ sessionId: 'session-a', enabled: true })
+
+      service.requestHostSandbox({ sessionId: 'session-b', overrides: { resources: { cpus: '8', memory: 'lots' } } })
+      expect(sandboxPreferences.getDesired(PROJECT)).toMatchObject({
+        enabled: true,
+        sessionId: 'session-a',
+        overrides: { resources: { cpus: '8' } },
+      })
+
+      service.requestHostSandbox({ sessionId: 'session-b', overrides: {} })
+      expect(sandboxPreferences.getDesired(PROJECT)?.overrides).toBeUndefined()
+    })
+
+    test('refuses a request that changes nothing', () => {
+      expect(createService().requestHostSandbox({ sessionId: 'session-1' }))
+        .toEqual({ error: 'Host sandbox request changes nothing: pass enabled or overrides' })
     })
   })
 })

@@ -8,7 +8,7 @@ import { canonicalizePath } from '../sandbox/path'
 import { loadPluginConfig } from '../setup'
 import { resolveForgeDataDir } from '../utils/opencode-paths'
 import { createForgeCore, type ForgeCore } from './forge-core'
-import { FORGE_RPC, toForgeRpcJson, type ForgeExecutePlanInput, type ForgeLoopRestartInput, type ForgeRpcError, type ForgeToastInput, type ForgeTuiEvent } from './forge-rpc'
+import { FORGE_RPC, toForgeRpcJson, type ForgeExecutePlanInput, type ForgeHostSandboxSetInput, type ForgeLoopRestartInput, type ForgeRpcError, type ForgeToastInput, type ForgeTuiEvent } from './forge-rpc'
 import { VERSION } from '../version'
 import {
   V2_EVENT_TYPES,
@@ -109,10 +109,8 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       loopRestart: async (input) => withCore(core, (active) =>
         active.tui.restartLoop(input as ForgeLoopRestartInput)),
       hostSandboxState: async () => withCore(core, (active) => active.tui.getHostSandboxState()),
-      hostSandboxSet: async (input) => {
-        const { sessionId, enabled } = input as { sessionId: string; enabled: boolean }
-        return withCore(core, (active) => active.tui.requestHostSandbox(sessionId, enabled))
-      },
+      hostSandboxSet: async (input) => withCore(core, (active) =>
+        active.tui.requestHostSandbox(input as ForgeHostSandboxSetInput)),
       worktrees: async () => withCore(core, (active) => active.tui.listWorktrees()),
       version: async () => ({ version: VERSION }),
     }))

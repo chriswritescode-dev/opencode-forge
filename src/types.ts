@@ -129,6 +129,9 @@ export interface SandboxNetworkConfig {
    *  value never enters the guest: msb substitutes it only for the listed hosts at the network
    *  boundary. */
   secrets?: SandboxSecretConfig[]
+  /** Allow egress to private (LAN) address ranges, which msb blocks by default. Applied when a
+   *  sandbox is created; per-sandbox overrides can change it. Default: false. */
+  allowLan?: boolean
 }
 
 /**
@@ -151,14 +154,23 @@ export interface SandboxResources {
 }
 
 /**
+ * Per-sandbox overrides of the `sandbox` config, shared by loop sandboxes and the host session
+ * sandbox. Unset fields fall back to the config.
+ */
+export interface SandboxOverrides {
+  /** Resource overrides for this sandbox. */
+  resources?: SandboxResources
+  /** Overrides `sandbox.network.allowLan` for this sandbox. */
+  allowLan?: boolean
+}
+
+/**
  * Per-loop sandbox overrides chosen at launch and persisted on the loop row. Unset fields fall
  * back to the `sandbox` config, so a loop launched without overrides behaves exactly as before.
  */
-export interface LoopSandboxSettings {
+export interface LoopSandboxSettings extends SandboxOverrides {
   /** `false` runs this loop worktree-only even though the sandbox is enabled in config. */
   enabled?: boolean
-  /** Resource overrides for this loop's sandbox; applied only when the sandbox is created. */
-  resources?: SandboxResources
 }
 
 /**

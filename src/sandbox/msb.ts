@@ -1,6 +1,7 @@
 import type { Logger, SandboxResources, SandboxSecretConfig } from '../types'
 import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
-import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS } from './loop-settings'
+import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS, type SandboxRuntimeSettings } from './loop-settings'
+import { isRecord } from '../utils/is-record'
 
 export function sanitizeMsbName(raw: string): string {
   const name = raw
@@ -64,6 +65,15 @@ export function normalizeMsbSize(raw: string | undefined, logger: Logger): strin
     return undefined
   }
   return raw.toLowerCase().replace(/b$/, '')
+}
+
+const MIB_PER_UNIT: Readonly<Record<string, number>> = { k: 1 / 1024, m: 1, g: 1024 }
+
+/** Size in MiB of a value {@link normalizeMsbSize} accepts (msb reads `k`/`m`/`g` as binary units). */
+export function msbSizeToMib(size: string): number | undefined {
+  const match = /^(\d+(?:\.\d+)?)([kmg])b?$/i.exec(size.trim())
+  if (!match) return undefined
+  return Math.round(Number(match[1]) * MIB_PER_UNIT[match[2]!.toLowerCase()]!)
 }
 
 /**
@@ -204,6 +214,7 @@ export function buildMsbCreateArgs(
     cacheDisk?: string
     env?: string[]
     secrets?: SandboxSecretConfig[]
+    allowLan?: boolean
   },
 ): string[] {
   if (workspaces.length === 0) {
@@ -227,6 +238,11 @@ export function buildMsbCreateArgs(
       const trimmed = host.trim()
       if (trimmed) args.push('--net-rule', `allow@${trimmed}`)
     }
+    if (opts.allowLan) args.push('--net-rule', 'allow@private')
+  } else if (opts.allowLan) {
+    // msb's default egress is deny with an implicit allow@public, so LAN ranges need the
+    // `private` group added alongside `public` rather than an unrestricted policy.
+    args.push('--net', 'public,private')
   }
   // Bare `-e <NAME>` only: msb resolves the key from its own environment at start, so the value
   // never appears in forge's argv (and never in `ps` output), unlike `-e NAME=VALUE`.
@@ -328,6 +344,34 @@ export function parseMsbInspectSecretNames(stdout: string): string[] | null {
     if (typeof envVar === 'string' && envVar) names.push(envVar)
   }
   return names
+}
+
+/**
+ * Extracts the CPUs, memory, and LAN access of a sandbox from `msb inspect --format json`
+ * (`config.resources.{cpus,memory_mib}`, and an allow egress rule for the `private` group in
+ * `config.network.policy.rules`). A sandbox without a network policy uses msb's default, which
+ * blocks LAN ranges. Returns `null` when the payload cannot be trusted.
+ */
+export function parseMsbInspectRuntimeSettings(stdout: string): SandboxRuntimeSettings | null {
+  let data: unknown
+  try {
+    data = JSON.parse(stdout)
+  } catch {
+    return null
+  }
+  if (!isRecord(data) || !isRecord(data.config)) return null
+  const { resources, network } = data.config
+  if (!isRecord(resources)) return null
+  const { cpus, memory_mib: memoryMib } = resources
+  if (typeof cpus !== 'number' || typeof memoryMib !== 'number') return null
+  const rules = isRecord(network) && isRecord(network.policy) && Array.isArray(network.policy.rules) ? network.policy.rules : []
+  const allowLan = rules.some((rule) =>
+    isRecord(rule)
+    && rule.action === 'allow'
+    && rule.direction !== 'ingress'
+    && isRecord(rule.destination)
+    && rule.destination.group === 'private')
+  return { cpus, memoryMib, allowLan }
 }
 
 export function parseMsbImageList(stdout: string): string[] {
@@ -435,6 +479,8 @@ export interface CreateSandboxOpts {
   env?: string[]
   /** Host-held credentials bound via `--secret <env>@<hosts>`; values never enter the guest. */
   secrets?: SandboxSecretConfig[]
+  /** Allow egress to private (LAN) ranges. Create-time only: msb cannot change it later. */
+  allowLan?: boolean
 }
 
 /** Options for a non-piped sandbox exec. `cwd` maps to the native `-w` flag, so no
@@ -465,6 +511,13 @@ export interface SandboxRuntime {
    *  never rejects. A no-op (nothing bound and nothing desired) returns `true` without invoking
    *  `msb modify`. */
   refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean>
+  /** Reads the CPUs, memory, and LAN access of an existing sandbox via `msb inspect`. Returns
+   *  `null` when the query fails or is unparseable; never rejects. */
+  readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
+  /** Changes the CPUs and/or memory of an existing sandbox via `msb modify --restart`. msb cannot
+   *  resize a running microVM live, so the sandbox restarts: its disks survive, its processes do
+   *  not. Rejects when msb refuses the change. */
+  resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
 
 const MSB_TEMPLATE_LOAD_TIMEOUT = 600000
@@ -526,6 +579,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
       cacheDisk: normalizeMsbSize(opts.resources?.cacheDisk, logger),
       env: opts.env,
       secrets: opts.secrets,
+      allowLan: opts.allowLan,
     })
     const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
     if (result.exitCode === 0) return
@@ -633,6 +687,28 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     }
   }
 
+  async function readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null> {
+    try {
+      const result = await run(['inspect', name, '--format', 'json'], { timeout: MSB_QUERY_TIMEOUT })
+      return result.exitCode === 0 ? parseMsbInspectRuntimeSettings(result.stdout) : null
+    } catch {
+      return null
+    }
+  }
+
+  async function resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void> {
+    const cpus = parseMsbCpus(resources.cpus, logger)
+    const memory = normalizeMsbSize(resources.memory, logger)
+    if (cpus === undefined && memory === undefined) return
+    const args = ['modify', name, '--restart']
+    if (cpus !== undefined) args.push('--cpus', String(cpus))
+    if (memory !== undefined) args.push('--memory', memory)
+    const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to resize sandbox ${name}: ${result.stderr || result.stdout}`)
+    }
+  }
+
   return {
     checkAvailable,
     templateExists,
@@ -644,5 +720,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     sandboxContainerName,
     listSandboxesByPrefix,
     refreshSandboxSecrets,
+    readSandboxSettings,
+    resizeSandbox,
   }
 }

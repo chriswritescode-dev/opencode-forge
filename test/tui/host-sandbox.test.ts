@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import type {
+  ForgeHostSandboxSetInput,
   ForgeHostSandboxSetOutput,
   ForgeHostSandboxState,
   ForgeHostSandboxStateOutput,
@@ -32,11 +33,20 @@ describe('createHostSandboxToggle', () => {
     let revision = 0
     const readState = vi.fn(async (): Promise<ForgeHostSandboxStateOutput> =>
       options.readError ? { error: options.readError } : state)
-    const setState = vi.fn(async (sessionId: string, enabled: boolean): Promise<ForgeHostSandboxSetOutput> => {
+    const setState = vi.fn(async (input: ForgeHostSandboxSetInput): Promise<ForgeHostSandboxSetOutput> => {
       const next = `rev-${++revision}`
+      const current = state.desired
+      const overrides = input.overrides ?? current?.overrides
       state = {
         ...state,
-        desired: { version: 1, revision: next, enabled, sessionId, requestedAt: 1 },
+        desired: {
+          version: 1,
+          revision: next,
+          enabled: input.enabled ?? current?.enabled ?? false,
+          sessionId: input.enabled !== undefined ? input.sessionId : current?.sessionId ?? input.sessionId,
+          requestedAt: 1,
+          ...(overrides ? { overrides } : {}),
+        },
       }
       return { revision: next }
     })
@@ -145,6 +155,38 @@ describe('createHostSandboxToggle', () => {
 
     expect(toasts.some((toast) => toast.variant === 'error')).toBe(false)
     expect(toggle.preference()?.desired).toMatchObject({ sessionId: 'ses_1' })
+  })
+
+  test('a toggle with drafted overrides sends both in one request', async () => {
+    const { toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
+
+    const pending = toggle.toggle({ resources: { cpus: '6' } })
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: true, overrides: { resources: { cpus: '6' } } })
+  })
+
+  test('setOverrides changes settings without touching the on/off binding', async () => {
+    const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
+
+    const on = toggle.toggle()
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
+    await on
+
+    const change = toggle.setOverrides({ resources: { memory: '12g' }, allowLan: true })
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(2))
+    acknowledge()
+    toggle.refresh()
+    await change
+
+    expect(setState).toHaveBeenLastCalledWith({ sessionId: 'ses_1', overrides: { resources: { memory: '12g' }, allowLan: true } })
+    expect(toggle.preference()?.desired).toMatchObject({ enabled: true, sessionId: 'ses_1', overrides: { allowLan: true } })
+    expect(toasts.at(-1)).toMatchObject({ variant: 'success', message: 'Host sandbox settings applied' })
   })
 
   test('surfaces a read error and keeps the preference unavailable', async () => {
