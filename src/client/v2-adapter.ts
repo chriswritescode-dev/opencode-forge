@@ -299,7 +299,7 @@ function toPortSession(info: V2SessionInfo): Session {
 function toProviderModelInfo(model: V2ModelInfo): ProviderList['all'][number]['models'][string] {
   const cost = model.cost[0]
   return {
-    id: model.modelID,
+    id: model.id,
     name: model.name,
     release_date: new Date(model.time.released).toISOString(),
     capabilities: {
@@ -322,7 +322,7 @@ export function toProviderListFromV2(
       models: Object.fromEntries(
         models
           .filter((model) => model.providerID === info.id)
-          .map((model) => [model.modelID, toProviderModelInfo(model)]),
+          .map((model) => [model.id, toProviderModelInfo(model)]),
       ),
     })),
     connected: providers.filter((info) => info.activation !== 'disabled').map((info) => info.id),

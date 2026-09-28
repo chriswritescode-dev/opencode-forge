@@ -537,8 +537,8 @@ describe('createForgeClientFromV2', () => {
         id: 'anthropic',
         name: 'Anthropic',
         models: {
-          'claude-sonnet-4': {
-            id: 'claude-sonnet-4',
+          sonnet: {
+            id: 'sonnet',
             name: 'Sonnet',
             release_date: new Date(0).toISOString(),
             capabilities: { toolcall: true, reasoning: false },
@@ -551,6 +551,42 @@ describe('createForgeClientFromV2', () => {
         name: 'OpenAI',
         models: {},
       }])
+    })
+
+    it('keys models by their unique id, not the shared base modelID', () => {
+      const list = toProviderListFromV2(
+        [{ id: 'openai', name: 'OpenAI', activation: 'enabled' }],
+        [
+          {
+            id: 'gpt-6-luna',
+            modelID: 'gpt-6-luna',
+            providerID: 'openai',
+            name: 'GPT-6 Luna',
+            capabilities: { tools: true, input: ['text'], output: ['text'] },
+            variants: [],
+            time: { released: 0 },
+            cost: [],
+            status: 'active',
+            enabled: true,
+            limit: { context: 1, output: 1 },
+          },
+          {
+            id: 'gpt-6-luna-fast',
+            modelID: 'gpt-6-luna',
+            providerID: 'openai',
+            name: 'GPT-6 Luna Fast',
+            capabilities: { tools: true, input: ['text'], output: ['text'] },
+            variants: [],
+            time: { released: 0 },
+            cost: [],
+            status: 'active',
+            enabled: true,
+            limit: { context: 1, output: 1 },
+          },
+        ] as never,
+      )
+
+      expect(Object.keys(list.all[0].models).sort()).toEqual(['gpt-6-luna', 'gpt-6-luna-fast'])
     })
   })
 

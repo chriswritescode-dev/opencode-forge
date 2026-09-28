@@ -100,7 +100,7 @@ async function loadModels(context: Plugin.Context, directory: string): Promise<E
       providers: connected,
       connectedProviderIds,
       configuredProviderIds: [],
-      defaultModel: fallback ? `${fallback.providerID}/${fallback.modelID}` : '',
+      defaultModel: fallback ? `${fallback.providerID}/${fallback.id}` : '',
     }
   } catch (err) {
     return {
