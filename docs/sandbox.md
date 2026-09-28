@@ -28,17 +28,19 @@ msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 
 `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a **Build sandbox template** command in the palette. Trigger it at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically. The dialog stays open for the duration and shows a live progress bar, the current Docker step, elapsed time, and streamed build output; on failure it keeps the last lines of Docker output so the cause is visible. A first build takes several minutes, and closing the dialog does not cancel it — it finishes in the background and reports with a toast. Restart OpenCode after changing sandbox configuration.
 
-The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Obscura, and Docker Engine (see [Nested Docker](#nested-docker)).
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Chromium, and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
-### Obscura
+### Chromium
 
-The image ships the Obscura headless browser engine as `obscura` — a Rust-based headless browser with embedded V8, built for web scraping and agent automation. `obscura serve` speaks the Chrome DevTools Protocol, so Puppeteer and Playwright connect to it like headless Chrome:
+The image ships Playwright's Chromium build as `chromium`. Google publishes no linux/arm64 Chrome build, so Chromium is the closest current Chrome-compatible browser on arm64 hosts and the architecture-matched build on amd64; `install --with-deps` pulls the runtime libraries it needs. Launch it headless with the usual sandbox flags:
 
 ```bash
-obscura serve --port 9222
+chromium --no-sandbox --disable-dev-shm-usage --headless
 ```
+
+The browser lives at `/opt/forge/.local/share/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`), deliberately off the cache disk so the image-shipped build is not hidden by the cache-disk mount (see [Tool Caches and Disk Space](#tool-caches-and-disk-space)).
 
 ## How It Works
 
@@ -235,9 +237,9 @@ Caches that do not honor `XDG_CACHE_HOME` are routed into that directory by imag
 | cargo and rustup | `CARGO_HOME` / `RUSTUP_HOME` under `/opt/forge/cache` |
 | Go modules | `GOPATH=/opt/forge/cache/go` |
 
-CLIs installed globally at image-build time (`fallow`) are a deliberate exception: they are installed with an explicit `--store-dir` under `/opt/forge/.local/share/pnpm/store`. pnpm does not copy a global package into `PNPM_HOME` — the global `node_modules` entry is a symlink chain into the store — so a global built against the cache-disk store would resolve to a dangling symlink the moment the disk is mounted over that path, and the CLI would fail with `Cannot find module`. The build-time store therefore stays on a path no mount shadows, while the environment keeps agent installs on the cache disk.
+CLIs installed globally at image-build time (`fallow`, `playwright-core`) are a deliberate exception: they are installed with an explicit `--store-dir` under `/opt/forge/.local/share/pnpm/store`. pnpm does not copy a global package into `PNPM_HOME` — the global `node_modules` entry is a symlink chain into the store — so a global built against the cache-disk store would resolve to a dangling symlink the moment the disk is mounted over that path, and the CLI would fail with `Cannot find module`. The build-time store therefore stays on a path no mount shadows, while the environment keeps agent installs on the cache disk.
 
-uv, pip, puccinialin, Playwright browsers, and pnpm's own cache resolve under `XDG_CACHE_HOME` unchanged. The uv-managed interpreters deliberately sit at `uv-python`, *outside* uv's own cache directory (`$XDG_CACHE_HOME/uv`), because `uv cache clean` clears that directory entirely and would otherwise delete interpreters that project virtualenvs link against. Because the store sits on a different filesystem than the mounted project, pnpm copies packages into `node_modules` instead of hard-linking — the same trade the container-internal store already made against the virtiofs project mount.
+uv, pip, puccinialin, and pnpm's own cache resolve under `XDG_CACHE_HOME` unchanged. Playwright is deliberately pinned off it with `PLAYWRIGHT_BROWSERS_PATH=/opt/forge/.local/share/ms-playwright`: the image ships Chromium there at build time, and a browser under the cache disk would be hidden by the mount. The uv-managed interpreters deliberately sit at `uv-python`, *outside* uv's own cache directory (`$XDG_CACHE_HOME/uv`), because `uv cache clean` clears that directory entirely and would otherwise delete interpreters that project virtualenvs link against. Because the store sits on a different filesystem than the mounted project, pnpm copies packages into `node_modules` instead of hard-linking — the same trade the container-internal store already made against the virtiofs project mount.
 
 The image ships `forge-cache-prune`, safe to run as `agent` whenever the sandbox is idle. It clears re-downloadable caches — the pnpm store, npm and uv caches, `cargo/registry`, `cargo/git`, `go/pkg/mod`, and any unrecognized entry — while preserving installed toolchains: `rustup`, the uv-managed Pythons, uv tool environments and executable links (`uv-tools` and `uv-bin`), and the `cargo/bin` and `go/bin` binaries. It then runs `apt-get clean` and `fstrim`, so the freed space is returned to the host's sparse disk image rather than only to the guest. The sandbox context note tells agents about it, so a full cache disk is reclaimed by running it instead of hand-hunting `du`.
 

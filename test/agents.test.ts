@@ -346,7 +346,7 @@ describe('Agent definitions', () => {
           'execution sandbox will not expose them',
           'unattended coding agent inside an isolated sandbox',
           'Docker for local services',
-          '`obscura` headless browser',
+          '`chromium` headless browser (Playwright)',
           'Not available: host environment variables, API keys, credentials, secrets, cloud or SaaS accounts',
           'authenticates to or mutates a system outside the sandbox',
           'applying Terraform or other infrastructure-as-code against a cloud provider',

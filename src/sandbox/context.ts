@@ -41,7 +41,7 @@ export const SANDBOX_CONTEXT_NOTE = [
   'Passwordless sudo is available for installing missing tools system-wide.',
   'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
   `Package and tool caches live on a dedicated disk mounted at ${SANDBOX_CACHE_DIR}; run forge-cache-prune to reclaim space when the disk fills (it clears caches while preserving installed toolchains).`,
-  'Obscura is installed as a drop-in replacement for headless Chrome with Puppeteer and Playwright; run obscura --help for usage.',
+  'Chromium (Playwright\'s browser build) is installed as chromium for headless browser automation; launch it with chromium --headless --no-sandbox --disable-dev-shm-usage.',
 ].join('\n')
 
 export const SANDBOX_OFF_NOTE = [
