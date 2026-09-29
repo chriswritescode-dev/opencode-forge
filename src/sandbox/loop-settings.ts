@@ -1,4 +1,4 @@
-import type { LoopSandboxSettings, SandboxResources } from '../types'
+import type { LoopSandboxSettings, SandboxOverrides, SandboxResources } from '../types'
 import { isRecord } from '../utils/is-record'
 
 /** Size literal msb accepts for `-m` and named-disk `size=` values, e.g. `8g` or `1024m`. */
@@ -46,8 +46,30 @@ export function readLoopSandboxSettings(value: unknown): LoopSandboxSettings | u
   const settings: LoopSandboxSettings = {
     ...(typeof value.enabled === 'boolean' ? { enabled: value.enabled } : {}),
     ...(Object.keys(resources).length > 0 ? { resources } : {}),
+    ...(typeof value.allowLan === 'boolean' ? { allowLan: value.allowLan } : {}),
   }
   return Object.keys(settings).length > 0 ? settings : undefined
+}
+
+/** {@link readLoopSandboxSettings} without the loop-only `enabled` flag, for any sandbox's overrides. */
+export function readSandboxOverrides(value: unknown): SandboxOverrides | undefined {
+  const { enabled: _enabled, ...overrides } = readLoopSandboxSettings(value) ?? {}
+  return Object.keys(overrides).length > 0 ? overrides : undefined
+}
+
+/** Effective LAN access: override, then `sandbox.network.allowLan`, then off. */
+export function resolveSandboxAllowLan(configAllowLan?: boolean, override?: SandboxOverrides): boolean {
+  return override?.allowLan ?? configAllowLan ?? false
+}
+
+/**
+ * The settings of an existing sandbox that can differ from what Forge wants: CPUs and memory
+ * (changed in place by a restart) and LAN access (changed only by recreating the sandbox).
+ */
+export interface SandboxRuntimeSettings {
+  cpus: number
+  memoryMib: number
+  allowLan: boolean
 }
 
 /**

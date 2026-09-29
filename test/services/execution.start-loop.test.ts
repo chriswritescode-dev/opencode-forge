@@ -1597,7 +1597,7 @@ describe('handleStartLoop per-loop sandbox settings', () => {
       }),
     )
 
-    expect(sandboxManager.start).toHaveBeenCalledWith(result.data.loopName, '/tmp/wt/sandbox', undefined, resources)
+    expect(sandboxManager.start).toHaveBeenCalledWith(result.data.loopName, '/tmp/wt/sandbox', undefined, { resources })
 
     const state = loopService.getActiveState(result.data.loopName)
     expect(state).not.toBeNull()

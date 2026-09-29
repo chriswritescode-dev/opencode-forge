@@ -101,6 +101,14 @@ test('globally installed CLIs are built against a store the cache-disk mount can
   }
 })
 
+test('the image pnpm is pinned exactly to a version whose CLI still accepts --global-bin-dir', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+  const install = dockerfile.split('\n').find((line) => line.includes('npm install -g pnpm'))
+
+  expect(install).toBe('RUN npm install -g pnpm@11.28.1')
+  expect(dockerfile).not.toContain('pnpm@latest')
+})
+
 function leftoverTars(dir: string): string[] {
   return readdirSync(dir).filter((f) => f.startsWith('forge-sandbox-template-') && f.endsWith('.tar'))
 }

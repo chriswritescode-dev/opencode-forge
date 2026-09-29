@@ -108,7 +108,7 @@
     // Mount the source project directory read-only at its identical host path. Defaults to true.
     // "mountProjectReadonly": true,
     // Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox (e.g.
-    // after `Toggle host sandbox`), using the auto-approve policy. Defaults to true.
+    // after turning it on in the `Host sandbox` menu), using the auto-approve policy. Defaults to true.
     // "autoApprovePermissions": true,
     // Network access configuration. msb egress is allow-by-default: with no hosts configured,
     // forge passes no network flags and all PUBLIC egress is allowed. Restriction is opt-in —
@@ -140,7 +140,12 @@
     //   // command fail, and forge logs a warning naming the variable.
     //   "secrets": [
     //     { "env": "NPM_TOKEN", "hosts": ["registry.npmjs.org"] }
-    //   ]
+    //   ],
+    //   // Allow the sandbox to reach private (LAN) address ranges, which msb blocks by default
+    //   // even when public egress is open. Exposes every service on your LAN to agent-run commands.
+    //   // Applied at create time; the loop settings dialog and the Host sandbox menu can override
+    //   // it per sandbox. Defaults to false.
+    //   "allowLan": false
     // },
     // Additional host directories to bind-mount into the sandbox at their identical host path.
     // "readonly" defaults to true (read-only); set false to grant the sandbox read-write access.
@@ -149,8 +154,9 @@
     //   { "host": "/abs/host/cache", "readonly": false }
     // ]
     // Per-sandbox resources. Both disks are dedicated block devices mounted at create time and are
-    // sparse, so the generous defaults cost no real host disk until used. Resources are fixed at
-    // creation: changing them requires recreating the sandbox.
+    // sparse, so the generous defaults cost no real host disk until used. Disk sizes are fixed at
+    // creation; the Host sandbox menu can change CPUs and memory on a running host sandbox, which
+    // restarts it in place.
     // "resources": {
     //   // Backs the in-VM Docker Engine data dir (/var/lib/docker).
     //   "dockerDisk": "16g",

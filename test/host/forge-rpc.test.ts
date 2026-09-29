@@ -71,6 +71,7 @@ describe('FORGE_RPC', () => {
           },
           additionalProperties: false,
         },
+        allowLan: { type: 'boolean' },
       },
       additionalProperties: false,
     })
@@ -92,6 +93,7 @@ describe('FORGE_RPC', () => {
           },
           additionalProperties: false,
         },
+        allowLan: { type: 'boolean' },
       },
       additionalProperties: false,
     })
@@ -104,9 +106,13 @@ describe('FORGE_RPC', () => {
       sandbox: {
         available: true,
         resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+        allowLan: true,
       },
     }
     expect(readForgeLoopDefaults(defaults)).toEqual(defaults)
+    const { allowLan: _allowLan, ...olderServerSandbox } = defaults.sandbox
+    expect(readForgeLoopDefaults({ ...defaults, sandbox: olderServerSandbox }))
+      .toEqual({ ...defaults, sandbox: { ...olderServerSandbox, allowLan: false } })
     expect(readForgeLoopDefaults({ error: 'no db' })).toEqual({ error: 'no db' })
     expect(readForgeLoopDefaults(null)).toEqual({ error: 'Forge returned an invalid loop defaults' })
     expect(readForgeLoopDefaults({ maxIterations: 10 }))

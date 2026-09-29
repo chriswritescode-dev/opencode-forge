@@ -691,7 +691,7 @@ describe('SandboxManager', () => {
         logger
       )
 
-      await manager.start('test', '/path', undefined, { memory: '2g', cpus: '1' })
+      await manager.start('test', '/path', undefined, { resources: { memory: '2g', cpus: '1' } })
 
       const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
       expect(resources).toEqual(expect.objectContaining({ memory: '2g', cpus: '1' }))
@@ -706,62 +706,146 @@ describe('SandboxManager', () => {
         logger
       )
 
-      await manager.start('test', '/path', undefined, { memory: '2g' })
+      await manager.start('test', '/path', undefined, { resources: { memory: '2g' } })
 
       const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
       expect(resources).toEqual(expect.objectContaining({ memory: '2g', cpus: '6', dockerDisk: '32g' }))
     })
 
-    test('resolveLoopResources supplies the override when no explicit resources are passed', async () => {
+    test('resolveOverrides supplies the override when no explicit overrides are passed', async () => {
       const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
-      const resolveLoopResources = vi.fn(() => ({ memory: '3g', cpus: '2' }))
+      const resolveOverrides = vi.fn(() => ({ resources: { memory: '3g', cpus: '2' }, allowLan: true }))
       const manager = createSandboxManager(
         mockRuntime,
-        { image: 'oc-forge-sandbox:latest', resolveLoopResources },
+        { image: 'oc-forge-sandbox:latest', resolveOverrides },
         logger
       )
 
       await manager.start('test', '/path')
 
-      expect(resolveLoopResources).toHaveBeenCalledWith('test')
-      const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
-      expect(resources).toEqual(expect.objectContaining({ memory: '3g', cpus: '2' }))
+      expect(resolveOverrides).toHaveBeenCalledWith('test')
+      const opts = mockRuntime.getCreateSandboxCalls()[0][2] as { resources?: object; allowLan?: boolean }
+      expect(opts.resources).toEqual(expect.objectContaining({ memory: '3g', cpus: '2' }))
+      expect(opts.allowLan).toBe(true)
+      expect(manager.getActive('test')?.settings).toEqual({ cpus: 2, memoryMib: 3072, allowLan: true })
     })
 
-    test('an explicit resources argument wins over resolveLoopResources', async () => {
+    test('an explicit overrides argument wins over resolveOverrides', async () => {
       const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
-      const resolveLoopResources = vi.fn(() => ({ memory: '3g' }))
+      const resolveOverrides = vi.fn(() => ({ resources: { memory: '3g' } }))
       const manager = createSandboxManager(
         mockRuntime,
-        { image: 'oc-forge-sandbox:latest', resolveLoopResources },
+        { image: 'oc-forge-sandbox:latest', resolveOverrides },
         logger
       )
 
-      await manager.start('test', '/path', undefined, { memory: '2g' })
+      await manager.start('test', '/path', undefined, { resources: { memory: '2g' } })
 
-      expect(resolveLoopResources).not.toHaveBeenCalled()
+      expect(resolveOverrides).not.toHaveBeenCalled()
       const resources = mockRuntime.getCreateSandboxCalls()[0][2]?.resources
       expect(resources).toEqual(expect.objectContaining({ memory: '2g' }))
     })
 
-    test('the adopt path ignores resource overrides because msb cannot resize an existing sandbox', async () => {
+    test('LAN access falls back to sandbox.network.allowLan, then off', async () => {
+      const blocked = createMockSandboxRuntime()
+      await createSandboxManager(blocked, { image: 'img' }, createMockLogger()).start('test', '/path')
+      expect((blocked.getCreateSandboxCalls()[0][2] as { allowLan?: boolean }).allowLan).toBe(false)
+
+      const allowed = createMockSandboxRuntime()
+      await createSandboxManager(allowed, { image: 'img', network: { allowLan: true } }, createMockLogger()).start('test', '/path')
+      expect((allowed.getCreateSandboxCalls()[0][2] as { allowLan?: boolean }).allowLan).toBe(true)
+    })
+
+    test('the start adopt path ignores overrides and reads the existing settings back once', async () => {
       const mockRuntime = createMockSandboxRuntime()
       const logger = createMockLogger()
-      const resolveLoopResources = vi.fn(() => ({ memory: '3g' }))
+      const resolveOverrides = vi.fn(() => ({ resources: { memory: '3g' } }))
       const manager = createSandboxManager(
         mockRuntime,
-        { image: 'oc-forge-sandbox:latest', resolveLoopResources },
+        { image: 'oc-forge-sandbox:latest', resolveOverrides },
         logger
       )
       mockRuntime.setSandboxState('forge-test', 'running')
+      mockRuntime.setSandboxSettings('forge-test', { cpus: 2, memoryMib: 2048, allowLan: false })
 
-      await manager.start('test', '/path', undefined, { memory: '2g' })
+      await manager.start('test', '/path', undefined, { resources: { memory: '2g' } })
 
       expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
-      expect(resolveLoopResources).not.toHaveBeenCalled()
-      expect(manager.isActive('test')).toBe(true)
+      expect(resolveOverrides).not.toHaveBeenCalled()
+      expect(manager.getActive('test')?.settings).toEqual({ cpus: 2, memoryMib: 2048, allowLan: false })
+    })
+  })
+
+  describe('applyOverrides', () => {
+    function setup(overrides: { resources?: { cpus?: string; memory?: string }; allowLan?: boolean } | undefined) {
+      const runtime = createMockSandboxRuntime()
+      let current = overrides
+      const manager = createSandboxManager(
+        runtime,
+        { image: 'img', resources: { cpus: '4', memory: '8g' }, resolveOverrides: () => current },
+        createMockLogger(),
+      )
+      runtime.setSandboxState('forge-test', 'running')
+      runtime.setSandboxSettings('forge-test', { cpus: 4, memoryMib: 8192, allowLan: false })
+      return { runtime, manager, setOverrides: (next: typeof overrides) => { current = next } }
+    }
+
+    test('leaves a sandbox that already matches untouched', async () => {
+      const { runtime, manager } = setup(undefined)
+
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('unchanged')
+
+      expect(runtime.getResizeCalls()).toEqual([])
+      expect(runtime.getRemoveSandboxCalls()).toEqual([])
+    })
+
+    test('a CPU or memory change resizes the existing sandbox in place and keeps its instance', async () => {
+      const { runtime, manager } = setup({ resources: { cpus: '6', memory: '12g' } })
+      await manager.ensureRunning('test', '/path')
+      const instanceId = manager.getActive('test')?.instanceId
+
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('resized')
+
+      expect(runtime.getResizeCalls()).toEqual([['forge-test', { cpus: '6', memory: '12g' }]])
+      expect(runtime.getRemoveSandboxCalls()).toEqual([])
+      expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
+      expect(manager.getActive('test')).toMatchObject({ instanceId, settings: { cpus: 6, memoryMib: 12288, allowLan: false } })
+    })
+
+    test('a LAN access change recreates the sandbox with the new policy', async () => {
+      const { runtime, manager } = setup({ allowLan: true })
+      await manager.ensureRunning('test', '/path')
+      const instanceId = manager.getActive('test')?.instanceId
+
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('recreated')
+
+      expect(runtime.getRemoveSandboxCalls()).toEqual(['forge-test'])
+      expect(runtime.getCreateSandboxCalls()).toHaveLength(1)
+      expect((runtime.getCreateSandboxCalls()[0][2] as { allowLan?: boolean }).allowLan).toBe(true)
+      expect(runtime.getResizeCalls()).toEqual([])
+      expect(manager.getActive('test')?.instanceId).not.toBe(instanceId)
+      expect(manager.getActive('test')?.settings?.allowLan).toBe(true)
+    })
+
+    test('refuses to guess when the current settings cannot be read', async () => {
+      const { runtime, manager } = setup({ allowLan: false })
+      runtime.setSandboxSettings('forge-test', null)
+
+      await expect(manager.applyOverrides('test', '/path')).rejects.toThrow(/Could not read the current settings/)
+      expect(runtime.getRemoveSandboxCalls()).toEqual([])
+    })
+
+    test('a concurrent ensureRunning waits for the recreation instead of creating a second sandbox', async () => {
+      const { runtime, manager } = setup({ allowLan: true })
+      await manager.ensureRunning('test', '/path')
+
+      const applying = manager.applyOverrides('test', '/path')
+      const running = manager.ensureRunning('test', '/path')
+      await Promise.all([applying, running])
+
+      expect(runtime.getCreateSandboxCalls()).toHaveLength(1)
     })
   })
 

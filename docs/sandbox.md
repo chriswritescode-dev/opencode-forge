@@ -28,17 +28,19 @@ msb load --input forge-sandbox.tar --tag oc-forge-sandbox:latest
 
 `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a **Build sandbox template** command in the palette. Trigger it at any time by searching for `Build sandbox template`, which opens a confirmation dialog and runs the build/save/load sequence automatically. The dialog stays open for the duration and shows a live progress bar, the current Docker step, elapsed time, and streamed build output; on failure it keeps the last lines of Docker output so the cause is visible. A first build takes several minutes, and closing the dialog does not cancel it — it finishes in the background and reports with a toast. Restart OpenCode after changing sandbox configuration.
 
-The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Obscura, and Docker Engine (see [Nested Docker](#nested-docker)).
+The default image includes Node.js (NodeSource current channel), pnpm, Bun, Python 3 + uv, ripgrep, git, jq, Chromium, and Docker Engine (see [Nested Docker](#nested-docker)).
 
 The sandbox image grants the `agent` user passwordless sudo, so loops can install whatever software they need at runtime. Commands arrive via `msb exec` without `-u`, so they run as the image's `USER agent` (keeping host-mapped worktree files owned by the host user); system-wide installs use an explicit `sudo` prefix, for example `sudo apt-get install ruby`.
 
-### Obscura
+### Chromium
 
-The image ships the Obscura headless browser engine as `obscura` — a Rust-based headless browser with embedded V8, built for web scraping and agent automation. `obscura serve` speaks the Chrome DevTools Protocol, so Puppeteer and Playwright connect to it like headless Chrome:
+The image ships Playwright's Chromium build as `chromium`. Google publishes no linux/arm64 Chrome build, so Chromium is the closest current Chrome-compatible browser on arm64 hosts and the architecture-matched build on amd64; `install --with-deps` pulls the runtime libraries it needs. Launch it headless with the usual sandbox flags:
 
 ```bash
-obscura serve --port 9222
+chromium --no-sandbox --disable-dev-shm-usage --headless
 ```
+
+The browser lives at `/opt/forge/.local/share/ms-playwright` (`PLAYWRIGHT_BROWSERS_PATH`), deliberately off the cache disk so the image-shipped build is not hidden by the cache-disk mount (see [Tool Caches and Disk Space](#tool-caches-and-disk-space)).
 
 ## How It Works
 
@@ -64,7 +66,7 @@ Commands the user runs directly — `!` commands and terminals — do not pass t
 
 ## Permission Auto-Approval
 
-When the host sandbox is toggled on for a session (`Toggle host sandbox` in the TUI, which writes a desired state through the Forge server RPC and waits for the server's applied acknowledgement), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when the last matching OpenCode rule (agent rules, then session rules; last match wins) is an explicit `ask`, or when it matches an `autoApprove.deny` rule; otherwise it is allowed. OpenCode `deny` rules still deny, and an unresolvable ruleset denies. This applies only while the session's shell calls actually route into a running sandbox. If the sandbox is off, still starting, or failed to start, prompts are shown as usual. The attached server's `sandbox.enabled` decides whether the toggle is available at all.
+When the host sandbox is turned on for a session (the `Host sandbox` menu in the TUI, which writes a desired state through the Forge server RPC and waits for the server's applied acknowledgement), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when the last matching OpenCode rule (agent rules, then session rules; last match wins) is an explicit `ask`, or when it matches an `autoApprove.deny` rule; otherwise it is allowed. OpenCode `deny` rules still deny, and an unresolvable ruleset denies. This applies only while the session's shell calls actually route into a running sandbox. If the sandbox is off, still starting, or failed to start, prompts are shown as usual. The attached server's `sandbox.enabled` decides whether the toggle is available at all.
 
 OpenCode `deny` rules still apply: they settle before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
 
@@ -108,6 +110,12 @@ When any concrete host is configured (including secret destination hosts, which 
 Either way, the host's loopback interface remains unreachable from inside the sandbox: the private range is not part of msb's `public` egress group, so a host listener on e.g. `0.0.0.0:18923` stays unreachable via `host.microsandbox.internal` or the gateway IP even when no net flags are passed.
 
 Forge applies the rules at sandbox **create time** only. msb rules are per sandbox (not daemon-global) and `msb modify` has no `--net-rule` flag, so egress rules cannot be changed on a live sandbox: a newly configured host requires the sandbox to be recreated.
+
+### LAN Access
+
+msb's default egress is deny with an implicit `allow@public`, so private (LAN) address ranges are blocked even when public egress is open, including with the `*` wildcard. Set `sandbox.network.allowLan: true` (default `false`) to let the sandbox reach them. Forge then creates the sandbox with `--net public,private`, or appends `--net-rule allow@private` when an allow-list is active, so a restriction stays a restriction. Only msb's `private` group is added. This exposes every service on your LAN (routers, NAS, other machines) to commands the agent runs, so keep it off unless a task needs it.
+
+The loop settings dialog and the `Host sandbox` menu override it per sandbox. Like the other egress rules it is fixed at create time: changing it on a running host sandbox recreates the sandbox, after confirmation, and loses everything outside the mounted directories. Forge reads the current setting back from `msb inspect` rather than assuming it, and refuses to apply overrides when that read fails, so a LAN restriction is never assumed to hold.
 
 ## Environment Passthrough
 
@@ -229,9 +237,9 @@ Caches that do not honor `XDG_CACHE_HOME` are routed into that directory by imag
 | cargo and rustup | `CARGO_HOME` / `RUSTUP_HOME` under `/opt/forge/cache` |
 | Go modules | `GOPATH=/opt/forge/cache/go` |
 
-CLIs installed globally at image-build time (`fallow`) are a deliberate exception: they are installed with an explicit `--store-dir` under `/opt/forge/.local/share/pnpm/store`. pnpm does not copy a global package into `PNPM_HOME` — the global `node_modules` entry is a symlink chain into the store — so a global built against the cache-disk store would resolve to a dangling symlink the moment the disk is mounted over that path, and the CLI would fail with `Cannot find module`. The build-time store therefore stays on a path no mount shadows, while the environment keeps agent installs on the cache disk.
+CLIs installed globally at image-build time (`fallow`, `playwright-core`) are a deliberate exception: they are installed with an explicit `--store-dir` under `/opt/forge/.local/share/pnpm/store`. pnpm does not copy a global package into `PNPM_HOME` — the global `node_modules` entry is a symlink chain into the store — so a global built against the cache-disk store would resolve to a dangling symlink the moment the disk is mounted over that path, and the CLI would fail with `Cannot find module`. The build-time store therefore stays on a path no mount shadows, while the environment keeps agent installs on the cache disk.
 
-uv, pip, puccinialin, Playwright browsers, and pnpm's own cache resolve under `XDG_CACHE_HOME` unchanged. The uv-managed interpreters deliberately sit at `uv-python`, *outside* uv's own cache directory (`$XDG_CACHE_HOME/uv`), because `uv cache clean` clears that directory entirely and would otherwise delete interpreters that project virtualenvs link against. Because the store sits on a different filesystem than the mounted project, pnpm copies packages into `node_modules` instead of hard-linking — the same trade the container-internal store already made against the virtiofs project mount.
+uv, pip, puccinialin, and pnpm's own cache resolve under `XDG_CACHE_HOME` unchanged. Playwright is deliberately pinned off it with `PLAYWRIGHT_BROWSERS_PATH=/opt/forge/.local/share/ms-playwright`: the image ships Chromium there at build time, and a browser under the cache disk would be hidden by the mount. The uv-managed interpreters deliberately sit at `uv-python`, *outside* uv's own cache directory (`$XDG_CACHE_HOME/uv`), because `uv cache clean` clears that directory entirely and would otherwise delete interpreters that project virtualenvs link against. Because the store sits on a different filesystem than the mounted project, pnpm copies packages into `node_modules` instead of hard-linking — the same trade the container-internal store already made against the virtiofs project mount.
 
 The image ships `forge-cache-prune`, safe to run as `agent` whenever the sandbox is idle. It clears re-downloadable caches — the pnpm store, npm and uv caches, `cargo/registry`, `cargo/git`, `go/pkg/mod`, and any unrecognized entry — while preserving installed toolchains: `rustup`, the uv-managed Pythons, uv tool environments and executable links (`uv-tools` and `uv-bin`), and the `cargo/bin` and `go/bin` binaries. It then runs `apt-get clean` and `fstrim`, so the freed space is returned to the host's sparse disk image rather than only to the guest. The sandbox context note tells agents about it, so a full cache disk is reclaimed by running it instead of hand-hunting `du`.
 
@@ -279,10 +287,14 @@ The mount is read-only because the setting exists to grant read access. To make 
 | `sandbox.resources.dockerDisk` | `"16g"` | `msb create --mount-named <sandbox>-docker-data:/var/lib/docker:kind=disk,size=<size>` |
 | `sandbox.resources.cacheDisk` | `"16g"` | `msb create --mount-named <sandbox>-cache-data:/opt/forge/cache:kind=disk,size=<size>` |
 
-The TUI execution dialog can override these for a single loop when launching in Loop mode, and can turn the sandbox off for that loop. The overrides are persisted on the loop row and read back whenever its sandbox is (re)created, so a restarted loop keeps its resources and a loop launched with the sandbox off stays off. They apply only when the sandbox is created — msb cannot resize an existing sandbox — and a per-loop setting can turn the sandbox off, never on when the server has `sandbox.enabled: false`. See [TUI → Loop Settings](tui.md#loop-settings).
+The TUI execution dialog can override these for a single loop when launching in Loop mode, and can turn the sandbox off for that loop. The overrides are persisted on the loop row and read back whenever its sandbox is (re)created, so a restarted loop keeps its resources and a loop launched with the sandbox off stays off. They apply when the loop's sandbox is created, and a per-loop setting can turn the sandbox off, never on when the server has `sandbox.enabled: false`. See [TUI → Loop Settings](tui.md#loop-settings).
 
-`memory` and `cpus` are exactly what the guest gets, for its whole life. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
+The `Host sandbox` menu overrides `cpus` and `memory` (and LAN access) for the project's host sandbox. The overrides are stored with the host sandbox's desired state, so they survive restarts. Unlike a loop's, they are also applied to a host sandbox that already exists: a CPU or memory change runs `msb modify <sandbox> --cpus <n> --memory <size> --restart`. msb cannot resize a running microVM live, so the sandbox restarts. Its root filesystem and the Docker and cache disks are kept; running processes, including the Docker daemon and its containers, are not. See [TUI → Host Sandbox Menu](tui.md#host-sandbox-menu). A failed resize is handled like a failed start: the sandbox is removed and the session is blocked until the sandbox is turned on again.
+
+Every sandboxed request's context note states the sandbox's CPUs, memory, and LAN access. After the sandbox a session was using restarts (a resize) or is recreated (a LAN change, or turned off and on between two requests), the next request's note says so once and names what was lost, so the agent restarts services or reinstalls tooling instead of assuming they are still there.
+
+`memory` and `cpus` are exactly what the guest gets. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
 
 msb's `--max-memory`/`--max-cpus` ceilings are deliberately not exposed. They only reserve hotplug capacity that must be claimed explicitly with `msb modify --memory <size>` from the **host**; agents run inside the sandbox and cannot call `msb`, so a ceiling never rescues a failing in-sandbox build.
 
-Resources are fixed when the sandbox is created, and forge reuses existing running or stopped sandboxes rather than recreating them. Changing these values does not resize a sandbox that already exists — remove it (`msb rm <sandbox>`) so the next run creates it with the new values, or resize it in place with `msb modify`.
+Forge reuses existing running or stopped sandboxes rather than recreating them. Changing these config values does not resize an existing loop sandbox; remove it (`msb rm <sandbox>`) so the next run creates it with the new values, or resize it in place with `msb modify`. The host sandbox converges to its overrides over config the next time it is validated after a restart.

@@ -2,9 +2,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { resolve } from 'path'
 import type { Logger } from '../types'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../storage'
-import type { SandboxContext } from './context'
+import { sandboxContextFromActive, type SandboxContext } from './context'
 import type { SandboxRuntime } from './msb'
-import type { ActiveSandbox } from './manager'
+import type { ActiveSandbox, ApplyOverridesOutcome } from './manager'
 import { findSessionAncestor } from '../utils/session-ancestry'
 import { isWithinDir } from '../workspace/forge-naming'
 
@@ -40,6 +40,7 @@ const MISSING_SESSION_ERROR = 'host sandbox cannot be enabled without a session'
 export interface SessionSandboxLifecycleManager {
   runtime: SandboxRuntime
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
+  applyOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome>
   stop(worktreeName: string): Promise<void>
   getActive(worktreeName: string): ActiveSandbox | null
 }
@@ -56,6 +57,9 @@ export function createUnavailableSandboxLifecycleManager(runtime: SandboxRuntime
   return {
     runtime,
     async ensureRunning() {
+      throw new Error(UNAVAILABLE_SANDBOX_ERROR)
+    },
+    async applyOverrides() {
       throw new Error(UNAVAILABLE_SANDBOX_ERROR)
     },
     async stop() {},
@@ -679,6 +683,9 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
         if (lastValidatedRevision !== desired.revision) {
           try {
             await sandboxManager.ensureRunning(managerKey, selectedProjectDirectory ?? directory)
+            // A sandbox adopted after a restart may not match the persisted overrides (e.g. the
+            // process stopped mid-change), so converge it once as part of the validation.
+            await sandboxManager.applyOverrides(managerKey, selectedProjectDirectory ?? directory)
             lastValidatedRevision = desired.revision
           } catch (err) {
             // A persisted-ON restore that partially creates the container and then fails must run
@@ -813,6 +820,9 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       }
       try {
         await sandboxManager.ensureRunning(managerKey, selectedProjectDirectory ?? directory)
+        // A new ON revision for the already-bound session is how an overrides change arrives: the
+        // running sandbox is adopted above and converged here (restarted or recreated) in place.
+        await sandboxManager.applyOverrides(managerKey, selectedProjectDirectory ?? directory)
       } catch (err) {
         await handleFailedOnStart(desired, desired.sessionId, err instanceof Error ? err.message : String(err))
         return desired.revision
@@ -832,6 +842,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
           sessionId: desired.sessionId,
           error: null,
           appliedAt: Date.now(),
+          ...(desired.overrides ? { overrides: desired.overrides } : {}),
         })
       } catch (err) {
         await handleFailedOnStart(desired, desired.sessionId, err instanceof Error ? err.message : String(err))
@@ -1028,12 +1039,7 @@ export function createSessionSandboxController(deps: SessionSandboxControllerDep
       }
       const active = sandboxManager.getActive(managerKey)
       if (!active) return null
-      return {
-        runtime: sandboxManager.runtime,
-        containerName: active.containerName,
-        hostDir: active.projectDir,
-        mounts: active.mounts ?? [{ hostDir: active.projectDir, containerDir: active.projectDir }],
-      }
+      return sandboxContextFromActive(sandboxManager.runtime, active)
     })
   }
 

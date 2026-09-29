@@ -26,6 +26,18 @@ interface SqliteOpenOptions {
   ensureParentDir?: boolean
 }
 
+/**
+ * Runs `fn` in a `BEGIN IMMEDIATE` transaction, taking the write lock up front so a
+ * read-then-write inside `fn` cannot interleave with another connection's write.
+ */
+export function runImmediateTransaction<T>(db: Database, fn: () => T): T {
+  // `db.transaction(fn)` returns a function plus `.immediate` / `.deferred` / `.exclusive`
+  // variants; bun-types does not surface the property on the inferred call signature under this
+  // tsconfig, so cast explicitly.
+  const run = db.transaction(fn) as unknown as { immediate: () => T }
+  return run.immediate()
+}
+
 function deleteDatabaseFiles(dbPath: string): void {
   try {
     unlinkSync(dbPath)
