@@ -55,7 +55,7 @@ Source: [src/index.ts](../src/index.ts)
 The TUI plugin entry, providing the sidebar widget and dialog system. It talks to the server plugin through the V2 plugin RPC port.
 
 - Exports `{ id: 'oc-forge', setup: setupForgeTuiV2 }`
-- Registers commands: `Execute plan`, `Open web dashboard`, `Build sandbox template`, and `Host sandbox`
+- Registers commands: `Execute plan`, `Open web dashboard`, `Build sandbox template`, and `Toggle sandbox`
 - Provides the loop sidebar, session-rotation following, and the missing-build-context toast
 
 Source: [src/tui.tsx](../src/tui.tsx), [src/tui/v2.tsx](../src/tui/v2.tsx)

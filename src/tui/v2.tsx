@@ -398,7 +398,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           },
           {
             id: 'forge.sandbox.toggleHost',
-            title: 'Host sandbox',
+            title: 'Toggle sandbox',
             description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox or on the host, and set its CPUs, memory, and LAN access',
             group: 'Forge',
             palette: true,

@@ -126,7 +126,7 @@ export async function editHostSandbox(deps: HostSandboxDialogDeps): Promise<void
       return
     }
     const choice = await host.select({
-      title: 'Host sandbox',
+      title: 'Toggle sandbox',
       options: buildHostSandboxOptions(preference, sessionId, draft, defaults),
       current,
     })
