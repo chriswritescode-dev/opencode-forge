@@ -1,6 +1,6 @@
 import type { ForgeLoopDefaults } from '../host/forge-rpc'
 import type { LoopSandboxSettings, SandboxResources } from '../types'
-import { isSandboxCpuCount, isSandboxSize, readLoopSandboxSettings, resolveSandboxResources } from '../sandbox/loop-settings'
+import { isSandboxCpuCount, isSandboxSize, readLoopSandboxSettings, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
 import type { ForgeTuiHost, ForgeTuiSelectOption } from './host'
 
 /** Loop-mode overrides chosen in the execution dialog; unset fields use the server defaults. */
@@ -9,21 +9,51 @@ export interface LoopLaunchSettings {
   sandbox?: LoopSandboxSettings
 }
 
-interface ResourceField {
+export interface ResourceField {
   key: keyof SandboxResources
   label: string
   example: string
   isValid(value: string): boolean
 }
 
-const RESOURCE_FIELDS: ReadonlyArray<ResourceField> = [
+export const RESOURCE_FIELDS: ReadonlyArray<ResourceField> = [
   { key: 'cpus', label: 'CPUs', example: '8', isValid: isSandboxCpuCount },
   { key: 'memory', label: 'Memory', example: '16g', isValid: isSandboxSize },
   { key: 'dockerDisk', label: 'Docker disk', example: '32g', isValid: isSandboxSize },
   { key: 'cacheDisk', label: 'Cache disk', example: '32g', isValid: isSandboxSize },
 ]
 
-const DEFAULT_SUFFIX = ' (default)'
+export const DEFAULT_SUFFIX = ' (default)'
+
+/** Settings-menu label for a LAN access value. */
+export function formatLanAccess(allowLan: boolean): string {
+  return allowLan ? 'allowed' : 'blocked'
+}
+
+/**
+ * Prompts for one resource override. Returns the edited overrides (an empty entry removes the
+ * override), or the unchanged ones when the prompt is dismissed or the value is invalid.
+ */
+export async function promptResourceOverride(
+  host: ForgeTuiHost,
+  resources: SandboxResources,
+  defaultValue: string,
+  field: ResourceField,
+): Promise<SandboxResources> {
+  const entered = await host.prompt({
+    title: field.label,
+    placeholder: `Leave empty for the default (${defaultValue}), e.g. ${field.example}`,
+    value: resources[field.key] ?? '',
+  })
+  if (entered === undefined) return resources
+  const trimmed = entered.trim().toLowerCase()
+  if (trimmed && !field.isValid(trimmed)) {
+    host.toast({ message: `Invalid ${field.label.toLowerCase()} "${trimmed}" (example: ${field.example})`, variant: 'error', duration: 4000 })
+    return resources
+  }
+  const { [field.key]: _previous, ...rest } = resources
+  return trimmed ? { ...rest, [field.key]: trimmed } : rest
+}
 
 function formatIterations(value: number | undefined): string {
   if (value === undefined) return 'server default'
@@ -51,7 +81,7 @@ export function formatLoopSettingsSummary(settings: LoopLaunchSettings, defaults
   if (defaults?.sandbox.available) {
     if (isSandboxOn(settings, defaults)) {
       const resources = effectiveResources(settings, defaults)
-      parts.push(`sandbox ${resources.cpus} CPU, ${resources.memory}`)
+      parts.push(`sandbox ${resources.cpus} CPU, ${resources.memory}${effectiveAllowLan(settings, defaults) ? ', LAN' : ''}`)
     } else {
       parts.push('sandbox off')
     }
@@ -71,7 +101,7 @@ export function toLoopLaunchRequest(
     ? undefined
     : settings.sandbox?.enabled === false
       ? { enabled: false }
-      : readLoopSandboxSettings({ resources: settings.sandbox?.resources })
+      : readLoopSandboxSettings({ resources: settings.sandbox?.resources, allowLan: settings.sandbox?.allowLan })
   return {
     ...(settings.maxIterations !== undefined ? { maxIterations: settings.maxIterations } : {}),
     ...(sandbox ? { sandbox } : {}),
@@ -101,6 +131,14 @@ export function buildLoopSettingsOptions(settings: LoopLaunchSettings, defaults:
           description: 'Press enter to change; applied when the loop sandbox is created',
         })
       }
+      const allowLan = effectiveAllowLan(settings, defaults)
+      options.push({
+        title: `LAN access: ${formatLanAccess(allowLan)}${settings.sandbox?.allowLan === undefined ? DEFAULT_SUFFIX : ''}`,
+        value: 'allowLan',
+        description: allowLan
+          ? 'Press enter to block this loop sandbox from private (LAN) addresses'
+          : 'Press enter to let this loop sandbox reach private (LAN) addresses',
+      })
     }
   }
   if (settings.maxIterations !== undefined || settings.sandbox) {
@@ -133,19 +171,19 @@ async function promptResource(
   defaults: ForgeLoopDefaults | null,
   field: ResourceField,
 ): Promise<LoopLaunchSettings> {
-  const entered = await host.prompt({
-    title: field.label,
-    placeholder: `Leave empty for the default (${effectiveResources({}, defaults)[field.key]}), e.g. ${field.example}`,
-    value: settings.sandbox?.resources?.[field.key] ?? '',
-  })
-  if (entered === undefined) return settings
-  const trimmed = entered.trim().toLowerCase()
-  if (trimmed && !field.isValid(trimmed)) {
-    host.toast({ message: `Invalid ${field.label.toLowerCase()} "${trimmed}" (example: ${field.example})`, variant: 'error', duration: 4000 })
-    return settings
-  }
-  const { [field.key]: _previous, ...resources } = settings.sandbox?.resources ?? {}
-  return withSandbox(settings, { ...settings.sandbox, resources: trimmed ? { ...resources, [field.key]: trimmed } : resources })
+  const resources = await promptResourceOverride(host, settings.sandbox?.resources ?? {}, effectiveResources({}, defaults)[field.key], field)
+  return withSandbox(settings, { ...settings.sandbox, resources })
+}
+
+function effectiveAllowLan(settings: LoopLaunchSettings, defaults: ForgeLoopDefaults | null): boolean {
+  return resolveSandboxAllowLan(defaults?.sandbox.allowLan, settings.sandbox)
+}
+
+/** Flips LAN access, dropping the override when the new value is the config default. */
+function toggleLoopAllowLan(settings: LoopLaunchSettings, defaults: ForgeLoopDefaults | null): LoopLaunchSettings {
+  const next = !effectiveAllowLan(settings, defaults)
+  const { allowLan: _previous, ...sandbox } = settings.sandbox ?? {}
+  return withSandbox(settings, next === (defaults?.sandbox.allowLan ?? false) ? sandbox : { ...sandbox, allowLan: next })
 }
 
 async function applyLoopSettingsChoice(
@@ -156,6 +194,7 @@ async function applyLoopSettingsChoice(
 ): Promise<LoopLaunchSettings> {
   if (choice === 'maxIterations') return promptMaxIterations(host, settings)
   if (choice === 'reset') return {}
+  if (choice === 'allowLan') return toggleLoopAllowLan(settings, defaults)
   if (choice === 'sandbox') {
     const { enabled: _previous, ...sandbox } = settings.sandbox ?? {}
     return withSandbox(settings, isSandboxOn(settings, defaults) ? { ...sandbox, enabled: false } : sandbox)

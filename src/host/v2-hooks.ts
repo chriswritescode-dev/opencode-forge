@@ -69,12 +69,8 @@ async function wrapShellToolForSandbox(ctx: Plugin.Context, core: ForgeHooksV2Co
   })
 }
 
-export const AUTO_APPROVE_RULES_UNRESOLVED_MESSAGE =
-  'Blocked in auto-approve mode: Forge could not resolve the permission rules for this session. Continue without it and report what was skipped.'
-
 interface AutoApprovePermissionEvent {
   sessionID: string
-  agent?: string
   action: string
   resources: ReadonlyArray<string>
   effect: PermissionEffectLike
@@ -82,37 +78,23 @@ interface AutoApprovePermissionEvent {
 }
 
 /**
- * Turns an auto-approved `ask` into allow or deny. Explicit OpenCode `ask` rules and the configured
- * deny rules deny with a message; requests no rule matched fall back to allow. An unresolvable agent or
- * session fails closed to deny so a prompt is never shown.
+ * Turns an auto-approved `ask` into allow or deny. Requests matching a configured `autoApprove.deny`
+ * rule deny with a message; every other `ask` is allowed. OpenCode `deny` decisions are never touched.
  */
 async function resolveAutoApprovedPermission(
-  ctx: Plugin.Context,
   core: ForgeHooksV2Core,
   event: AutoApprovePermissionEvent,
 ): Promise<void> {
   if (event.effect !== 'ask') return
   if (!(await core.autoApprovesPermissions(event.sessionID))) return
 
-  try {
-    const session = await ctx.session.get({ sessionID: event.sessionID })
-    const agentID = event.agent ?? session.agent
-    if (!agentID) throw new Error(`no agent id for session ${event.sessionID}`)
-    const agent = await ctx.agent.get({ agentID })
-    const rules = [...agent.data.permissions, ...(session.permissions ?? [])]
-    const decision = resolveAutoApproveDecision({
-      action: event.action,
-      resources: event.resources,
-      rules,
-      denyRules: core.autoApproveDenyRules,
-    })
-    event.effect = decision.effect
-    if (decision.effect === 'deny') event.message = decision.message
-  } catch (err) {
-    console.error('[forge] auto-approve permission resolution failed', err)
-    event.effect = 'deny'
-    event.message = AUTO_APPROVE_RULES_UNRESOLVED_MESSAGE
-  }
+  const decision = resolveAutoApproveDecision({
+    action: event.action,
+    resources: event.resources,
+    denyRules: core.autoApproveDenyRules,
+  })
+  event.effect = decision.effect
+  if (decision.effect === 'deny') event.message = decision.message
 }
 
 export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooksV2Core): Promise<void> {
@@ -150,7 +132,7 @@ export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooks
   }
 
   await ctx.permission.hook('evaluate', async (event) => {
-    await resolveAutoApprovedPermission(ctx, core, event)
+    await resolveAutoApprovedPermission(core, event)
   })
 
   await ctx.shell.hook('create.before', async (event) => {

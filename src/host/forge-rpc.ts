@@ -6,7 +6,7 @@ import type {
   SessionSandboxControllerState,
   SessionSandboxDesiredState,
 } from '../storage/repos/session-sandbox-preferences-repo'
-import type { LoopSandboxSettings, SandboxResources } from '../types'
+import type { LoopSandboxSettings, SandboxOverrides, SandboxResources } from '../types'
 import { isRecord } from '../utils/is-record'
 import { TOAST_VARIANTS, type ToastVariant } from '../utils/toast'
 import type { LoopInfo } from '../utils/tui-models'
@@ -68,6 +68,8 @@ export interface ForgeLoopDefaults {
   sandbox: {
     available: boolean
     resources: Required<SandboxResources>
+    /** `sandbox.network.allowLan`, the LAN access a sandbox gets without an override. */
+    allowLan: boolean
   }
 }
 
@@ -118,6 +120,17 @@ export const FORGE_HOST_SANDBOX_DISABLED_ERROR = 'Host sandbox is disabled by co
 
 export type ForgeHostSandboxStateOutput = ForgeHostSandboxState | ForgeRpcError
 
+/**
+ * A host sandbox change. `enabled` binds the sandbox to `sessionId` (on) or releases it (off);
+ * omitted, the current on/off state and session are kept. `overrides` replaces the project's host
+ * sandbox overrides (`{}` resets them to config); omitted, the current overrides are kept.
+ */
+export interface ForgeHostSandboxSetInput {
+  sessionId: string
+  enabled?: boolean
+  overrides?: SandboxOverrides
+}
+
 export type ForgeHostSandboxSetOutput = { revision: string } | ForgeRpcError
 
 const OPTIONAL_STRING = { type: 'string' } as const
@@ -133,11 +146,20 @@ const SANDBOX_RESOURCES_SCHEMA = {
   additionalProperties: false,
 } as const
 
+const SANDBOX_OVERRIDES_SCHEMA = {
+  type: 'object',
+  properties: {
+    resources: SANDBOX_RESOURCES_SCHEMA,
+    allowLan: { type: 'boolean' },
+  },
+  additionalProperties: false,
+} as const
+
 const SANDBOX_SETTINGS_SCHEMA = {
   type: 'object',
   properties: {
     enabled: { type: 'boolean' },
-    resources: SANDBOX_RESOURCES_SCHEMA,
+    ...SANDBOX_OVERRIDES_SCHEMA.properties,
   },
   additionalProperties: false,
 } as const
@@ -216,6 +238,7 @@ const LOOP_DEFAULTS_OUTPUT = {
       properties: {
         available: { type: 'boolean' },
         resources: SANDBOX_RESOURCES_SCHEMA,
+        allowLan: { type: 'boolean' },
       },
       additionalProperties: false,
     },
@@ -363,8 +386,9 @@ export const FORGE_RPC = {
         properties: {
           sessionId: { type: 'string', minLength: 1 },
           enabled: { type: 'boolean' },
+          overrides: SANDBOX_OVERRIDES_SCHEMA,
         },
-        required: ['sessionId', 'enabled'],
+        required: ['sessionId'],
         additionalProperties: false,
       },
       output: {
@@ -530,6 +554,7 @@ export function readForgeLoopDefaults(value: unknown): ForgeLoopDefaultsOutput {
           dockerDisk: resources.dockerDisk as string,
           cacheDisk: resources.cacheDisk as string,
         },
+        allowLan: sandbox.allowLan === true,
       },
     }
   })

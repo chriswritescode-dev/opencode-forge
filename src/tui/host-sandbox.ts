@@ -1,5 +1,6 @@
 import { createSignal, type Accessor } from 'solid-js'
 import {
+  type ForgeHostSandboxSetInput,
   type ForgeHostSandboxSetOutput,
   type ForgeHostSandboxStateOutput,
   type ForgeRpcError,
@@ -12,10 +13,11 @@ import {
 import { createRefetchCoordinator } from './refetch-coordinator'
 import { errorMessage } from '../utils/error-message'
 import type { SessionSandboxAppliedState } from '../storage/repos/session-sandbox-preferences-repo'
+import type { SandboxOverrides } from '../types'
 
 export interface HostSandboxToggleDeps {
   readState(): Promise<ForgeHostSandboxStateOutput>
-  setState(sessionId: string, enabled: boolean): Promise<ForgeHostSandboxSetOutput>
+  setState(input: ForgeHostSandboxSetInput): Promise<ForgeHostSandboxSetOutput>
   currentSessionId(): string | null
   toast(input: ForgeToastInput): void
 }
@@ -25,9 +27,19 @@ export interface HostSandboxToggle {
   preference: Accessor<SessionSandboxPreference | null>
   /** Re-read the current state; coalesced with any in-flight read. */
   refresh(): void
-  toggle(): Promise<void>
+  /** Turns the sandbox on or off for the current session, replacing the overrides when given. */
+  toggle(overrides?: SandboxOverrides): Promise<void>
+  /**
+   * Replaces the project's host sandbox overrides (`{}` resets them) without changing whether the
+   * sandbox is on. A running sandbox is restarted or recreated to apply them.
+   */
+  setOverrides(overrides: SandboxOverrides): Promise<void>
   dispose(): void
 }
+
+const TOGGLE_ACK_TIMEOUT_MS = 15_000
+/** A settings change can restart or recreate the sandbox, which takes longer than a toggle. */
+const OVERRIDES_ACK_TIMEOUT_MS = 120_000
 
 function preferencesEqual(a: SessionSandboxPreference | null, b: SessionSandboxPreference | null): boolean {
   if (a === b) return true
@@ -141,7 +153,21 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
   const coordinator = createRefetchCoordinator(refresh)
   coordinator.trigger()
 
-  const toggle = async (): Promise<void> => {
+  interface HostSandboxRequest {
+    /** Builds the change from the current state, or returns null when there is nothing to send. */
+    build(current: SessionSandboxPreference, sessionId: string): Omit<ForgeHostSandboxSetInput, 'sessionId'> | null
+    label: string
+    timeoutMs: number
+    success(applied: SessionSandboxAppliedState): string
+    guidance(): string
+  }
+
+  /**
+   * The single request path for every host sandbox change: re-reads the state, refuses when
+   * sandboxing is unavailable, writes the change, and waits for the server's acknowledgement of
+   * that exact revision before reporting the outcome.
+   */
+  const request = async (spec: HostSandboxRequest): Promise<void> => {
     const sessionId = deps.currentSessionId()
     if (!sessionId) {
       deps.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
@@ -151,7 +177,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     if (lifecycle.signal.aborted) return
     if ('error' in state) {
       setPreference(preferenceFrom(state))
-      deps.toast({ message: `Sandbox toggle unavailable: ${state.error}`, variant: 'warning', duration: 5000 })
+      deps.toast({ message: `${spec.label} unavailable: ${state.error}`, variant: 'warning', duration: 5000 })
       return
     }
     const blocked = hostSandboxToggleBlocked(state.configEnabled)
@@ -161,48 +187,69 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     }
     const current = preferenceFrom(state)
     if (!current) return
-    const enabling = !(current.desired?.enabled === true && current.desired.sessionId === sessionId)
+    const change = spec.build(current, sessionId)
+    if (!change) return
     let revision: string | null = null
     let pending: SandboxWaiter | null = null
     waiter?.cancel()
     waiter = null
     try {
-      const result = await deps.setState(sessionId, enabling)
+      const result = await deps.setState({ sessionId, ...change })
       if (lifecycle.signal.aborted) return
       if ('error' in result) {
-        deps.toast({ message: `Sandbox toggle failed: ${result.error}`, variant: 'error', duration: 6000 })
+        deps.toast({ message: `${spec.label} failed: ${result.error}`, variant: 'error', duration: 6000 })
         return
       }
       revision = result.revision
-      const created = createSandboxWaiter(revision, { timeoutMs: 15_000, signal: lifecycle.signal })
+      const created = createSandboxWaiter(revision, { timeoutMs: spec.timeoutMs, signal: lifecycle.signal })
       pending = created.waiter
       waiter = created.waiter
       coordinator.trigger()
       const applied = await created.promise
       const latest = preference()
       if (latest?.desired?.revision !== applied.revision) return
-      deps.toast({
-        message: applied.enabled
-          ? 'Host sandbox enabled for this session. Agent shell, glob, and grep calls run in the sandbox; commands you run yourself stay on the host.'
-          : 'Host sandbox disabled for this session',
-        variant: 'success',
-        duration: 5000,
-      })
+      deps.toast({ message: spec.success(applied), variant: 'success', duration: 5000 })
     } catch (err) {
       if (lifecycle.signal.aborted || pending?.cancelled) return
       const latest = preference()
       if (latest?.desired && revision && latest.desired.revision !== revision) return
-      const guidance = enabling ? 'Toggle off, then on to retry.' : 'Toggle again to retry disabling.'
-      deps.toast({ message: `Sandbox toggle failed: ${errorMessage(err)}. ${guidance}`, variant: 'error', duration: 6000 })
+      deps.toast({ message: `${spec.label} failed: ${errorMessage(err)}. ${spec.guidance()}`, variant: 'error', duration: 6000 })
     } finally {
       if (waiter === pending) waiter = null
     }
   }
 
+  const toggle = async (overrides?: SandboxOverrides): Promise<void> => {
+    let enabling = true
+    await request({
+      label: 'Sandbox toggle',
+      timeoutMs: overrides ? OVERRIDES_ACK_TIMEOUT_MS : TOGGLE_ACK_TIMEOUT_MS,
+      build: (current, sessionId) => {
+        enabling = !(current.desired?.enabled === true && current.desired.sessionId === sessionId)
+        return { enabled: enabling, ...(overrides ? { overrides } : {}) }
+      },
+      success: (applied) => applied.enabled
+        ? 'Host sandbox enabled for this session. Agent shell, glob, and grep calls run in the sandbox; commands you run yourself stay on the host.'
+        : 'Host sandbox disabled for this session',
+      guidance: () => enabling ? 'Toggle off, then on to retry.' : 'Toggle again to retry disabling.',
+    })
+  }
+
+  const setOverrides = (overrides: SandboxOverrides): Promise<void> => request({
+    label: 'Sandbox settings',
+    timeoutMs: OVERRIDES_ACK_TIMEOUT_MS,
+    build: () => ({ overrides }),
+    success: (applied) => applied.enabled
+      ? 'Host sandbox settings applied'
+      : 'Host sandbox settings saved; they apply when the sandbox is next turned on',
+    guidance: () => 'Change the setting again to retry.',
+  })
+
   return {
     preference,
     refresh: coordinator.trigger,
     toggle,
+    setOverrides,
     dispose() {
       lifecycle.abort()
       waiter?.cancel()

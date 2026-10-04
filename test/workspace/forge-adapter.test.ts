@@ -320,7 +320,7 @@ describe('createForgeWorkspaceAdapter', () => {
         sandboxManager,
       })
       const info = makeInfo('loop-sandbox-resources', tmpRepo)
-      info.extra = { ...info.extra, loopSandbox: { resources: { memory: '4g', cpus: '2' } } }
+      info.extra = { ...info.extra, loopSandbox: { resources: { memory: '4g', cpus: '2' }, allowLan: true } }
       const configured = adapter.configure(info)
 
       await adapter.create(configured, {})
@@ -329,7 +329,7 @@ describe('createForgeWorkspaceAdapter', () => {
         'loop-sandbox-resources',
         configured.directory,
         expect.any(String),
-        { memory: '4g', cpus: '2' },
+        { resources: { memory: '4g', cpus: '2' }, allowLan: true },
       )
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })

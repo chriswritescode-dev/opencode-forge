@@ -1,6 +1,7 @@
 import { vi } from 'vitest'
 import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/msb'
 import type { SandboxResources, SandboxSecretConfig } from '../../src/types'
+import type { SandboxRuntimeSettings } from '../../src/sandbox/loop-settings'
 
 /**
  * Mock SandboxRuntime plus the test helpers used by the manager suites. Extending
@@ -17,6 +18,9 @@ export interface MockSandboxRuntime extends SandboxRuntime {
   >
   getRefreshSecretCalls(): Array<[string, SandboxSecretConfig[]]>
   getRemoveSandboxCalls(): string[]
+  getResizeCalls(): Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]>
+  /** Sets what `readSandboxSettings` reports for a sandbox; `null` simulates an unreadable one. */
+  setSandboxSettings(name: string, settings: SandboxRuntimeSettings | null): void
   setSandboxes(newSandboxes: string[]): void
   setRunning(name: string, running: boolean): void
   setSandboxState(name: string, state: SandboxState): void
@@ -39,6 +43,8 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
   > = []
   const removeSandboxCalls: string[] = []
   const refreshSecretCalls: Array<[string, SandboxSecretConfig[]]> = []
+  const resizeCalls: Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]> = []
+  const sandboxSettings = new Map<string, SandboxRuntimeSettings | null>()
   let sandboxes = ['forge-foo', 'forge-bar']
   const sandboxStates = new Map<string, SandboxState>()
   let shouldBeAvailable = true
@@ -64,6 +70,8 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       if (shouldRemoveThrow) {
         throw new Error('Failed to remove sandbox')
       }
+      sandboxStates.delete(name)
+      sandboxSettings.delete(name)
     },
     exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
     getSandboxState: async (name: string) => sandboxStates.get(name) ?? 'missing',
@@ -73,9 +81,19 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       refreshSecretCalls.push([name, secrets])
       return true
     },
+    readSandboxSettings: async (name: string) => sandboxSettings.has(name)
+      ? sandboxSettings.get(name)!
+      : { cpus: 4, memoryMib: 8192, allowLan: false },
+    resizeSandbox: async (name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>) => {
+      resizeCalls.push([name, resources])
+    },
     getCreateSandboxCalls: () => createSandboxCalls,
     getRefreshSecretCalls: () => refreshSecretCalls,
     getRemoveSandboxCalls: () => removeSandboxCalls,
+    getResizeCalls: () => resizeCalls,
+    setSandboxSettings: (name: string, settings: SandboxRuntimeSettings | null) => {
+      sandboxSettings.set(name, settings)
+    },
     setSandboxes: (newSandboxes: string[]) => {
       sandboxes = newSandboxes
     },

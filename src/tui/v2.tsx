@@ -14,6 +14,7 @@ import {
   readForgeHostSandboxChangedEvent,
   readForgeHostSandboxSetOutput,
   readForgeHostSandboxState,
+  readForgeLoopDefaults,
   readForgeLoopSidebar,
   readForgeLoopsChangedEvent,
   readForgeVersion,
@@ -36,6 +37,7 @@ import { attachV2LoopSessionFollower } from './session-follow'
 import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort, type ForgeWorktreeList } from './loop-session-cleanup'
 import { createForgeRpcCaller, createV2ForgeProjectClient } from './v2-client'
 import { createHostSandboxToggle } from './host-sandbox'
+import { editHostSandbox } from './host-sandbox-dialog'
 import { createLoopSidebarStore, type LoopSidebarStore } from './loop-sidebar'
 import { createSessionAutoApproveToggle } from './session-auto-approve'
 import { deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
@@ -323,8 +325,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
 
   const hostSandbox = createHostSandboxToggle({
     readState: () => call((rpc, location) => rpc.hostSandboxState({}, location), readForgeHostSandboxState),
-    setState: (sessionId, enabled) => call(
-      (rpc, location) => rpc.hostSandboxSet({ sessionId, enabled }, location),
+    setState: (input) => call(
+      (rpc, location) => rpc.hostSandboxSet(input, location),
       readForgeHostSandboxSetOutput,
     ),
     currentSessionId,
@@ -396,12 +398,22 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           },
           {
             id: 'forge.sandbox.toggleHost',
-            title: 'Toggle host sandbox',
-            description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox, or back on the host',
+            title: 'Toggle sandbox',
+            description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox or on the host, and set its CPUs, memory, and LAN access',
             group: 'Forge',
             palette: true,
             ...(opts.keybinds.toggleHostSandbox ? { bind: opts.keybinds.toggleHostSandbox } : {}),
-            run: () => { void hostSandbox.toggle() },
+            run: () => {
+              void editHostSandbox({
+                host,
+                sandbox: hostSandbox,
+                currentSessionId,
+                loadDefaults: async () => {
+                  const defaults = await call((rpc, location) => rpc.loopDefaults({}, location), readForgeLoopDefaults)
+                  return 'error' in defaults ? null : defaults
+                },
+              })
+            },
           },
           {
             id: 'forge.permissions.toggleAutoApprove',

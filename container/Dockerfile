@@ -42,7 +42,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
 # pnpm installed globally at build time so the container never downloads a package
 # manager at runtime. Node stopped shipping corepack in v25, so npm is the install
 # path; the resulting /usr/local tree is readable by an arbitrary host UID.
-RUN npm install -g pnpm@latest
+#
+# Pinned exactly instead of @latest: pnpm 12 removed the --global-bin-dir flag the
+# fallow install below relies on, so a floating tag silently breaks the image build
+# the moment the next major lands. An exact pin keeps the build reproducible; the
+# flag is guaranteed for the whole 11.x line.
+RUN npm install -g pnpm@11.28.1
 
 # bun installed to a world-accessible location. The default installer targets
 # /root/.bun, which is unreadable (mode 0700) when the container runs as a
@@ -93,9 +98,10 @@ ENV HOME=/opt/forge \
 RUN mkdir -p /opt/forge/cache /opt/forge/.local/share/pnpm \
     && chmod -R 0777 /opt/forge
 
-# fallow CLI — dead-code analysis tool — installed globally with the same pnpm
-# setup used by the rest of the sandbox image. Binaries are linked into
-# /usr/local/bin so they are on PATH for arbitrary container UIDs.
+# fallow CLI — dead-code analysis tool — and Playwright's Chromium browser are
+# installed globally with the same pnpm setup used by the rest of the sandbox image.
+# Binaries are linked into /usr/local/bin so they are on PATH for arbitrary
+# container UIDs.
 #
 # --store-dir is load-bearing and must NOT be dropped to inherit the ENV store.
 # pnpm does not copy a globally installed package into PNPM_HOME: the global
@@ -107,6 +113,14 @@ RUN mkdir -p /opt/forge/cache /opt/forge/.local/share/pnpm \
 # which the image actually ships and no mount shadows, keeps every global CLI
 # working; the ENV store keeps agent installs on the cache disk.
 #
+# PLAYWRIGHT_BROWSERS_PATH pins the browser under /opt/forge/.local for the same
+# reason: the image ships Chromium at build time, but a browser under the default
+# $XDG_CACHE_HOME/ms-playwright would be hidden by the mounted cache disk. It is
+# Playwright's own Chromium build, not branded Google Chrome, because Google
+# publishes no linux/arm64 Chrome build and the image must build on both
+# architectures; `install --with-deps` pulls the runtime libraries Chromium needs.
+# The installed executable is linked to /usr/local/bin/chromium.
+#
 # The install then deletes whatever it cached under /opt/forge/cache, since that
 # path is shadowed at runtime and those bytes would be unreachable weight on the
 # small root filesystem. The trailing chmod re-asserts 0777 on the tree the image
@@ -114,26 +128,14 @@ RUN mkdir -p /opt/forge/cache /opt/forge/.local/share/pnpm \
 # writable by any exec UID. The cache tree's runtime permissions are owned by the
 # sandbox manager, which chowns and chmods the mounted cache disk at create time;
 # no build step establishes them.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/forge/.local/share/ms-playwright
 RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
+    && pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
+    && playwright_root="$(readlink -f "$(find "$(pnpm root -g)" -maxdepth 4 -path '*/node_modules/playwright-core' -print -quit)")" \
+    && node "$playwright_root/cli.js" install --with-deps chromium \
+    && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$playwright_root/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium \
     && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
     && chmod -R 0777 /opt/forge
-
-# Obscura (https://github.com/h4ckf0r0day/obscura) — Rust headless browser
-# engine with embedded V8 — replaces the former Playwright Chromium install.
-# The release tarball ships static `obscura` and `obscura-worker` binaries that
-# need no system libraries beyond the base image's glibc, so nothing is apt-
-# installed here. The archive layout is flat, so `tar xz` must extract straight
-# into /usr/local/bin; `obscura-worker` has to sit next to `obscura` for
-# parallel scraping. The architecture mapping matches dpkg naming to the
-# upstream release assets (amd64 -> x86_64, arm64 -> aarch64).
-RUN obscura_arch="$(case "$(dpkg --print-architecture)" in \
-        amd64) echo x86_64 ;; \
-        arm64) echo aarch64 ;; \
-        *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac)" \
-    && curl -fsSL "https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-${obscura_arch}-linux.tar.gz" \
-        | tar xz -C /usr/local/bin \
-    && chmod 0755 /usr/local/bin/obscura /usr/local/bin/obscura-worker
 
 # Docker Engine from Docker's official apt repository. The microVM boots a real
 # kernel, so the daemon runs natively — no privileged-container or nested-

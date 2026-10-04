@@ -40,6 +40,7 @@ function deferred<T>() {
 
 interface FakeManager extends SessionSandboxLifecycleManager {
   ensureRunningCalls: string[]
+  applyOverridesCalls: string[]
   stopCalls: string[]
   active: ActiveSandbox | null
   setEnsureRunningImpl(fn: (key: string, dir: string) => Promise<string>): void
@@ -51,9 +52,14 @@ function createFakeManager(): FakeManager {
   const manager: FakeManager = {
     runtime,
     ensureRunningCalls: [],
+    applyOverridesCalls: [],
     stopCalls: [],
     active: null,
     ensureRunning: async () => '',
+    applyOverrides: async (key: string) => {
+      manager.applyOverridesCalls.push(key)
+      return 'unchanged'
+    },
     stop: async (key: string) => {
       manager.stopCalls.push(key)
       manager.active = null
@@ -63,7 +69,7 @@ function createFakeManager(): FakeManager {
       manager.ensureRunning = async (key: string, dir: string) => {
         manager.ensureRunningCalls.push(key)
         const name = await fn(key, dir)
-        manager.active = { containerName: name, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
+        manager.active = { containerName: name, projectDir: dir, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-${name}` }
         return name
       }
     },
@@ -123,6 +129,46 @@ describe('SessionSandboxController', () => {
     } catch {
       // ignore cleanup errors
     }
+  })
+
+  test('an ON start converges the sandbox to its overrides and records them on the applied row', async () => {
+    const overrides = { resources: { cpus: '6' }, allowLan: true }
+    repo.setDesired(PROJECT, makeDesired({ overrides }))
+    const controller = createController()
+
+    await controller.start()
+
+    expect(manager.applyOverridesCalls).toEqual([MANAGER_KEY])
+    expect(repo.getApplied(PROJECT)).toMatchObject({ revision: 'rev-1', enabled: true, error: null, overrides })
+    await controller.dispose()
+  })
+
+  test('an overrides change for the bound session converges in place without stopping the sandbox', async () => {
+    repo.setDesired(PROJECT, makeDesired())
+    const controller = createController({ pollIntervalMs: 10 })
+    await controller.start()
+    expect(manager.applyOverridesCalls).toHaveLength(1)
+
+    repo.setDesired(PROJECT, makeDesired({ revision: 'rev-2', overrides: { resources: { memory: '12g' } } }))
+    await vi.waitFor(() => expect(repo.getApplied(PROJECT)?.revision).toBe('rev-2'))
+
+    expect(manager.stopCalls).toEqual([])
+    expect(manager.applyOverridesCalls).toHaveLength(2)
+    expect(repo.getApplied(PROJECT)).toMatchObject({ enabled: true, error: null, overrides: { resources: { memory: '12g' } } })
+    expect(await controller.resolveSandboxForSession(ROOT_SESSION)).not.toBeNull()
+    await controller.dispose()
+  })
+
+  test('a failed convergence fails closed like a failed start', async () => {
+    manager.applyOverrides = async () => { throw new Error('resize refused') }
+    repo.setDesired(PROJECT, makeDesired({ overrides: { resources: { cpus: '64' } } }))
+    const controller = createController()
+
+    await controller.start()
+
+    expect(repo.getApplied(PROJECT)).toMatchObject({ enabled: false, error: 'resize refused' })
+    await expect(controller.resolveSandboxForSession(ROOT_SESSION)).rejects.toThrow(/resize refused/)
+    await controller.dispose()
   })
 
   test('start with no desired state stays off and writes nothing', async () => {

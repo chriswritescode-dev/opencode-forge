@@ -10,7 +10,7 @@ import {
 
 const defaults: ForgeLoopDefaults = {
   maxIterations: 50,
-  sandbox: { available: true, resources: { cpus: '4', memory: '8g', dockerDisk: '16g', cacheDisk: '16g' } },
+  sandbox: { available: true, resources: { cpus: '4', memory: '8g', dockerDisk: '16g', cacheDisk: '16g' }, allowLan: false },
 }
 
 const noSandbox: ForgeLoopDefaults = { ...defaults, sandbox: { ...defaults.sandbox, available: false } }
@@ -64,7 +64,7 @@ describe('toLoopLaunchRequest', () => {
 describe('buildLoopSettingsOptions', () => {
   test('lists resource rows only while the sandbox is on', () => {
     expect(buildLoopSettingsOptions({}, defaults).map((o) => o.value))
-      .toEqual(['maxIterations', 'sandbox', 'resource:cpus', 'resource:memory', 'resource:dockerDisk', 'resource:cacheDisk', 'done'])
+      .toEqual(['maxIterations', 'sandbox', 'resource:cpus', 'resource:memory', 'resource:dockerDisk', 'resource:cacheDisk', 'allowLan', 'done'])
     expect(buildLoopSettingsOptions({ sandbox: { enabled: false } }, defaults).map((o) => o.value))
       .toEqual(['maxIterations', 'sandbox', 'reset', 'done'])
     expect(buildLoopSettingsOptions({}, noSandbox).map((o) => o.value)).toEqual(['maxIterations', 'done'])
@@ -105,6 +105,20 @@ describe('editLoopSettings', () => {
 
     const reset = await editLoopSettings(scriptedHost(['reset', 'done']).host, { maxIterations: 9, sandbox: { enabled: false } }, defaults)
     expect(reset).toEqual({})
+  })
+
+  test('LAN access toggles an override that is dropped again at the config default', async () => {
+    const on = await editLoopSettings(scriptedHost(['allowLan', 'done']).host, {}, defaults)
+    expect(on).toEqual({ sandbox: { allowLan: true } })
+    expect(formatLoopSettingsSummary(on, defaults)).toBe('50 iterations · sandbox 4 CPU, 8g, LAN')
+    expect(toLoopLaunchRequest(on, defaults)).toEqual({ sandbox: { allowLan: true } })
+
+    const back = await editLoopSettings(scriptedHost(['allowLan', 'done']).host, on, defaults)
+    expect(back).toEqual({})
+
+    const lanDefault = { ...defaults, sandbox: { ...defaults.sandbox, allowLan: true } }
+    expect(buildLoopSettingsOptions({}, lanDefault).map((o) => o.title)).toContain('LAN access: allowed (default)')
+    expect(await editLoopSettings(scriptedHost(['allowLan', 'done']).host, {}, lanDefault)).toEqual({ sandbox: { allowLan: false } })
   })
 
   test('a cancelled prompt leaves the settings unchanged', async () => {

@@ -212,6 +212,7 @@ describe('V2 server setup', () => {
     expect(result.sandbox).toEqual({
       available: true,
       resources: { memory: '8g', cpus: '4', dockerDisk: '16g', cacheDisk: '16g' },
+      allowLan: false,
     })
   })
 
