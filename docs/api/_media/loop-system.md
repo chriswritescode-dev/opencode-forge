@@ -15,13 +15,13 @@ The loop system provides autonomous iterative development with automatic code au
 - **Any non-completed loop is restartable** via explicit restart when the worktree is available.
 - Restartable statuses: `running`, `cancelled`, `errored`, `stalled`.
 - **Completed loops are history-only** and cannot be restarted.
-- **Missing worktree blocks restart** — the worktree directory must exist for restart to proceed.
+- **A missing worktree blocks restart only when the scratch branch is gone too** — if the branch survives, restart recreates the worktree from it (`git worktree add <branch>`); when both are gone the work is unrecoverable.
 
 ### Restart Semantics
 
 - Restart preserves loop identity, plan, worktree path, section progress, review findings, and per-loop sandbox settings (a loop launched with the sandbox off stays off; its resource overrides apply if the sandbox is recreated).
-- Restart resets iteration count and error budget.
-- Restart creates a fresh session and resumes from the persisted phase and section index.
+- Restart resets the iteration count to 1 and clears the error budget.
+- Restart creates a fresh session and preserves the section index. An ordinary `auditing` phase restarts as `coding`, while `final_auditing`, `final_audit_fix`, and an enabled `post_action` phase are preserved.
 - Restarts into section coding with outstanding bug findings for the current section use the continuation prompt, including full finding details and the shared remediation policy; without current-section bugs, they use the initial section prompt.
 
 ### Stale Workspace Sweep
@@ -38,7 +38,7 @@ stateDiagram-v2
     [*] --> Coding: loop tool invoked
     Coding --> Auditing: coding idle complete
     Auditing --> Coding: section dirty or audit dirty
-    Auditing --> Auditing: next section
+    Auditing --> Coding: next section
     Auditing --> FinalAuditing: last section clean
     Auditing --> [*]: audit clear
     FinalAuditing --> FinalAuditFix: final audit dirty
@@ -60,7 +60,7 @@ A loop has five persisted phases:
 2. **`auditing`** — the auditor reviews the change against conventions and stored findings.
 3. **`final_auditing`** — audits the whole accumulated diff (sectioned plan loops only).
 4. **`final_audit_fix`** — a coding pass that fixes final-audit findings without a section rewind.
-5. **`post_action`** — an optional best-effort action after a clean final audit (sectioned plan loops only).
+5. **`post_action`** — an optional best-effort action after a clean audit (plan loops only; never goal loops).
 
 Each completed code or audit pass rotates to a fresh session, and audit findings feed back into the next coding iteration. Goal loops skip sections, the final audit, and the post-action phase.
 
@@ -118,25 +118,7 @@ Each iteration runs in a **fresh session** to keep context small and prioritize 
 
 Rotated sessions are deleted from the OpenCode server right after their usage is captured, so a running loop has exactly one session: the current one. When a loop completes and its worktree is removed, its final session is deleted too, and the TUI removes any loop session whose worktree directory no longer exists. Loop sessions therefore drop out of OpenCode's session list once the loop moves on; loop history lives in `loop-status` and the [Dashboard](dashboard.md). A TUI can briefly keep showing deleted loop sessions from its local cache or tabs until it next refreshes the list from the server.
 
-```typescript
-function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
-  let systemLine = `Loop iteration ${state.iteration}`
-
-  if (state.maxIterations > 0) {
-    systemLine += ` / ${state.maxIterations}`
-  } else {
-    systemLine += ` | No max iterations set - loop runs until auditor all-clear or cancelled`
-  }
-
-  let prompt = `[${systemLine}]\n\n${state.prompt ?? ''}`
-
-  if (auditFindings) {
-    prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address all bugs and convention violations.`
-  }
-
-  return prompt
-}
-```
+Continuation prompts are built by `buildContinuationPrompt` in `src/loop/prompts.ts`, which routes by loop kind: goal loops build the goal coding prompt, sectioned loops build the section continuation prompt, and non-sectioned plan loops build the generic iteration prompt. Each variant composes the loop notice, the persisted attempt history, the outstanding review findings read from the review store (bug findings scoped to the current section for sectioned loops), and any recurring-findings block. Findings are inlined in full through the shared finding renderer; the auditor's response prose is never injected into a coder prompt.
 
 ## Usage Tracking
 
@@ -151,14 +133,18 @@ Tracked token buckets are input, output, reasoning, cache read, and cache write,
 
 ## Stall Detection
 
-A watchdog monitors loop activity. If no progress is detected within `stallTimeoutMs` (default: 60 seconds), the current phase is re-triggered.
+A watchdog monitors loop activity and distinguishes two ceilings:
+
+- `stallTimeoutMs` (default: 60 seconds) applies to ordinary stalls where no session registered to the loop is busy; the current phase is re-triggered through the ordinary recovery path.
+- `busyStallTimeoutMs` (default: 900000 ms, 15 minutes) bounds a busy stretch without progress. Real activity resets the stretch; newer streamed content (reasoning included) extends it. A busy session that exceeds it is nudged, and `busy` alone never resets the stall counters.
 
 ```typescript
 const STALL_TIMEOUT_MS = 60_000
+const BUSY_STALL_TIMEOUT_MS = 900_000
 const MAX_CONSECUTIVE_STALLS = 5
 ```
 
-After 5 consecutive stalls, the loop terminates with `terminationReason: 'stall_timeout'`.
+Retries reset the activity timer and suppress the ordinary recovery path; a provider-limit retry is either absorbed through model fallback or terminates the loop. A queued prompt suppresses the ordinary non-busy recovery tick. After 5 consecutive stalls, the loop terminates with `terminationReason: 'stall_timeout'`.
 
 ## Review Finding Persistence
 
@@ -215,7 +201,7 @@ Benefits of worktree isolation:
 Sandbox is optional and controlled by `sandbox.enabled` (default `true`): when enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop is rolled back rather than falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
 1. Sandbox created with the worktree mounted at its identical host path
-2. `bash`, `glob`, `grep` tools redirect into the sandbox
+2. `shell`, `glob`, `grep` tools redirect into the sandbox
 3. `read`/`write`/`edit` operate on host filesystem
 4. Sandbox stopped and removed on loop completion
 
@@ -250,7 +236,7 @@ A loop completes when the active phase emits a clean audit result (optionally fo
 - Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
 - Dirty section audits rotate back to coding for the same section so findings can be addressed.
 - Dirty final audits rotate to a coding session in the `final_audit_fix` phase (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
-- After a clean final audit, if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion occurs when the post-action session goes idle (`post-action-complete` event).
+- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion occurs when the post-action session goes idle (`post-action-complete` event). Goal loops never enter this phase.
 
 ## Termination
 
@@ -262,7 +248,7 @@ In addition to a clean audit, the loop terminates when:
 
 ## Post-Completion Action Phase
 
-After a clean final audit, before worktree teardown, the loop may run a **post-completion action** configured via `loop.postAction` in `forge-config.jsonc`. This phase is best-effort — it is not re-audited and relies only on safe, scoped fixes. The post-action runs as the `code` agent in a fresh session inside the worktree.
+After a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops), before worktree teardown, the loop may run a **post-completion action** configured via `loop.postAction` in `forge-config.jsonc`. This phase is best-effort — it is not re-audited and relies only on safe, scoped fixes. The post-action runs as the `code` agent in a fresh session inside the worktree. Goal loops never run it.
 
 ```jsonc
 {
@@ -286,12 +272,12 @@ After a clean final audit, before worktree teardown, the loop may run a **post-c
 
 ### Behavior
 
-- Runs only after a clean final audit completes.
+- Runs only after a clean audit completes (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops); goal loops never run it.
 - Runs **inside the worktree** as the `code` agent, with access to the full worktree state (including uncommitted changes).
 - **Best-effort:** The post-action result is not re-audited; it applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
 - On idle (`post-action-complete`), the loop terminates normally.
 - If the post-action session fails to create, the loop terminates as completed without retrying.
-- **Outcome capture:** On `post-action-complete`, the post-action session's raw final assistant message is stored verbatim in the loop's `completion_summary` (surfaced as **Completion Summary** in the dashboard). The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the final audit; the summary only provides context (alternate-review verdict, CI result, etc.). Completion summary is captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave it empty.
+- **Outcome capture:** On `post-action-complete`, the post-action session's full assistant transcript is stored in the loop's `postActionReport`, and its raw final assistant message is stored verbatim in `completion_summary`. `loop-status` and the dashboard prefer the full **Post-Action Report** and fall back to **Completion Summary** when no report was captured. The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the audit; the report only provides context (alternate-review verdict, CI result, etc.). Completion summary and report are captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave them empty.
 
 ## Cancellation
 
@@ -350,7 +336,7 @@ Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, a
 | Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh session per feature loop |
 | Final audit | Yes (after all sections) | No | Per feature loop |
 | Post-completion action | Yes (when configured) | Never | Per feature loop |
-| Slash command | `/execute-plan` | `/execute-goal` | None (agent-invoked) |
+| Slash command | `/execute-plan` | `/execute-goal` | `/launch-group` |
 
 ## Model Configuration
 

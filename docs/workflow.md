@@ -18,7 +18,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions msb when enabled, configured, and available.
+- **Loop** — Forge launches an iterative coding/auditing loop directly (no extra architect turn), creating an isolated git worktree and provisioning msb when enabled. An enabled sandbox that cannot start fails the launch rather than silently running on the host.
 
 | Mode | When to choose it |
 |------|-------------------|
@@ -28,7 +28,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 The dialog also lets you pick the execution model, auditor model, and their optional **variants** (provider-specific reasoning or thinking-effort levels such as `low`, `high`, `max`) at launch time. Selections are persisted with the loop and pre-filled on later launches. Variant defaults can be set via `config.executionVariant` / `config.auditorVariant` in the plugin config. In-session changes in the dialog override all other sources and persist for the OpenCode instance lifetime only (not across restarts).
 
-For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode, the architect is instead instructed to launch the loop via the `execute-plan` tool.
+For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode the path depends on the surface: the TUI execution dialog dispatches the loop directly, while the question-based plan approval instructs the architect to launch it with the `execute-plan` tool.
 
 For grouped execution, the `/launch-group` slash command orchestrates parallel feature extraction: a PRD or feature list is split into implementation-coherent features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each warning-free plan runs as its own loop within a concurrency cap. The group tools (`launch-group`, `group-status`, `group-cancel`) are agent-invoked; `/launch-group` is the only slash command.
 

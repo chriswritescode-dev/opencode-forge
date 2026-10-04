@@ -19,7 +19,7 @@ Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.
 
 ## Architect restrictions
 
-The architect agents cannot use `edit`, `write`, `patch`, or `task`. They retain direct read/search tools, Bash for read-only inspection and project checks, and `plan-read`, `plan-write`, and `plan-edit`; only the interactive architect can call `question` and `execute-plan`. The autonomous architect cannot invoke execution, loop, or group tools directly.
+The architect agents cannot use `edit`, `write`, `patch`, or `subagent`. They retain direct read/search tools, `shell` for read-only inspection and project checks, and `plan-read`, `plan-write`, and `plan-edit`; only the interactive architect can call `question` and `execute-plan`. The autonomous architect cannot invoke execution, loop, or group tools directly.
 
 ## Auditor restrictions
 
@@ -33,8 +33,12 @@ Excluded tools:
 - `plan-edit`
 - `execute-plan`
 - `execute-goal`
+- `question`
 - `loop-cancel`
 - `loop-status`
+- `launch-group`
+- `group-status`
+- `group-cancel`
 
 Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 

@@ -62,26 +62,11 @@
     //   "prompt": "Auto-defer anything needing clarification; do not use the question tool.",
     //   "model": "provider/model"  // optional: override model (defaults to auditor model chain)
     // },
-    // Host directories loop/audit/post-action sessions may read despite worktree isolation
-    // (e.g. an Obsidian vault). Use absolute host paths; governs Read/Glob/Grep (external_directory).
     // "allowExternalDirectories": ["/abs/host/path/to/vault"]
     //
-    // Per-tool deny overrides for loop, audit, and post-action sessions, layered between the
-    // external-directory allow rules and Forge's structural denies. Entries are a tool name
-    // (pattern "*"), or an object to scope the pattern. Only "deny" entries are supported;
-    // an "allow" array is ignored with a warning. Forge-managed permissions ("*",
-    // "external_directory", and every structural deny) are rejected, as are blanket denies of
-    // Forge-required permissions ("review-read", "plan-read", "section-read", "plan-adjust",
-    // "bash", "read") — scope those with a pattern instead of denying them outright.
     // "permissions": {
     //   "deny": ["browser_navigate", { "permission": "bash", "pattern": "git push *" }]
     // }
-    //
-    // Shared scratch/temp directory available to loops in BOTH modes. It is added to the
-    // external_directory allowlist and, for sandboxed loops, bind-mounted read-write at the
-    // identical container path so absolute temp paths match host<->container. Created on startup
-    // if missing. Defaults to "/tmp/oc-forge".
-    // "tmpDir": "/tmp/oc-forge"
     //
     // Inline opencode config written as opencode.jsonc into each loop worktree (skip-if-exists;
     // never overwrites a committed opencode.json/opencode.jsonc). Primarily for enabling per-loop
@@ -98,9 +83,6 @@
     "maxConcurrentLoops": 3
   },
 
-  // Sandbox configuration. Sandbox is optional: loops always run in an isolated git worktree, and
-  // when the msb CLI is installed and `msb doctor` reports a usable host a sandbox is provisioned
-  // automatically. Set "enabled": false to force worktree-only mode even when msb is available.
   "sandbox": {
     "enabled": true,
     "mode": "msb",
@@ -110,15 +92,6 @@
     // Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox (e.g.
     // after turning it on in the `Host sandbox` menu), using the auto-approve policy. Defaults to true.
     // "autoApprovePermissions": true,
-    // Network access configuration. msb egress is allow-by-default: with no hosts configured,
-    // forge passes no network flags and all PUBLIC egress is allowed. Restriction is opt-in —
-    // once any host is listed, forge passes `--net-default deny` plus one `--net-rule allow@<host>`
-    // per validated host, and only those hosts are reachable. Host loopback (host.microsandbox.internal
-    // and the gateway IP) is always unreachable from inside the sandbox. Invalid host entries
-    // (e.g. a bare "*", port-qualified hosts, or single-label hosts) are skipped and logged rather
-    // than failing the loop launch; if every configured host is invalid, egress is fully denied
-    // rather than falling back to allow-all. Egress rules cannot be changed on a live sandbox —
-    // a newly configured host requires recreating the sandbox.
     // Host environment variables pass through at create time as bare names (msb resolves each name
     // from its own environment, so values never appear on forge's command line); host-held
     // secrets are bound reference-only and exposed inside the sandbox as $MSB_<env> placeholders

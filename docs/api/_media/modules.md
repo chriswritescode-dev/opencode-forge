@@ -122,13 +122,15 @@ Defines roles and system prompts for each AI agent used in the forge pipeline.
 | `code.ts` | Code execution agent |
 | `architect.ts` | Read-only planning/design agent |
 | `auditor.ts` | Code review agent + auditor-loop variant |
+| `architect-auto.ts` | Autonomous architect agent |
+| `feature-splitter.ts` | Splits a PRD into features for a group |
 
 ### Public API
 
 ```typescript
 buildAgents(): Record<AgentRole, AgentDefinition>
 
-type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop'
+type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'architect-auto' | 'feature-splitter'
 ```
 
 Source: [src/agents/index.ts](../src/agents/index.ts)
@@ -273,7 +275,7 @@ isAwaitingBusy(sessionId): boolean
 isAwaitingBusyExpired(sessionId): boolean
 
 // Name uniqueness
-generateUniqueName(existingNames[]): string
+generateUniqueName(baseName: string, existingNames: readonly string[]): string
 
 // Session output
 fetchSessionOutput(client, sessionId, directory, logger?, options?): LoopSessionOutput | null
@@ -363,6 +365,8 @@ interface SandboxRuntime {
   sandboxContainerName(worktreeName: string): string
   listSandboxesByPrefix(prefix: string): Promise<string[]>
   refreshSandboxSecrets(name: string, secrets: SandboxSecretConfig[]): Promise<boolean>
+  readSandboxSettings(name: string): Promise<SandboxRuntimeSettings | null>
+  resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
 ```
 
@@ -371,7 +375,7 @@ interface SandboxRuntime {
 ```typescript
 interface SandboxManager {
   runtime: SandboxRuntime
-  start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }>
+  start(worktreeName: string, projectDir: string, startedAt?: string, overrides?: SandboxOverrides): Promise<{ containerName: string }>
   stop(worktreeName: string): Promise<void>
   getActive(worktreeName: string): ActiveSandbox | null
   isActive(worktreeName: string): boolean
@@ -379,8 +383,11 @@ interface SandboxManager {
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
+  applyOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome>
 }
 ```
+
+`applyOverrides` converges an existing sandbox to its effective settings (persisted overrides over config) and returns whether it was `unchanged`, `resized` (a CPU or memory change restarts the sandbox in place, keeping its disks), or `recreated` (a LAN-access change recreates it, because msb fixes network policy at create time). It rejects when the current settings cannot be read, so a LAN restriction is never assumed to hold.
 
 `SandboxManagerConfig` no longer carries a `dataDir` field — its only reader was the deleted per-sandbox env-file writer. The overlapping-workspace drop rule is a single shared implementation used by both the mount plan and the workspace builder, so a mount conflict resolves identically on either path. `removeSandbox` also removes both of the sandbox's named volumes in one bulk `msb volume rm` — `<container>-docker-data`, which backs `/var/lib/docker` for the in-VM Docker Engine, and `<container>-cache-data`, which backs `/opt/forge/cache`. Because named volumes survive `msb rm`, `stop` routes through the same removal path even when the sandbox is already gone, so a container destroyed out of band still has its disks reclaimed.
 
@@ -397,7 +404,7 @@ All data persistence via `bun:sqlite`. Organized as:
 | Export | Description |
 |--------|-------------|
 | `initializeDatabase(dataDir, options)` | Creates SQLite DB with migrations |
-| `closeDatabase()` | Closes database connections |
+| `closeDatabase(db: Database)` | Closes database connections |
 | `resolveDataDir()` | Platform-appropriate data directory |
 | `resolveLogPath()` | Default log file path |
 
@@ -416,7 +423,8 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `FeatureGroupsRepo` | `feature_groups` | `FeatureGroupsRepo` — grouped-execution state |
 | `LoopAttemptsRepo` | `loop_attempts` | `LoopAttemptsRepo` — durable audit-attempt history |
-| `SessionSandboxPreferencesRepo` | `session_sandbox_preferences` | `SessionSandboxPreferencesRepo` — host-session sandbox desired/applied state |
+| `SessionSandboxPreferencesRepo` | `tui_preferences` (JSON keys `session-sandbox.desired` / `.applied` / `.controller`) | `SessionSandboxPreferencesRepo` — host-session sandbox desired/applied state |
+| `SessionAutoApproveRepo` | `tui_preferences` (TTL-scoped JSON keys `session-auto-approve.<sessionId>`) | `SessionAutoApproveRepo` — per-session auto-approve state |
 
 ### Migrations
 
@@ -560,14 +568,14 @@ setupForgeV2(ctx)                 // Server plugin entry
 createForgeCore(config, host)      // Host-neutral core
 createLoop(deps)                  // Loop runtime
 createLoopService(...)            // State management
-createSandboxManager(config, logger) // Sandbox
+createSandboxManager(runtime, config, logger, git?) // Sandbox
 createTools(ctx)                  // Tool registry
 createForgeWorkspaceAdapter(deps) // Workspace
 createMsbRuntime(logger)          // Sandbox
 createLogger(config)              // Logging
 ```
 
-Dependencies are injected via parameter objects, not global singletons.
+Dependencies are injected via parameter objects, not global singletons. The one deliberate exception is process-shared state (`processShared` in `src/utils/process-shared.ts`): OpenCode loads a separate module graph per location in one process, so state that must be one per process (host sandbox controllers, idle-gate markers, the loop registry) lives on `globalThis` under registered symbols, and every module copy resolves the same value.
 
 ### Barrel Exports
 

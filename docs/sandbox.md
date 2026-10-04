@@ -11,7 +11,7 @@ See also: [Configuration](configuration.md), [Tools](tools.md), [Loop System](lo
   curl -fsSL https://install.microsandbox.dev | sh
   ```
   Verify the host is ready with `msb doctor` (an alias of `msb self doctor`), which checks the hypervisor prerequisites. The interactive installer (`bunx opencode-forge`, or `pnpm run setup` from a checkout) offers to run this command for you when it cannot find `msb` on `PATH`.
-- A host that can run microVMs: Linux with KVM, macOS on Apple silicon, or Windows 11 with Windows Hypervisor Platform.
+- A host that can run microVMs: Linux with KVM or macOS on Apple silicon. msb advertises Windows 11 with Windows Hypervisor Platform, but Forge's sandbox shell routing relies on a POSIX shell shim that is unavailable on win32, so with the sandbox enabled Forge refuses to start there rather than silently running on the host — set `sandbox.enabled: false` on Windows.
 - Docker on the host, used only to build the sandbox image (see below) — the msb runtime itself does not need it.
 
 Forge probes availability with `msb doctor` bounded at 30s. A probe that does not answer is treated as *indeterminate* rather than "daemon down": Forge logs and continues, letting the actual sandbox operation report the authoritative error. Only a host that answers definitively (or a missing CLI) fails a loop launch with remediation advice.
@@ -49,7 +49,7 @@ The browser lives at `/opt/forge/.local/share/ms-playwright` (`PLAYWRIGHT_BROWSE
 3. The active directory, the read-only source project (when `sandbox.mountProjectReadonly` is enabled), and the worktree's git metadata directory are mounted at their identical host paths, so absolute paths resolve the same on both sides. There is no `/workspace` or `/project` container path.
 4. Shell commands and search tools execute inside the sandbox; file tools stay on the host, so LSP and editor integration continue to work, but are fenced to the sandbox mounts (see [File-Tool Boundary](#file-tool-boundary)).
 
-The read-only project mount is dropped whenever it would nest over the writable worktree — which is the default forge layout, where the worktree lives inside the source project — so `sandbox.mountProjectReadonly` is effectively inert there. The worktree stays writable and the git metadata directory is mounted read-write alongside it, so in-sandbox git works and multiple loops in the same project each mount their worktree plus the shared git metadata independently.
+Loop worktrees are created under `<dataDir>/worktrees/<slug>`, outside the source project. The read-only project mount is dropped whenever it overlaps an accepted read-write mount with conflicting permissions (a read-only ancestor would silently make its whole subtree read-only). For a loop, the worktree's git metadata directory is the source repository's `.git` — inside the source project — and is mounted read-write, so the read-only project mount is dropped in the default layout and `sandbox.mountProjectReadonly` is effectively inert there. When the repository's git directory lives outside the source project the read-only mount can survive instead. The worktree stays writable and the git metadata directory is mounted read-write alongside it, so in-sandbox git works and multiple loops in the same project each mount their worktree plus the shared git metadata independently.
 
 ## Shell Routing
 
@@ -93,7 +93,7 @@ File tools (`read`, `write`, `edit`, `patch`) run on the host, not in the sandbo
 
 ## Network Access
 
-Public egress is **allowed by default**: when `sandbox.network.allow` is omitted — or set to `["*"]` or `["**"]`, the explicit allow-all wildcards — Forge passes no network flags and msb's own default applies, letting the sandbox reach any public host. A wildcard entry anywhere in `network.allow` makes the whole list unrestricted, overriding any narrower entries in the same list. Restriction is opt-in — listing concrete hosts with `sandbox.network.allow` flips the sandbox to restricted egress, where only allow-listed hosts are reachable:
+Public egress is **allowed by default**: when no host restrictions or secret destinations are configured — or `sandbox.network.allow` contains `"*"` or `"**"` — Forge passes no network flags with the default `allowLan: false`. msb then allows public egress and blocks private ranges. With `allowLan: true`, Forge instead passes `--net public,private`; see [LAN Access](#lan-access). A wildcard entry overrides narrower entries in the same list. Listing concrete hosts enables restricted public egress:
 
 ```jsonc
 {
@@ -105,17 +105,17 @@ Public egress is **allowed by default**: when `sandbox.network.allow` is omitted
 }
 ```
 
-When any concrete host is configured (including secret destination hosts, which are unioned into the same allow list) and no `*`/`**` entry is present in `sandbox.network.allow`, Forge creates the sandbox with `--net-default deny` plus one `--net-rule allow@<host>` per validated host. Each entry is validated before use; invalid entries are skipped and logged. Verified rejections: a comma (for `--net-rule` a comma separates whole rule tokens, not hosts), a colon (`example.com:443` needs the `example.com:tcp:443` form), an `@`, a wildcard suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (msb requires the `domain=` form). The `domain=` and `suffix=` forms pass through. A wildcard in a secret's destination hosts stays invalid — those hosts declare where that secret may be sent, not global egress policy. If every configured host is rejected as invalid, Forge still emits `--net-default deny` with no allow rules and logs that egress is fully denied — it deliberately does not fall back to allow-all, so a config typo cannot silently remove an intended restriction.
+When any concrete host is configured (including secret destination hosts, which are unioned into the same allow list) and no `*`/`**` entry is present in `sandbox.network.allow`, Forge creates the sandbox with `--net-default deny` plus one `--net-rule allow@<host>` per validated host. Each entry is validated before use; invalid entries are skipped and logged. Verified rejections: a comma, any colon (both `example.com:443` and `example.com:tcp:443` are rejected; use `example.com`), an `@`, a wildcard suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (use `domain=myhost`). The `domain=` and `suffix=` forms pass through. A wildcard in a secret's destination hosts stays invalid — those hosts declare where that secret may be sent, not global egress policy. If every configured host is invalid, Forge retains deny-by-default without host allow rules rather than falling back to allow-all. An explicit `allowLan: true` still adds the private-address group.
 
-Either way, the host's loopback interface remains unreachable from inside the sandbox: the private range is not part of msb's `public` egress group, so a host listener on e.g. `0.0.0.0:18923` stays unreachable via `host.microsandbox.internal` or the gateway IP even when no net flags are passed.
+With `sandbox.network.allowLan` off (the default), the host's loopback interface remains unreachable from inside the sandbox: the private range is not part of msb's `public` egress group, so a host listener on e.g. `0.0.0.0:18923` stays unreachable via `host.microsandbox.internal` or the gateway IP even when no net flags are passed. See [LAN Access](#lan-access) for the `allowLan: true` posture.
 
 Forge applies the rules at sandbox **create time** only. msb rules are per sandbox (not daemon-global) and `msb modify` has no `--net-rule` flag, so egress rules cannot be changed on a live sandbox: a newly configured host requires the sandbox to be recreated.
 
 ### LAN Access
 
-msb's default egress is deny with an implicit `allow@public`, so private (LAN) address ranges are blocked even when public egress is open, including with the `*` wildcard. Set `sandbox.network.allowLan: true` (default `false`) to let the sandbox reach them. Forge then creates the sandbox with `--net public,private`, or appends `--net-rule allow@private` when an allow-list is active, so a restriction stays a restriction. Only msb's `private` group is added. This exposes every service on your LAN (routers, NAS, other machines) to commands the agent runs, so keep it off unless a task needs it.
+msb's default egress is deny with an implicit `allow@public`, so private (LAN) address ranges are blocked even when public egress is open, including with the `*` wildcard. Set `sandbox.network.allowLan: true` (default `false`) to let the sandbox reach them. Forge then creates the sandbox with `--net public,private`, or appends `--net-rule allow@private` when an allow-list is active. Public-host restrictions remain, but the entire private-address group is allowed independently of the host list, even if every configured host is invalid. This exposes every service on your LAN (routers, NAS, other machines) to commands the agent runs, so keep it off unless a task needs it.
 
-The loop settings dialog and the `Host sandbox` menu override it per sandbox. Like the other egress rules it is fixed at create time: changing it on a running host sandbox recreates the sandbox, after confirmation, and loses everything outside the mounted directories. Forge reads the current setting back from `msb inspect` rather than assuming it, and refuses to apply overrides when that read fails, so a LAN restriction is never assumed to hold.
+The loop settings dialog and the `Host sandbox` menu override it per sandbox. Like the other egress rules it is fixed at create time: changing it on a running host sandbox removes and recreates the sandbox, after confirmation. Host bind mounts survive (they are host directories), but the VM root filesystem, the Docker and cache disks, and all running processes are lost — the removal deletes the sandbox's named Docker and cache volumes along with it. Forge reads the current setting back from `msb inspect` rather than assuming it, and refuses to apply overrides when that read fails, so a LAN restriction is never assumed to hold.
 
 ## Environment Passthrough
 
@@ -162,13 +162,13 @@ Security notes:
 
 ## Read-Only Project Mount
 
-By default, Forge mounts the source project directory read-only at its identical host path.
+When enabled, Forge mounts the source project directory read-only at its identical host path. The mount is dropped when it overlaps a read-write mount with conflicting permissions (see below), so it is not guaranteed for every loop.
 
 | Option | Default | Description |
 |---|---:|---|
 | `sandbox.mountProjectReadonly` | `true` | Enable the read-only source project mount. |
 
-The loop worktree remains writable. When the read-only project mount would nest over the writable worktree (the default forge layout), it is dropped instead: inside the sandbox the outermost mount's read-only flag applies to the whole subtree, so a read-only ancestor would silently make the worktree read-only. The worktree and the shared git metadata directory are mounted read-write in that case.
+The loop worktree remains writable. The read-only project mount is dropped whenever it overlaps an accepted read-write mount with conflicting permissions: inside the sandbox the outermost mount's read-only flag applies to the whole subtree, so a read-only ancestor would silently make a read-write descendant read-only. Loop worktrees live under `<dataDir>/worktrees/<slug>`, outside the source project, so the worktree itself does not nest under the project mount; the usual conflict is the worktree's git metadata directory — the source repository's `.git`, inside the source project — which is mounted read-write. When the git directory lives outside the source project, the read-only mount can be kept. The worktree and the shared git metadata directory are mounted read-write.
 
 ## Git Metadata and Hooks
 
@@ -243,7 +243,7 @@ uv, pip, puccinialin, and pnpm's own cache resolve under `XDG_CACHE_HOME` unchan
 
 The image ships `forge-cache-prune`, safe to run as `agent` whenever the sandbox is idle. It clears re-downloadable caches — the pnpm store, npm and uv caches, `cargo/registry`, `cargo/git`, `go/pkg/mod`, and any unrecognized entry — while preserving installed toolchains: `rustup`, the uv-managed Pythons, uv tool environments and executable links (`uv-tools` and `uv-bin`), and the `cargo/bin` and `go/bin` binaries. It then runs `apt-get clean` and `fstrim`, so the freed space is returned to the host's sparse disk image rather than only to the guest. The sandbox context note tells agents about it, so a full cache disk is reclaimed by running it instead of hand-hunting `du`.
 
-The cache volume keeps its contents across sandbox recreation via `--replace`. Sandboxes created before this feature keep their caches on the root filesystem; as a stopgap their root disk can be grown in place (`msb modify <sandbox> --root-disk <size>`, grow-only), but the cache disk itself requires recreating the sandbox (`msb rm <sandbox>`). Changing `sandbox.resources.cacheDisk` does not resize an existing sandbox — see [Resource Defaults](#resource-defaults).
+The cache volume keeps its contents across msb's `--replace` recovery (the retry Forge uses when `msb create` reports an already-existing orphaned sandbox), because the named volume is reused. It does not survive the remove-and-recreate path a LAN-access change takes, which deletes the sandbox's named Docker and cache volumes. Sandboxes created before this feature keep their caches on the root filesystem; as a stopgap their root disk can be grown in place (`msb modify <sandbox> --root-disk <size>`, grow-only), but the cache disk itself requires recreating the sandbox (`msb rm <sandbox>`). Changing `sandbox.resources.cacheDisk` does not resize an existing sandbox — see [Resource Defaults](#resource-defaults).
 
 ## Sandbox Lifecycle
 

@@ -214,7 +214,7 @@ export interface AutoApproveDenyRule {
 
 /** Policy applied while auto-approve is on for a session. Requests are only ever allowed or denied, never prompted. */
 export interface AutoApproveConfig {
-  /** Extra rules denied during auto-approval, using OpenCode permission action/resource wildcard syntax. Explicit OpenCode `ask` rules are always denied during auto-approval. */
+  /** Extra rules denied during auto-approval, using OpenCode permission action/resource wildcard syntax. Other OpenCode `ask` requests are allowed; existing `deny` decisions are unchanged. */
   deny?: AutoApproveDenyRule[]
 }
 
@@ -224,17 +224,18 @@ export interface AutoApproveConfig {
 export interface CompactionConfig {
   /** Use a custom compaction prompt. */
   customPrompt?: boolean
-  /** Maximum context tokens for compaction. */
+  /** Maximum context tokens for compaction. Currently unused by Forge's compaction hook, which reads only `customPrompt`. */
   maxContextTokens?: number
 }
 
 /**
- * Configuration for message transformation in architect sessions.
+ * Configuration for the architect reminder appended to the last user message of an interactive
+ * architect session.
  */
 export interface MessagesTransformConfig {
-  /** Enable message transformation. Defaults to true. */
+  /** Enable the architect reminder. Defaults to true; `false` suppresses it. */
   enabled?: boolean
-  /** Enable debug logging. */
+  /** Enable debug logging. Currently unused: no production reader. */
   debug?: boolean
 }
 
@@ -251,7 +252,7 @@ export interface TuiConfig {
 }
 
 /**
- * Configuration for the read-only observability dashboard HTTP server.
+ * Configuration for the database-backed observability dashboard HTTP server.
  * The dashboard is unauthenticated: binding to a non-loopback address exposes
  * every loop plan, goal, audit result, finding, and cost to anyone who can reach
  * the port. Protect it with a firewall or VPN. See `DASHBOARD_EXPOSED_WARNING`

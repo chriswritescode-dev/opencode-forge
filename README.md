@@ -119,10 +119,11 @@ The diagram below shows the overall flow of the Forge loop system — from loop 
 
 ## Development
 
+Install pnpm and Bun; build, setup, and dashboard scripts require Bun. Use pnpm for dependencies and run the build before tests so the generated dashboard bundle is current.
+
 ```bash
-pnpm build      # Compile TypeScript to dist/
-pnpm test       # Run tests
-pnpm typecheck  # Type check without emitting
+pnpm install --frozen-lockfile
+pnpm build && pnpm typecheck && pnpm lint && pnpm test
 ```
 
 ## License

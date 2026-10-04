@@ -8,7 +8,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 
 | Option | Default | Description |
 |---|---:|---|
-| `dataDir` | `""` | Data directory for `forge.db`, worktrees, and logs. Empty resolves to the platform data dir. |
+| `dataDir` | `""` | Data directory for `forge.db` and worktrees. Empty resolves to the platform data dir. It does not relocate the default log path, which is always derived from the platform data dir; set `logging.file` to move logs. |
 | `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before cleanup sweep. |
 | `executionModel` | `""` | Fallback model override for plan execution sessions. Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
@@ -34,14 +34,14 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | Option | Default | Description |
 |---|---:|---|
 | `compaction.customPrompt` | `true` | Use Forge's custom compaction prompt. |
-| `compaction.maxContextTokens` | `0` | Maximum context tokens for compaction. `0` means unlimited. |
+| `compaction.maxContextTokens` | `0` | Accepted but currently unused; compaction does not read it. |
 
 ## Messages Transform
 
 | Option | Default | Description |
 |---|---:|---|
-| `messagesTransform.enabled` | `true` | Enable message transformation for Architect read-only enforcement and marked-plan instructions. |
-| `messagesTransform.debug` | `false` | Enable debug logging for the transform. |
+| `messagesTransform.enabled` | `true` | Gate the interactive Architect system reminder (read-only filesystem mode plus finalize-the-plan instructions) appended to the last user message for the Architect agent. Loop sessions are unaffected. |
+| `messagesTransform.debug` | `false` | Accepted but currently unused. |
 
 ## Loop
 
@@ -214,7 +214,7 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
 | `sandbox.autoApprovePermissions` | `true` | Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox, including a session sandboxed from the `Host sandbox` menu, using the same policy as per-session auto-approve (`autoApprove.deny` matches and OpenCode `deny` rules are denied; everything else, including explicit `ask` rules, is allowed). Set `false` to keep prompting in sandboxed sessions; a per-session `Toggle auto-approve` still applies. See [Sandbox](sandbox.md#permission-auto-approval). |
-| `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. Restriction is opt-in: an empty list, or a list containing the `*`/`**` allow-all wildcard, passes no network flags and msb's default allows all public egress; configuring any concrete host flips the sandbox to deny-by-default (`--net-default deny`) with one `--net-rule allow@<host>` per validated host. |
+| `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. An empty list or `*`/`**` wildcard allows public egress; concrete hosts enable deny-by-default with an allow rule per validated host. Secret destinations also contribute allowed hosts. `allowLan: true` additionally allows msb's private-address group, regardless of the host list. |
 | `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
 | `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. The named variable must be exported in the environment that launches opencode — a bound secret with a missing variable breaks every sandboxed shell command. |
 | `sandbox.network.allowLan` | `false` | Allow the sandbox to reach private (LAN) address ranges, which msb blocks by default even when public egress is open. This exposes every service on your LAN to commands the agent runs. Applied at create time. |
@@ -223,12 +223,12 @@ The TUI execution dialog can override `sandbox.resources.*` and `sandbox.network
 
 ### Sandbox network egress
 
-`sandbox.network.allow`, plus the destination hosts of any configured secrets, controls the sandbox's outbound access. Restriction is opt-in: when nothing is configured — or the allow list contains `*`/`**` — forge passes no network flags and msb's own default applies, so all public egress is allowed. A wildcard entry anywhere in the list makes the whole list unrestricted, overriding any narrower entries in the same list. When at least one concrete host or secret destination is configured and no allow-all wildcard is present, forge flips the sandbox to deny-by-default with `--net-default deny` plus one `--net-rule allow@<host>` per validated host.
+`sandbox.network.allow`, plus the destination hosts of any configured secrets, controls the sandbox's outbound access. Restriction is opt-in: when nothing is configured — or the allow list contains `*`/`**` — and `allowLan` is false, Forge passes no network flags and msb's default allows public egress while blocking private ranges. With `allowLan: true`, Forge instead passes `--net public,private`. A wildcard entry overrides narrower entries in the same list. When at least one concrete host or secret destination is configured and no allow-all wildcard is present, Forge passes `--net-default deny` plus one `--net-rule allow@<host>` per validated host; `allowLan: true` additionally permits the entire private-address group.
 
 - Invalid host entries are skipped and logged rather than failing the loop launch. Verified rejections include commas (a comma separates whole rule tokens, not hosts), port-qualified hosts (colon), `@`, a suffix with fewer than two labels (`*.example.com` is valid, `*.com` is rejected), and a bare single-label hostname (use `domain=myhost`). `domain=` and `suffix=` forms pass through. A wildcard in a secret's destination hosts stays invalid — those hosts declare where that secret may be sent, not global egress policy.
-- If every configured host is invalid, forge emits `--net-default deny` with no allow rules and logs that egress is fully denied — it deliberately does not fall back to allow-all.
+- If every configured host is invalid, Forge emits `--net-default deny` with no host allow rules rather than falling back to allow-all. With `allowLan: true`, the private-address group remains allowed.
 - DNS is gateway-mediated and needs no rule; the old `--net-rule allow@dns` form was rejected by msb 0.6.8, and its presence made every sandbox creation fail.
-- The host's loopback interface remains unreachable from inside the sandbox: `host.microsandbox.internal` and the gateway IP are both blocked, because the private range is not part of msb's `public` egress group.
+- With the default `allowLan: false`, the host's loopback interface remains unreachable from inside the sandbox: `host.microsandbox.internal` and the gateway IP are both blocked, because the private range is not part of msb's `public` egress group. `allowLan: true` adds msb's `private` group (`--net public,private`, or `--net-rule allow@private` when an allow-list is active); see [Sandbox → LAN Access](sandbox.md#lan-access).
 - Egress rules cannot be changed on a live sandbox (`msb modify` has no `--net-rule`), so a newly configured host requires recreating the sandbox.
 
 ### Sandbox secrets
@@ -357,7 +357,7 @@ The vendored copy mirrors the npm package layout rather than being "just dist": 
 
 #### Plugin loading
 
-OpenCode 2.x (verified on 2.0.15) loads the two surfaces from different places:
+Package installs expose `./tui` alongside the server entrypoint, which OpenCode can load automatically from the package entry in `opencode.json`. The config-directory installer uses explicit registrations instead (verified on 2.0.15):
 
 - **Server** — the `plugins` array in `opencode.json`/`opencode.jsonc`, or any `*.js` file directly in `<configDir>/plugin/`. The installer uses the second: `opencode-forge.js` is a one-line re-export of the server entry. Package directories under `plugin/`, such as the vendored copy, are not loaded on their own.
 - **TUI** — the `plugins` array in `cli.json`, which resolves a directory spec's package entrypoints rather than accepting a file target. That is why the installer points `cli.json` at the built `dist` directory. Path specs resolve relative to the config file's own directory, which makes the vendored `./plugin/opencode-forge/dist` entry portable.

@@ -78,7 +78,7 @@ The codebase is organized into these module groups under `src/`:
 |--------|-----------|-----------|
 | `host/` | Host-neutral core plus the V2 adapter | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts`, `forge-rpc.ts` |
 | `client/` | `ForgeClient` port and the V2 adapter | `port.ts`, `v2-adapter.ts`, `v2-workspaces.ts`, `errors.ts` |
-| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
+| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant, architect-auto, feature-splitter) | `index.ts`, `types.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `architect-auto.ts`, `feature-splitter.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects, group orchestrator) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `group-orchestrator.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `group-orchestrator.ts`, `group-scheduler.ts`, `tui-rpc-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
@@ -144,7 +144,7 @@ The sandbox state model has five states. `running` and `stopped` are both usable
   the `shell.hook('create.before')` strips the marker, points `event.shell` at the
   `forge-shell` shim (`sandbox/shell-shim.ts`), and sets `FORGE_SANDBOX_CONTAINER`. The shim
   `exec`s `msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"`.
-  Tool arguments are never rewritten, and an unstripped marker fails with "command not found".
+  The marker prefix is stripped before execution, and an unstripped marker fails with "command not found".
 - **`glob` and `grep`** use output replacement. `tool.hook('execute.before')` runs the equivalent
   `rg` command inside the container and stores the result by `callID`; `tool.hook('execute.after')`
   overwrites `output.output` with it. Because the before-hook cannot cancel a tool call,
@@ -168,7 +168,7 @@ The V2 adapter registers the shared core handlers through V2's hook API:
 
 ### Session Hooks (`src/hooks/session.ts`)
 
-- `session.hook('prompt')` - Inject memory into context, handle session events
+- `session.hook('prompt')` - Session message handling (session initialization logging)
 - `session.hook('compaction')` - Custom compaction behavior for session continuity
 
 ### Architect Reminder (`session.hook('context')`)
@@ -210,7 +210,7 @@ OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is 
 ### Database (`src/storage/database.ts`)
 
 - `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
-- `closeDatabase()` - Closes database connections on shutdown
+- `closeDatabase(db: Database)` - Closes database connections on shutdown
 - `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
 - Migrations are registered explicitly in execution order (ids 100-149; not every id ships a SQL file) and tracked in a `migrations` table
 
@@ -229,7 +229,8 @@ All data access goes through typed repository interfaces created via factory fun
 | `LoopSessionUsageRepo` | Per-session token/cost usage across rotated loop sessions | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `FeatureGroupsRepo` | Feature-group state for grouped execution | `FeatureGroupsRepo` |
 | `LoopAttemptsRepo` | Durable audit-attempt history | `LoopAttemptsRepo` |
-| `SessionSandboxPreferencesRepo` | Desired/applied host-session sandbox state | `SessionSandboxPreferencesRepo` |
+| `SessionSandboxPreferencesRepo` | Desired/applied host-session sandbox state (stored as `tui_preferences` JSON keys) | `SessionSandboxPreferencesRepo` |
+| `SessionAutoApproveRepo` | Per-session auto-approve state (stored as TTL-scoped `tui_preferences` JSON keys) | `SessionAutoApproveRepo` |
 
 Each repository is project-scoped via `projectId` parameter.
 
@@ -246,7 +247,7 @@ The plugin follows this initialization sequence within `createForgeCore()`:
 3. **Pending Teardown Registry** - Track worktree teardown contexts
 4. **Workspace Adapter** - Register the forge workspace adapter
 5. **Database** - Initialize SQLite storage (`initializeDatabase()`)
-6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, featureGroups, transitions, planAmendments, attempts, sessionSandboxPreferences)
+6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, featureGroups, transitions, planAmendments, attempts, sessionSandboxPreferences, sessionAutoApprove)
 7. **Loop Event Handler** - Connect loop runtime to events and state management
 8. **Session Sandbox Controller** - Reconcile the host-session sandbox selection
 9. **Group Orchestrator** - Manage grouped execution
@@ -261,10 +262,12 @@ Plugin initialization does not recover, cancel, or restart loops. Boot initializ
 
 On plugin shutdown (`location.shutdown` event):
 
-1. Release the shared session-sandbox controller
-2. Stop all active sandboxes
-3. Clear retry timeouts
-4. Close database connections
+1. Unregister the process signal listeners and the TUI event emitter
+2. Clear all loop retry timeouts
+3. Release the shared session-sandbox controller (reference-counted; only the final release disposes it)
+4. Close the database connection
+
+Cleanup does not stop loop sandboxes or cancel loops: active loops are preserved, and their sandboxes are torn down by the loop runtime on completion or cancellation rather than by plugin shutdown.
 
 ## Data Flow
 

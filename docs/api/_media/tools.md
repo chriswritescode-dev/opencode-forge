@@ -110,7 +110,6 @@ Arguments:
 | `severity` | `bug` or `warning`. |
 | `description` | Clear description of the issue. |
 | `scenario` | Optional conditions under which the issue manifests. |
-| `status` | Finding status; defaults to `open`. |
 | `crossSection` | Write as a cross-section finding with `sectionIndex: null`. |
 | `sectionIndex` | Explicit section index override. |
 
@@ -153,7 +152,6 @@ Arguments:
 | `title` | Required short title for the session list. |
 | `plan` | Optional inline plan. If omitted, Forge reads the current session's stored plan. |
 | `loopName` | Optional loop name, slugified and uniquified. |
-| `hostSessionId` | Optional host session ID for post-completion redirect. |
 | `mode` | Execution mode. `loop` (default) runs the iterative loop in an isolated git worktree. `new-session` launches the plan in a fresh standalone session running the code agent (no worktree, no loop, not tracked by `loop-status`/`loop-cancel`). |
 
 ### `execute-goal`
@@ -168,7 +166,6 @@ Arguments:
 | `title` | Optional short title for the loop (derived from the goal when omitted). |
 | `loopName` | Optional loop name, slugified and uniquified. |
 | `maxIterations` | Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`; `0` means unlimited (run until auditor all-clear or cancellation). |
-| `hostSessionId` | Optional host session ID for post-completion redirect; defaults to the invoking (`execute-goal`) session. |
 
 Worktree/session behavior, auditor/finding completion rule, iteration cap, and differences from `execute-plan` and `launch-group` are documented in [Loop System → Goal Loops](loop-system.md#goal-loops).
 
@@ -192,7 +189,7 @@ Arguments:
 
 Completed loops are history-only and cannot be restarted. See [Loop System](loop-system.md#restartability).
 
-> Group, loop, and plan tools are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work.
+> Plan authoring (`plan-write`, `plan-edit`), the loop/group management tools (`execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`), and `question` are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work. `plan-read` stays available, and `plan-adjust` is callable by the auditor during a section audit.
 
 ## Group Tools
 

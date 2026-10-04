@@ -50,7 +50,7 @@ The project has one host sandbox, bound to one session at a time. The menu shows
 - **Reset to defaults** — clears every override.
 - **Apply settings** — shown when a setting changed; sends the changes without turning the sandbox on or off. **Discard changes** closes without sending.
 
-Edits are collected until the sandbox is turned on or off, or the settings are applied, so several edits cost one restart. The settings are saved for the project and survive restarts. On a running sandbox, a CPU or memory change restarts it in place: files, installed packages, and the Docker and cache disks are kept, but running processes stop. A LAN access change recreates the sandbox, because msb sets network policy only when a sandbox is created. That loses everything outside the mounted directories, so the menu asks for confirmation first. Disk sizes are not offered because an existing sandbox cannot change them. The agent is told about the new resources, and that the sandbox restarted or was recreated, on its next request (see [Sandbox → Resource Defaults](sandbox.md#resource-defaults)).
+Edits are collected until the sandbox is turned on or off, or the settings are applied, so several edits cost one restart. The settings are saved for the project and survive restarts. On a running sandbox, a CPU or memory change restarts it in place: files, installed packages, and the Docker and cache disks are kept, but running processes stop. A LAN access change removes and recreates the sandbox, because msb sets network policy only when a sandbox is created. Host bind mounts survive, but the VM root filesystem, the Docker and cache disks, and all running processes are lost (the removal deletes the sandbox's named Docker and cache volumes), so the menu asks for confirmation first. Disk sizes are not offered because an existing sandbox cannot change them. The agent is told about the new resources, and that the sandbox restarted or was recreated, on its next request (see [Sandbox → Resource Defaults](sandbox.md#resource-defaults)).
 
 ## Execution Dialog
 
@@ -62,17 +62,17 @@ The dialog provides full control over execution parameters.
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (msb is used when enabled, configured, and available)
+3. **Loop** — Starts an iterative coding/auditing loop in an isolated git worktree directly through the server's shared execution service (the same service the `execute-plan` tool uses), not by prompting the architect. When the sandbox is enabled it is required: an unavailable msb or host fails the launch closed rather than running on the host.
 
 ### Model Selection
 
 Two model selectors are available:
 
-**Execution Model** — opens a full model selection dialog with all available providers. Shows recently used models for quick access (derived from your OpenCode sessions, recent Forge loops, OpenCode favorites, and the global default), and defaults to `config.executionModel`, then the most recent Forge loop's selection, then the platform default.
+**Execution Model** — opens a full model selection dialog with all connected providers. Shows recently used models for quick access (derived from your OpenCode sessions, recent Forge loops, and the global default), and defaults to `config.executionModel`, then the most recent Forge loop's selection, then the platform default.
 
 **Auditor Model** — the same model selection interface. Defaults to `config.auditorModel`, then `config.executionModel`, then the most recent Forge loop's auditor or execution model, then the platform default.
 
-Models are sorted with recently used first (last 10, derived from the OpenCode session list, recent Forge loops, OpenCode favorites, and the global default), then connected providers, then configured providers, then the remaining models alphabetically by provider and model name. Recent models are grouped under a `Recent` header, and the rest under their provider name; each entry shows the model name and, as its description, the provider name or a `Reasoning` marker. A **"Use default"** option sits at the top. Recently used models are derived from server-side data each time the dialog opens, so they reflect the latest state across all hosts you have used.
+Only models from connected providers are listed. Models are sorted with recently used first (last 10, derived from the OpenCode session list, recent Forge loops, and the global default), then the rest alphabetically by provider and model name. Recent models are grouped under a `Recent` header, and the rest under their provider name; each entry shows the model name and, as its description, the provider name or a `Reasoning` marker. A **"Use default"** option sits at the top. Recently used models are derived from server-side data each time the dialog opens, so they reflect the latest state across all hosts you have used.
 
 ### Loop Settings
 
@@ -90,7 +90,7 @@ The overrides are persisted on the loop row and read back whenever its sandbox i
 
 Selections live on the **OpenCode server**, not in a TUI-local cache. A loop launched from the TUI execution dialog persists the chosen execution and auditor models (and variants) on the loop row; later dialogs derive defaults and recents from the project's loops plus the session list. This keeps the picker correct when the TUI and OpenCode server run on different hosts.
 
-The dialog tracks only loop-mode executions for recents / last-used defaults; `New session` and `Execute here` modes do not create a loop, so they do not contribute to recents.
+Loop-mode launches persist their models on the loop row, and the dialog's last-used defaults are derived from the project's loops. The recents list is not loop-only, though: it also draws on the OpenCode session list and on the immediate selection, so `New session` and `Execute here` sessions — and a model picked without launching a loop — do contribute to recents.
 
 ## Setup
 
