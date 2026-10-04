@@ -7,13 +7,6 @@ export type { AutoApproveDenyRule }
 /** Permission effect as OpenCode models it. */
 export type PermissionEffectLike = 'allow' | 'ask' | 'deny'
 
-/** An OpenCode permission rule with a wildcard action and resource. */
-export interface PermissionRuleLike {
-  action: string
-  resource: string
-  effect: PermissionEffectLike
-}
-
 /** The outcome of auto-approving a request: always allow or deny, never a prompt. */
 export type AutoApproveDecision = { effect: 'allow' } | { effect: 'deny'; message: string }
 
@@ -82,27 +75,16 @@ export function parseAutoApproveDenyRules(raw: unknown): { rules: AutoApproveDen
 }
 
 /**
- * Resolves an auto-approved request to allow or deny. A resource whose last matching
- * OpenCode rule is `ask`, or that matches a configured deny rule, denies the whole
- * request; requests no rule matched fall back to allow.
+ * Resolves an auto-approved request to allow or deny. A resource that matches a configured
+ * deny rule denies the whole request; everything else, including explicit OpenCode `ask`
+ * rules, is allowed.
  */
 export function resolveAutoApproveDecision(input: {
   action: string
   resources: readonly string[]
-  rules: readonly PermissionRuleLike[]
   denyRules: readonly AutoApproveDenyRule[]
 }): AutoApproveDecision {
-  const { action, resources, rules, denyRules } = input
-
-  for (const resource of resources) {
-    const rule = findLastMatchingRule(action, resource, rules)
-    if (rule?.effect === 'ask') {
-      return {
-        effect: 'deny',
-        message: `Blocked in auto-approve mode: \`${action} ${resource}\` matches the ask rule \`${rule.action}: ${rule.resource}\`, which requires manual approval. Continue without it and report what was skipped.`,
-      }
-    }
-  }
+  const { action, resources, denyRules } = input
 
   for (const resource of resources) {
     const denyRule = findLastMatchingRule(action, resource, denyRules)

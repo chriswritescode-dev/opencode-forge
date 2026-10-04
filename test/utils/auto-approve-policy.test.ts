@@ -4,7 +4,6 @@ import {
   findLastMatchingRule,
   parseAutoApproveDenyRules,
   resolveAutoApproveDecision,
-  type PermissionRuleLike,
 } from '../../src/utils/auto-approve-policy'
 
 describe('matchPermissionWildcard', () => {
@@ -43,7 +42,7 @@ describe('matchPermissionWildcard', () => {
 
 describe('findLastMatchingRule', () => {
   test('returns the last matching rule', () => {
-    const rules: PermissionRuleLike[] = [
+    const rules = [
       { action: 'shell', resource: 'git *', effect: 'ask' },
       { action: 'shell', resource: 'git push *', effect: 'allow' },
     ]
@@ -51,7 +50,7 @@ describe('findLastMatchingRule', () => {
   })
 
   test('returns undefined when nothing matches', () => {
-    const rules: PermissionRuleLike[] = [{ action: 'shell', resource: 'git *', effect: 'ask' }]
+    const rules = [{ action: 'shell', resource: 'git *', effect: 'ask' }]
     expect(findLastMatchingRule('read', 'git push', rules)).toBeUndefined()
     expect(findLastMatchingRule('shell', 'git push', [])).toBeUndefined()
   })
@@ -95,60 +94,11 @@ describe('parseAutoApproveDenyRules', () => {
 })
 
 describe('resolveAutoApproveDecision', () => {
-  test('denies when an ask rule is the last match', () => {
-    const rules: PermissionRuleLike[] = [
-      { action: 'shell', resource: 'git push *', effect: 'ask' },
-    ]
-    const decision = resolveAutoApproveDecision({
-      action: 'shell',
-      resources: ['git push origin main'],
-      rules,
-      denyRules: [],
-    })
-    expect(decision.effect).toBe('deny')
-    if (decision.effect === 'deny') {
-      expect(decision.message).toContain('git push *')
-      expect(decision.message).toContain('git push origin main')
-      expect(decision.message).toContain('requires manual approval')
-    }
-  })
-
-  test('allows when a later allow rule overrides an earlier ask', () => {
-    const rules: PermissionRuleLike[] = [
-      { action: 'shell', resource: 'git *', effect: 'ask' },
-      { action: 'shell', resource: 'git push *', effect: 'allow' },
-    ]
+  test('allows when no deny rule matches', () => {
     expect(
       resolveAutoApproveDecision({
         action: 'shell',
         resources: ['git push origin main'],
-        rules,
-        denyRules: [],
-      }).effect,
-    ).toBe('allow')
-  })
-
-  test('denies when a later ask rule overrides an earlier allow', () => {
-    const rules: PermissionRuleLike[] = [
-      { action: 'shell', resource: 'git *', effect: 'allow' },
-      { action: 'shell', resource: 'git push *', effect: 'ask' },
-    ]
-    expect(
-      resolveAutoApproveDecision({
-        action: 'shell',
-        resources: ['git push origin main'],
-        rules,
-        denyRules: [],
-      }).effect,
-    ).toBe('deny')
-  })
-
-  test('allows when no rule matches', () => {
-    expect(
-      resolveAutoApproveDecision({
-        action: 'shell',
-        resources: ['git status'],
-        rules: [{ action: 'shell', resource: 'git push *', effect: 'ask' }],
         denyRules: [],
       }).effect,
     ).toBe('allow')
@@ -158,7 +108,6 @@ describe('resolveAutoApproveDecision', () => {
     const decision = resolveAutoApproveDecision({
       action: 'shell',
       resources: ['rm -rf /tmp/build'],
-      rules: [],
       denyRules: [{ action: 'shell', resource: 'rm -rf *' }],
     })
     expect(decision.effect).toBe('deny')
@@ -168,15 +117,11 @@ describe('resolveAutoApproveDecision', () => {
     }
   })
 
-  test('denies when any one of several resources hits an ask rule', () => {
-    const rules: PermissionRuleLike[] = [
-      { action: 'shell', resource: 'git push *', effect: 'ask' },
-    ]
+  test('denies when any one of several resources hits a deny rule', () => {
     const decision = resolveAutoApproveDecision({
       action: 'shell',
       resources: ['ls', 'git push origin main'],
-      rules,
-      denyRules: [],
+      denyRules: [{ action: 'shell', resource: 'git push *' }],
     })
     expect(decision.effect).toBe('deny')
     if (decision.effect === 'deny') {

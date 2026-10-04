@@ -6,7 +6,7 @@ import { createRefetchCoordinator } from './refetch-coordinator'
 const TTL_DAYS = Math.round(SESSION_AUTO_APPROVE_TTL_MS / (24 * 60 * 60 * 1000))
 
 const ENABLED_MESSAGE =
-  `Auto-approve enabled for this session and its subagents. Nothing will prompt: ask rules and autoApprove.deny rules are denied, everything else is allowed. Expires after ${TTL_DAYS} days idle.`
+  `Auto-approve enabled for this session and its subagents. Nothing will prompt: deny rules and autoApprove.deny rules are denied, everything else is allowed. Expires after ${TTL_DAYS} days idle.`
 
 export interface SessionAutoApproveToggleDeps {
   currentSessionId(): string | null

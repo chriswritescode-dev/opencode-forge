@@ -168,7 +168,7 @@
 
   // Policy applied while auto-approve is on for a session. Requests are only ever allowed or
   // denied, never prompted. Extra deny rules use OpenCode permission action/resource wildcard
-  // syntax; explicit OpenCode "ask" rules are always denied during auto-approval.
+  // syntax; explicit OpenCode "ask" rules are allowed and OpenCode "deny" rules still deny.
   // "autoApprove": {
   //   "deny": [
   //     { "action": "shell", "resource": "rm -rf *" }
