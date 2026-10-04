@@ -269,6 +269,8 @@ Adopting an existing sandbox (for example after a plugin restart) converges the 
 }
 ```
 
+> **Upgrade note.** Auto-approve now allows `ask` rules, including in already-enabled sessions. To preserve blocking, use explicit `deny` rules or `autoApprove.deny`.
+
 ## Bundled Assets & Installer
 
 Forge ships editable assets that are installed into your config dir:

@@ -34,7 +34,7 @@ The sandbox image grants the `agent` user passwordless sudo, so loops can instal
 
 ### Chromium
 
-The image ships Playwright's Chromium build as `chromium`. Google publishes no linux/arm64 Chrome build, so Chromium is the closest current Chrome-compatible browser on arm64 hosts and the architecture-matched build on amd64; `install --with-deps` pulls the runtime libraries it needs. Launch it headless with the usual sandbox flags:
+The image ships Playwright's Chromium build as `chromium` — the architecture-matched build for the host — and `install --with-deps` pulls the runtime libraries it needs. Launch it headless with the usual sandbox flags:
 
 ```bash
 chromium --no-sandbox --disable-dev-shm-usage --headless
@@ -66,7 +66,7 @@ Commands the user runs directly — `!` commands and terminals — do not pass t
 
 ## Permission Auto-Approval
 
-When the host sandbox is turned on for a session (the `Host sandbox` menu in the TUI, which writes a desired state through the Forge server RPC and waits for the server's applied acknowledgement), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when it matches an `autoApprove.deny` rule; otherwise it is allowed, including requests that match an explicit OpenCode `ask` rule. OpenCode `deny` rules still deny. This applies only while the session's shell calls actually route into a running sandbox. If the sandbox is off, still starting, or failed to start, prompts are shown as usual. The attached server's `sandbox.enabled` decides whether the toggle is available at all.
+When the host sandbox is turned on for a session (the `Host sandbox` menu in the TUI, which writes a desired state through the Forge server RPC and waits for the server's applied acknowledgement), Forge resolves that session's permission prompts automatically, and those of its Task subagents. It does this through OpenCode's `permission.evaluate` hook: a decision that would ask is resolved to allow or deny rather than shown. It is denied when it matches an `autoApprove.deny` rule; otherwise it is allowed, including requests that match an explicit OpenCode `ask` rule. OpenCode `deny` rules still deny. This applies only while the session's shell calls actually route into a running sandbox. A request that arrives during initial sandbox startup waits for that resolution: if the sandbox becomes active it is auto-approved under the same policy; otherwise the prompt is shown as usual. When the sandbox is off or failed to start, prompts are shown as usual unless a per-session auto-approve is separately enabled. The attached server's `sandbox.enabled` decides whether the toggle is available at all.
 
 OpenCode `deny` rules still apply: they settle before the hook runs. Loop sessions are unaffected because their permission ruleset already allows everything it doesn't deny.
 
