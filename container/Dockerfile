@@ -21,9 +21,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
+    git-lfs \
     jq \
     python3 \
+    python3-venv \
     ripgrep \
+    rsync \
+    sqlite3 \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -137,6 +141,32 @@ RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin --store-dir /opt/f
     && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
     && chmod -R 0777 /opt/forge
 
+# Hugging Face CLI (`hf`) via its official installer. HF_CLI_BIN_DIR puts the
+# wrapper in /usr/local/bin, on PATH for any UID; the venv lands in $HOME/.hf-cli
+# (/opt/forge/.hf-cli), which the runtime cache mount does not shadow. The
+# installer builds the venv with `python3 -m venv`, so python3-venv (installed
+# above) is required, and it reuses the uv installed above for speed. Model and
+# dataset downloads stay on the cache disk through the XDG_CACHE_HOME default.
+# --no-modify-path skips shell-rc edits (the wrapper is already on PATH);
+# --exclude-skill keeps the build deterministic instead of writing an agent skill
+# into HOME. The trailing rm drops whatever the install cached under the shadowed
+# cache path, and the chmod keeps the tree readable by any exec UID.
+RUN HF_CLI_BIN_DIR=/usr/local/bin bash -c 'curl -LsSf https://hf.co/cli/install.sh | bash -s -- --no-modify-path --exclude-skill' \
+    && chmod -R a+rX /opt/forge/.hf-cli \
+    && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?*
+
+# GitHub CLI from GitHub's official apt repository, so `gh` is available for
+# authenticated GitHub workflows inside the sandbox. Installed via the signed
+# keyring the same way as Docker below; `curl` and the keyring dir come from the
+# base packages.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # Docker Engine from Docker's official apt repository. The microVM boots a real
 # kernel, so the daemon runs natively — no privileged-container or nested-
 # virtualization tricks. `/var/lib/docker` is mounted as a dedicated msb block
@@ -237,8 +267,12 @@ sudo -n apt-get clean
 sudo -n /usr/sbin/fstrim -v "$cache" 2>/dev/null || true
 EOF
 
-# Allow git to operate on the msb-mounted project directory regardless of owner UID.
-RUN git config --system --add safe.directory '*'
+# Git LFS filters are configured system-wide so any repo's smudge/clean filters
+# work without a per-user `git lfs install`; the apt package ships only the
+# binary. The safe.directory wildcard then lets git operate on the msb-mounted
+# project directory regardless of owner UID.
+RUN git lfs install --system \
+    && git config --system --add safe.directory '*'
 
 # Return to the image's default user. `msb exec` (without `-u`) runs commands as
 # this user, so agent commands are unprivileged by default.

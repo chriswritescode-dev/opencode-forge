@@ -12,6 +12,7 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
@@ -1123,7 +1124,7 @@ describe('post-action phase', () => {
     // Simulate the post_action session completing: mock messages to return assistant response
     const postActionSessionId = afterState!.sessionId
     ;(client.session.messages as any).mockImplementation(async () => [
-      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Action complete.' }] },
+      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action complete.\n${POST_ACTION_COMPLETE_MARKER}` }] },
     ])
 
     // Send busy to clear the idle-gate (prompt was marked as sent)
@@ -1244,7 +1245,7 @@ describe('post-action phase', () => {
     // Clean up: simulate post_action completion to avoid stale state
     const postActionSessionId = afterState!.sessionId
     ;(client.session.messages as any).mockImplementation(async () => [
-      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Action done.' }] },
+      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action done.\n${POST_ACTION_COMPLETE_MARKER}` }] },
     ])
     await loop.tick({
       type: 'session.status',
@@ -1326,7 +1327,7 @@ describe('post-action phase', () => {
     // Simulate the post_action session completing
     const postActionSessionId = afterState!.sessionId
     ;(client.session.messages as any).mockImplementation(async () => [
-      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Action complete.' }] },
+      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action complete.\n${POST_ACTION_COMPLETE_MARKER}` }] },
     ])
 
     // Send busy to clear idle-gate
@@ -1426,6 +1427,63 @@ describe('post-action phase', () => {
     expect(finalState).not.toBeNull()
     expect(finalState!.active).toBe(false)
     expect(finalState!.terminationReason).toBe('missing_worktree_dir')
+  })
+
+  test('post_action idle without completion marker → prompts the session to continue, then completes once confirmed', async () => {
+    let reply = 'When the reviewers report back I will merge everything.'
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: reply }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({ client })
+    const state = makeState({ phase: 'post_action' })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+    const continued = loopService.getAnyState(state.loopName)!
+    expect(continued.active).toBe(true)
+    expect(continued.phase).toBe('post_action')
+    const continuePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === state.sessionId)
+    expect(continuePrompts).toHaveLength(1)
+    expect((continuePrompts[0]!.params as any).parts[0].text).toContain('did not confirm that the post-action workflow is complete')
+
+    reply = `Merged reviewer findings and saved the record.\n${POST_ACTION_COMPLETE_MARKER}`
+    await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: state.sessionId } })
+    await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+    const finalState = loopService.getAnyState(state.loopName)!
+    expect(finalState.active).toBe(false)
+    expect(finalState.terminationReason).toBe('completed')
+    expect(finalState.completionSummary).toBe('Merged reviewer findings and saved the record.')
+  })
+
+  test('post_action never confirming completion → stops prompting after the cap and completes best effort', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'still waiting' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({ client })
+    const state = makeState({ phase: 'post_action' })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    for (let i = 0; i < 4; i++) {
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: state.sessionId } })
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+    }
+
+    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === state.sessionId)).toHaveLength(3)
+    const finalState = loopService.getAnyState(state.loopName)!
+    expect(finalState.active).toBe(false)
+    expect(finalState.terminationReason).toBe('completed')
   })
 
   test('post_action session error → terminates completed as best effort', async () => {

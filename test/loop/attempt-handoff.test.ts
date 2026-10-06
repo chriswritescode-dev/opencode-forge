@@ -12,6 +12,7 @@ import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-re
 import { createLoopService, type LoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
+import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig } from '../../src/types'
@@ -479,6 +480,33 @@ describe('durable attempt handoff', () => {
       expect(rows[0].coderDecisions).toContain('quiescent capture decisions')
       expect(harness.service.getActiveState(loopName)!.phase).toBe('auditing')
       expect(auditorPrompts(harness.calls).length).toBe(1)
+    })
+
+    test('post-action waits for a busy background subagent before completing the loop', async () => {
+      vi.useFakeTimers()
+      const loopName = 'handoff-post-action-subagent'
+      const harness = createRuntimeHarness({
+        statuses: { 'reviewer-ses': { type: 'busy' } },
+        getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
+      })
+
+      harness.service.setState(loopName, makeLoopState(loopName, 'pa-ses', { phase: 'post_action' }))
+      harness.service.registerLoopSession('pa-ses', loopName)
+      harness.messagesBySession.set('pa-ses', [
+        assistantMessage('msg-pa1', `Reviewers launched; merging when they report.\n${POST_ACTION_COMPLETE_MARKER}`),
+      ])
+      await idleTick(harness.loop, 'pa-ses')
+      await vi.advanceTimersByTimeAsync(1700)
+
+      expect(harness.service.getActiveState(loopName)?.active).toBe(true)
+      expect(harness.service.getActiveState(loopName)?.phase).toBe('post_action')
+
+      for (const key of Object.keys(harness.statuses)) delete harness.statuses[key]
+      await vi.advanceTimersByTimeAsync(1700)
+
+      const finalState = harness.service.getAnyState(loopName)!
+      expect(finalState.active).toBe(false)
+      expect(finalState.terminationReason).toBe('completed')
     })
 
     test('defers capture when the session status query fails and keeps deferring while it keeps failing', async () => {

@@ -529,9 +529,25 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
     '',
     'This runs unattended — do NOT use the question tool. Auto-defer any finding that would require clarification',
     'and report it; apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.',
+    '',
+    POST_ACTION_COMPLETION_RULE,
   )
 
   return parts.join('\n')
+}
+
+/** Line the post-action agent must end its final reply with once every step is finished and persisted. */
+export const POST_ACTION_COMPLETE_MARKER = '<!-- forge:post-action-complete -->'
+
+const POST_ACTION_COMPLETION_RULE = `Do not end your turn while any step is still pending (subagents still running, results not yet merged, records not yet saved). The worktree is removed as soon as you confirm completion. Only when every step is finished and persisted, end your final reply with this exact line:\n${POST_ACTION_COMPLETE_MARKER}`
+
+/**
+ * Follow-up sent to the post-action session when it went idle without the
+ * completion marker, so an agent that ended its turn early finishes its work
+ * before the loop terminates and the worktree is removed.
+ */
+export function buildPostActionContinuePromptText(): string {
+  return `Your last reply did not confirm that the post-action workflow is complete. Check every step of it now. If anything is unfinished — subagent results not yet received or merged, findings or summaries not yet saved, checks not yet run — finish it in this turn, running subagents in the foreground so you wait for their results.\n\n${POST_ACTION_COMPLETION_RULE}`
 }
 
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {

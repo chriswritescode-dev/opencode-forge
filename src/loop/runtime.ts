@@ -48,7 +48,7 @@ import { parseCoderDecisions } from '../utils/coder-decisions'
 import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
-import { buildSectionSummaryRepromptText } from './prompts'
+import { buildPostActionContinuePromptText, buildSectionSummaryRepromptText, POST_ACTION_COMPLETE_MARKER } from './prompts'
 
 export interface LoopEvent {
   type: string
@@ -221,6 +221,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const summaryRepromptedSections = new Map<string, number>()
 
   /**
+   * Continue prompts already sent to the post-action session (loopName → count).
+   * An idle post-action reply without POST_ACTION_COMPLETE_MARKER is re-prompted
+   * at most MAX_POST_ACTION_CONTINUES times before the loop completes best-effort.
+   */
+  const postActionContinueAttempts = new Map<string, number>()
+
+  /**
    * Commit the just-completed section's work as a `section <N>: <title>`
    * checkpoint so the next section's audit can scope its review to changes
    * made after this commit. Best-effort: failures are logged and never block
@@ -318,6 +325,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const AUDITOR_FALLBACK_SETTLE_MS = 250
   const MAX_IDLE_RETRIES = 1
   const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
+  const MAX_POST_ACTION_CONTINUES = 3
 
   const codingLaunchRecoveryAttempts = new Map<string, number>()
   interface RetainedSessionMeta {
@@ -453,6 +461,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!statuses) throw new Error('Session status is unavailable')
       const active = await activeLoopSessions(statuses, loopName, sessionId => resolveSessionLoopName(sessionId, true))
       if (active.length > 0) reason = 'Loop sessions are still busy or retrying'
+      else if (isPromptQueued(state.sessionId)) reason = 'A prompt is still queued in the session inbox'
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err)
     }
@@ -764,12 +773,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
-    const auditorModel = resolveLoopAuditorChoice(getConfig(), loopService, loopName).model
-    const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
-    // Use the configured post-action model if set, falling back to the loop's auditor model when it fails.
-    const primaryModel = configuredModel ?? auditorModel
-    const fallbackModel = configuredModel ? auditorModel : undefined
-    const { error } = await sendPromptWithFallback({ loopName, sessionId: created.sessionId, promptText: prompt, agent: 'code', model: primaryModel, fallbackModel, variant: currentState.executionVariant })
+    const { error } = await sendPostActionPrompt(loopName, currentState, created.sessionId, prompt)
     if (error) {
       const targetState = loopService.getActiveState(loopName) ?? currentState
       logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
@@ -778,6 +782,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     watchdog.recordActivity(loopName, 'post-action-prompt-sent')
     return true
+  }
+
+  /** Sends a prompt to the post-action session on the configured post-action model, falling back to the loop's auditor model. */
+  function sendPostActionPrompt(loopName: string, state: LoopState, sessionId: string, promptText: string) {
+    const cfg = resolvePostActionConfig(getConfig())
+    const auditorModel = resolveLoopAuditorChoice(getConfig(), loopService, loopName).model
+    const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
+    return sendPromptWithFallback({
+      loopName,
+      sessionId,
+      promptText,
+      agent: 'code',
+      model: configuredModel ?? auditorModel,
+      fallbackModel: configuredModel ? auditorModel : undefined,
+      variant: state.executionVariant,
+    })
   }
 
   function bumpDirtyAuditRecurrence(loopName: string, bugFindings: ReviewFindingRow[], sectionIndex?: number): void {
@@ -1074,6 +1094,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
     summaryRepromptedSections.delete(loopName)
+    postActionContinueAttempts.delete(loopName)
     clearPromptPending(projectId, loopName, logger)
     clearPromptInFlight(projectId, loopName)
 
@@ -2497,7 +2518,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  async function runPostActionPhase(loopName: string, _state: LoopState): Promise<void> {
+  /**
+   * Completes the post-action phase once its session is idle. Unless `confirmCompletion`
+   * is false (user abort), it first waits for every loop session, subagents included,
+   * to settle, then requires the completion marker in the final reply, re-prompting the
+   * session to finish its work up to MAX_POST_ACTION_CONTINUES times.
+   */
+  async function runPostActionPhase(loopName: string, _state: LoopState, confirmCompletion = true): Promise<void> {
     const currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} no longer active, skipping post-action phase`)
@@ -2519,6 +2546,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'post-action phase', exhaustedReason: { kind: 'completed' }, rerun: runPostActionPhase })) return
 
+    if (confirmCompletion) {
+      if (await deferUntilQuiescent(currentState)) return
+      if (!postActionText?.includes(POST_ACTION_COMPLETE_MARKER)) {
+        const attempts = postActionContinueAttempts.get(loopName) ?? 0
+        if (attempts < MAX_POST_ACTION_CONTINUES) {
+          postActionContinueAttempts.set(loopName, attempts + 1)
+          logger.log(`Loop: post-action reply for ${loopName} has no completion marker; prompting the session to finish (attempt ${attempts + 1}/${MAX_POST_ACTION_CONTINUES})`)
+          const { error } = await sendPostActionPrompt(loopName, currentState, currentState.sessionId, buildPostActionContinuePromptText())
+          if (!error) {
+            watchdog.recordActivity(loopName, 'post-action-continue')
+            return
+          }
+          logger.error(`Loop: post-action continue prompt failed for ${loopName}, completing best-effort`, error)
+        } else {
+          logger.error(`Loop: post-action for ${loopName} never confirmed completion after ${MAX_POST_ACTION_CONTINUES} continue prompts, completing best-effort`)
+        }
+      }
+    }
+
     logger.log(`Loop: post-action complete for ${loopName}, terminating`)
     const trans = nextTransition(currentState, { type: 'post-action-complete' })
     if (trans.kind === 'terminate') {
@@ -2531,7 +2577,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // Capture the raw post-action assistant message as the loop's completion summary so the
       // outcome (alternate review verdict, CI result, etc.) is visible in loop-status/dashboard.
       // The loop still terminates `completed` — the plan itself was already cleared by the audit.
-      await terminateLoop(loopName, currentState, trans.reason, postActionText || undefined)
+      await terminateLoop(loopName, currentState, trans.reason, postActionText?.replace(POST_ACTION_COMPLETE_MARKER, '').trim() || undefined)
     }
   }
 
@@ -2625,7 +2671,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           }
           if (state.phase === 'post_action') {
             await resumeOrFallback(loopName, state, eventSessionId,
-              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted after assistant response, processing result`); await runPostActionPhase(ln, s) },
+              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted after assistant response, processing result`); await runPostActionPhase(ln, s, false) },
               async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted without assistant response, terminating as completed (best-effort)`); await terminateLoop(ln, s, { kind: 'completed' }) },
             )
             return
@@ -3023,6 +3069,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     handoffWaits.clear()
     codingLaunchRecoveryAttempts.clear()
     coalescedLimitSessions.clear()
+    postActionContinueAttempts.clear()
     loopRetainedSessions.clear()
     sessionToLoop.clear()
     terminatingLoops.clear()
@@ -3080,6 +3127,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     handoffWaits.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
+    postActionContinueAttempts.delete(loopName)
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
