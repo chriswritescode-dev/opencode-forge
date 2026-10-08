@@ -1,7 +1,7 @@
 import { describe, test, expect, vi } from 'vitest'
 import type { Plugin } from '@opencode/plugin/tui'
 import { FORGE_RPC, readForgeLoopSidebar } from '../../src/host/forge-rpc'
-import { createForgeRpcCaller, createV2ForgeProjectClient, describeRpcError, loopsToWorkspacesForRecents } from '../../src/tui/v2-client'
+import { createForgeRpcCaller, createV2ForgeProjectClient, describeRpcError, followRpcEvent, loopsToWorkspacesForRecents } from '../../src/tui/v2-client'
 import { deriveExecutionPreferencesFromWorkspaces } from '../../src/utils/tui-execution-preferences'
 import type { LoopInfo } from '../../src/utils/tui-models'
 
@@ -244,5 +244,57 @@ describe('loopsToWorkspacesForRecents', () => {
       executionVariant: undefined,
       auditorVariant: 'high',
     })
+  })
+})
+
+describe('followRpcEvent', () => {
+  function endingStream<E>(events: E[], error?: Error): AsyncIterable<E> {
+    return {
+      async *[Symbol.asyncIterator]() {
+        for (const event of events) yield event
+        if (error) throw error
+      },
+    }
+  }
+
+  function openStream<E>(): AsyncIterable<E> {
+    return { [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<E>>(() => {}) }) }
+  }
+
+  test('resubscribes after the stream ends and re-reads missed state', async () => {
+    const controller = new AbortController()
+    const received: string[] = []
+    const onResubscribed = vi.fn()
+    const subscribe = vi.fn()
+      .mockReturnValueOnce(endingStream(['a']))
+      .mockReturnValueOnce(endingStream(['b'], new Error('overflow')))
+      .mockReturnValue(openStream<string>())
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    followRpcEvent(subscribe, (event) => received.push(event), {
+      signal: controller.signal,
+      onResubscribed,
+      resubscribeDelayMs: 0,
+    })
+
+    await vi.waitFor(() => expect(subscribe).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(onResubscribed).toHaveBeenCalledTimes(2))
+    expect(received).toEqual(['a', 'b'])
+    controller.abort()
+    error.mockRestore()
+  })
+
+  test('does not re-read on the first subscription or resubscribe after abort', async () => {
+    const controller = new AbortController()
+    const onResubscribed = vi.fn()
+    const subscribe = vi.fn(() => endingStream<string>([]))
+
+    followRpcEvent(subscribe, () => {}, { signal: controller.signal, onResubscribed, resubscribeDelayMs: 60_000 })
+    await vi.waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1))
+    controller.abort()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(subscribe).toHaveBeenCalledTimes(1)
+    expect(onResubscribed).not.toHaveBeenCalled()
   })
 })
