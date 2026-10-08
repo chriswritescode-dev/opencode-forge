@@ -63,6 +63,17 @@ describe('SANDBOX_OFF_NOTE', () => {
   })
 })
 
+describe('shared workspace artifacts', () => {
+  it.each([
+    ['SANDBOX_CONTEXT_NOTE', SANDBOX_CONTEXT_NOTE],
+    ['SANDBOX_OFF_NOTE', SANDBOX_OFF_NOTE],
+  ])('%s tells the agent to delete and rebuild dependency output from the other environment', (_, note) => {
+    expect(note).toMatch(/project directory is shared/i)
+    expect(note).toMatch(/node_modules/)
+    expect(note).toMatch(/delete them and reinstall or rebuild/i)
+  })
+})
+
 describe('isSandboxEnabled', () => {
   it('returns true when sandboxManager is provided regardless of legacy mode value', () => {
     expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const } }, {} as unknown)).toBe(true)

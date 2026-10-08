@@ -35,9 +35,12 @@ export function sandboxContextFromActive(runtime: SandboxRuntime, active: Active
  * routing itself rather than anything loop-specific, and because subagents never see a loop
  * prompt body. Single source of truth.
  */
+const SHARED_WORKSPACE_ARTIFACTS_NOTE = 'The project directory is shared between the host and the container, so dependency directories and native build output created in the other environment (for example node_modules, .venv, virtualenvs, compiled extensions, and build/target directories) may be built for the wrong OS or architecture: delete them and reinstall or rebuild here rather than only rerunning an install that may report them as up to date.'
+
 export const SANDBOX_CONTEXT_NOTE = [
   '[Sandbox] This session runs inside a container: bash tool commands execute in that container, not on the host. OS-specific commands or tools may differ from the host system.',
   'Environment-specific tooling that is missing or incompatible is not acceptable: install or reinstall the required tooling and dependencies in the container, rerun the intended checks, and do not misreport environment-induced failures as code defects.',
+  SHARED_WORKSPACE_ARTIFACTS_NOTE,
   'Passwordless sudo is available for installing missing tools system-wide.',
   'Docker is available inside the sandbox: run forge-dockerd-start to ensure the daemon is running (idempotent, safe to run any time).',
   `Package and tool caches live on a dedicated disk mounted at ${SANDBOX_CACHE_DIR}; run forge-cache-prune to reclaim space when the disk fills (it clears caches while preserving installed toolchains).`,
@@ -46,7 +49,9 @@ export const SANDBOX_CONTEXT_NOTE = [
 
 export const SANDBOX_OFF_NOTE = [
   '[Sandbox] Execution has returned to the host environment. Container tools, packages, processes, and in-memory state must not be assumed to be available here.',
+  'Earlier command output in this session may come from the container and does not describe the host.',
   'Install or reinstall the required host tooling and dependencies before rerunning any checks.',
+  SHARED_WORKSPACE_ARTIFACTS_NOTE,
 ].join('\n')
 
 /**

@@ -293,6 +293,8 @@ The `Host sandbox` menu overrides `cpus` and `memory` (and LAN access) for the p
 
 Every sandboxed request's context note states the sandbox's CPUs, memory, and LAN access. After the sandbox a session was using restarts (a resize) or is recreated (a LAN change, or turned off and on between two requests), the next request's note says so once and names what was lost, so the agent restarts services or reinstalls tooling instead of assuming they are still there.
 
+Both the container and host notes also say the project directory is shared between the host and the container, so dependency directories and native build output created in the other environment may be built for the wrong OS or architecture and must be deleted and rebuilt rather than only reinstalled. When a session's sandbox is turned off, its requests keep the host note — leading with the container-to-host change, probed once — on every request until the sandbox is turned on again, so the agent is not left reading container output as if it described the host.
+
 `memory` and `cpus` are exactly what the guest gets. There is no autoscaling: nothing observes memory pressure, so a build needing more than `memory` is OOM-killed rather than given more. Size `memory` for the peak of the heaviest command the sandbox will run.
 
 msb's `--max-memory`/`--max-cpus` ceilings are deliberately not exposed. They only reserve hotplug capacity that must be claimed explicitly with `msb modify --memory <size>` from the **host**; agents run inside the sandbox and cannot call `msb`, so a ceiling never rescues a failing in-sandbox build.
