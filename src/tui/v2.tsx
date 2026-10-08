@@ -35,7 +35,7 @@ import { createForgePlanCommands } from './plan-commands'
 import { openSandboxBuildDialog } from './sandbox-build-dialog'
 import { attachV2LoopSessionFollower } from './session-follow'
 import { readForgeSessionDelete, removeOrphanedLoopSessions, removeSessionBestEffort, type ForgeWorktreeList } from './loop-session-cleanup'
-import { createForgeRpcCaller, createV2ForgeProjectClient } from './v2-client'
+import { createForgeRpcCaller, createV2ForgeProjectClient, followRpcEvent } from './v2-client'
 import { createHostSandboxToggle } from './host-sandbox'
 import { editHostSandbox } from './host-sandbox-dialog'
 import { createLoopSidebarStore, type LoopSidebarStore } from './loop-sidebar'
@@ -454,7 +454,12 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       throw new Error('context.client.rpc is unavailable')
     }
     const rpcEvents = context.client.rpc(FORGE_RPC).events
-    rpcEvents.on('toast', (event) => {
+    const signal = eventController.signal
+    const refreshLoops = (): void => {
+      loopSidebar?.refresh()
+      hostSandbox.refresh()
+    }
+    followRpcEvent((s) => rpcEvents.subscribe('toast', { signal: s }), (event) => {
       const toast = readForgeToast(event.data)
       if (!toast) return
       withProjectId((projectId) => {
@@ -466,36 +471,32 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           duration: toast.duration,
         })
       })
-    }, { signal: eventController.signal })
-    rpcEvents.on('sessionDelete', (event) => {
+    }, { signal })
+    followRpcEvent((s) => rpcEvents.subscribe('sessionDelete', { signal: s }), (event) => {
       const sessionID = readForgeSessionDelete(event.data)
       if (sessionID) void removeSessionBestEffort(context, sessionID)
-    }, { signal: eventController.signal })
-    rpcEvents.on('loopsChanged', (event) => {
+    }, { signal })
+    followRpcEvent((s) => rpcEvents.subscribe('loopsChanged', { signal: s }), (event) => {
       const changed = readForgeLoopsChangedEvent(event.data)
       if (!changed) return
       withProjectId((projectId) => {
-        if (changed.projectId !== projectId) return
-        loopSidebar?.refresh()
-        hostSandbox.refresh()
+        if (changed.projectId === projectId) refreshLoops()
       })
-    }, { signal: eventController.signal })
-    rpcEvents.on('autoApproveChanged', (event) => {
+    }, { signal, onResubscribed: refreshLoops })
+    followRpcEvent((s) => rpcEvents.subscribe('autoApproveChanged', { signal: s }), (event) => {
       const changed = readForgeAutoApproveChangedEvent(event.data)
       if (!changed) return
       withProjectId((projectId) => {
-        if (changed.projectId !== projectId) return
-        autoApprove.refresh()
+        if (changed.projectId === projectId) autoApprove.refresh()
       })
-    }, { signal: eventController.signal })
-    rpcEvents.on('hostSandboxChanged', (event) => {
+    }, { signal, onResubscribed: autoApprove.refresh })
+    followRpcEvent((s) => rpcEvents.subscribe('hostSandboxChanged', { signal: s }), (event) => {
       const changed = readForgeHostSandboxChangedEvent(event.data)
       if (!changed) return
       withProjectId((projectId) => {
-        if (changed.projectId !== projectId) return
-        hostSandbox.refresh()
+        if (changed.projectId === projectId) hostSandbox.refresh()
       })
-    }, { signal: eventController.signal })
+    }, { signal, onResubscribed: hostSandbox.refresh })
   } catch (err) {
     console.error('[forge] failed to subscribe to Forge RPC events', err)
   }

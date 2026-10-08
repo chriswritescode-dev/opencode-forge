@@ -96,7 +96,7 @@ The block applies to loop, audit, and post-action sessions.
 
 ### Post-Action
 
-`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean final audit and before teardown.
+`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops) and before teardown. Goal loops never run it. See [Post-Completion Action Phase](loop-system.md#post-completion-action-phase) for completion confirmation.
 
 The phase is enabled only when `enabled === true` and at least one of `skill` or `prompt` is configured.
 

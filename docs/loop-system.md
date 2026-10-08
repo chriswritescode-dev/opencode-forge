@@ -236,7 +236,7 @@ A loop completes when the active phase emits a clean audit result (optionally fo
 - Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
 - Dirty section audits rotate back to coding for the same section so findings can be addressed.
 - Dirty final audits rotate to a coding session in the `final_audit_fix` phase (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
-- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion occurs when the post-action session goes idle (`post-action-complete` event). Goal loops never enter this phase.
+- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion (see [Behavior](#behavior)). Goal loops never enter this phase.
 
 ## Termination
 
@@ -269,15 +269,18 @@ After a clean audit (a clean final audit for sectioned loops, `audit-clear` for 
 | `loop.postAction.enabled` | `boolean` | `false` | Enable the post-completion action phase. |
 | `loop.postAction.skill` | `string` | — | Name of a skill to load via the Skill tool at action time (e.g. `"pr-review"`). Must be installed host-side. |
 | `loop.postAction.prompt` | `string` | — | Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. |
+| `loop.postAction.model` | `string` | — | Optional `provider/model` for the post-action session. Falls back to the loop's auditor model when unset or when the configured model fails. |
 
 ### Behavior
 
 - Runs only after a clean audit completes (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops); goal loops never run it.
 - Runs **inside the worktree** as the `code` agent, with access to the full worktree state (including uncommitted changes).
 - **Best-effort:** The post-action result is not re-audited; it applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
-- On idle (`post-action-complete`), the loop terminates normally.
+- **Completion confirmation:** The prompt requires the agent to finish every step (subagents, merges, saved records) before ending its turn, and to end its final reply with the line `<!-- forge:post-action-complete -->` (`POST_ACTION_COMPLETE_MARKER` in `src/loop/prompts.ts`). When the session goes idle, Forge first waits until every loop session, subagents included, is idle and no prompt is queued in the session inbox; the wait is bounded by `busyStallTimeoutMs`, after which the loop terminates with an error because the worktree cannot be torn down safely. It then checks the final reply for the marker. Without it, Forge sends a continue prompt asking the agent to finish, up to 3 times; after the third, or if the continue prompt fails to send, the loop completes best-effort.
+- On a confirmed (or best-effort) `post-action-complete`, the loop terminates normally.
+- If the post-action session is aborted after it has replied, the reply is processed as-is: the settle wait and marker check are skipped.
 - If the post-action session fails to create, the loop terminates as completed without retrying.
-- **Outcome capture:** On `post-action-complete`, the post-action session's full assistant transcript is stored in the loop's `postActionReport`, and its raw final assistant message is stored verbatim in `completion_summary`. `loop-status` and the dashboard prefer the full **Post-Action Report** and fall back to **Completion Summary** when no report was captured. The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the audit; the report only provides context (alternate-review verdict, CI result, etc.). Completion summary and report are captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave them empty.
+- **Outcome capture:** On `post-action-complete`, the post-action session's full assistant transcript (including any continue-prompt turns) is stored in the loop's `postActionReport`, and its final assistant message, with the completion marker removed, is stored in `completion_summary`. `loop-status` and the dashboard prefer the full **Post-Action Report** and fall back to **Completion Summary** when no report was captured. The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the audit; the report only provides context (alternate-review verdict, CI result, etc.). Completion summary and report are captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave them empty.
 
 ## Cancellation
 

@@ -8,7 +8,7 @@
 
 > **createSessionDirectoryLookup**(`options`): (`sessionId`) => `Promise`\<`string` \| `null`\>
 
-Defined in: [host/forge-core.ts:264](https://github.com/chriswritescode-dev/opencode-forge/blob/60a77095f4a0787f7b93be817c313586da5e2cc2/src/host/forge-core.ts#L264)
+Defined in: [host/forge-core.ts:264](https://github.com/chriswritescode-dev/opencode-forge/blob/b382204ae204f32dd48db3e500db2a310bfcc63a/src/host/forge-core.ts#L264)
 
 ## Parameters
 

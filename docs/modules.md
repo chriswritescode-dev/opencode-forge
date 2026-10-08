@@ -155,7 +155,7 @@ Translates OpenCode events into loop actions and manages lifecycle side-effects.
 | `forge-session-attach.ts` | Auto-attach loops on `session.created` and `chat.message` events |
 | `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
-| `sandbox-message.ts` | Tells the agent its tool calls run in a container |
+| `sandbox-message.ts` | Adds the container note to every sandboxed request and, once the sandbox is turned off, the host note to every request until it is turned back on |
 | `group-orchestrator.ts` | Advances queued features when a group loop terminates |
 | `tool-hook-types.ts` | Shared tool before/after hook types |
 

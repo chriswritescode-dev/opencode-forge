@@ -39,6 +39,7 @@ interface RecordedRpcSubscription {
   name: string
   handler: (event: { data: Record<string, unknown> }) => void
   signal?: AbortSignal
+  end: () => void
 }
 
 const SLOT_PLACEMENTS = ['prepend', 'append', 'before', 'after', 'replace'] as const
@@ -114,13 +115,38 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       autoApproveSet,
       version,
       events: {
-        on: vi.fn((
-          name: string,
-          handler: (event: { data: Record<string, unknown> }) => void,
-          options?: { signal?: AbortSignal },
-        ) => {
-          rpcSubscriptions.push({ name, handler, signal: options?.signal })
-          return () => {}
+        subscribe: vi.fn((name: string, options?: { signal?: AbortSignal }) => {
+          type Event = { data: Record<string, unknown> }
+          const queued: Event[] = []
+          let wake: (() => void) | null = null
+          let ended = false
+          const subscription: RecordedRpcSubscription = {
+            name,
+            signal: options?.signal,
+            handler: (event) => {
+              queued.push(event)
+              wake?.()
+            },
+            end: () => {
+              ended = true
+              wake?.()
+            },
+          }
+          rpcSubscriptions.push(subscription)
+          return {
+            async *[Symbol.asyncIterator]() {
+              while (true) {
+                const next = queued.shift()
+                if (next) {
+                  yield next
+                  continue
+                }
+                if (ended) return
+                await new Promise<void>((resolve) => { wake = resolve })
+                wake = null
+              }
+            },
+          }
         }),
       },
     }
@@ -347,6 +373,23 @@ describe('V2 TUI setup', () => {
 
     fake.findRpcSubscription('loopsChanged')?.handler({ data: { projectId: 'proj-1' } })
     await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(2))
+    cleanup()
+  })
+
+  test('resubscribes to loopsChanged after the event stream ends and re-reads the sidebar', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(1))
+    const first = fake.findRpcSubscription('loopsChanged')
+    first?.end()
+
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(2), { timeout: 3000 })
+    const subscriptions = fake.rpcSubscriptions.filter((subscription) => subscription.name === 'loopsChanged')
+    expect(subscriptions).toHaveLength(2)
+
+    subscriptions[1]?.handler({ data: { projectId: 'proj-1' } })
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(3))
     cleanup()
   })
 

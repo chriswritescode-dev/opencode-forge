@@ -86,6 +86,63 @@ export function createForgeRpcCaller(
   }
 }
 
+/** Pause before resubscribing to an ended RPC event stream, so a down server is not hammered. */
+export const RPC_EVENT_RESUBSCRIBE_DELAY_MS = 1000
+
+export interface FollowRpcEventOptions {
+  signal: AbortSignal
+  /** Re-reads state whose events may have been missed while the stream was down. */
+  onResubscribed?: () => void
+  resubscribeDelayMs?: number
+}
+
+/**
+ * Delivers every event of one Forge RPC event stream for the lifetime of `signal`.
+ * The OpenCode client ends an RPC subscription for good when its shared event
+ * connection closes or the subscriber overflows, so the stream is resubscribed
+ * after a short pause and `onResubscribed` re-reads whatever the gap may have hidden.
+ * It runs once the new subscription has started connecting, so no event between the
+ * re-read and the subscription is lost.
+ */
+export function followRpcEvent<E>(
+  subscribe: (signal: AbortSignal) => AsyncIterable<E>,
+  handler: (event: E) => void,
+  options: FollowRpcEventOptions,
+): void {
+  const { signal, onResubscribed } = options
+  const delayMs = options.resubscribeDelayMs ?? RPC_EVENT_RESUBSCRIBE_DELAY_MS
+  void (async () => {
+    let resubscribed = false
+    while (!signal.aborted) {
+      try {
+        const events = subscribe(signal)
+        if (resubscribed && onResubscribed) queueMicrotask(onResubscribed)
+        for await (const event of events) {
+          if (signal.aborted) return
+          try {
+            handler(event)
+          } catch (err) {
+            console.error('[forge] RPC event handler failed', err)
+          }
+        }
+      } catch (err) {
+        if (!signal.aborted) console.error('[forge] RPC event stream failed', err)
+      }
+      if (signal.aborted) return
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, delayMs)
+        function done(): void {
+          clearTimeout(timer)
+          signal.removeEventListener('abort', done)
+          resolve()
+        }
+        signal.addEventListener('abort', done, { once: true })
+      })
+      resubscribed = true
+    }
+  })()
+}
+
 async function loadModels(context: Plugin.Context, directory: string): Promise<ExecutionContext['models'] & { defaultModel: string }> {
   const location = { directory }
   try {
