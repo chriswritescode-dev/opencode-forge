@@ -236,7 +236,7 @@ A loop completes when the active phase emits a clean audit result (optionally fo
 - Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
 - Dirty section audits rotate back to coding for the same section so findings can be addressed.
 - Dirty final audits rotate to a coding session in the `final_audit_fix` phase (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
-- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion (see [Behavior](#behavior)). Goal loops never enter this phase.
+- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Normal confirmed completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion; see [Behavior](#behavior) for the best-effort completion that follows exhausted or failed continuation attempts and the abort-with-reply exceptions. Goal loops never enter this phase.
 
 ## Termination
 
