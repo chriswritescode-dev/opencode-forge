@@ -65,14 +65,15 @@ type SystemTransformInput = { sessionID?: string }
 type SystemTransformOutput = { system: string[] }
 
 /**
- * Merges environment guidance into the system prompt when a session runs in a container and once
- * when it returns to the host. This covers sandbox loops, their Task-tool subagents, and sessions
- * with the host sandbox toggled on.
+ * Merges environment guidance into the system prompt when a session runs in a container and after
+ * it returns to the host. This covers sandbox loops, their Task-tool subagents, and sessions with
+ * the host sandbox toggled on.
  *
  * Both notes lead with the concrete environment change, probed from the two environments
- * themselves rather than described in the abstract: host -> container while sandboxed (repeated on
- * every request, so it stands for as long as the toggle is on) and container -> host on the single
- * request that observes the toggle going off. The container note also carries the sandbox's known
+ * themselves rather than described in the abstract, and both repeat on every request so they stand
+ * for as long as the state they describe: host -> container while sandboxed, and container -> host
+ * from the request that observes the toggle going off until the sandbox is re-enabled (the host is
+ * probed once, on that first request). The container note also carries the sandbox's known
  * CPUs, memory, and LAN access, and on the first request after the same sandbox is restarted
  * (a resize) or recreated (a LAN change, or an off/on toggle between requests) it says so once.
  *
@@ -89,10 +90,13 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
   const { resolveSandboxForSession, probe, logger } = deps
 
   /**
-   * Session -> the sandbox it was in on its previous request and that container's descriptor,
-   * retained so the off note can name it and a restart or recreation is reported once.
+   * Session -> either the sandbox it was in on its previous request and that container's
+   * descriptor (so the off note can name it and a restart or recreation is reported once), or the
+   * off note it received on returning to the host, repeated until the sandbox is re-enabled.
    */
-  const sandboxedSessions = new LRUCache<{ sandbox: SandboxContext; env: string | null }>(SANDBOX_TRACKED_SESSION_LIMIT)
+  const trackedSessions = new LRUCache<
+    { sandbox: SandboxContext; env: string | null } | { offNote: string }
+  >(SANDBOX_TRACKED_SESSION_LIMIT)
 
   return async (input: SystemTransformInput, output: SystemTransformOutput): Promise<void> => {
     const sessionID = input?.sessionID
@@ -111,8 +115,9 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
         probe ? probe.describeHost() : null,
         probe ? probe.describeSandbox(sandbox) : null,
       ])
-      const change = detectSandboxChange(sandboxedSessions.get(sessionID)?.sandbox, sandbox)
-      sandboxedSessions.set(sessionID, { sandbox, env: containerEnv })
+      const previous = trackedSessions.get(sessionID)
+      const change = detectSandboxChange(previous && 'sandbox' in previous ? previous.sandbox : undefined, sandbox)
+      trackedSessions.set(sessionID, { sandbox, env: containerEnv })
       applySandboxSystemNote(
         output.system,
         buildSandboxContextNote({ from: hostEnv, to: containerEnv }, { settings: sandbox.settings, change }),
@@ -120,15 +125,17 @@ export function createSandboxMessageHook(deps: CreateSandboxMessageHookDeps) {
       return
     }
 
-    if (!sandboxedSessions.has(sessionID)) {
+    const tracked = trackedSessions.get(sessionID)
+    if (!tracked) {
       applySandboxSystemNote(output.system, null)
       return
     }
-    const containerEnv = sandboxedSessions.get(sessionID)?.env ?? null
-    sandboxedSessions.delete(sessionID)
-    applySandboxSystemNote(
-      output.system,
-      buildSandboxOffNote({ from: containerEnv, to: probe ? await probe.describeHost() : null }),
-    )
+    if ('offNote' in tracked) {
+      applySandboxSystemNote(output.system, tracked.offNote)
+      return
+    }
+    const offNote = buildSandboxOffNote({ from: tracked.env, to: probe ? await probe.describeHost() : null })
+    trackedSessions.set(sessionID, { offNote })
+    applySandboxSystemNote(output.system, offNote)
   }
 }

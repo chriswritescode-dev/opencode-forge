@@ -120,10 +120,12 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(systemText(output)).not.toContain('was recreated')
   })
 
-  test('merges the sandbox-off note exactly once per sandboxed -> unsandboxed transition', async () => {
+  test('keeps the sandbox-off note on every request until the sandbox is re-enabled, probing the host once', async () => {
     let state: SandboxContext | null = context
+    const describeHost = vi.fn(async () => 'Darwin 24.6.0 arm64 | macOS 15.6')
     const hook = createSandboxMessageHook({
       resolveSandboxForSession: async () => state,
+      probe: { describeHost, describeSandbox: async () => 'Linux 6.1.0 aarch64' },
       logger,
     })
 
@@ -137,9 +139,17 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(systemText(firstOff)).toContain(SANDBOX_OFF_NOTE)
     expect(systemText(firstOff)).not.toContain(SANDBOX_CONTEXT_NOTE)
 
+    describeHost.mockClear()
     const secondOff = { system: ['base'] }
     await hook({ sessionID: 'ses_1' }, secondOff)
-    expect(systemText(secondOff)).not.toContain(SANDBOX_OFF_NOTE)
+    expect(systemText(secondOff)).toBe(systemText(firstOff))
+    expect(describeHost).not.toHaveBeenCalled()
+
+    state = context
+    const reEnabled = { system: ['base'] }
+    await hook({ sessionID: 'ses_1' }, reEnabled)
+    expect(systemText(reEnabled)).toContain(SANDBOX_CONTEXT_NOTE)
+    expect(systemText(reEnabled)).not.toContain(SANDBOX_OFF_NOTE)
   })
 
   test('re-enabling then disabling the sandbox emits the off note again', async () => {
@@ -150,13 +160,13 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     })
 
     const emittedOff = []
-    for (const next of [context, null, context, null]) {
+    for (const next of [context, null, context, null, null]) {
       state = next
       const output = { system: ['base'] }
       await hook({ sessionID: 'ses_1' }, output)
       emittedOff.push(systemText(output).includes(SANDBOX_OFF_NOTE))
     }
-    expect(emittedOff).toEqual([false, true, false, true])
+    expect(emittedOff).toEqual([false, true, false, true, true])
   })
 
   test('tracks each session independently', async () => {
@@ -324,7 +334,7 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(countBlock(output.system[1]!, SANDBOX_BLOCK_CLOSE)).toBe(1)
   })
 
-  test('replaces the on guidance with the off note on a reused array, then clears it when no note applies', async () => {
+  test('replaces the on guidance with the off note on a reused array, then keeps exactly one off block', async () => {
     let state: SandboxContext | null = context
     const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
     const output = { system: ['base'] }
@@ -337,9 +347,10 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(output.system[0]).toContain(SANDBOX_OFF_NOTE)
     expect(output.system[0]).not.toContain(SANDBOX_CONTEXT_NOTE)
     expect(countBlock(output.system[0]!, SANDBOX_BLOCK_OPEN)).toBe(1)
+    const offEntry = output.system[0]
 
     await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system).toEqual(['base\n\n'])
+    expect(output.system).toEqual([offEntry])
   })
 
   test('removes only the owned block on cleanup, preserving prefix and suffix byte-for-byte', async () => {
@@ -355,7 +366,7 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(output.system).toEqual([`${prefix}${suffix}`])
   })
 
-  test('preserves a same-entry suffix written by another plugin across on, off, and clear', async () => {
+  test('preserves a same-entry suffix written by another plugin across on, off, and a repeated off', async () => {
     let state: SandboxContext | null = context
     const hook = createSandboxMessageHook({ resolveSandboxForSession: async () => state, logger })
     const output = { system: ['base', 'mode instructions'] }
@@ -374,8 +385,9 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     expect(output.system[1]!.endsWith('another plugin suffix')).toBe(true)
     expect(countBlock(output.system[1]!, SANDBOX_BLOCK_OPEN)).toBe(1)
 
+    const offEntry = output.system[1]
     await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).toBe('mode instructions\n\n\n\nanother plugin suffix')
+    expect(output.system[1]).toBe(offEntry)
   })
 
   test('preserves a project-md-context block in the same entry', async () => {
@@ -392,9 +404,6 @@ describe('createSandboxMessageHook (chat.system.transform)', () => {
     await hook({ sessionID: 'ses_1' }, output)
     expect(output.system[1]).toContain(projectMdBlock)
     expect(output.system[1]).toContain(SANDBOX_OFF_NOTE)
-
-    await hook({ sessionID: 'ses_1' }, output)
-    expect(output.system[1]).toBe(`${projectMdBlock}\n\n`)
   })
 
   test('handles an empty array and an empty string entry', async () => {
