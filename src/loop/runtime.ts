@@ -195,7 +195,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
-  const handoffWaits = new Map<string, { sessionId: string; phase: string; since: number }>()
 
   /**
    * Process-wide per-loop state locks. OpenCode loads a separate copy of the plugin module
@@ -452,6 +451,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return statuses
   }
 
+  /**
+   * Defers a phase handoff indefinitely while any loop session (subagents included) is
+   * busy or retrying, or a prompt is still queued in the session inbox, re-checking on the
+   * existing 1.5s retry timer. Genuinely wedged sessions are left to the watchdog's
+   * progress-aware stall handling rather than a wall-clock cutoff here.
+   */
   async function deferUntilQuiescent(state: LoopState): Promise<boolean> {
     if (!deps.loopAttemptsRepo) return false
     const loopName = state.loopName
@@ -467,19 +472,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     const fresh = loopService.getActiveState(loopName)
     if (!fresh || fresh.sessionId !== state.sessionId || fresh.phase !== state.phase) return true
-    if (!reason) {
-      handoffWaits.delete(loopName)
-      return false
-    }
-    const previous = handoffWaits.get(loopName)
-    const wait = previous?.sessionId === state.sessionId && previous.phase === state.phase
-      ? previous : { sessionId: state.sessionId, phase: state.phase, since: Date.now() }
-    handoffWaits.set(loopName, wait)
-    const timeout = loopService.getBusyStallTimeoutMs() || 900_000
-    if (Date.now() - wait.since >= timeout) {
-      await terminateLoop(loopName, fresh, { kind: 'error_max_retries', message: `Cannot safely hand off work: ${reason}` })
-      return true
-    }
+    if (!reason) return false
     logger.debug(`Loop: deferring ${state.phase} handoff for ${loopName}: ${reason}`)
     const pending = idleRetryTimeouts.get(loopName)
     if (pending) clearTimeout(pending)
@@ -1090,7 +1083,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
-    handoffWaits.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
     summaryRepromptedSections.delete(loopName)
@@ -3066,7 +3058,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       idleRetryTimeouts.delete(worktreeName)
     }
     idleRetryAttempts.clear()
-    handoffWaits.clear()
     codingLaunchRecoveryAttempts.clear()
     coalescedLimitSessions.clear()
     postActionContinueAttempts.clear()
@@ -3124,7 +3115,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
-    handoffWaits.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
     postActionContinueAttempts.delete(loopName)
