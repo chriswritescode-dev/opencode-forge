@@ -19,12 +19,20 @@ test('sandbox image keeps the pnpm store and every tool cache on the mounted cac
   expect(dockerfile).toContain('UV_PYTHON_INSTALL_DIR=/opt/forge/cache/uv-python')
   expect(dockerfile).toContain('UV_TOOL_DIR=/opt/forge/cache/uv-tools')
   expect(dockerfile).toContain('UV_TOOL_BIN_DIR=/opt/forge/cache/uv-bin')
-  expect(dockerfile).toContain('PATH=/opt/forge/cache/uv-bin:/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH')
+  expect(dockerfile).toContain('PATH=/opt/forge/.cargo/bin:/opt/forge/cache/cargo/bin:/opt/forge/cache/uv-bin:/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH')
   expect(dockerfile).toContain('CARGO_HOME=/opt/forge/cache/cargo')
-  expect(dockerfile).toContain('RUSTUP_HOME=/opt/forge/cache/rustup')
   expect(dockerfile).toContain('GOPATH=/opt/forge/cache/go')
   expect(dockerfile).toContain('mkdir -p /opt/forge/cache /opt/forge/.local/share/pnpm')
   expect(dockerfile).toContain('forge-cache-prune')
+})
+
+test('the image ships a Rust toolchain outside the shadowed cache disk', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+
+  expect(dockerfile).toContain('https://sh.rustup.rs')
+  expect(dockerfile).toContain('RUSTUP_HOME=/opt/forge/.rustup')
+  expect(dockerfile).toContain('CARGO_HOME=/opt/forge/cache/cargo')
+  expect(dockerfile).toContain('/opt/forge/.cargo/bin/rustup component add clippy rustfmt')
 })
 
 test('forge-cache-prune preserves toolchain roots, prunes cache subtrees, and trims the cache mount', () => {
@@ -34,7 +42,7 @@ test('forge-cache-prune preserves toolchain roots, prunes cache subtrees, and tr
 
   expect(prune).toContain('set -u')
   expect(prune).toContain('XDG_CACHE_HOME:-/opt/forge/cache')
-  expect(prune).toContain('"$cache"/rustup|"$cache"/uv-python|"$cache"/uv-tools|"$cache"/uv-bin) ;;')
+  expect(prune).toContain('"$cache"/uv-python|"$cache"/uv-tools|"$cache"/uv-bin) ;;')
   expect(prune).toContain('wipe "$cache/cargo/registry"')
   expect(prune).toContain('wipe "$cache/cargo/git"')
   expect(prune).toContain('wipe "$cache/go/pkg/mod"')
