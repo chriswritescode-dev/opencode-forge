@@ -15,7 +15,7 @@ Process findings in this exact order:
 
 1. **Read first**: Call `review-read` with no arguments to load findings for the tool's current project, loop, and section scope.
 2. **Manifest**: Establish the changed-file manifest from the diff and status commands above — no substantive code analysis yet.
-3. **Reconcile**: Check EVERY open finding in scope against the current code — not only findings whose file appears in the diff. A finding can be resolved by changes in a different file, and findings on pseudo-paths (e.g. `PLAN:phase-<N>`, `GOAL`, `AUDIT_SCOPE`) never appear in a diff; re-verify them too. The changed-file manifest is a starting hint, not a filter.
+3. **Reconcile**: Check EVERY open finding in scope against the current code — not only findings whose file appears in the diff. A finding can be resolved by changes in a different file, and findings on pseudo-paths (e.g. `PLAN:phase-<N>`, `AUDIT_SCOPE`) never appear in a diff; re-verify them too. The changed-file manifest is a starting hint, not a filter.
    - **Resolved**: Call `review-delete` immediately with the file and line arguments.
    - **Still open**: Keep it and report it under "### Previously Identified Issues".
 4. **Inspect**: Analyze the diff and the changed files (see What to Look For).

@@ -1,7 +1,7 @@
 
 ## Final Audit Rules
 
-This addendum applies only when the invocation is `[Final integration audit]`. Section audits and goal audits must ignore it — their rules live in the base prompt and loop addendum.
+This addendum applies only when the invocation is `[Final integration audit]`. Section audits must ignore it — their rules live in the base prompt and loop addendum.
 
 ### Scope
 

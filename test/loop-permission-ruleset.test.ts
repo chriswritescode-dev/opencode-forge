@@ -18,14 +18,13 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'review-delete',      pattern: '*', action: 'deny' },
       { permission: 'plan-write',         pattern: '*', action: 'deny' },
       { permission: 'plan-edit',          pattern: '*', action: 'deny' },
+      { permission: 'goal-write',         pattern: '*', action: 'deny' },
       { permission: 'execute-plan',       pattern: '*', action: 'deny' },
-      { permission: 'execute-goal',       pattern: '*', action: 'deny' },
       { permission: 'question',           pattern: '*', action: 'deny' },
       { permission: 'loop-cancel',        pattern: '*', action: 'deny' },
       { permission: 'loop-status',        pattern: '*', action: 'deny' },
-      { permission: 'launch-group',       pattern: '*', action: 'deny' },
-      { permission: 'group-status',       pattern: '*', action: 'deny' },
-      { permission: 'group-cancel',       pattern: '*', action: 'deny' },
+      { permission: 'goal-cancel',        pattern: '*', action: 'deny' },
+      { permission: 'goal-status',        pattern: '*', action: 'deny' },
     ])
   })
 
@@ -35,7 +34,7 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
-    const required = ['review-write', 'review-delete', 'plan-write', 'plan-edit', 'execute-plan', 'question']
+    const required = ['review-write', 'review-delete', 'plan-write', 'plan-edit', 'goal-write', 'execute-plan', 'question', 'goal-status', 'goal-cancel']
     const rules = buildLoopPermissionRuleset()
     for (const tool of required) {
       expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
@@ -62,13 +61,16 @@ describe('buildAuditSessionPermissionRuleset', () => {
 
     // Loop/plan denies
     expect(rules.some(r => r.permission === 'execute-plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'execute-goal' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'question' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     // Plan-authoring tools: auditor's sanctioned path is plan-adjust, never plan-write/plan-edit.
     expect(rules.some(r => r.permission === 'plan-write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan-edit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    // Goal authoring is likewise denied to the auditor.
+    expect(rules.some(r => r.permission === 'goal-write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'goal-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'goal-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
   })
 
   test('emits no external_directory rules, so external directories fall under the blanket allow', () => {

@@ -7,7 +7,7 @@ import {
   createLoopSessionUsageRepo,
   createLoopTransitionsRepo,
   createPlanAmendmentsRepo,
-  createFeatureGroupsRepo,
+  createGoalsRepo,
   hasTable,
 } from '../storage'
 import type { LoopRow } from '../storage'
@@ -16,7 +16,7 @@ import type { ReviewFindingRow } from '../storage'
 import type { LoopUsageAggregate } from '../storage'
 import type { LoopTransitionRow } from '../storage'
 import type { PlanAmendmentRow } from '../storage'
-import type { FeatureGroupRow, GroupFeatureRow } from '../storage'
+import type { GoalStatus, GoalChunkStage } from '../storage'
 import { summarizeAmendmentSnapshots, type AmendmentChangeSummary } from './amendment-diff'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { extractPlanTitle } from '../utils/plan-execution'
@@ -24,15 +24,10 @@ import { extractPlanTitle } from '../utils/plan-execution'
 /** Newest transitions shipped per loop; the dashboard's "100-row fetch window". */
 const DASHBOARD_TRANSITIONS_WINDOW = 100
 
+/** Character cap on goal objective and chunk summary previews shipped to the client. */
+const GOAL_PREVIEW_MAX = 400
+
 export type { LoopRow, LoopTransitionRow }
-
-const PRD_PREVIEW_MAX = 400
-
-export interface DashboardGroup {
-  id: string
-  group: Omit<FeatureGroupRow, 'prdText'> & { prdPreview: string | null }
-  features: GroupFeatureRow[]
-}
 
 export type DashboardAmendment = Omit<PlanAmendmentRow, 'sectionsBefore' | 'sectionsAfter'> & { summary: AmendmentChangeSummary }
 
@@ -42,7 +37,6 @@ export interface DashboardLoop {
   loop: LoopRow
   lastAuditResult: string | null
   postActionReport: string | null
-  goal: string | null
   plan: string | null
   /** Whether a plan row exists. Always populated; `plan` content ships only for the scoped loop. */
   hasPlan: boolean
@@ -66,13 +60,50 @@ export interface DashboardLoop {
   amendments: DashboardAmendment[]
 }
 
+/** One entry of a goal's ordered task list, typically a ticket reference. */
+export interface DashboardGoalTask {
+  ref?: string
+  title: string
+}
+
+export interface DashboardGoalChunk {
+  chunkIndex: number
+  stage: GoalChunkStage
+  title: string | null
+  loopName: string | null
+  branch: string | null
+  summaryPreview: string | null
+}
+
+/**
+ * A goal executed as sequential plan-loop chunks. The objective and each chunk
+ * summary ship as capped previews; the full text stays in the goals tables.
+ */
+export interface DashboardGoal {
+  /** Stable identity for keyed store reconciliation; equals `goalId`. */
+  id: string
+  goalId: string
+  title: string
+  objectivePreview: string
+  status: GoalStatus
+  error: string | null
+  maxChunks: number
+  tasks: DashboardGoalTask[]
+  executionModel: string | null
+  auditorModel: string | null
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+  chunks: DashboardGoalChunk[]
+}
+
 export interface DashboardProject {
   /** Stable identity for keyed store reconciliation; equals `projectId`. */
   id: string
   projectId: string
   projectDir: string | null
   loops: DashboardLoop[]
-  groups: DashboardGroup[]
+  goals: DashboardGoal[]
   /**
    * Session-scoped plans no loop has executed, newest first. Content itself is
    * not shipped — only the derived title and size — because a project can retain
@@ -124,7 +155,7 @@ interface DashboardRepos {
   loopSessionUsageRepo: ReturnType<typeof createLoopSessionUsageRepo>
   loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo> | null
   amendmentsRepo: ReturnType<typeof createPlanAmendmentsRepo> | null
-  featureGroupsRepo: ReturnType<typeof createFeatureGroupsRepo> | null
+  goalsRepo: ReturnType<typeof createGoalsRepo> | null
 }
 
 // The dashboard poll handler calls collectDashboardData every 5s per open tab;
@@ -145,28 +176,69 @@ function reposFor(db: Database): DashboardRepos {
       // Detect availability so the dashboard serves 200 with empty collections instead of failing.
       loopTransitionsRepo: hasTable(db, 'loop_transitions') ? createLoopTransitionsRepo(db) : null,
       amendmentsRepo: hasTable(db, 'plan_amendments') ? createPlanAmendmentsRepo(db) : null,
-      featureGroupsRepo: hasTable(db, 'feature_groups') ? createFeatureGroupsRepo(db) : null,
+      goalsRepo: hasTable(db, 'goals') ? createGoalsRepo(db) : null,
     }
     repoCache.set(db, repos)
   }
   return repos
 }
 
+/**
+ * Goals for one project, newest first, with capped text previews. Returns an
+ * empty list when the goals table is absent (older databases). `projectDir` is
+ * the newest goal's persisted directory, null for a goal that has not launched
+ * its first chunk.
+ */
+function collectProjectGoals(
+  goalsRepo: ReturnType<typeof createGoalsRepo> | null,
+  projectId: string,
+): { goals: DashboardGoal[]; projectDir: string | null } {
+  if (!goalsRepo) return { goals: [], projectDir: null }
+  const repo = goalsRepo
+  const rows = repo.listGoals(projectId)
+  const projectDir = rows.find(row => row.projectDir)?.projectDir ?? null
+  const goals = rows.map(row => ({
+    id: row.goalId,
+    goalId: row.goalId,
+    title: row.title,
+    objectivePreview: row.objective.slice(0, GOAL_PREVIEW_MAX),
+    status: row.status,
+    error: row.error,
+    maxChunks: row.maxChunks,
+    tasks: row.tasks.map(task => ({ ...(task.ref ? { ref: task.ref } : {}), title: task.title })),
+    executionModel: row.executionModel,
+    auditorModel: row.auditorModel,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    completedAt: row.completedAt,
+    chunks: repo.listChunks(projectId, row.goalId).map(chunk => ({
+      chunkIndex: chunk.chunkIndex,
+      stage: chunk.stage,
+      title: chunk.title,
+      loopName: chunk.loopName,
+      branch: chunk.branch,
+      summaryPreview: chunk.summary ? chunk.summary.slice(0, GOAL_PREVIEW_MAX) : null,
+    })),
+  }))
+  return { goals, projectDir }
+}
+
+/**
+ * Dashboard payload for every discovered project. Projects are discovered from
+ * the union of loop projects, goal projects, and projects with unexecuted
+ * plans, so a project that only holds a goal or an unexecuted plan still
+ * appears.
+ */
 export function collectDashboardData(db: Database, scope: DashboardScope = UNSCOPED): DashboardPayload {
-  const { loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, amendmentsRepo, featureGroupsRepo } = reposFor(db)
+  const { loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, amendmentsRepo, goalsRepo } = reposFor(db)
 
   const loopProjectIds = db.prepare(
     'SELECT DISTINCT project_id FROM loops ORDER BY project_id'
   ).all() as { project_id: string }[]
 
-  // A project may have a feature group persisted before any feature loop launches
-  // (group is in `extracting` or `planning`), or a session plan authored before
-  // any loop exists. Discover projects from the union of loop projects,
-  // feature-group projects, and projects with unexecuted plans so group-only and
-  // plan-only projects still appear.
-  const groupProjectIds = featureGroupsRepo
+  const goalProjectIds = goalsRepo
     ? (db.prepare(
-        'SELECT DISTINCT project_id FROM feature_groups ORDER BY project_id'
+        'SELECT DISTINCT project_id FROM goals ORDER BY project_id'
       ).all() as { project_id: string }[])
     : []
 
@@ -175,7 +247,7 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
   const projectIds = Array.from(
     new Set([
       ...loopProjectIds.map(r => r.project_id),
-      ...groupProjectIds.map(r => r.project_id),
+      ...goalProjectIds.map(r => r.project_id),
       ...unexecutedCounts.keys(),
     ])
   ).sort()
@@ -185,8 +257,9 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
     const loopRows = loopsRepo.listAll(projectId)
     const hasLoops = loopRows.length > 0
 
-    // Determine projectDir from first (most recent) loop row
-    const projectDir = hasLoops ? loopRows[0].projectDir : null
+    const { goals: projectGoals, projectDir: goalProjectDir } = collectProjectGoals(goalsRepo, projectId)
+
+    const projectDir = hasLoops ? loopRows[0].projectDir : goalProjectDir
 
     // Sort: running first, then by startedAt desc within each group
     const sortedLoops = [...loopRows].sort((a, b) => {
@@ -212,7 +285,6 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       const large = isScopedLoop ? loopsRepo.getLarge(projectId, loopName) : null
       const lastAuditResult = large?.lastAuditResult ?? null
       const postActionReport = large?.postActionReport ?? null
-      const goal = large?.goal ?? null
 
       const hasPlan = planLoopNames.has(loopName)
       const plan = isScopedLoop ? (plansRepo.getForLoop(projectId, loopName)?.content ?? null) : null
@@ -242,25 +314,11 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
         : { ...loop, completionSummary: null }
 
       return {
-        id: loopName, loop: loopRow, lastAuditResult, postActionReport, goal,
+        id: loopName, loop: loopRow, lastAuditResult, postActionReport,
         plan, hasPlan, sections, sectionCount,
         findings, bugCount, usage, duration, transitions, transitionsCapped, amendments,
       }
     })
-
-    let groups: DashboardGroup[] = []
-    if (featureGroupsRepo) {
-      // One features query per project, not one per group.
-      const featuresByGroup = featureGroupsRepo.listFeaturesByGroup(projectId)
-      groups = featureGroupsRepo.listGroups(projectId).map(g => {
-        const { prdText, ...rest } = g
-        return {
-          id: g.groupId,
-          group: { ...rest, prdPreview: prdText ? prdText.slice(0, PRD_PREVIEW_MAX) : null },
-          features: featuresByGroup.get(g.groupId) ?? [],
-        }
-      })
-    }
 
     const unexecutedPlanCount = unexecutedCounts.get(projectId) ?? 0
     // A loopless project is hidden from the repo menu (no projectDir labels
@@ -283,7 +341,7 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       projectId,
       projectDir,
       loops: dashboardLoops,
-      groups,
+      goals: projectGoals,
       unexecutedPlans,
       unexecutedPlanCount,
     })

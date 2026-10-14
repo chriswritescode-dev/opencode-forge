@@ -7,7 +7,9 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import { createLoopService } from '../../src/loop/service'
+import { createForgeExecutionService } from '../../src/services/execution'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import { buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../../src/constants/loop'
@@ -29,6 +31,12 @@ const mockPendingTeardowns = {
   get: vi.fn().mockReturnValue(undefined),
   clear: vi.fn(),
 }
+
+const MOCK_BASE_COMMIT = 'a'.repeat(40)
+
+const mockGitService = {
+  revParseHead: () => ({ ok: true, status: 0, stdout: `${MOCK_BASE_COMMIT}\n`, stderr: '' }),
+} as any
 
 const PROJECT_ID = 'test-project'
 
@@ -114,6 +122,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo,
       loopsRepo,
       loop: {
@@ -218,6 +227,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo,
       loopsRepo,
       loop: {
@@ -304,6 +314,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo,
       loopsRepo,
       loop: {
@@ -390,6 +401,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       config: configuredConfig,
       logger: mockLogger,
       dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo,
       loopsRepo,
       loop: {
@@ -471,6 +483,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo,
       loopsRepo,
       loop: {
@@ -537,6 +550,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo,
       loopsRepo,
       loop: {
@@ -637,6 +651,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       projectId: PROJECT_ID, directory: '/tmp/test',
       config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
       logger: mockLogger, dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
@@ -699,6 +714,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       projectId: PROJECT_ID, directory: '/tmp/test',
       config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
       logger: mockLogger, dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
@@ -760,6 +776,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       projectId: PROJECT_ID, directory: '/tmp/test',
       config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
       logger: mockLogger, dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
@@ -838,6 +855,7 @@ describe('handleStartLoop variant config fallback', () => {
         auditorVariant: 'audit-high',
       },
       logger: mockLogger, dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
@@ -911,6 +929,7 @@ describe('handleStartLoop variant config fallback', () => {
         auditorVariant: 'audit-high',
       },
       logger: mockLogger, dataDir: '/tmp',
+      gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
@@ -948,440 +967,140 @@ describe('handleStartLoop variant config fallback', () => {
   })
 })
 
-describe('handleStartGoal creates dedicated code session', () => {
-  let db: Database
-  let loopsRepo: LoopsRepo
-  let plansRepo: PlansRepo
-  let reviewFindingsRepo: ReviewFindingsRepo
-  let sectionPlansRepo: SectionPlansRepo
-
+describe('handleStartLoop base ref and base commit', () => {
   const noopFn = () => {}
 
-  beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-goal-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
-  })
-
-  function goalClient(overrides?: any) {
-    return createFakeForgeClient({
-      workspace: {
-        create: async () => ({
-          id: 'ws_goal',
-          directory: '/tmp/wt/goal',
-          branch: 'opencode/goal',
-          type: 'worktree',
-          name: 'opencode/goal',
-          extra: null,
-          projectID: PROJECT_ID,
-          timeUsed: Date.now(),
-        }),
-      },
-      session: {
-        create: async () => ({ id: 'new-goal-session' }),
-        promptAsync: async () => {},
-      },
-      ...overrides,
-    })
-  }
-
-  async function buildService(client: any, loopHandlerOverrides: any = {}, sandboxManager?: any) {
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-      ...loopHandlerOverrides,
-    }
-
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-
-    const service = createForgeExecutionService({
+  function buildService(opts: {
+    gitService: any
+    workspaceCreate?: () => Promise<Record<string, unknown>>
+    loopsRepo: LoopsRepo
+    plansRepo: PlansRepo
+    sectionPlansRepo: SectionPlansRepo
+    loopService: LoopService
+    client: any
+  }) {
+    return {
       projectId: PROJECT_ID,
       directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
       logger: mockLogger,
       dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
+      gitService: opts.gitService,
+      plansRepo: opts.plansRepo,
+      loopsRepo: opts.loopsRepo,
       loop: {
-        service: loopService,
-        listActive: (...args: any[]) => loopService.listActive(...args),
-        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+        service: opts.loopService,
+        listActive: (...args: any[]) => opts.loopService.listActive(...args),
+        generateUniqueLoopName: (...args: any[]) => opts.loopService.generateUniqueLoopName(...args),
+        findMatchByName: (...args: any[]) => opts.loopService.findMatchByName(...args),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
         handleAuditorProviderLimit: async () => false,
       } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      sandboxManager,
+      loopHandler: { runExclusive: async <T>(_n: string, fn: () => Promise<T>) => fn(), startWatchdog: noopFn, clearLoopTimers: noopFn } as any,
+      sectionPlansRepo: opts.sectionPlansRepo,
+      client: opts.client,
       pendingTeardowns: mockPendingTeardowns,
-    })
-
-    return { service, loopService }
+    }
   }
 
-  test('creates workspace + new session with worktree/workspace/permissions, sends initial prompt, and sets state IDs to new session', async () => {
-    const { client } = goalClient()
-    const { service, loopService } = await buildService(client)
-
-    const invokingSessionId = 'invoker-session-1'
-    const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
-      {
-        type: 'goal.start' as const,
-        goal: 'Refactor the storage layer for goal loops',
-        executorSessionId: invokingSessionId,
-      },
-    )
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-
-    // ---- session.create was called with worktree directory, workspace, and loop permissions ----
-    expect(client.session.create).toHaveBeenCalledTimes(1)
-    const sessionCreateArgs = (client.session.create as any).mock.calls[0][0]
-    expect(sessionCreateArgs.directory).toBe('/tmp/wt/goal')
-    expect(sessionCreateArgs.workspaceID).toBe('ws_goal')
-    expect(sessionCreateArgs.permission).toEqual(
-      buildLoopPermissionRuleset(),
-    )
-
-    // The new session ID is returned in the result
-    const newSessionId = 'new-goal-session'
-    expect(result.data.sessionId).toBe(newSessionId)
-
-    // ---- Initial prompt contains original goal, uses worktree directory, workspace, and code model ----
-    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
-    const promptArgs = (client.session.promptAsync as any).mock.calls[0][0]
-    expect(promptArgs.sessionID).toBe(newSessionId)
-    expect(promptArgs.directory).toBe('/tmp/wt/goal')
-    expect(promptArgs.agent).toBe('code')
-    expect(promptArgs.parts[0].text).toContain('## Goal\nRefactor the storage layer for goal loops')
-    expect(promptArgs.parts[0].text).toContain('Implement the goal above directly in this worktree')
-    expect(promptArgs.workspace).toBe('ws_goal')
-
-    // ---- State IDs use the new session for both sessionId and executorSessionId ----
-    const state = loopService.getActiveState(result.data.loopName)
-    expect(state).not.toBeNull()
-    expect(state!.sessionId).toBe(newSessionId)
-    expect(state!.executorSessionId).toBe(newSessionId)
-    expect(state!.hostSessionId).toBe(invokingSessionId)
-    expect(state!.kind).toBe('goal')
-    expect(state!.goal).toBe('Refactor the storage layer for goal loops')
-    expect(state!.workspaceId).toBe('ws_goal')
-    expect(state!.worktreeDir).toBe('/tmp/wt/goal')
-    expect(state!.worktreeBranch).toBe('opencode/goal')
-
-    // ---- Source/invoking session is never warped or mutated ----
-    // workspace.warp is called internally by createLoopSessionWithWorkspace →
-    // bindSessionToWorkspace for the NEW session (not the invoking session)
-    expect(client.workspace.warp).toHaveBeenCalledTimes(1)
-    expect((client.workspace.warp as any).mock.calls[0][0]).toEqual({
-      id: 'ws_goal',
-      sessionID: newSessionId,
-    })
-    expect(client.session.update).not.toHaveBeenCalled()
-
-    // ---- Invoking session's turn is aborted after successful launch so its
-    // agent cannot keep implementing the goal in the original directory ----
-    expect(client.session.abort).toHaveBeenCalledTimes(1)
-    expect((client.session.abort as any).mock.calls[0][0]).toEqual({ sessionID: invokingSessionId })
-
-    // Goal text persisted in loop_large_fields, NOT in the plans table
-    const largeFields = loopsRepo.getLarge(PROJECT_ID, result.data.loopName)
-    expect(largeFields).not.toBeNull()
-    expect(largeFields!.goal).toBe('Refactor the storage layer for goal loops')
-
-    const planRow = plansRepo.getForLoop(PROJECT_ID, result.data.loopName)
-    expect(planRow).toBeNull()
-
-    db.close()
-  })
-
-  test('applies loop permissions via createLoopSessionWithWorkspace, starts sandbox before prompting for the new session', async () => {
-    const { client } = goalClient()
-    const sandboxManager = {
-      start: vi.fn().mockResolvedValue({ containerName: 'goal-sandbox' }),
-      stop: vi.fn().mockResolvedValue(undefined),
-      getActive: vi.fn().mockReturnValue(null),
-      isActive: vi.fn().mockReturnValue(false),
-      isLive: vi.fn().mockResolvedValue(false),
-      cleanupOrphans: vi.fn().mockResolvedValue(0),
-      restore: vi.fn().mockResolvedValue(undefined),
-      provisionDependencies: vi.fn().mockResolvedValue(undefined),
-    }
-    const { service, loopService } = await buildService(client, {}, sandboxManager)
-
-    const invokingSessionId = 'invoker-session-sandboxed'
-    const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
-      {
-        type: 'goal.start' as const,
-        goal: 'Run this goal with sandbox isolation',
-        executorSessionId: invokingSessionId,
-      },
-    )
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-
-    // Permissions passed to session.create, NOT via session.update
-    expect(client.session.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        permission: buildLoopPermissionRuleset(),
-      }),
-    )
-    expect(client.session.update).not.toHaveBeenCalled()
-
-    // Sandbox started after session create, before prompt
-    expect(sandboxManager.start).toHaveBeenCalledWith(result.data.loopName, '/tmp/wt/goal')
-    const sandboxCallOrder = sandboxManager.start.mock.invocationCallOrder[0]
-    const sessionCreateCallOrder = (client.session.create as any).mock.invocationCallOrder[0]
-    expect(sessionCreateCallOrder).toBeLessThan(sandboxCallOrder)
-
-    // promptAsync called after sandbox start
-    expect(client.session.promptAsync).toHaveBeenCalled()
-    const promptCallOrder = (client.session.promptAsync as any).mock.invocationCallOrder[0]
-    expect(sandboxCallOrder).toBeLessThan(promptCallOrder)
-
-    expect(loopService.getActiveState(result.data.loopName)).toMatchObject({
-      sandbox: true,
-      sandboxContainer: 'goal-sandbox',
-      sessionId: 'new-goal-session',
-      executorSessionId: 'new-goal-session',
-    })
-
-    db.close()
-  })
-
-  test('goal text survives reload (fresh loop service) without creating a plans-table record', async () => {
-    const { client } = goalClient()
-    const { service } = await buildService(client)
-
-    const invokingSessionId = 'invoker-session-2'
-    const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
-      {
-        type: 'goal.start' as const,
-        goal: 'Refactor the storage layer for goal loops',
-        executorSessionId: invokingSessionId,
-      },
-    )
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    const loopName = result.data.loopName
-
-    // Simulate a restart/reload: a brand-new loop service reading the same DB
-    const reloadedService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-    const reloaded = reloadedService.getAnyState(loopName)
-    expect(reloaded).not.toBeNull()
-    expect(reloaded!.kind).toBe('goal')
-    expect(reloaded!.goal).toBe('Refactor the storage layer for goal loops')
-    // The new session ID is persisted
-    expect(reloaded!.sessionId).toBe('new-goal-session')
-
-    // Still no plan row after reload
-    expect(plansRepo.getForLoop(PROJECT_ID, loopName)).toBeNull()
-
-    db.close()
-  })
-
-  test('rollback on session create failure removes workspace but never aborts the invoking session', async () => {
+  function buildHarness() {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-base-ref-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    setupLoopsTestDb(db)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
     const { client } = createFakeForgeClient({
       workspace: {
-        create: async () => ({
-          id: 'ws_goal_create_fail',
-          directory: '/tmp/wt/goal-create-fail',
-          branch: 'opencode/goal-create-fail',
-          type: 'worktree',
-          name: 'opencode/goal-create-fail',
-          extra: null,
-          projectID: PROJECT_ID,
-          timeUsed: Date.now(),
-        }),
+        create: async () => ({ id: 'ws_base', directory: '/tmp/wt/base', branch: 'forge/base-loop' }),
+        warp: async () => {},
       },
       session: {
-        create: async () => { throw new Error('session.create rejected') },
+        create: async () => ({ id: 'sess-base' }),
+        get: async () => ({}),
       },
     })
-    const { service, loopService } = await buildService(client)
+    return { db, loopsRepo, plansRepo, sectionPlansRepo, loopService, client }
+  }
 
-    const invokingSessionId = 'invoker-session-3'
+  test('forwards baseRef to workspace creation and persists the resolved base commit', async () => {
+    const h = buildHarness()
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(buildService({
+      gitService: mockGitService,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+
     const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
       {
-        type: 'goal.start' as const,
-        goal: 'Goal that fails session create',
-        executorSessionId: invokingSessionId,
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Based Plan\n\nBody.' },
+        baseRef: 'refs/heads/forge/prior-loop',
       },
     )
 
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.error.code).toBe('internal_error')
-    }
+    expect(result.ok).toBe(true)
+    expect(h.client.workspace.create).toHaveBeenCalledWith(
+      expect.objectContaining({ extra: expect.objectContaining({ baseRef: 'refs/heads/forge/prior-loop' }) }),
+    )
+    if (!result.ok) return
+    expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.baseCommit).toBe(MOCK_BASE_COMMIT)
+    expect(h.loopService.getActiveState(result.data.loopName)!.baseCommit).toBe(MOCK_BASE_COMMIT)
 
-    // Never abort the invoking/host session
-    expect(client.session.abort).not.toHaveBeenCalled()
-
-    // Newly-created workspace is removed during rollback
-    expect(client.workspace.remove).toHaveBeenCalledTimes(1)
-    expect((client.workspace.remove as any).mock.calls[0][0]).toEqual({ id: 'ws_goal_create_fail' })
-
-    // Loop state must not be persisted
-    const active = loopService.listActive().filter((s) => s.goal)
-    expect(active.length).toBe(0)
-
-    db.close()
+    h.db.close()
   })
 
-  test('rollback on prompt failure aborts only the created goal session, never the invoking session', async () => {
-    const { client } = createFakeForgeClient({
-      workspace: {
-        create: async () => ({
-          id: 'ws_goal_prompt_fail',
-          directory: '/tmp/wt/goal-prompt-fail',
-          branch: 'opencode/goal-prompt-fail',
-          type: 'worktree',
-          name: 'opencode/goal-prompt-fail',
-          extra: null,
-          projectID: PROJECT_ID,
-          timeUsed: Date.now(),
-        }),
-      },
-      session: {
-        create: async () => ({ id: 'goal-session-to-abort' }),
-        promptAsync: async () => { throw new Error('prompt failed') },
-      },
-    })
-    const { service, loopService } = await buildService(client)
+  test('rolls back the start when the base commit cannot be resolved', async () => {
+    const h = buildHarness()
+    const failingGit = { revParseHead: () => ({ ok: false, status: 128, stdout: '', stderr: 'not a repo' }) }
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(buildService({
+      gitService: failingGit,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
 
-    const invokingSessionId = 'invoker-session-4'
     const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
       {
-        type: 'goal.start' as const,
-        goal: 'Goal that fails prompt',
-        executorSessionId: invokingSessionId,
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# No Base Plan\n\nBody.' },
       },
     )
 
     expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.error.code).toBe('prompt_failed')
-    }
+    if (result.ok) return
+    expect(result.error.message).toBe('Failed to resolve loop base commit')
+    expect(h.client.workspace.remove).toHaveBeenCalled()
+    expect(h.loopService.listActive()).toHaveLength(0)
 
-    // The CREATED goal session is aborted during rollback
-    expect(client.session.abort).toHaveBeenCalledTimes(1)
-    expect((client.session.abort as any).mock.calls[0][0]).toEqual({ sessionID: 'goal-session-to-abort' })
-
-    // Workspace removed during rollback
-    expect(client.workspace.remove).toHaveBeenCalledTimes(1)
-
-    // Loop state must not be persisted
-    const active = loopService.listActive().filter((s) => s.goal)
-    expect(active.length).toBe(0)
-
-    db.close()
-  })
-
-  test('rejects a blank/whitespace goal before any workspace provisioning', async () => {
-    const { client } = goalClient()
-    const { service } = await buildService(client)
-
-    const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: 'invoker-session-5' },
-      {
-        type: 'goal.start' as const,
-        goal: '   \n  ',
-        executorSessionId: 'invoker-session-5',
-      },
-    )
-
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.error.code).toBe('bad_request')
-    }
-    expect(client.workspace.create).not.toHaveBeenCalled()
-    expect(client.session.create).not.toHaveBeenCalled()
-    expect(client.workspace.warp).not.toHaveBeenCalled()
-
-    db.close()
-  })
-
-  test.each([
-    ['goal.start', { type: 'goal.start' as const, goal: 'Ship it', executorSessionId: 'invoker-6' }],
-    ['loop.start', { type: 'loop.start' as const, source: { kind: 'inline' as const, planText: '# Plan\nDo it' }, title: 'Plan' }],
-  ])('%s in an uncommitted project (projectId=global) fails fast with a toast and provisions nothing', async (_label, command) => {
-    const { client } = goalClient()
-    const { service } = await buildService(client)
-
-    const result = await service.dispatch(
-      { surface: 'tool', projectId: 'global', directory: '/tmp/test', sourceSessionId: 'invoker-6' },
-      command as any,
-    )
-
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.error.code).toBe('bad_request')
-      expect(result.error.message).toContain('at least one commit')
-    }
-
-    // Nothing provisioned
-    expect(client.workspace.create).not.toHaveBeenCalled()
-    expect(client.session.create).not.toHaveBeenCalled()
-
-    // Error toast published to the TUI
-    expect(client.toast).toHaveBeenCalledTimes(1)
-    const toast = (client.toast as any).mock.calls[0][0]
-    expect(toast.variant).toBe('error')
-    expect(toast.message).toContain('restart opencode')
-
-    db.close()
+    h.db.close()
   })
 })
 
-describe('handlePlanNewSession workspace forwarding', () => {
-  let db: Database
-  let loopsRepo: LoopsRepo
-  let plansRepo: PlansRepo
-  let reviewFindingsRepo: ReviewFindingsRepo
-  let sectionPlansRepo: SectionPlansRepo
-
+describe('handleStartLoop goal attach', () => {
   const noopFn = () => {}
 
-  beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-new-session-test-'))
-    db = new Database(join(tempDir, 'test.db'))
+  function buildHarness() {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-goal-attach-'))
+    const db = new Database(join(tempDir, 'test.db'))
     setupLoopsTestDb(db)
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
-  })
-
-  test('forwards the created session workspaceID to promptAsync', async () => {
-    const { client } = createFakeForgeClient({
-      session: {
-        create: async () => ({ id: 'new-session-id', workspaceID: 'ws_test' }),
-        promptAsync: async () => {},
-      },
-    })
-
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const goalsRepo = createGoalsRepo(db)
     const loopService = createLoopService(
       loopsRepo,
       plansRepo,
@@ -1392,215 +1111,178 @@ describe('handlePlanNewSession workspace forwarding', () => {
       undefined,
       sectionPlansRepo,
     )
-
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
-
-    const result = await service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'plan.execute.newSession' as const,
-        source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-      },
-    )
-
-    expect(result.ok).toBe(true)
-    expect(client.session.promptAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionID: 'new-session-id', workspace: 'ws_test' }),
-    )
-
-    db.close()
-  })
-})
-
-describe('handleStartLoop per-loop sandbox settings', () => {
-  let db: Database
-  let loopsRepo: LoopsRepo
-  let plansRepo: PlansRepo
-  let reviewFindingsRepo: ReviewFindingsRepo
-  let sectionPlansRepo: SectionPlansRepo
-  let loopService: LoopService
-
-  const noopFn = () => {}
-
-  beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-loop-sandbox-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
-  })
-
-  afterEach(() => {
-    try { db.close() } catch {}
-  })
-
-  function createSandboxManager() {
-    return {
-      docker: {} as any,
-      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
-      stop: vi.fn().mockResolvedValue(undefined),
-      getActive: vi.fn().mockReturnValue(null),
-      isActive: vi.fn().mockReturnValue(false),
-      isLive: vi.fn().mockResolvedValue(false),
-      cleanupOrphans: vi.fn().mockResolvedValue(0),
-      restore: vi.fn().mockResolvedValue(undefined),
-      provisionDependencies: vi.fn().mockResolvedValue(undefined),
-    }
-  }
-
-  async function buildService(sandboxManager: ReturnType<typeof createSandboxManager>) {
     const { client } = createFakeForgeClient({
       workspace: {
-        create: async () => ({
-          id: 'ws_sandbox',
-          directory: '/tmp/wt/sandbox',
-          branch: 'opencode/sandbox',
-          type: 'worktree',
-          name: 'opencode/sandbox',
-          extra: null,
-          projectID: PROJECT_ID,
-          timeUsed: Date.now(),
-        }),
+        create: async () => ({ id: 'ws_goal', directory: '/tmp/wt/goal', branch: 'forge/goal-loop' }),
+        warp: async () => {},
       },
       session: {
-        create: async () => ({ id: 'sess-sandbox' }),
+        create: async () => ({ id: 'sess-goal' }),
         get: async () => ({}),
       },
     })
+    return { db, loopsRepo, plansRepo, sectionPlansRepo, goalsRepo, loopService, client }
+  }
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-
-    const service = createForgeExecutionService({
+  function buildDeps(
+    h: ReturnType<typeof buildHarness>,
+    logger: Logger = mockLogger,
+    goalsRepo: any = h.goalsRepo,
+  ) {
+    return {
       projectId: PROJECT_ID,
       directory: '/tmp/test',
       config: {
         loop: { enabled: true },
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
+        executionVariant: 'high',
+        auditorVariant: 'audit-high',
       },
-      logger: mockLogger,
+      logger,
       dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
+      gitService: mockGitService,
+      plansRepo: h.plansRepo,
+      loopsRepo: h.loopsRepo,
+      goalsRepo,
       loop: {
-        service: loopService,
-        listActive: (...args: any[]) => loopService.listActive(...args),
-        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
-        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+        service: h.loopService,
+        listActive: (...args: any[]) => h.loopService.listActive(...args),
+        generateUniqueLoopName: (...args: any[]) => h.loopService.generateUniqueLoopName(...args),
+        findMatchByName: (...args: any[]) => h.loopService.findMatchByName(...args),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
         handleAuditorProviderLimit: async () => false,
       } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      sandboxManager: sandboxManager as any,
-      client,
+      loopHandler: {
+        runExclusive: async <T>(_n: string, fn: () => Promise<T>) => fn(),
+        startWatchdog: noopFn,
+        clearLoopTimers: noopFn,
+      } as any,
+      sectionPlansRepo: h.sectionPlansRepo,
+      client: h.client,
       pendingTeardowns: mockPendingTeardowns,
-    })
-
-    return { service, client }
+    }
   }
 
-  test('sandbox: { enabled: false } skips sandbox start, persists sandbox=false, and carries loopSandbox on the workspace extra', async () => {
-    const sandboxManager = createSandboxManager()
-    const { service, client } = await buildService(sandboxManager)
+  function saveDraft(h: ReturnType<typeof buildHarness>, hostSessionId: string) {
+    return h.goalsRepo.saveDraft({
+      projectId: PROJECT_ID,
+      goalId: 'goal-draft',
+      title: 'Goal title',
+      objective: 'Goal objective',
+      tasks: [{ title: 'First task' }],
+      hostSessionId,
+      maxChunks: 3,
+    })
+  }
 
-    const result = await service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.start' as const,
-        source: { kind: 'inline', planText: '# Test Plan\n\nOpted-out sandbox.' },
-        sandbox: { enabled: false },
-      },
-    )
+  const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+
+  test('attaches a draft goal as chunk 1 and snapshots the resolved launch settings', async () => {
+    const h = buildHarness()
+    saveDraft(h, 'host-goal')
+    const service = createForgeExecutionService(buildDeps(h))
+
+    const result = await service.dispatch(ctx, {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Goal Plan\n\nBody.' },
+      hostSessionId: 'host-goal',
+      maxIterations: 7,
+      sandbox: { enabled: false },
+    })
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    expect(result.data.goalId).toBe('goal-draft')
 
-    expect(sandboxManager.start).not.toHaveBeenCalled()
+    const goal = h.goalsRepo.getGoal(PROJECT_ID, 'goal-draft')!
+    expect(goal.status).toBe('running')
+    expect(goal.projectDir).toBe('/tmp/test')
+    expect(goal.executionModel).toBe('prov/exec')
+    expect(goal.auditorModel).toBe('prov/aud')
+    expect(goal.executionVariant).toBe('high')
+    expect(goal.auditorVariant).toBe('audit-high')
+    expect(goal.sandboxSettings).toEqual({ enabled: false })
+    expect(goal.maxIterations).toBe(7)
 
-    expect(client.workspace.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        extra: expect.objectContaining({ loopSandbox: { enabled: false } }),
-      }),
-    )
+    const chunks = h.goalsRepo.listChunks(PROJECT_ID, 'goal-draft')
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]).toMatchObject({
+      chunkIndex: 0,
+      stage: 'running',
+      loopName: result.data.loopName,
+      branch: 'forge/goal-loop',
+      baseCommit: MOCK_BASE_COMMIT,
+      title: result.data.displayName,
+    })
 
-    const state = loopService.getActiveState(result.data.loopName)
-    expect(state).not.toBeNull()
-    expect(state!.sandbox).toBe(false)
-    expect(state!.sandboxSettings).toEqual({ enabled: false })
+    h.db.close()
   })
 
-  test('sandbox resources are persisted on the loop and forwarded to sandbox start', async () => {
-    const sandboxManager = createSandboxManager()
-    const { service, client } = await buildService(sandboxManager)
+  test('without a draft goal nothing changes and no goalId is returned', async () => {
+    const h = buildHarness()
+    const service = createForgeExecutionService(buildDeps(h))
 
-    const resources = { memory: '4g', cpus: '2' }
-    const result = await service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.start' as const,
-        source: { kind: 'inline', planText: '# Test Plan\n\nCustom resources.' },
-        sandbox: { resources },
-      },
-    )
+    const result = await service.dispatch(ctx, {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# No Goal\n\nBody.' },
+      hostSessionId: 'host-none',
+    })
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    expect(result.data.goalId).toBeUndefined()
+    expect(h.goalsRepo.listGoals(PROJECT_ID)).toHaveLength(0)
 
-    expect(client.workspace.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        extra: expect.objectContaining({ loopSandbox: { resources } }),
-      }),
-    )
+    h.db.close()
+  })
 
-    expect(sandboxManager.start).toHaveBeenCalledWith(result.data.loopName, '/tmp/wt/sandbox', undefined, { resources })
+  test('an attachFirstChunk throw is logged and the start still succeeds', async () => {
+    const h = buildHarness()
+    saveDraft(h, 'host-throw')
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const throwingRepo = {
+      ...h.goalsRepo,
+      attachFirstChunk: () => {
+        throw new Error('boom')
+      },
+    }
+    const service = createForgeExecutionService(buildDeps(h, logger, throwingRepo))
 
-    const state = loopService.getActiveState(result.data.loopName)
-    expect(state).not.toBeNull()
-    expect(state!.sandboxSettings).toEqual({ resources })
+    const result = await service.dispatch(ctx, {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Throwing Goal\n\nBody.' },
+      hostSessionId: 'host-throw',
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.goalId).toBeUndefined()
+    expect(logger.error).toHaveBeenCalledWith('handleStartLoop: failed to attach first goal chunk', expect.any(Error))
+
+    h.db.close()
+  })
+
+  test('a deduped concurrent start attaches exactly once', async () => {
+    const h = buildHarness()
+    saveDraft(h, 'host-dedupe')
+    const attachFirstChunk = vi.fn(h.goalsRepo.attachFirstChunk.bind(h.goalsRepo))
+    const repo = { ...h.goalsRepo, attachFirstChunk }
+    const service = createForgeExecutionService(buildDeps(h, mockLogger, repo))
+
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Dedupe Goal\n\nBody.' },
+      hostSessionId: 'host-dedupe',
+    }
+    const [r1, r2] = await Promise.all([service.dispatch(ctx, command), service.dispatch(ctx, command)])
+
+    expect(attachFirstChunk).toHaveBeenCalledTimes(1)
+    expect(r1.ok).toBe(true)
+    expect(r2.ok).toBe(true)
+    expect(h.goalsRepo.getGoal(PROJECT_ID, 'goal-draft')!.status).toBe('running')
+
+    h.db.close()
   })
 })

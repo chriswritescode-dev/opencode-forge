@@ -2,8 +2,8 @@ import type { ToolDefinition } from './tool'
 import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createPlanAuthoringTools } from './plan-authoring'
+import { createGoalTools } from './goal'
 import { createLoopTools } from './loop'
-import { createGroupTools } from './group'
 import { createSectionReadTool } from './section-read'
 import { createPlanAdjustTool } from './plan-adjust'
 import type { ToolContext } from './types'
@@ -21,8 +21,8 @@ export function createTools(ctx: ToolContext): Record<string, ToolDefinition> {
     ...createReviewTools(ctx),
     ...createPlanTools(ctx),
     ...createPlanAuthoringTools(ctx),
+    ...createGoalTools(ctx),
     ...createLoopTools(ctx),
-    ...createGroupTools(ctx),
     'section-read': createSectionReadTool(ctx),
     'plan-adjust': createPlanAdjustTool(ctx),
   }

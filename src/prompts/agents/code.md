@@ -73,7 +73,7 @@ For multi-step work, track progress with a task-tracking tool when one is availa
 Run the narrowest meaningful checks for the change and any checks required by the task or project. Report exactly what ran and its results or limitations. Avoid redundant broad validation once the relevant checks pass.
 
 # Forge custom tools
-- Do not call `execute-goal`, `execute-plan`, `launch-group`, or `loop-cancel` unless the user explicitly asks you to. They launch or stop loops and groups; never invoke them proactively, and do not treat a question about execution as permission to launch them.
+- Do not call `execute-plan`, `loop-cancel`, or `goal-cancel` unless the user explicitly asks you to. They launch or stop loops and goals; never invoke them proactively, and do not treat a question about execution as permission to launch them.
 
 # Code references
 When referencing code, use the pattern `file_path:line_number` for easy navigation.

@@ -14,6 +14,42 @@ function createTempDb(): string {
   return dbPath
 }
 
+/**
+ * Apply every registered migration whose numeric id is <= maxId, skipping ones
+ * already recorded. Lets legacy-repair tests stop before a later migration that
+ * would undo the schema they assert on (e.g. migration 150 removing goal columns).
+ */
+function applyMigrationsThrough(db: Database, maxId: string): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    )
+  `)
+  for (const migration of migrations) {
+    if (Number(migration.id) > Number(maxId)) continue
+    const existing = db.prepare('SELECT id FROM migrations WHERE id = ?').get(migration.id)
+    if (existing) continue
+    migration.apply(db)
+    db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run(migration.id, migration.description, Date.now())
+  }
+}
+
+function applySingleMigration(db: Database, id: string): void {
+  const migration = migrations.find((m) => m.id === id)
+  if (!migration) throw new Error(`migration ${id} not found`)
+  migration.apply(db)
+}
+
+function loopTableColumns(db: Database, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name)
+}
+
+function indexExists(db: Database, name: string): boolean {
+  return (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?").all(name) as unknown[]).length > 0
+}
+
 test('openForgeDatabase creates all new tables', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)
@@ -709,7 +745,8 @@ test('migration 132 is idempotent on re-opened databases', () => {
 
 test('migration 135 adds loop_kind to loops and goal to loop_large_fields on fresh databases', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '135')
 
   const loopsCols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
   expect(loopsCols.some((c) => c.name === 'loop_kind')).toBe(true)
@@ -863,7 +900,8 @@ function buildLegacyPost134Db(partial: { loopKind?: boolean; goal?: boolean } = 
 test('migration 135 backfills loop_kind=plan on legacy rows and accepts goal kind', () => {
   const dbPath = buildLegacyPost134Db()
 
-  const migrated = openForgeDatabase(dbPath)
+  const migrated = new Database(dbPath)
+  applyMigrationsThrough(migrated, '135')
 
   // loop_kind column now exists and legacy rows hydrate as 'plan'
   const loopCols = migrated.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
@@ -898,10 +936,12 @@ test('migration 135 backfills loop_kind=plan on legacy rows and accepts goal kin
 test('migration 135 is idempotent on re-opened databases', () => {
   const dbPath = createTempDb()
 
-  const db1 = openForgeDatabase(dbPath)
+  const db1 = new Database(dbPath)
+  applyMigrationsThrough(db1, '135')
   db1.close()
 
-  const db2 = openForgeDatabase(dbPath)
+  const db2 = new Database(dbPath)
+  applyMigrationsThrough(db2, '135')
 
   const loopsCols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
   expect(loopsCols.some((c) => c.name === 'loop_kind')).toBe(true)
@@ -918,7 +958,8 @@ test('migration 135 repairs partial legacy schema with only loop_kind present', 
   // loop_kind already exists on loops, but goal is absent from loop_large_fields.
   const dbPath = buildLegacyPost134Db({ loopKind: true })
 
-  const migrated = openForgeDatabase(dbPath)
+  const migrated = new Database(dbPath)
+  applyMigrationsThrough(migrated, '135')
 
   // loop_kind preserved and still defaults the legacy row to 'plan'
   const loopsCols = migrated.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
@@ -940,7 +981,8 @@ test('migration 135 repairs partial legacy schema with only goal present', () =>
   // goal already exists on loop_large_fields, but loop_kind is absent on loops.
   const dbPath = buildLegacyPost134Db({ goal: true })
 
-  const migrated = openForgeDatabase(dbPath)
+  const migrated = new Database(dbPath)
+  applyMigrationsThrough(migrated, '135')
 
   // loop_kind added and backfills the pre-existing legacy row to 'plan'
   const loopsCols = migrated.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
@@ -960,7 +1002,8 @@ test('migration 135 repairs partial legacy schema with only goal present', () =>
 
 test('migration 136 adds nullable executor_session_id column to loops on fresh databases', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '136')
 
   const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
   const execCol = cols.find((c) => c.name === 'executor_session_id')
@@ -974,10 +1017,12 @@ test('migration 136 adds nullable executor_session_id column to loops on fresh d
 test('migration 136 is idempotent on re-opened databases', () => {
   const dbPath = createTempDb()
 
-  const db1 = openForgeDatabase(dbPath)
+  const db1 = new Database(dbPath)
+  applyMigrationsThrough(db1, '136')
   db1.close()
 
-  const db2 = openForgeDatabase(dbPath)
+  const db2 = new Database(dbPath)
+  applyMigrationsThrough(db2, '136')
 
   const cols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
   expect(cols.filter((c) => c.name === 'executor_session_id').length).toBe(1)
@@ -1005,7 +1050,8 @@ test('migration 137 replaces idx_loops_session with partial unique index on runn
 
 test('migration 137 adds idx_loops_executor_session partial index', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '137')
 
   const idxRow = db.prepare(
     "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_executor_session'"
@@ -1071,10 +1117,12 @@ test('migration 137 preserves existing running loop unique session constraint', 
 test('migration 137 is idempotent on re-opened databases', () => {
   const dbPath = createTempDb()
 
-  const db1 = openForgeDatabase(dbPath)
+  const db1 = new Database(dbPath)
+  applyMigrationsThrough(db1, '137')
   db1.close()
 
-  const db2 = openForgeDatabase(dbPath)
+  const db2 = new Database(dbPath)
+  applyMigrationsThrough(db2, '137')
 
   const sessionIdx = db2.prepare(
     "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'"
@@ -1386,4 +1434,316 @@ test('migration 149 is idempotent on re-opened databases', () => {
   expect(count.count).toBe(1)
 
   db2.close()
+})
+
+const PER_LOOP_TABLES = [
+  'loop_large_fields',
+  'section_plans',
+  'review_findings',
+  'plans',
+  'loop_transitions',
+  'loop_attempts',
+  'loop_session_usage',
+  'plan_amendments',
+]
+
+function insertLoopFixtures(db: Database, projectId: string, loopName: string, kind: 'plan' | 'goal'): void {
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, loop_kind, executor_session_id)
+    VALUES (?, ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1, ?, ?)
+  `).run(projectId, loopName, `sess-${loopName}`, kind, kind === 'goal' ? `exec-${loopName}` : null)
+  db.prepare(`INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result, goal) VALUES (?, ?, 'audit', ?)`)
+    .run(projectId, loopName, kind === 'goal' ? 'the goal' : null)
+  db.prepare(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, created_at) VALUES (?, ?, 0, 'S1', 'c1', 1)`)
+    .run(projectId, loopName)
+  db.prepare(`INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, section_index, created_at) VALUES (?, ?, 'src/a.ts', 1, 'bug', 'd', 0, 1)`)
+    .run(projectId, loopName)
+  db.prepare(`INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, 'plan content', 1)`)
+    .run(projectId, loopName)
+  db.prepare(`INSERT INTO loop_transitions (project_id, loop_name, event_type, transition_kind, from_phase, created_at) VALUES (?, ?, 'phase', 'phase', 'coding', 1)`)
+    .run(projectId, loopName)
+  db.prepare(`INSERT INTO loop_attempts (project_id, loop_name, scope, attempt_number, source_session_id, completion_key, iteration, worktree_dir, plan_hash, findings_before, created_at) VALUES (?, ?, 'section:0', 1, 's', 'k', 1, '/tmp/wt', 'h', '[]', 1)`)
+    .run(projectId, loopName)
+  db.prepare(`INSERT INTO loop_session_usage (project_id, loop_name, session_id, role, model, captured_at) VALUES (?, ?, 's', 'code', 'm', 1)`)
+    .run(projectId, loopName)
+  db.prepare(`INSERT INTO plan_amendments (project_id, loop_name, rationale, applied_at_section, sections_before, sections_after, created_at) VALUES (?, ?, 'r', 0, '[]', '[]', 1)`)
+    .run(projectId, loopName)
+}
+
+function countLoopRows(db: Database, table: string, projectId: string, loopName: string): number {
+  return (db.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE project_id = ? AND loop_name = ?`).get(projectId, loopName) as { c: number }).c
+}
+
+test('migration 150 deletes goal loops and their dependent rows, then drops the goal columns and index', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '149')
+
+  insertLoopFixtures(db, 'p1', 'goal-loop', 'goal')
+  insertLoopFixtures(db, 'p1', 'plan-loop', 'plan')
+
+  expect(indexExists(db, 'idx_loops_executor_session')).toBe(true)
+
+  applySingleMigration(db, '150')
+
+  // The goal loop and every dependent per-loop row are gone.
+  expect(countLoopRows(db, 'loops', 'p1', 'goal-loop')).toBe(0)
+  for (const table of PER_LOOP_TABLES) {
+    expect(countLoopRows(db, table, 'p1', 'goal-loop'), table).toBe(0)
+  }
+
+  // The plan loop and all of its dependent rows survive untouched.
+  expect(countLoopRows(db, 'loops', 'p1', 'plan-loop')).toBe(1)
+  for (const table of PER_LOOP_TABLES) {
+    expect(countLoopRows(db, table, 'p1', 'plan-loop'), table).toBe(1)
+  }
+
+  // The goal columns and the executor index no longer exist.
+  expect(loopTableColumns(db, 'loops')).not.toContain('loop_kind')
+  expect(loopTableColumns(db, 'loops')).not.toContain('executor_session_id')
+  expect(loopTableColumns(db, 'loop_large_fields')).not.toContain('goal')
+  expect(indexExists(db, 'idx_loops_executor_session')).toBe(false)
+
+  db.close()
+})
+
+test('migration 150 is a no-op when applied twice', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '149')
+
+  insertLoopFixtures(db, 'p1', 'goal-loop', 'goal')
+  insertLoopFixtures(db, 'p1', 'plan-loop', 'plan')
+
+  applySingleMigration(db, '150')
+  expect(() => applySingleMigration(db, '150')).not.toThrow()
+
+  expect(countLoopRows(db, 'loops', 'p1', 'goal-loop')).toBe(0)
+  expect(countLoopRows(db, 'loops', 'p1', 'plan-loop')).toBe(1)
+  expect(loopTableColumns(db, 'loops')).not.toContain('loop_kind')
+  expect(loopTableColumns(db, 'loops')).not.toContain('executor_session_id')
+  expect(loopTableColumns(db, 'loop_large_fields')).not.toContain('goal')
+
+  db.close()
+})
+
+test('migration 150 does not fail on a schema that already lacks the goal columns', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '134')
+
+  expect(loopTableColumns(db, 'loops')).not.toContain('loop_kind')
+  expect(loopTableColumns(db, 'loops')).not.toContain('executor_session_id')
+  expect(loopTableColumns(db, 'loop_large_fields')).not.toContain('goal')
+
+  expect(() => applySingleMigration(db, '150')).not.toThrow()
+
+  db.close()
+})
+
+test('migration 151 drops feature_groups and group_features on a fully migrated database', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  const names = tables.map((t) => t.name)
+  expect(names).not.toContain('feature_groups')
+  expect(names).not.toContain('group_features')
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('151') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 151 drops both group tables and their rows', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '150')
+
+  db.prepare(`
+    INSERT INTO feature_groups (project_id, group_id, title, status, max_concurrent, created_at, updated_at)
+    VALUES ('p1', 'g-1', 'Group One', 'running', 3, 1, 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO group_features (project_id, group_id, feature_index, title, description, stage, attempts, created_at, updated_at)
+    VALUES ('p1', 'g-1', 0, 'Feature A', 'a', 'pending', 0, 1, 1)
+  `).run()
+
+  applySingleMigration(db, '151')
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  const names = tables.map((t) => t.name)
+  expect(names).not.toContain('feature_groups')
+  expect(names).not.toContain('group_features')
+
+  db.close()
+})
+
+test('migration 151 is a no-op when applied twice', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '150')
+
+  applySingleMigration(db, '151')
+  expect(() => applySingleMigration(db, '151')).not.toThrow()
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  expect(tables.map((t) => t.name)).not.toContain('feature_groups')
+
+  db.close()
+})
+
+test('migration 152 adds nullable base_commit to loops and is idempotent', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
+  const col = cols.find((c) => c.name === 'base_commit')
+  expect(col).toBeDefined()
+  // Nullable text so loops persisted before this column hydrate as "no base commit".
+  expect(col!.notnull).toBe(0)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-base', 'running', 'sess-base', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  const row = db.prepare("SELECT base_commit FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-base'").get() as { base_commit: string | null }
+  expect(row.base_commit).toBeNull()
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('152') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 152 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+  const cols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'base_commit').length).toBe(1)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('152') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})
+
+test('migration 152 is a no-op when applied twice', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '151')
+
+  applySingleMigration(db, '152')
+  expect(() => applySingleMigration(db, '152')).not.toThrow()
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'base_commit').length).toBe(1)
+
+  db.close()
+})
+
+test('migration 153 creates goals and goal_chunks tables with indexes', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  const names = tables.map((t) => t.name)
+  expect(names).toContain('goals')
+  expect(names).toContain('goal_chunks')
+
+  const goalCols = db.prepare('PRAGMA table_info(goals)').all() as Array<{ name: string; pk: number; notnull: number }>
+  expect(goalCols.map((c) => c.name)).toEqual(expect.arrayContaining([
+    'project_id', 'goal_id', 'title', 'objective', 'tasks', 'host_session_id', 'project_dir',
+    'status', 'max_chunks', 'execution_model', 'auditor_model', 'execution_variant',
+    'auditor_variant', 'sandbox_settings', 'max_iterations', 'error', 'created_at', 'updated_at',
+    'completed_at',
+  ]))
+  expect(goalCols.find((c) => c.name === 'project_id')?.pk).toBe(1)
+  expect(goalCols.find((c) => c.name === 'goal_id')?.pk).toBe(2)
+  expect(goalCols.find((c) => c.name === 'tasks')?.notnull).toBe(1)
+
+  const chunkCols = db.prepare('PRAGMA table_info(goal_chunks)').all() as Array<{ name: string; pk: number }>
+  expect(chunkCols.map((c) => c.name)).toEqual(expect.arrayContaining([
+    'project_id', 'goal_id', 'chunk_index', 'stage', 'title', 'planner_session_id',
+    'planning_dir', 'base_commit', 'loop_name', 'branch', 'summary', 'created_at', 'updated_at',
+  ]))
+  expect(chunkCols.find((c) => c.name === 'chunk_index')?.pk).toBe(3)
+
+  const draftIdx = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_goals_one_draft'").get() as { sql: string } | null
+  expect(draftIdx).not.toBeNull()
+  expect(draftIdx!.sql).toContain('UNIQUE')
+  expect(draftIdx!.sql).toContain("status = 'draft'")
+  expect(indexExists(db, 'idx_goals_session')).toBe(true)
+  expect(indexExists(db, 'idx_goal_chunks_loop')).toBe(true)
+  expect(indexExists(db, 'idx_goal_chunks_planner')).toBe(true)
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('153') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 153 rejects goal and chunk rows with an unknown status or stage', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  expect(() => {
+    db.prepare(`
+      INSERT INTO goals (project_id, goal_id, title, objective, host_session_id, status, max_chunks, created_at, updated_at)
+      VALUES ('p1', 'g1', 't', 'o', 's', 'bogus', 1, 1, 1)
+    `).run()
+  }).toThrow(/CHECK constraint failed/)
+
+  db.prepare(`
+    INSERT INTO goals (project_id, goal_id, title, objective, host_session_id, status, max_chunks, created_at, updated_at)
+    VALUES ('p1', 'g1', 't', 'o', 's', 'draft', 1, 1, 1)
+  `).run()
+
+  expect(() => {
+    db.prepare(`
+      INSERT INTO goal_chunks (project_id, goal_id, chunk_index, stage, created_at, updated_at)
+      VALUES ('p1', 'g1', 0, 'bogus', 1, 1)
+    `).run()
+  }).toThrow(/CHECK constraint failed/)
+
+  db.close()
+})
+
+test('migration 153 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+  const tables = db2.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  const names = tables.map((t) => t.name)
+  expect(names.filter((n) => n === 'goals').length).toBe(1)
+  expect(names.filter((n) => n === 'goal_chunks').length).toBe(1)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('153') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})
+
+test('migration 153 is a no-op when applied twice', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '152')
+
+  applySingleMigration(db, '153')
+  expect(() => applySingleMigration(db, '153')).not.toThrow()
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  const names = tables.map((t) => t.name)
+  expect(names.filter((n) => n === 'goals').length).toBe(1)
+  expect(names.filter((n) => n === 'goal_chunks').length).toBe(1)
+
+  db.close()
 })

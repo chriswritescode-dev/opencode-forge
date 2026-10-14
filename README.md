@@ -76,18 +76,19 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 ## Features
 
 - **Plans** — architect authors validated plans directly into SQL storage with `plan-write`/`plan-edit`
-- **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; grouped execution launches features from a PRD as parallel loops
+- **Execution** — approved-plan launch paths in dedicated worktree sessions
 - **Loops** — iterative coding/auditing with an isolated git worktree and optional msb sandbox
+- **Goals** — `/goal` runs an objective as a sequence of chunk loops, each planned by `architect-auto` and stacked on the previous chunk's branch
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — loop sidebar, a unified execution dialog with model, variant, and per-loop launch settings, and per-session host-sandbox and auto-approve toggles
-- **Dashboard** — a repo shell for loops, groups, findings, and plans, with loop state
+- **Dashboard** — a repo shell for loops, goals, findings, and plans, with loop state
 
 ## Documentation
 
 - [Agents and Slash Commands](docs/agents-and-commands.md) — the bundled `code`, `architect`, and `auditor` agents, hidden loop agents, and every slash command.
-- [Planning and Execution Workflow](docs/workflow.md) — how the architect authors plans, the three execution modes, variants, and grouped execution.
+- [Planning and Execution Workflow](docs/workflow.md) — how the architect authors plans, the three execution modes, variants, and the `/goal` multi-chunk workflow.
 - [Tools Reference](docs/tools.md) — full arguments, section-scoping behavior, restart options, and sandbox shell details.
-- [Loop System](docs/loop-system.md) — phases, section lifecycle, review findings, session rotation, stall detection, model configuration, and termination.
+- [Loop System](docs/loop-system.md) — phases, section lifecycle, goals, review findings, session rotation, stall detection, model configuration, and termination.
 - [TUI Plugin](docs/tui.md) — sidebar, palette commands, the execution dialog, per-loop launch settings, per-session auto-approve, model selection, and setup.
 - [Dashboard](docs/dashboard.md) — views, hash deep links, and the HTTP API.
 - [Workspace Integration](docs/workspaces.md) — OpenCode workspace registration, requirements, and failure behavior.

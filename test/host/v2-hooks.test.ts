@@ -122,7 +122,7 @@ describe('toV1ToolName', () => {
     expect(toV1ToolName('write')).toBe('write')
     expect(toV1ToolName('glob')).toBe('glob')
     expect(toV1ToolName('grep')).toBe('grep')
-    expect(toV1ToolName('execute-goal')).toBe('execute-goal')
+    expect(toV1ToolName('execute-plan')).toBe('execute-plan')
   })
 })
 

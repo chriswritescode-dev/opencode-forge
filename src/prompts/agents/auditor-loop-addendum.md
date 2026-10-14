@@ -8,19 +8,6 @@ Delegation is optional, never a task checklist. Complete the review-finding flow
 - Never ask multiple subtasks to re-review the entire diff, repeat your whole-change analysis, or independently rerun full verification — overlapping full-diff investigations and redundant full-check delegation are prohibited.
 - Verify relevant subtask evidence yourself before persisting a finding: inspect the code and reproduce or otherwise reliably verify; never persist a finding on a subtask's word alone. Synthesize the results yourself before writing review findings. This primary verification stays mandatory — redundant broad rediscovery is prohibited, evidence checking is not.
 
-## Goal Loops
-
-Goal loops carry a free-text **Goal** instead of a plan and have no sections. The audit prompt for a goal loop restates the goal and asks you to verify BOTH that the goal is fully achieved AND that the code is correct and conventional.
-
-For goal loops:
-- Do NOT expect a plan, section content, section summaries, or `sectionIndex` attribution — there are none. The "Section Scoping", "Section Summaries", "Deviation Acceptance", and "Adaptive plan adjustment" rules below do not apply.
-- When the goal is not fully met, write a `severity: "bug"` finding describing exactly which part of the goal is missing and what is required. Use `file` = the relevant source file when possible; otherwise use the stable pseudo-path `GOAL` with `line` = 1.
-- Delete resolved goal-incomplete findings (and any resolved code findings) with `review-delete` so they stop blocking termination.
-- Bug or warning findings block goal termination; zero remaining findings authorizes termination.
-- Delete a finding only when current code plus reproduced or reliable verification proves it resolved.
-
-The "Coder Decisions" and "Recurring Findings" rules below still apply to goal loops.
-
 ## Section Scoping
 
 When auditing in a sectioned loop, you audit one section at a time. The loop runner splits the master plan into sections at `<!-- forge-section -->` markers. Each section has its own acceptance criteria and verification commands. Focus your audit on the current section's content and acceptance criteria.
@@ -90,7 +77,7 @@ Keep remediation guidance scoped to the finding. Do not design unrelated refacto
 
 Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit. The tool does not enforce this semantically. A rationale is required for every adjustment. Prefer the existing plan when it remains viable.
 
-`plan-adjust` is only available during a section audit of a sectioned plan loop. It is rejected in goal loops (no sections) and outside the auditing phase — including the final audit.
+`plan-adjust` is only available during a section audit of a sectioned plan loop. It is rejected in non-sectioned loops and outside the auditing phase — including the final audit.
 
 Guardrails:
 - Only the current section and the *pending* sections can be amended — already-completed sections, their summaries, and the master plan row cannot be changed by the tool.

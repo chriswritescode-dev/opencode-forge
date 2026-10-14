@@ -59,6 +59,17 @@ export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extr
   return typeof loopName === 'string' && loopName.length > 0 ? loopName : undefined
 }
 
+/** Workspace `extra` key carrying the explicit base ref a loop worktree is branched from. */
+export const FORGE_BASE_REF_EXTRA_KEY = 'baseRef'
+
+/** Reads the optional explicit base ref a loop worktree is branched from, or undefined when absent. */
+export function getForgeWorkspaceBaseRef(entry: { extra?: unknown }): string | undefined {
+  const extra = entry.extra
+  if (typeof extra !== 'object' || extra === null) return undefined
+  const raw = (extra as Record<string, unknown>)[FORGE_BASE_REF_EXTRA_KEY]
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+}
+
 export function getForgeWorkspacePermissionRules(entry: Pick<ForgeWorkspaceEntry, 'extra'>): PermissionRule[] {
   const raw = entry.extra?.permissionRules
   if (!Array.isArray(raw)) return []
@@ -99,6 +110,8 @@ export async function createBuiltinWorktreeWorkspace(
   options: {
     loopName: string
     directory: string
+    /** Explicit base ref the new loop worktree branches from; omitted for the project HEAD. */
+    baseRef?: string
     /** Caller-supplied extra fields preserved onto the new workspace (e.g. portable permission rules). */
     extra?: Record<string, unknown>
   },
@@ -111,14 +124,17 @@ export async function createBuiltinWorktreeWorkspace(
   try {
     const _wsStart = Date.now()
     ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)
+    const callerExtra: Record<string, unknown> = { ...(options.extra ?? {}) }
+    delete callerExtra[FORGE_BASE_REF_EXTRA_KEY]
     const createParams: { type: string; branch: string | null; extra: Record<string, unknown> } = {
       type: 'forge',
       branch: null,
       extra: {
-        ...options.extra,
+        ...callerExtra,
         loopName: options.loopName,
         projectDirectory: options.directory,
         workspaceCreatedAt: Date.now(),
+        ...(options.baseRef ? { [FORGE_BASE_REF_EXTRA_KEY]: options.baseRef } : {}),
       },
     }
     const workspaceData = await client.workspace.create(createParams)

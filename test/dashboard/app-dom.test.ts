@@ -49,7 +49,6 @@ function makeLoop(over: Record<string, any> = {}): any {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
-      kind: 'plan',
       ...loopOver,
     },
     lastAuditResult: null,
@@ -77,8 +76,8 @@ function makePayload(over: Record<string, any> = {}): any {
   // for keyed reconcile.
   const loops = over.loops
   delete over.loops
-  const groups = over.groups ?? []
-  delete over.groups
+  const goals = over.goals ?? []
+  delete over.goals
   const unexecutedPlans = over.unexecutedPlans ?? []
   delete over.unexecutedPlans
   return {
@@ -89,7 +88,7 @@ function makePayload(over: Record<string, any> = {}): any {
         projectId: 'p1',
         projectDir: '/proj/p1',
         loops: loops ?? [makeLoop({ ...dashLoopOver, loop: loopOver })],
-        groups,
+        goals,
         unexecutedPlans,
         unexecutedPlanCount: over.unexecutedPlanCount ?? unexecutedPlans.length,
       },
@@ -2302,16 +2301,6 @@ describe('dashboard App loop detail tabs', () => {
     })
   }
 
-  function goalLoopFixture(): any {
-    return makePayload({
-      dashLoop: {
-        goal: 'GOAL TEXT',
-        plan: null,
-        sections: [],
-        loop: { kind: 'goal', totalSections: 0 },
-      },
-    })
-  }
   test('opening a plan loop builds only the active tab body and builds Usage on first activation', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = planLoopFixture()
@@ -2382,20 +2371,6 @@ describe('dashboard App loop detail tabs', () => {
     const planMd3 = planBody.querySelector('.markdown-content') as HTMLElement
     expect(planMd3).toBe(planMd)
     expect(planMd3.innerHTML).toContain('PLAN TWO')
-  })
-
-  test('opening a goal loop renders no Sections tab and its Overview contains the goal text', async () => {
-    window.location.hash = '#p1/loop/loop-a'
-    payload = goalLoopFixture()
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const tabs = Array.from(container.querySelectorAll('.tab-item')).map((i: HTMLElement) => i.dataset.tab)
-    expect(tabs).not.toContain('sections')
-    // Overview is active and its body contains the goal markdown.
-    const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    expect(overviewBody.style.display).not.toBe('none')
-    expect(overviewBody.querySelector('.markdown-content')?.innerHTML).toContain('GOAL TEXT')
   })
 
   test('clicking the Usage tab writes #p1/loop/loop-a/usage and shows the usage body', async () => {
@@ -3040,7 +3015,7 @@ describe('dashboard App breadcrumb loop picker', () => {
 })
 
 describe('dashboard App overview tab content', () => {
-  test('overview renders a metadata strip with models, branch, sandbox, kind, audits, and errors', async () => {
+  test('overview renders a metadata strip with models, branch, sandbox, audits, and errors', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
       loop: {
@@ -3048,7 +3023,6 @@ describe('dashboard App overview tab content', () => {
         auditorModel: 'audit-m',
         worktreeBranch: 'feat/branch-x',
         sandbox: true,
-        kind: 'goal',
         auditCount: 3,
         errorCount: 2,
       },
@@ -3068,7 +3042,6 @@ describe('dashboard App overview tab content', () => {
     expect(groupText).toContain('audit-m')
     expect(groupText).toContain('feat/branch-x')
     expect(groupText).toContain('on')
-    expect(groupText).toContain('goal')
     expect(groupText).toContain('Audits')
     expect(groupText).toContain('3')
     expect(groupText).toContain('Errors')
@@ -3115,7 +3088,6 @@ describe('dashboard App overview tab content', () => {
         auditorModel: 'audit-m',
         worktreeBranch: 'feat/branch-x',
         sandbox: true,
-        kind: 'goal',
         auditCount: 3,
         errorCount: 2,
       },
@@ -3136,7 +3108,6 @@ describe('dashboard App overview tab content', () => {
     const env = groups[2]
     expect(env.textContent).toContain('feat/branch-x')
     expect(env.textContent).toContain('on')
-    expect(env.textContent).toContain('goal')
     expect(env.textContent).toContain('Audits')
     expect(env.textContent).toContain('3')
     expect(env.textContent).toContain('Errors')
@@ -3214,25 +3185,6 @@ describe('dashboard App overview tab content', () => {
     expect(findings.classList.contains('ldh-cell-warn')).toBe(true)
     expect(findings.querySelector('.ldh-cell-value')!.textContent).toContain('1 warning')
     expect(overviewBody.textContent).not.toContain('0 bug')
-  })
-
-  test('overview goal markdown renders before the loop-detail-header', async () => {
-    window.location.hash = '#p1/loop/loop-a'
-    payload = makePayload({
-      dashLoop: { goal: 'GOAL TEXT', plan: null, sections: [], loop: { kind: 'goal', totalSections: 0 } },
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const goalSection = Array.from(overviewBody.querySelectorAll('.markdown-section'))
-      .find(s => s.querySelector('.section-label')?.textContent === 'Goal') as HTMLElement
-    const header = overviewBody.querySelector('.loop-detail-header') as HTMLElement
-    expect(goalSection).toBeTruthy()
-    expect(header).toBeTruthy()
-    // The goal section precedes the header in document order.
-    const pos = goalSection.compareDocumentPosition(header)
-    expect(pos & Node.DOCUMENT_POSITION_FOLLOWING).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
   })
 
   test('overview renders postActionReport when present, taking precedence over completionSummary', async () => {
@@ -3395,22 +3347,6 @@ describe('dashboard App overview tab content', () => {
     expect(auditRow.querySelector('.usage-model-cost')?.textContent).toBe('$1.00')
     expect((execRow.querySelector('.usage-model-fill') as HTMLElement).style.width).toBe('100%')
     expect((auditRow.querySelector('.usage-model-fill') as HTMLElement).style.width).toBe('50%')
-  })
-
-  test('a goal loop loaded at /plan canonicalizes the hash to overview', async () => {
-    window.location.hash = '#p1/loop/loop-a/plan'
-    payload = makePayload({
-      dashLoop: { goal: 'GOAL TEXT', plan: null, sections: [], loop: { kind: 'goal', totalSections: 0 } },
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    // Plan tab is unavailable for a goal loop with no plan; URL canonicalizes
-    // to the loop route (overview is the default and omitted from the hash).
-    expect(location.hash).toBe('#p1/loop/loop-a')
-    const active = container.querySelector('.tab-item.tab-active') as HTMLElement
-    expect(active?.dataset.tab).toBe('overview')
-    expect(container.querySelector('.tab-item[data-tab="plan"]')).toBeFalsy()
   })
 
   test('a poll that removes the active conditional tab canonicalizes back to overview', async () => {
@@ -4014,490 +3950,6 @@ describe('dashboard App timeline tab', () => {
   })
 })
 
-describe('dashboard App groups section', () => {
-  function makeGroup(over: Record<string, any> = {}): any {
-    const groupOver = over.group || {}
-    delete over.group
-    return {
-      id: groupOver.groupId ?? 'g-abc',
-      group: {
-        projectId: 'p1',
-        groupId: 'g-abc',
-        title: 'Group ABC',
-        status: 'running',
-        maxConcurrent: 3,
-        executionModel: null,
-        auditorModel: null,
-        splitterSessionId: null,
-        hostSessionId: null,
-        error: null,
-        createdAt: 1700000000000,
-        updatedAt: 1700000000000,
-        completedAt: null,
-        prdPreview: null,
-        ...groupOver,
-      },
-      features: [],
-      ...over,
-    }
-  }
-
-  function makeFeature(over: Record<string, any> = {}): any {
-    return {
-      projectId: 'p1',
-      groupId: 'g-abc',
-      featureIndex: 0,
-      title: 'Feature',
-      description: 'd',
-      stage: 'pending',
-      architectSessionId: null,
-      loopName: null,
-      error: null,
-      attempts: 0,
-      createdAt: 1700000000000,
-      updatedAt: 1700000000000,
-      ...over,
-    }
-  }
-
-  test('#p1/groups renders one .group-row per group with a features meter', async () => {
-    window.location.hash = '#p1/groups'
-    payload = makePayload({
-      groups: [
-        makeGroup({ group: { groupId: 'g-a', title: 'A' } }),
-        makeGroup({ group: { groupId: 'g-b', title: 'B' } }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const rows = Array.from(container.querySelectorAll('.group-row')) as HTMLElement[]
-    expect(rows.length).toBe(2)
-    expect(rows.every(r => r.querySelector('.lt-meter-cell'))).toBe(true)
-    // Loop table is hidden on the groups section.
-    expect(container.querySelector('table.loop-table')).toBeFalsy()
-  })
-
-  test('#p1/groups/g-abc renders one .feature-row per feature', async () => {
-    window.location.hash = '#p1/groups/g-abc'
-    payload = makePayload({
-      groups: [
-        makeGroup({
-          features: [
-            makeFeature({ featureIndex: 0, title: 'F0' }),
-            makeFeature({ featureIndex: 1, title: 'F1' }),
-            makeFeature({ featureIndex: 2, title: 'F2' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const rows = Array.from(container.querySelectorAll('.feature-row')) as HTMLElement[]
-    expect(rows.length).toBe(3)
-    expect(rows.map(r => r.querySelector('.feature-index')?.textContent)).toEqual(['#0', '#1', '#2'])
-  })
-
-  test('a feature with a loopName in the payload renders a link; one without renders its stage as text', async () => {
-    window.location.hash = '#p1/groups/g-abc'
-    payload = makePayload({
-      loops: [
-        makeLoop({ loop: { loopName: 'loop-linked', status: 'running' } }),
-      ],
-      groups: [
-        makeGroup({
-          features: [
-            makeFeature({ featureIndex: 0, title: 'Linked', stage: 'running', loopName: 'loop-linked' }),
-            makeFeature({ featureIndex: 1, title: 'Pending', stage: 'pending' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const rows = Array.from(container.querySelectorAll('.feature-row')) as HTMLElement[]
-    expect(rows.length).toBe(2)
-    const linked = rows[0]
-    const pending = rows[1]
-    expect(linked.querySelector('.feature-loop-link')).toBeTruthy()
-    expect(linked.querySelector('.feature-loop-link')!.textContent).toBe('loop-linked')
-    // The anchor targets the canonical project-aware loop hash, not the index.
-    expect(linked.querySelector('.feature-loop-link')!.getAttribute('href')).toBe('#p1/loop/loop-linked')
-    // Pending feature has no loop link, but renders its stage as a stage badge.
-    expect(pending.querySelector('.feature-loop-link')).toBeFalsy()
-    expect(pending.querySelector('.feature-stage')!.textContent).toBe('pending')
-  })
-
-  test('a feature loop link encodes its loop name and primary clicks still navigate', async () => {
-    window.location.hash = '#p1/groups/g-abc'
-    payload = makePayload({
-      loops: [
-        makeLoop({ loop: { loopName: 'loop with space/Slash', status: 'running' } }),
-      ],
-      groups: [
-        makeGroup({
-          features: [
-            makeFeature({ featureIndex: 0, title: 'Linked', stage: 'running', loopName: 'loop with space/Slash' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const anchor = container.querySelector('.feature-loop-link') as HTMLAnchorElement
-    expect(anchor).toBeTruthy()
-    expect(anchor.getAttribute('href')).toBe('#p1/loop/loop%20with%20space%2FSlash')
-    // Primary click navigates via the SPA handler without a full reload.
-    anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-    await flush()
-    expect(location.hash).toBe('#p1/loop/loop%20with%20space%2FSlash')
-  })
-
-  test('modified primary clicks on a feature loop link preserve native anchor behavior', async () => {
-    window.location.hash = '#p1/groups/g-abc'
-    payload = makePayload({
-      loops: [
-        makeLoop({ loop: { loopName: 'loop-linked', status: 'running' } }),
-      ],
-      groups: [
-        makeGroup({
-          features: [
-            makeFeature({ featureIndex: 0, title: 'Linked', stage: 'running', loopName: 'loop-linked' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const anchor = container.querySelector('.feature-loop-link') as HTMLAnchorElement
-    expect(anchor).toBeTruthy()
-    // Unmodified primary click → SPA intercepts and prevents the anchor default.
-    const primaryEvt = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
-    anchor.dispatchEvent(primaryEvt)
-    await flush()
-    expect(primaryEvt.defaultPrevented).toBe(true)
-    expect(location.hash).toBe('#p1/loop/loop-linked')
-
-    // Restore the group route before verifying modified clicks.
-    window.location.hash = '#p1/groups/g-abc'
-    await flush()
-    for (const init of [
-      { metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true },
-    ]) {
-      const evt = new MouseEvent('click', { bubbles: true, cancelable: true, ...init })
-      anchor.dispatchEvent(evt)
-      await flush()
-      // SPA handler must not intercept; the browser keeps native anchor behavior.
-      expect(evt.defaultPrevented).toBe(false)
-    }
-  })
-
-  test('a feature with stage failed renders its error text', async () => {
-    window.location.hash = '#p1/groups/g-abc'
-    payload = makePayload({
-      groups: [
-        makeGroup({
-          features: [
-            makeFeature({ featureIndex: 0, title: 'Boom', stage: 'failed', error: 'explosion' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const row = container.querySelector('.feature-row') as HTMLElement
-    expect(row).toBeTruthy()
-    expect(row.querySelector('.feature-error')?.textContent).toContain('explosion')
-  })
-
-  test('a completed group row exposes both created and completed timestamps; an active row exposes only created', async () => {
-    window.location.hash = '#p1/groups'
-    payload = makePayload({
-      groups: [
-        makeGroup({ id: 'g-active', group: { groupId: 'g-active', title: 'Active', status: 'running', createdAt: 1700000000000 } }),
-        makeGroup({ id: 'g-done', group: { groupId: 'g-done', title: 'Completed', status: 'completed', createdAt: 1700000000000, completedAt: 1700000500000 } }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const rows = Array.from(container.querySelectorAll('.group-row')) as HTMLElement[]
-    const active = rows.find(r => r.querySelector('.group-row-title')?.textContent === 'Active')!
-    const completed = rows.find(r => r.querySelector('.group-row-title')?.textContent === 'Completed')!
-    expect(active).toBeTruthy()
-    expect(completed).toBeTruthy()
-    expect(active.querySelector('.group-row-created')).toBeTruthy()
-    expect(active.querySelector('.group-row-completed')).toBeFalsy()
-    expect(completed.querySelector('.group-row-created')).toBeTruthy()
-    expect(completed.querySelector('.group-row-completed')).toBeTruthy()
-  })
-
-  test('an interrupted group carries a distinct class from a completed one', async () => {
-    window.location.hash = '#p1/groups'
-    payload = makePayload({
-      groups: [
-        makeGroup({ id: 'g-int', group: { groupId: 'g-int', title: 'Interrupted', status: 'interrupted' } }),
-        makeGroup({ id: 'g-done', group: { groupId: 'g-done', title: 'Completed', status: 'completed', completedAt: 1700000500000 } }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const rows = Array.from(container.querySelectorAll('.group-row')) as HTMLElement[]
-    expect(rows.length).toBe(2)
-    const interrupted = rows.find(r => r.querySelector('.group-row-title')?.textContent === 'Interrupted')!
-    const completed = rows.find(r => r.querySelector('.group-row-title')?.textContent === 'Completed')!
-    expect(interrupted).toBeTruthy()
-    expect(completed).toBeTruthy()
-    // Distinct classes: interrupted carries group-row-active (not terminal),
-    // completed carries group-row-terminal; status is reflected on data attr.
-    expect(interrupted.classList.contains('group-row-terminal')).toBe(false)
-    expect(completed.classList.contains('group-row-terminal')).toBe(true)
-    expect(interrupted.getAttribute('data-group-status')).toBe('interrupted')
-    expect(completed.getAttribute('data-group-status')).toBe('completed')
-  })
-
-  test('the Groups count in .section-nav matches the number of groups', async () => {
-    window.location.hash = '#p1/groups'
-    payload = makePayload({
-      groups: [
-        makeGroup({ id: 'g-a', group: { groupId: 'g-a', title: 'A' } }),
-        makeGroup({ id: 'g-b', group: { groupId: 'g-b', title: 'B' } }),
-        makeGroup({ id: 'g-c', group: { groupId: 'g-c', title: 'C' } }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
-    const groupsItem = navItems.find(i => i.textContent?.startsWith('Groups'))!
-    expect(groupsItem).toBeTruthy()
-    expect(groupsItem.querySelector('.section-nav-count')?.textContent).toBe('3')
-  })
-
-  test('the Groups count stays at the project total when loop filters match zero loops', async () => {
-    window.location.hash = '#p1/groups?q=nomatch-xyz'
-    payload = makePayload({
-      loops: [
-        makeLoop({ loop: { loopName: 'loop-a', status: 'running' } }),
-        makeLoop({ loop: { loopName: 'loop-b', status: 'completed' } }),
-      ],
-      groups: [
-        makeGroup({ id: 'g-a', group: { groupId: 'g-a', title: 'A' } }),
-        makeGroup({ id: 'g-b', group: { groupId: 'g-b', title: 'B' } }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    // The hash carries the query (matching no loops), but the Groups count
-    // reflects the full project, not the filtered loop set.
-    expect(location.hash).toBe('#p1/groups?q=nomatch-xyz')
-    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
-    const groupsItem = navItems.find(i => i.textContent?.startsWith('Groups'))!
-    expect(groupsItem).toBeTruthy()
-    expect(groupsItem.querySelector('.section-nav-count')?.textContent).toBe('2')
-    // Group rows still render.
-    expect(container.querySelectorAll('.group-row').length).toBe(2)
-  })
-
-  test('a project with groups but no loops and no unexecuted plans is not listed', async () => {
-    window.location.hash = ''
-    payload = makePayload({
-      loops: [],
-      groups: [
-        makeGroup({ id: 'g-only', group: { groupId: 'g-only', title: 'GroupOnly' } }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    // No repo-menu entry (no projectDir to label it with) and no
-    // unofficial-projects entry (no unexecuted plan to view or delete).
-    expect(container.querySelector('.repo-menu')).toBeFalsy()
-    expect(container.querySelector('.repo-menu-item')).toBeFalsy()
-    expect(container.querySelector('.unofficial-projects')).toBeFalsy()
-    expect(container.querySelector('.empty-state')).toBeTruthy()
-  })
-
-  test('a PRD preview with embedded HTML event handlers is rendered as inert text', async () => {
-    window.location.hash = '#p1/groups/g-abc'
-    const malicious = '<img src=x onerror="window.__boom=1">text'
-    payload = makePayload({
-      groups: [
-        makeGroup({ group: { groupId: 'g-abc', prdPreview: malicious } }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const preview = container.querySelector('.prd-preview') as HTMLElement
-    expect(preview).toBeTruthy()
-    // No img element is created from the raw HTML.
-    expect(preview.querySelector('img')).toBeNull()
-    // The payload is rendered as plain text (escaped), not parsed as HTML.
-    expect(preview.textContent).toBe(malicious)
-    // The event handler never executes.
-    expect((window as unknown as { __boom?: number }).__boom).toBeUndefined()
-  })
-
-  test('polling a feature completion updates the groups meter without rebuilding rows', async () => {
-    window.location.hash = '#p1/groups'
-    payload = makePayload({
-      groups: [
-        makeGroup({
-          id: 'g-abc',
-          group: { groupId: 'g-abc', title: 'Metered' },
-          features: [
-            makeFeature({ featureIndex: 0, stage: 'completed' }),
-            makeFeature({ featureIndex: 1, stage: 'running' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const row = container.querySelector('.group-row') as HTMLElement
-    expect(row).toBeTruthy()
-    expect(row.querySelector('.lt-meter-text')!.textContent).toBe('1/2')
-    const fillBefore = row.querySelector('.lt-meter-fill') as HTMLElement
-    expect(fillBefore.getAttribute('style')).toContain('50%')
-
-    // Same group identity, second feature now completed.
-    await poll(makePayload({
-      groups: [
-        makeGroup({
-          id: 'g-abc',
-          group: { groupId: 'g-abc', title: 'Metered', completedAt: 1700000500000 },
-          features: [
-            makeFeature({ featureIndex: 0, stage: 'completed' }),
-            makeFeature({ featureIndex: 1, stage: 'completed' }),
-          ],
-        }),
-      ],
-    }))
-
-    // Same DOM node (keyed reconcile preserves identity).
-    const rowAfter = container.querySelector('.group-row') as HTMLElement
-    expect(rowAfter).toBe(row)
-    expect(rowAfter.querySelector('.lt-meter-text')!.textContent).toBe('2/2')
-    const fillAfter = rowAfter.querySelector('.lt-meter-fill') as HTMLElement
-    expect(fillAfter.getAttribute('style')).toContain('100%')
-  })
-
-  test('polling a running-to-errored group switches status class and data-group-status', async () => {
-    window.location.hash = '#p1/groups'
-    payload = makePayload({
-      groups: [
-        makeGroup({
-          id: 'g-abc',
-          group: { groupId: 'g-abc', title: 'Boom', status: 'running' },
-          features: [
-            makeFeature({ featureIndex: 0, stage: 'running' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const row = container.querySelector('.group-row') as HTMLElement
-    expect(row).toBeTruthy()
-    expect(row.classList.contains('group-row-active')).toBe(true)
-    expect(row.classList.contains('group-row-terminal')).toBe(false)
-    expect(row.getAttribute('data-group-status')).toBe('running')
-
-    // Same identity, now errored.
-    await poll(makePayload({
-      groups: [
-        makeGroup({
-          id: 'g-abc',
-          group: { groupId: 'g-abc', title: 'Boom', status: 'errored', error: 'kaboom' },
-          features: [
-            makeFeature({ featureIndex: 0, stage: 'running' }),
-          ],
-        }),
-      ],
-    }))
-
-    const rowAfter = container.querySelector('.group-row') as HTMLElement
-    expect(rowAfter).toBe(row)
-    expect(rowAfter.classList.contains('group-row-terminal')).toBe(true)
-    expect(rowAfter.classList.contains('group-row-active')).toBe(false)
-    expect(rowAfter.getAttribute('data-group-status')).toBe('errored')
-  })
-
-  test('polling a feature stage and error updates the group detail row in place', async () => {
-    window.location.hash = '#p1/groups/g-abc'
-    payload = makePayload({
-      groups: [
-        makeGroup({
-          id: 'g-abc',
-          group: { groupId: 'g-abc', title: 'Detail' },
-          features: [
-            makeFeature({ featureIndex: 0, title: 'F0', stage: 'running' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const row = container.querySelector('.feature-row') as HTMLElement
-    expect(row).toBeTruthy()
-    expect(row.getAttribute('data-stage')).toBe('running')
-    expect(row.querySelector('.feature-error')).toBeNull()
-
-    await poll(makePayload({
-      groups: [
-        makeGroup({
-          id: 'g-abc',
-          group: { groupId: 'g-abc', title: 'Detail' },
-          features: [
-            makeFeature({ featureIndex: 0, title: 'F0', stage: 'failed', error: 'crashed' }),
-          ],
-        }),
-      ],
-    }))
-
-    const rowAfter = container.querySelector('.feature-row') as HTMLElement
-    expect(rowAfter).toBe(row)
-    expect(rowAfter.getAttribute('data-stage')).toBe('failed')
-    expect(rowAfter.querySelector('.feature-error')?.textContent).toContain('crashed')
-  })
-
-  test('primary-clicking a group feature loop link clears filters from the hash', async () => {
-    window.location.hash = '#p1/groups/g-abc?status=errored&q=bug'
-    payload = makePayload({
-      loops: [makeLoop({ loop: { loopName: 'loop-linked', status: 'errored' } })],
-      groups: [
-        makeGroup({
-          features: [
-            makeFeature({ featureIndex: 0, title: 'Linked', stage: 'running', loopName: 'loop-linked' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const anchor = container.querySelector('.feature-loop-link') as HTMLAnchorElement
-    expect(anchor).toBeTruthy()
-    expect(anchor.getAttribute('href')).toBe('#p1/loop/loop-linked')
-    anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-    await flush()
-    expect(location.hash).toBe('#p1/loop/loop-linked')
-    expect(location.hash).not.toContain('status=')
-    expect(location.hash).not.toContain('q=')
-  })
-})
-
 describe('dashboard App findings and plans sections', () => {
   function makeFinding(over: Record<string, any> = {}): any {
     return {
@@ -5015,7 +4467,6 @@ describe('dashboard App findings and plans sections', () => {
           projectId: 'p1',
           projectDir: '/proj/p1',
           loops: [makeLoop()],
-          groups: [],
           unexecutedPlans: [],
           unexecutedPlanCount: 0,
         },
@@ -5024,7 +4475,6 @@ describe('dashboard App findings and plans sections', () => {
           projectId: 'p2',
           projectDir: null,
           loops: [],
-          groups: [],
           unexecutedPlans: [makeUnexecutedPlan({ projectId: 'p2' })],
           unexecutedPlanCount: 1,
         },
@@ -5254,6 +4704,172 @@ describe('dashboard App findings and plans sections', () => {
     await flush()
     expect(container.querySelector('.markdown-content')?.textContent).toContain('PLAN BODY')
     expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
+  })
+})
+
+describe('dashboard App goals section', () => {
+  function makeGoal(over: Record<string, any> = {}): any {
+    const goalId = over.goalId ?? 'g-abc'
+    const { chunks = [], ...rest } = over
+    return {
+      id: goalId,
+      goalId,
+      title: 'Goal ABC',
+      objectivePreview: 'Objective text',
+      status: 'running',
+      error: null,
+      maxChunks: 5,
+      tasks: [],
+      executionModel: null,
+      auditorModel: null,
+      createdAt: 1700000000000,
+      updatedAt: 1700000000000,
+      completedAt: null,
+      chunks,
+      ...rest,
+    }
+  }
+
+  function makeChunk(over: Record<string, any> = {}): any {
+    return {
+      chunkIndex: 0,
+      stage: 'running',
+      title: 'Chunk',
+      loopName: null,
+      branch: null,
+      summaryPreview: null,
+      ...over,
+    }
+  }
+
+  test('#p1/goals renders one .goal-row per goal with a chunks meter, stage, and error', async () => {
+    window.location.hash = '#p1/goals'
+    payload = makePayload({
+      goals: [
+        makeGoal({
+          goalId: 'g-a',
+          title: 'A',
+          chunks: [
+            makeChunk({ chunkIndex: 0, stage: 'completed' }),
+            makeChunk({ chunkIndex: 1, stage: 'running' }),
+          ],
+        }),
+        makeGoal({ goalId: 'g-b', title: 'B', status: 'cancelled', error: 'boom' }),
+      ],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rows = Array.from(container.querySelectorAll('.goal-row')) as HTMLElement[]
+    expect(rows.length).toBe(2)
+    expect(rows.every(r => r.querySelector('.lt-meter-cell'))).toBe(true)
+    const a = rows.find(r => r.querySelector('.goal-row-title')?.textContent === 'A')!
+    expect(a.querySelector('.lt-meter-text')?.textContent).toBe('1/2')
+    expect(a.querySelector('.goal-row-stage')?.textContent).toBe('running')
+    expect(a.querySelector('.goal-badge')?.textContent).toBe('running')
+    const b = rows.find(r => r.querySelector('.goal-row-title')?.textContent === 'B')!
+    expect(b.querySelector('.goal-row-error')?.textContent).toBe('boom')
+    // Loop table is hidden on the goals section.
+    expect(container.querySelector('table.loop-table')).toBeFalsy()
+  })
+
+  test('#p1/goals/g-abc numbers chunks from 1 and links a chunk loop present in the payload', async () => {
+    window.location.hash = '#p1/goals/g-abc'
+    payload = makePayload({
+      loops: [makeLoop({ loop: { loopName: 'loop-linked', status: 'running' } })],
+      goals: [
+        makeGoal({
+          title: 'Goal ABC',
+          tasks: [{ ref: 'T-1', title: 'Task A' }, { title: 'Task B' }],
+          chunks: [
+            makeChunk({
+              chunkIndex: 0,
+              stage: 'completed',
+              title: 'First',
+              branch: 'feat/a',
+              loopName: 'loop-linked',
+              summaryPreview: 'summary text',
+            }),
+            makeChunk({ chunkIndex: 1, stage: 'running', title: 'Second' }),
+          ],
+        }),
+      ],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rows = Array.from(container.querySelectorAll('.goal-chunk-row')) as HTMLElement[]
+    expect(rows.length).toBe(2)
+    expect(rows.map(r => r.querySelector('.goal-chunk-index')?.textContent)).toEqual(['chunk 1', 'chunk 2'])
+    expect(rows[0].querySelector('.goal-chunk-title')?.textContent).toBe('First')
+    expect(rows[0].querySelector('.goal-chunk-branch')?.textContent).toBe('feat/a')
+    expect(rows[0].querySelector('.goal-chunk-summary')?.textContent).toBe('summary text')
+    const link = rows[0].querySelector('.goal-chunk-loop-link') as HTMLAnchorElement
+    expect(link).toBeTruthy()
+    expect(link.getAttribute('href')).toBe('#p1/loop/loop-linked')
+    // The second chunk has no loop in the payload, so it renders no link.
+    expect(rows[1].querySelector('.goal-chunk-loop-link')).toBeFalsy()
+    // Objective and task refs render on the detail view.
+    expect(container.querySelector('.goal-objective-text')?.textContent).toBe('Objective text')
+    expect(Array.from(container.querySelectorAll('.goal-task-ref')).map(e => e.textContent)).toEqual(['T-1'])
+  })
+
+  test('primary-clicking a goal chunk loop link navigates to the loop detail', async () => {
+    window.location.hash = '#p1/goals/g-abc'
+    payload = makePayload({
+      loops: [makeLoop({ loop: { loopName: 'loop-linked', status: 'running' } })],
+      goals: [makeGoal({ chunks: [makeChunk({ chunkIndex: 0, loopName: 'loop-linked' })] })],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const link = container.querySelector('.goal-chunk-loop-link') as HTMLAnchorElement
+    expect(link).toBeTruthy()
+    link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    await flush()
+    expect(location.hash).toBe('#p1/loop/loop-linked')
+  })
+
+  test('the Goals count in .section-nav matches the number of goals', async () => {
+    window.location.hash = '#p1/goals'
+    payload = makePayload({
+      goals: [
+        makeGoal({ goalId: 'g-a' }),
+        makeGoal({ goalId: 'g-b' }),
+        makeGoal({ goalId: 'g-c' }),
+      ],
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
+    const goalsItem = navItems.find(i => i.textContent?.startsWith('Goals'))!
+    expect(goalsItem).toBeTruthy()
+    expect(goalsItem.querySelector('.section-nav-count')?.textContent).toBe('3')
+  })
+
+  test('#p1/goals with no goals shows an empty state, not the loops table', async () => {
+    window.location.hash = '#p1/goals'
+    payload = makePayload({ goals: [] })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('table.loop-table')).toBeFalsy()
+    expect(container.querySelector('.goals-panel .tab-empty')?.textContent).toContain('No goals')
+  })
+
+  test('the goals list caps rendered rows and reports the true total', async () => {
+    window.location.hash = '#p1/goals'
+    const total = MAX_RENDERED_LOOP_ROWS + 5
+    payload = makePayload({
+      goals: Array.from({ length: total }, (_, i) => makeGoal({ goalId: `g-${i}`, title: `Goal ${i}` })),
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelectorAll('.goal-row').length).toBe(MAX_RENDERED_LOOP_ROWS)
+    const notice = container.querySelector('.goals-panel .list-cap-text') as HTMLElement
+    expect(notice.textContent).toContain(String(total))
   })
 })
 

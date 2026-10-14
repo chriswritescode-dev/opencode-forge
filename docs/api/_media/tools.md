@@ -1,6 +1,6 @@
 # Tools Reference
 
-Forge exposes server-side tools for plan storage, review findings, loop management, group orchestration, section navigation, and sandbox shell execution. The `review` / `review-plan` slash commands run inline instead of spawning a subtask. See [Limitations](../README.md#limitations).
+Forge exposes server-side tools for plan storage, review findings, loop management, goal orchestration, section navigation, and sandbox shell execution. The `review` / `review-plan` slash commands run inline instead of spawning a subtask. See [Limitations](../README.md#limitations).
 
 See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](configuration.md), [Loop System](loop-system.md).
 
@@ -17,12 +17,11 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
-| `execute-goal` | Start a managed goal loop in a dedicated code session inside an isolated Forge worktree. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
-| `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
-| `group-status` | List groups, inspect one group's per-feature stages, or restart a non-completed group. | [`src/tools/group.ts`](../src/tools/group.ts) |
-| `group-cancel` | Cancel a group, optionally cancelling its running loops. | [`src/tools/group.ts`](../src/tools/group.ts) |
+| `goal-write` | Save the ordered goal (objective and task list) for this session as a draft; the next loop launched from this session becomes chunk 1. Architect-only. | [`src/tools/goal.ts`](../src/tools/goal.ts) |
+| `goal-status` | List goals, inspect one goal's chunks, or restart a paused/interrupted goal (optionally raising `maxChunks`). | [`src/tools/goal.ts`](../src/tools/goal.ts) |
+| `goal-cancel` | Cancel a goal, optionally cancelling its running chunk loop. | [`src/tools/goal.ts`](../src/tools/goal.ts) |
 
 ## Plan Tools
 
@@ -44,7 +43,7 @@ Arguments:
 
 ### `plan-write`
 
-Creates or overwrites the plan stored for the current session, matching the regular Write interaction with the plan as the implicit target. The stored plan is the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `plan-edit` for incremental additions and revisions. Available to architect and architect-auto sessions; denied in code, auditor, auditor-loop, and feature-splitter sessions, and inside loop/audit sessions.
+Creates or overwrites the plan stored for the current session, matching the regular Write interaction with the plan as the implicit target. The stored plan is the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `plan-edit` for incremental additions and revisions. Available to architect and architect-auto sessions; denied in code, auditor, and auditor-loop sessions, and inside loop/audit sessions.
 
 Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, the full decomposed section outline, and a `Warnings:` block when any structural requirement is unmet.
 
@@ -85,7 +84,7 @@ Arguments:
 
 ### `plan-adjust`
 
-Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in goal loops and during the final audit). Revises the executable section instructions only: the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or the pending section suffix from the current section + 1 onward (`sections`). `sections` is destructive — it replaces the entire pending suffix, so any omitted milestone is deleted; confirm the retained list with `section-read` `pending_suffix: true` before calling. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. The tool performs no semantic validation of the adjusted instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots and a required rationale.
+Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in non-sectioned loops and during the final audit). Revises the executable section instructions only: the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or the pending section suffix from the current section + 1 onward (`sections`). `sections` is destructive — it replaces the entire pending suffix, so any omitted milestone is deleted; confirm the retained list with `section-read` `pending_suffix: true` before calling. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. The tool performs no semantic validation of the adjusted instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots and a required rationale.
 
 Arguments:
 
@@ -124,7 +123,7 @@ Arguments:
 | `pattern` | Regex search across finding descriptions and scenarios. |
 | `crossSection` | Read only cross-section findings. |
 | `allSections` | Read findings from all sections instead of the current section. |
-| `attempts` | Return durable audit-attempt history instead of live findings. Defaults to the current section/goal/final-audit scope; explicit `loopName` or `allSections` reads all scopes. |
+| `attempts` | Return durable audit-attempt history instead of live findings. Defaults to the current section/plan/final-audit scope; explicit `loopName` or `allSections` reads all scopes. |
 | `limit` | With `attempts: true`, page size from 1 to 100 (default 20). |
 | `beforeId` | With `attempts: true`, read attempts older than this positive integer ID. |
 
@@ -154,21 +153,6 @@ Arguments:
 | `loopName` | Optional loop name, slugified and uniquified. |
 | `mode` | Execution mode. `loop` (default) runs the iterative loop in an isolated git worktree. `new-session` launches the plan in a fresh standalone session running the code agent (no worktree, no loop, not tracked by `loop-status`/`loop-cancel`). |
 
-### `execute-goal`
-
-Starts a managed **goal loop** from free-text goal input, with no plan, decomposition, approval flow, final audit, or post-action. Forge creates a dedicated code session inside an isolated worktree and sends the goal as its initial prompt. When that coding pass goes idle, Forge replaces it with a fresh auditor session; a dirty audit then creates a fresh code session for remediation. The invoking session remains the host redirect target and is not moved into the worktree.
-
-Arguments:
-
-| Argument | Description |
-|---|---|
-| `goal` | Required. Non-empty free text describing the goal; the first line is used to derive a title/loop name when omitted. |
-| `title` | Optional short title for the loop (derived from the goal when omitted). |
-| `loopName` | Optional loop name, slugified and uniquified. |
-| `maxIterations` | Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`; `0` means unlimited (run until auditor all-clear or cancellation). |
-
-Worktree/session behavior, auditor/finding completion rule, iteration cap, and differences from `execute-plan` and `launch-group` are documented in [Loop System → Goal Loops](loop-system.md#goal-loops).
-
 ### `loop-cancel`
 
 Arguments:
@@ -189,37 +173,48 @@ Arguments:
 
 Completed loops are history-only and cannot be restarted. See [Loop System](loop-system.md#restartability).
 
-> Plan authoring (`plan-write`, `plan-edit`), the loop/group management tools (`execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`), and `question` are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work. `plan-read` stays available, and `plan-adjust` is callable by the auditor during a section audit.
+> Plan authoring (`plan-write`, `plan-edit`, `goal-write`), the loop management tools (`execute-plan`, `loop-cancel`, `loop-status`), the goal tools (`goal-status`, `goal-cancel`), and `question` are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work. `plan-read` stays available, and `plan-adjust` is callable by the auditor during a section audit.
 
-## Group Tools
+## Goal Tools
 
-Group tools orchestrate parallel feature extraction: a PRD or other broad work source is split into implementation-coherent features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each warning-free plan runs as its own loop. Structurally incomplete stored plans fail after planning, and queued plans are revalidated immediately before launch. The autonomous architect cannot invoke execution, loop, or group tools directly. The launch command and splitter prefer small independently reviewable plans, grouping source items only when they have non-trivial implementation coupling such as shared contracts, migrations, state machines, refactors, or unavoidable sequencing. A scheduler advances features while respecting a per-group concurrency cap. Group tools are agent-invoked; `/launch-group` is the only slash command. They are denied inside loop/audit sessions.
+Goal tools drive the sequential goal orchestrator: a goal is an objective run as a series of plan-loop **chunks**, one per task, each stacked on the previous chunk's branch. See [Loop System → Goals](loop-system.md#goals) for the full lifecycle. `goal-write` is architect-only; all three are denied inside loop and audit sessions.
 
-### `launch-group`
+### `goal-write`
 
-Requires exactly one of `prd` or `features`.
+Saves the ordered goal for the current session as a `draft`. The next loop launched from that session — through the TUI dialog, the plan-approval `Loop` path, or `execute-plan` — is attached as chunk 1 and promotes the draft to `running`. A session may hold at most one running or paused goal, and `goal-write` replaces any existing draft for the session. Available to architect sessions only (excluded from code, auditor, and architect-auto).
 
-| Argument | Description |
-|---|---|
-| `title` | Required short title for the group. |
-| `prd` | PRD or other broad documentation text to split into features. Mutually exclusive with `features`. |
-| `features` | Pre-split or overlap-grouped features (`{ title, description }[]`). Mutually exclusive with `prd`. |
-| `maxConcurrentLoops` | Maximum number of concurrent loops for this group. When omitted, defaults to the global `groupLaunch.maxConcurrentLoops` config value. |
-| `loopNamePrefix` | Reserved for future use. |
-
-### `group-status`
+Arguments:
 
 | Argument | Description |
 |---|---|
-| `groupId` | Optional group ID for detailed per-feature status. When omitted, lists all groups. |
-| `restart` | Restart a non-completed, non-running group by `groupId` (resumes interrupted/errored groups). |
+| `title` | Short title for the goal; also seeds the generated goal id. |
+| `objective` | The goal objective, verbatim plus any clarified scope. |
+| `tasks` | Optional ordered task list; each task becomes its own chunk. Each entry takes an optional `ref` (ticket/issue identifier), a `title`, and optional `details` (a self-contained summary including acceptance criteria). |
+| `maxChunks` | Optional cap on how many chunks the goal may run, 1–100. Defaults to 20. |
 
-### `group-cancel`
+### `goal-status`
+
+Lists goals when called with no arguments; pass `goalId` for a goal's detail (status, models, objective, tasks, and chunks with their stage, loop, branch, and summary). With `restart`, resumes a paused or interrupted goal.
+
+Arguments:
 
 | Argument | Description |
 |---|---|
-| `groupId` | Required group ID to cancel. |
-| `cancelRunningLoops` | Also cancel running loops for non-terminal features. |
+| `goalId` | Goal id to show in detail, or to restart when `restart` is true. |
+| `restart` | Restart a paused or interrupted goal. Requires `goalId`. |
+| `force` | Discard planning that is still marked in flight when restarting. |
+| `maxChunks` | Raise the goal chunk limit when restarting. |
+
+### `goal-cancel`
+
+Cancels a goal by `goalId`, cleaning up any planning chunks.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `goalId` | Goal id to cancel. |
+| `cancelRunningLoops` | Also cancel the goal chunk loop that is currently running. |
 
 ## Sandbox Shell
 

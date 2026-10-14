@@ -60,9 +60,9 @@ export function isWithinDir(root: string, directory: string): boolean {
  *
  * A forge worktree is always a child context of a live plugin instance — when a
  * loop creates its worktree, OpenCode instantiates a fresh plugin for that
- * directory. Startup-only recovery (e.g. marking orphaned feature groups
- * interrupted) must not run for these child instances, since the owning process
- * is still alive and may be actively driving those groups in the same project.
+ * directory. Startup-only recovery must not run for these child instances, since
+ * the owning process is still alive and may be actively driving state in the same
+ * project.
  */
 export function isForgeWorktreeDir(dataDir: string, directory: string): boolean {
   return isWithinDir(forgeWorktreesRoot(dataDir), directory)

@@ -9,7 +9,7 @@ describe('MAX_TOTAL_SECTIONS', () => {
 
 describe('PLAN_AUTHORING_TOOL_NAMES', () => {
   it('is the single list of plan-authoring tools every deny path derives from', () => {
-    expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit'])
+    expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit', 'goal-write'])
   })
 })
 
@@ -30,22 +30,14 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan-write', pattern: '*', action: 'deny' },
       { permission: 'plan-edit', pattern: '*', action: 'deny' },
+      { permission: 'goal-write', pattern: '*', action: 'deny' },
       { permission: 'execute-plan', pattern: '*', action: 'deny' },
-      { permission: 'execute-goal', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
-      { permission: 'launch-group', pattern: '*', action: 'deny' },
-      { permission: 'group-status', pattern: '*', action: 'deny' },
-      { permission: 'group-cancel', pattern: '*', action: 'deny' },
+      { permission: 'goal-cancel', pattern: '*', action: 'deny' },
+      { permission: 'goal-status', pattern: '*', action: 'deny' },
     ])
-  })
-
-  it('denies execute-goal in both loop and audit rulesets so active sessions cannot recurse', () => {
-    const loopRules = buildLoopPermissionRuleset()
-    const auditRules = buildAuditSessionPermissionRuleset()
-    expect(loopRules).toContainEqual({ permission: 'execute-goal', pattern: '*', action: 'deny' })
-    expect(auditRules).toContainEqual({ permission: 'execute-goal', pattern: '*', action: 'deny' })
   })
 
   it('emits no sh or bash permission rules (native bash is covered by the blanket allow)', () => {
@@ -65,6 +57,13 @@ describe('buildLoopPermissionRuleset', () => {
       expect(allowIndex).toBeLessThan(denyIndex)
     })
   })
+
+  it('denies the goal management tools', () => {
+    const rules = buildLoopPermissionRuleset()
+    for (const tool of ['goal-status', 'goal-cancel']) {
+      expect(rules.some(r => r.permission === tool && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    }
+  })
 })
 
 describe('buildAuditSessionPermissionRuleset', () => {
@@ -81,6 +80,18 @@ describe('buildAuditSessionPermissionRuleset', () => {
   it('emits no sh or bash permission rules', () => {
     const rules = buildAuditSessionPermissionRuleset()
     expect(rules.some(r => r.permission === 'sh' || r.permission === 'bash')).toBe(false)
+  })
+
+  it('denies goal-write, so the auditor can never author a goal', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    expect(rules.some(r => r.permission === 'goal-write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+  })
+
+  it('denies the goal management tools, so the auditor can never manage goals', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    for (const tool of ['goal-status', 'goal-cancel']) {
+      expect(rules.some(r => r.permission === tool && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    }
   })
 })
 

@@ -9,7 +9,7 @@ import { createSectionPlansRepo } from '../../src/storage'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRow } from '../../src/storage'
 import { createLoopTransitionsRepo } from '../../src/storage'
 import { createPlanAmendmentsRepo } from '../../src/storage'
-import { createFeatureGroupsRepo } from '../../src/storage'
+import { createGoalsRepo, type GoalLaunchSnapshot } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -42,7 +42,6 @@ function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
-    kind: 'plan',
     ...overrides,
   }
 }
@@ -193,26 +192,6 @@ describe('collectDashboardData', () => {
     const payload = collectDashboardData(db!)
 
     expect(payload.projects[0].loops[0].duration).toBe('2m 5s')
-  })
-
-  test('a loop with goal in loop_large_fields exposes goal on the dashboard loop', () => {
-    const loopsRepo = createLoopsRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'goal-loop', kind: 'goal' }),
-      { lastAuditResult: null, goal: 'Ship the tabs refactor' },
-    )
-    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: 'goal-loop' })
-    expect(payload.projects[0].loops[0].goal).toBe('Ship the tabs refactor')
-  })
-
-  test('a loop with no large-fields goal exposes goal as null', () => {
-    const loopsRepo = createLoopsRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'no-goal' }),
-      { lastAuditResult: null, goal: null },
-    )
-    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: 'no-goal' })
-    expect(payload.projects[0].loops[0].goal).toBeNull()
   })
 
   // ─── Cycle 3: running-first ordering ────────────────────────────────
@@ -390,146 +369,6 @@ describe('collectDashboardData', () => {
     ])
   })
 
-  // ─── Cycle 5: feature groups ──────────────────────────────────────────
-
-  test('a project with no groups exposes groups: []', () => {
-    const loopsRepo = createLoopsRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
-      { lastAuditResult: null },
-    )
-    const payload = collectDashboardData(db!)
-    expect(payload.projects).toHaveLength(1)
-    expect(payload.projects[0].groups).toEqual([])
-  })
-
-  test('a group with three features exposes them ordered by featureIndex', () => {
-    const loopsRepo = createLoopsRepo(db!)
-    const groupsRepo = createFeatureGroupsRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
-      { lastAuditResult: null },
-    )
-    groupsRepo.createGroup({
-      projectId: 'p1',
-      groupId: 'g-1',
-      title: 'Group One',
-      status: 'running',
-      maxConcurrent: 2,
-    })
-    // Insert features with explicit feature_index values whose physical INSERT
-    // (rowid) order differs from feature_index order. A regression that drops
-    // ORDER BY feature_index ASC would return rows in rowid order instead.
-    const ts = Date.now()
-    const insertFeature = db!.prepare(`
-      INSERT INTO group_features (
-        project_id, group_id, feature_index, title, description, stage,
-        architect_session_id, loop_name, error, attempts, created_at, updated_at
-      ) VALUES ('p1', 'g-1', ?, ?, ?, 'pending', NULL, NULL, NULL, 0, ?, ?)
-    `)
-    insertFeature.run(2, 'Feature C', 'c', ts, ts)
-    insertFeature.run(0, 'Feature A', 'a', ts, ts)
-    insertFeature.run(1, 'Feature B', 'b', ts, ts)
-
-    const payload = collectDashboardData(db!)
-    expect(payload.projects[0].groups).toHaveLength(1)
-    const g = payload.projects[0].groups[0]
-    expect(g.id).toBe('g-1')
-    expect(g.group.groupId).toBe('g-1')
-    expect(g.group.title).toBe('Group One')
-    expect(g.group.maxConcurrent).toBe(2)
-    expect(g.features.map(f => f.featureIndex)).toEqual([0, 1, 2])
-    expect(g.features.map(f => f.title)).toEqual(['Feature A', 'Feature B', 'Feature C'])
-  })
-
-  test('prdText longer than 400 chars is exposed as a 400-char prdPreview and raw prdText is absent', () => {
-    const loopsRepo = createLoopsRepo(db!)
-    const groupsRepo = createFeatureGroupsRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
-      { lastAuditResult: null },
-    )
-    const longPrd = 'P'.repeat(1000)
-    groupsRepo.createGroup({
-      projectId: 'p1',
-      groupId: 'g-1',
-      title: 'Group One',
-      status: 'running',
-      prdText: longPrd,
-    })
-
-    const payload = collectDashboardData(db!)
-    const g = payload.projects[0].groups[0]
-    expect((g.group as Record<string, unknown>).prdText).toBeUndefined()
-    expect(g.group.prdPreview).toHaveLength(400)
-    expect(g.group.prdPreview).toBe('P'.repeat(400))
-  })
-
-  test('a database without the feature_groups table returns groups: [] and does not throw', () => {
-    // Build a database with only the loops + minimum tables by dropping
-    // feature_groups; relies on hasTable() gating the repo construction.
-    const loopsRepo = createLoopsRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
-      { lastAuditResult: null },
-    )
-    db!.exec('DROP TABLE group_features')
-    db!.exec('DROP TABLE feature_groups')
-
-    expect(() => collectDashboardData(db!)).not.toThrow()
-    const payload = collectDashboardData(db!)
-    expect(payload.projects[0].groups).toEqual([])
-  })
-
-  test('a project containing only a feature group appears with loops: [] and populated groups', () => {
-    const groupsRepo = createFeatureGroupsRepo(db!)
-    groupsRepo.createGroup({
-      projectId: 'p1',
-      groupId: 'g-1',
-      title: 'Group One',
-      status: 'extracting',
-      maxConcurrent: 2,
-    })
-    groupsRepo.insertFeatures('p1', 'g-1', [
-      { title: 'Feature A', description: 'a' },
-    ])
-
-    const payload = collectDashboardData(db!)
-    expect(payload.projects).toHaveLength(1)
-    const proj = payload.projects[0]
-    expect(proj.projectId).toBe('p1')
-    expect(proj.loops).toEqual([])
-    expect(proj.groups).toHaveLength(1)
-    expect(proj.groups[0].group.groupId).toBe('g-1')
-    expect(proj.groups[0].features).toHaveLength(1)
-  })
-
-  test('groups from another project_id do not leak into this project', () => {
-    const loopsRepo = createLoopsRepo(db!)
-    const groupsRepo = createFeatureGroupsRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
-      { lastAuditResult: null },
-    )
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p2', loopName: 'l2' }),
-      { lastAuditResult: null },
-    )
-    groupsRepo.createGroup({
-      projectId: 'p2',
-      groupId: 'g-other',
-      title: 'Other Project Group',
-      status: 'running',
-    })
-
-    const payload = collectDashboardData(db!)
-    const p1 = payload.projects.find(p => p.projectId === 'p1')!
-    const p2 = payload.projects.find(p => p.projectId === 'p2')!
-    expect(p1.groups).toEqual([])
-    expect(p2.groups).toHaveLength(1)
-    expect(p2.groups[0].group.groupId).toBe('g-other')
-  })
-
   // ─── Cycle 9: query-scoped payload (Phase 1) ──────────────────────────
 
   test('unscoped payload reports hasPlan but omits plan content', () => {
@@ -615,22 +454,20 @@ describe('collectDashboardData', () => {
     expect(scopedDl.sections.map(s => s.title)).toEqual(['Section A', 'Section B'])
   })
 
-  test('goal, lastAuditResult and postActionReport are null unless the loop is scoped', () => {
+  test('lastAuditResult and postActionReport are null unless the loop is scoped', () => {
     const loopsRepo = createLoopsRepo(db!)
     loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'loop-a', kind: 'goal' }),
-      { lastAuditResult: 'audit-x', postActionReport: 'report-x', goal: 'goal-x' },
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: 'audit-x', postActionReport: 'report-x' },
     )
 
     const unscoped = collectDashboardData(db!)
     const unscopedDl = unscoped.projects[0].loops[0]
-    expect(unscopedDl.goal).toBeNull()
     expect(unscopedDl.lastAuditResult).toBeNull()
     expect(unscopedDl.postActionReport).toBeNull()
 
     const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
     const scopedDl = scoped.projects[0].loops[0]
-    expect(scopedDl.goal).toBe('goal-x')
     expect(scopedDl.lastAuditResult).toBe('audit-x')
     expect(scopedDl.postActionReport).toBe('report-x')
   })
@@ -803,7 +640,7 @@ describe('collectDashboardData', () => {
     const plansRepo = createPlansRepo(db!)
     loopsRepo.insert(
       makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
-      { lastAuditResult: 'audit-x', postActionReport: 'report-x', goal: 'goal-x' },
+      { lastAuditResult: 'audit-x', postActionReport: 'report-x' },
     )
     plansRepo.writeForLoop('p1', 'loop-a', 'plan-content-a')
 
@@ -813,7 +650,6 @@ describe('collectDashboardData', () => {
     const dl = payload.projects[0].loops[0]
     expect(dl.plan).toBeNull()
     expect(dl.hasPlan).toBe(true)
-    expect(dl.goal).toBeNull()
     expect(dl.lastAuditResult).toBeNull()
     expect(dl.postActionReport).toBeNull()
     expect(dl.sections).toEqual([])
@@ -937,8 +773,155 @@ describe('collectDashboardData', () => {
     expect(proj.projectId).toBe('p1')
     expect(proj.projectDir).toBeNull()
     expect(proj.loops).toEqual([])
-    expect(proj.groups).toEqual([])
     expect(proj.unexecutedPlanCount).toBe(1)
     expect(proj.unexecutedPlans.map(p => p.sessionId)).toEqual(['session-plan'])
+  })
+
+  // ─── Cycle 11: goals ──────────────────────────────────────────────────
+
+  function goalSnapshot(over: Partial<GoalLaunchSnapshot> = {}): GoalLaunchSnapshot {
+    return {
+      projectDir: '/tmp/goal-project',
+      executionModel: 'claude-sonnet-4-20250514',
+      auditorModel: null,
+      executionVariant: null,
+      auditorVariant: null,
+      sandboxSettings: null,
+      maxIterations: null,
+      ...over,
+    }
+  }
+
+  test('a project with no goals exposes goals: []', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].goals).toEqual([])
+  })
+
+  test('a goal exposes its tasks, ordered chunks, and capped previews', () => {
+    const goalsRepo = createGoalsRepo(db!)
+    const projectId = 'p1'
+    goalsRepo.saveDraft({
+      projectId,
+      goalId: 'g-1',
+      title: 'Goal One',
+      objective: 'O'.repeat(1000),
+      tasks: [
+        { ref: 'T-1', title: 'Task A', details: 'not shipped' },
+        { title: 'Task B' },
+      ],
+      hostSessionId: 'host-1',
+      maxChunks: 5,
+    })
+    goalsRepo.attachFirstChunk(projectId, 'host-1', goalSnapshot(), {
+      loopName: 'loop-1',
+      branch: 'feat/goal',
+      title: 'Chunk 0',
+      baseCommit: 'abc',
+    })
+    goalsRepo.insertPlanningChunk(projectId, 'g-1', 1, { planningDir: '/tmp/plan', baseCommit: 'def' })
+    goalsRepo.completeChunk(projectId, 'g-1', 0, 'S'.repeat(1000))
+
+    const payload = collectDashboardData(db!)
+    const proj = payload.projects.find(p => p.projectId === projectId)!
+    expect(proj.goals).toHaveLength(1)
+    const goal = proj.goals[0]
+    expect(goal.id).toBe('g-1')
+    expect(goal.goalId).toBe('g-1')
+    expect(goal.title).toBe('Goal One')
+    expect(goal.status).toBe('running')
+    expect(goal.error).toBeNull()
+    expect(goal.maxChunks).toBe(5)
+    expect(goal.objectivePreview).toHaveLength(400)
+    expect(goal.objectivePreview).toBe('O'.repeat(400))
+    expect(goal.tasks).toEqual([{ ref: 'T-1', title: 'Task A' }, { title: 'Task B' }])
+    expect(goal.chunks.map(c => c.chunkIndex)).toEqual([0, 1])
+    expect(goal.chunks[0]).toMatchObject({
+      stage: 'completed',
+      title: 'Chunk 0',
+      loopName: 'loop-1',
+      branch: 'feat/goal',
+    })
+    expect(goal.chunks[0].summaryPreview).toHaveLength(400)
+    expect(goal.chunks[0].summaryPreview).toBe('S'.repeat(400))
+    expect(goal.chunks[1]).toMatchObject({
+      stage: 'planning',
+      title: null,
+      loopName: null,
+      branch: null,
+      summaryPreview: null,
+    })
+  })
+
+  test('goals are newest first', () => {
+    const goalsRepo = createGoalsRepo(db!)
+    goalsRepo.saveDraft({
+      projectId: 'p1', goalId: 'g-old', title: 'Old', objective: 'o', tasks: [],
+      hostSessionId: 'host-old', maxChunks: 3,
+    })
+    goalsRepo.saveDraft({
+      projectId: 'p1', goalId: 'g-new', title: 'New', objective: 'n', tasks: [],
+      hostSessionId: 'host-new', maxChunks: 3,
+    })
+    db!.prepare('UPDATE goals SET created_at = ? WHERE project_id = ? AND goal_id = ?').run(1000, 'p1', 'g-old')
+    db!.prepare('UPDATE goals SET created_at = ? WHERE project_id = ? AND goal_id = ?').run(2000, 'p1', 'g-new')
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].goals.map(g => g.goalId)).toEqual(['g-new', 'g-old'])
+  })
+
+  test('a database without the goals table returns goals: [] and does not throw', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    db!.exec('DROP TABLE goal_chunks')
+    db!.exec('DROP TABLE goals')
+
+    expect(() => collectDashboardData(db!)).not.toThrow()
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].goals).toEqual([])
+  })
+
+  test('a project containing only a goal is discovered with its project_dir label', () => {
+    const goalsRepo = createGoalsRepo(db!)
+    goalsRepo.saveDraft({
+      projectId: 'p1', goalId: 'g-1', title: 'Goal One', objective: 'obj', tasks: [],
+      hostSessionId: 'host-1', maxChunks: 2,
+    })
+    goalsRepo.attachFirstChunk('p1', 'host-1', goalSnapshot({ projectDir: '/tmp/goal-only' }), {
+      loopName: 'loop-1',
+      branch: null,
+      title: 'Chunk 0',
+      baseCommit: null,
+    })
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects).toHaveLength(1)
+    const proj = payload.projects[0]
+    expect(proj.projectId).toBe('p1')
+    expect(proj.projectDir).toBe('/tmp/goal-only')
+    expect(proj.loops).toEqual([])
+    expect(proj.goals).toHaveLength(1)
+    expect(proj.goals[0].goalId).toBe('g-1')
+  })
+
+  test('a project containing only an unlaunched goal is discovered with no projectDir', () => {
+    const goalsRepo = createGoalsRepo(db!)
+    goalsRepo.saveDraft({
+      projectId: 'p2', goalId: 'g-draft', title: 'Draft', objective: 'obj', tasks: [],
+      hostSessionId: 'host-2', maxChunks: 2,
+    })
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects).toHaveLength(1)
+    expect(payload.projects[0].projectId).toBe('p2')
+    expect(payload.projects[0].projectDir).toBeNull()
+    expect(payload.projects[0].goals).toHaveLength(1)
   })
 })

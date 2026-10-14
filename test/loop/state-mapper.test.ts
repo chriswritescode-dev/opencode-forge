@@ -42,6 +42,7 @@ function makeRow(overrides: Partial<LoopRow> = {}): LoopRow {
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
+    baseCommit: null,
     kind: 'plan',
     ...overrides,
   }
@@ -314,6 +315,25 @@ describe('sandboxSettings mapping', () => {
 
     const row = loopStateToRow(state, 'proj-1')
     expect(row.sandboxSettings).toBeNull()
+  })
+})
+
+describe('baseCommit mapping', () => {
+  it('maps row baseCommit to state and back', () => {
+    const sha = 'deadbeef'.repeat(5)
+    const state = loopRowToState(makeRow({ baseCommit: sha }))
+    expect(state.baseCommit).toBe(sha)
+
+    const row = loopStateToRow(state, 'proj-1')
+    expect(row.baseCommit).toBe(sha)
+  })
+
+  it('maps null row baseCommit to undefined and back to null', () => {
+    const state = loopRowToState(makeRow({ baseCommit: null }))
+    expect(state.baseCommit).toBeUndefined()
+
+    const row = loopStateToRow(state, 'proj-1')
+    expect(row.baseCommit).toBeNull()
   })
 })
 

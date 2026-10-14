@@ -6,7 +6,7 @@ import { USAGE_ROLE_ORDER } from '../../loop/token-usage'
 import type { UsageRole } from '../../loop/token-usage'
 
 export type LoopTab = 'overview' | 'timeline' | 'sections' | 'findings' | 'plan' | 'usage'
-export type RepoSection = 'loops' | 'groups' | 'findings' | 'plans'
+export type RepoSection = 'loops' | 'goals' | 'findings' | 'plans'
 
 /** Every loop tab, in render order. Also the set `parseDashboardHash` accepts. */
 export const ALL_TABS: readonly LoopTab[] = ['overview', 'timeline', 'sections', 'findings', 'plan', 'usage']
@@ -42,12 +42,12 @@ export interface DashboardRoute {
   section: RepoSection
   loopName: string | null
   tab: LoopTab
-  groupId: string | null
+  goalId: string | null
   statuses: string[]
   query: string
 }
 
-const SECTION_KEYWORDS: ReadonlySet<string> = new Set<RepoSection>(['loops', 'groups', 'findings', 'plans'])
+const SECTION_KEYWORDS: ReadonlySet<string> = new Set<RepoSection>(['loops', 'goals', 'findings', 'plans'])
 const LOOP_TABS: ReadonlySet<string> = new Set<string>(ALL_TABS)
 
 function safeDecode(s: string): string {
@@ -64,7 +64,7 @@ function emptyRoute(): DashboardRoute {
     section: 'loops',
     loopName: null,
     tab: 'overview',
-    groupId: null,
+    goalId: null,
     statuses: [],
     query: '',
   }
@@ -128,8 +128,8 @@ export function parseDashboardHash(hash: string): DashboardRoute {
     }
   } else if (SECTION_KEYWORDS.has(first)) {
     route.section = first as RepoSection
-    if (first === 'groups' && segs.length >= 2) {
-      route.groupId = safeDecode(segs[1])
+    if (first === 'goals' && segs.length >= 2) {
+      route.goalId = safeDecode(segs[1])
     }
   } else {
     route.loopName = first
@@ -148,9 +148,9 @@ export function buildDashboardHash(route: DashboardRoute): string {
       h += '/loop/' + encodeURIComponent(route.loopName)
       if (route.tab !== 'overview') h += '/' + route.tab
     }
-  } else if (route.section === 'groups') {
-    h += '/groups'
-    if (route.groupId) h += '/' + encodeURIComponent(route.groupId)
+  } else if (route.section === 'goals') {
+    h += '/goals'
+    if (route.goalId) h += '/' + encodeURIComponent(route.goalId)
   } else {
     h += '/' + route.section
   }
@@ -204,12 +204,13 @@ export function sectionStatusClass(s: string): string {
   return 'section-status section-' + s
 }
 
-// Group features have their own stage vocabulary (pending/planning/planned/
-// launching/running/completed/failed/cancelled) that only partly overlaps the
-// section-status vocabulary, so it gets its own class family rather than
-// borrowing `section-*` and rendering unstyled for the non-overlapping stages.
-export function featureStageClass(stage: string): string {
-  return 'feature-stage feature-stage-' + stage
+/**
+ * Single badge family for both goal statuses and chunk stages. The two
+ * vocabularies overlap (running/completed/cancelled), so one class family keeps
+ * the CSS from drifting into parallel copies.
+ */
+export function goalBadgeClass(value: string): string {
+  return 'goal-badge goal-badge-' + value
 }
 
 export type SortMode = 'recent' | 'cost' | 'duration' | 'findings'

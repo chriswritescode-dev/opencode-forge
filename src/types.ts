@@ -254,7 +254,7 @@ export interface TuiConfig {
 /**
  * Configuration for the database-backed observability dashboard HTTP server.
  * The dashboard is unauthenticated: binding to a non-loopback address exposes
- * every loop plan, goal, audit result, finding, and cost to anyone who can reach
+ * every loop plan, audit result, finding, and cost to anyone who can reach
  * the port. Protect it with a firewall or VPN. See `DASHBOARD_EXPOSED_WARNING`
  * for the canonical warning text rendered by launch surfaces.
  */
@@ -271,14 +271,6 @@ export interface DashboardConfig {
 export interface AgentOverrideConfig {
   /** Override default model temperature. */
   temperature?: number
-}
-
-/**
- * Configuration for group launch behavior.
- */
-export interface GroupLaunchConfig {
-  /** Max loops from one group running concurrently. Also bounds concurrent planning passes. Default 3. */
-  maxConcurrentLoops?: number
 }
 
 /**
@@ -317,8 +309,6 @@ export interface PluginConfig {
   auditorFallbackModels?: Array<string | AuditorFallbackModel>
   /** Loop behavior configuration. */
   loop?: LoopConfig
-  /** Group launch configuration. */
-  groupLaunch?: GroupLaunchConfig
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
   /** TUI display configuration. */

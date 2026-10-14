@@ -217,7 +217,7 @@ export function buildDashboardUrls(
  */
 export const DASHBOARD_EXPOSED_WARNING =
   'Forge dashboard is bound to a non-loopback address and has no authentication. ' +
-  'Anyone who can reach this port can read every loop plan, goal, audit result, finding, and cost. ' +
+  'Anyone who can reach this port can read every loop plan, audit result, finding, and cost. ' +
   'Restrict access with a firewall or VPN.'
 
 export interface DashboardBindingNotice {

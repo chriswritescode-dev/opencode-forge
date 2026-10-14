@@ -431,4 +431,82 @@ export const migrations: Migration[] = [
       db.run('ALTER TABLE loops ADD COLUMN sandbox_settings TEXT')
     },
   },
+  {
+    id: '150',
+    description: 'Remove goal loops: delete goal-kind rows and drop loop_kind, executor_session_id, and loop_large_fields.goal',
+    apply: (db: Database) => {
+      const tableExists = (name: string): boolean =>
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").all(name) as unknown[]).length > 0
+
+      const loopsCols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (loopsCols.some((c) => c.name === 'loop_kind')) {
+        const goalLoops = db.prepare("SELECT project_id, loop_name FROM loops WHERE loop_kind = 'goal'").all() as Array<{
+          project_id: string
+          loop_name: string
+        }>
+        const perLoopTables = [
+          'loop_large_fields',
+          'section_plans',
+          'review_findings',
+          'plans',
+          'loop_transitions',
+          'loop_attempts',
+          'loop_session_usage',
+          'plan_amendments',
+        ]
+        const deleteLoopRowStmt = db.prepare('DELETE FROM loops WHERE project_id = ? AND loop_name = ?')
+        const deleteStmtsByTable = new Map<string, ReturnType<Database['prepare']>>()
+        for (const table of perLoopTables) {
+          if (!tableExists(table)) continue
+          deleteStmtsByTable.set(table, db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND loop_name = ?`))
+        }
+        for (const goalLoop of goalLoops) {
+          for (const stmt of deleteStmtsByTable.values()) {
+            stmt.run(goalLoop.project_id, goalLoop.loop_name)
+          }
+          deleteLoopRowStmt.run(goalLoop.project_id, goalLoop.loop_name)
+        }
+      }
+
+      db.run('DROP INDEX IF EXISTS idx_loops_executor_session')
+
+      if (loopsCols.some((c) => c.name === 'executor_session_id')) {
+        db.run('ALTER TABLE loops DROP COLUMN executor_session_id')
+      }
+      if (loopsCols.some((c) => c.name === 'loop_kind')) {
+        db.run('ALTER TABLE loops DROP COLUMN loop_kind')
+      }
+
+      const largeCols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      if (largeCols.some((c) => c.name === 'goal')) {
+        db.run('ALTER TABLE loop_large_fields DROP COLUMN goal')
+      }
+    },
+  },
+  {
+    id: '151',
+    description: 'Remove feature groups: drop group_features and feature_groups',
+    apply: (db: Database) => {
+      db.run('DROP TABLE IF EXISTS group_features')
+      db.run('DROP TABLE IF EXISTS feature_groups')
+    },
+  },
+  {
+    id: '152',
+    description: 'Add base_commit to loops: exact commit each loop worktree branched from',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'base_commit')) return
+      db.run('ALTER TABLE loops ADD COLUMN base_commit TEXT')
+    },
+  },
+  {
+    id: '153',
+    description: 'Create goals and goal_chunks tables for goal orchestration',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='goals'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('153_create_goals.sql'))
+    },
+  },
 ]

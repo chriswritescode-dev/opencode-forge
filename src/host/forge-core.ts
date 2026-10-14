@@ -3,7 +3,7 @@ import { ForgeClientError } from '../client/port'
 import { buildAgents } from '../agents'
 import { createConfigHandler } from '../config'
 import { createSessionHooks, createLoopEventHandler } from '../hooks'
-import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo } from '../storage'
+import { initializeDatabase, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopAttemptsRepo, createSessionSandboxPreferencesRepo, createSessionAutoApproveRepo, createGoalsRepo } from '../storage'
 import type { LoopChangeNotifier } from '../loop'
 import { resolveBundledContainerDir, resolvePromptsDir } from '../setup'
 import { resolveLogPath } from '../storage'
@@ -23,7 +23,7 @@ import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, deriveManagerKey, type ResolveActiveLoopForSession, type SessionSandboxController } from '../sandbox/session-controller'
-import type { PluginConfig, CompactionConfig, AutoApproveDenyRule } from '../types'
+import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
 import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
 import { createTools } from '../tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../hooks'
@@ -40,17 +40,14 @@ import { resolveSessionAutoApproveFlag } from '../utils/session-auto-approve-fla
 import { createSessionLoopResolver } from '../services/session-loop-resolver'
 import { createUnifiedSandboxResolver } from '../services/unified-sandbox-resolver'
 import { createPlanCaptureEventHook } from '../hooks/plan-capture'
+import { createGoalPlannerEventHook } from '../hooks/goal-orchestrator'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from '../hooks/forge-session-attach'
 import { createLoopPermissionPatcher } from '../hooks/loop-permission'
 import { createSandboxMessageHook } from '../hooks/sandbox-message'
-import { createGroupOrchestratorEventHook } from '../hooks/group-orchestrator'
-import { createGroupOrchestrator, mapLoopStateToOutcome, type GroupOrchestrator, type GroupEffects } from '../services/group-orchestrator'
-import { parseModelString } from '../utils/model-fallback'
-import { parseFeatureList } from '../utils/feature-list-parser'
-import { classifyArchitectOutput, inspectArchitectPlanReadiness } from '../utils/architect-auto-output'
-import { resolveSessionPlanOfRecord } from '../services/plan-capture'
-import { PLAN_CAPTURE_MESSAGE_LIMIT } from '../utils/marked-plan-parser'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
+import { createArchitectAutoPlanner } from '../services/architect-auto-planner'
+import { createGoalOrchestrator, type GoalOrchestrator } from '../services/goal-orchestrator'
+import { deleteSessionBestEffort } from '../utils/loop-session'
 import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
 import { processShared } from '../utils/process-shared'
@@ -273,6 +270,41 @@ export function buildArchitectReminder(): string {
 READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
 Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
 </system-reminder>`
+}
+
+/** Inputs the loop-change notifier needs, injected so its settled dispatch is testable. */
+export interface LoopChangeNotifierDeps {
+  directory: string
+  projectId: string
+  publishLoopsChanged: () => void
+  getGoalOrchestrator: () => GoalOrchestrator | undefined
+  logger: Logger
+}
+
+/**
+ * Builds the loop-change notifier. A settled loop has committed its branch, so
+ * the goal orchestrator is asked to advance the goal; the call is fire-and-forget
+ * because the orchestrator guards against loops that belong to no goal.
+ */
+export function createLoopChangeNotifier(deps: LoopChangeNotifierDeps): LoopChangeNotifier {
+  const { directory, projectId, publishLoopsChanged, getGoalOrchestrator, logger } = deps
+
+  return (reason, loopName, hint) => {
+    const targetDirectories = Array.from(new Set([
+      hint?.projectDir,
+      hint?.worktreeDir,
+      directory,
+    ].filter((dir): dir is string => !!dir)))
+    logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
+
+    if (reason === 'settled') {
+      getGoalOrchestrator()?.onLoopSettled(loopName).catch((err: unknown) => {
+        logger.error(`[notifyLoopChange] goalOrchestrator.onLoopSettled failed for loop=${loopName}:`, err as Error)
+      })
+    }
+
+    publishLoopsChanged()
+  }
 }
 
 type SessionSandboxProvider = {
@@ -576,48 +608,24 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const reviewFindingsRepo = createReviewFindingsRepo(db)
   const sectionPlansRepo = createSectionPlansRepo(db)
   const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
-  const featureGroupsRepo = createFeatureGroupsRepo(db)
   const loopTransitionsRepo = createLoopTransitionsRepo(db)
   const planAmendmentsRepo = createPlanAmendmentsRepo(db)
   const loopAttemptsRepo = createLoopAttemptsRepo(db)
+  const goalsRepo = createGoalsRepo(db)
 
-  // Mark any groups left in non-terminal status (extracting/planning/running) from a
-  // prior process as interrupted. Do NOT auto-resume — user must restart via group-status.
-  //
-  // Skip this for forge worktree directories: when a loop (including a group's own
-  // loops) creates its worktree, OpenCode spins up a fresh plugin instance for that
-  // child directory in the SAME project. Running recovery there would mark the still-
-  // active parent group interrupted, sabotaging the group that just launched the loop.
-  if (!isForgeWorktreeDir(dataDir, directory)) {
-    const interruptedCount = featureGroupsRepo.markInterrupted(projectId)
-    if (interruptedCount > 0) {
-      logger.log(`Startup: marked ${interruptedCount} group(s) as interrupted (no auto-resume)`)
-    }
-  }
+  /**
+   * Forward holder — filled once the execution service exists below, so the
+   * loop-change notifier can reach the orchestrator without a construction cycle.
+   */
+  const goalOrchestratorRef: { orchestrator?: GoalOrchestrator } = {}
 
-  // Forward reference — assigned after real effects are built (post sessionLoopResolver).
-  // eslint-disable-next-line prefer-const
-  let groupOrchestrator: GroupOrchestrator | undefined
-
-  const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
-    const targetDirectories = Array.from(new Set([
-      hint?.projectDir,
-      hint?.worktreeDir,
-      directory,
-    ].filter((dir): dir is string => !!dir)))
-    logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
-
-    // When a loop terminates, notify the group orchestrator so it can advance
-    // the next queued feature. Fire-and-forget — the orchestrator guards internally
-    // against non-group loops.
-    if (reason === 'terminate') {
-      groupOrchestrator?.onLoopTerminated(loopName).catch((err: unknown) => {
-        logger.error(`[notifyLoopChange] groupOrchestrator.onLoopTerminated failed for loop=${loopName}:`, err as Error)
-      })
-    }
-
-    publishLoopsChanged()
-  }
+  const notifyLoopChange = createLoopChangeNotifier({
+    directory,
+    projectId,
+    publishLoopsChanged,
+    getGoalOrchestrator: () => goalOrchestratorRef.orchestrator,
+    logger,
+  })
 
   const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory, defaultGitService, loopAttemptsRepo)
 
@@ -811,42 +819,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     logger,
   })
 
-  // Spawns an isolated agent session (splitter/architect) seeded with a single text prompt,
-  // using the configured auditor model. Single source of truth for group agent bring-up.
-  async function spawnAgentSession(title: string, text: string, agent: string): Promise<{ sessionId: string }> {
-    const session = await forgeClient.session.create({ title, directory })
-    const parsedModel = parseModelString(config.auditorModel)
-    const modelParam = parsedModel ? { model: parsedModel } : {}
-    await forgeClient.session.promptAsync({
-      sessionID: session.id,
-      directory,
-      parts: [{ type: 'text', text }],
-      agent,
-      ...modelParam,
-    })
-    return { sessionId: session.id }
-  }
-
-  // Returns the newest assistant text part across a session's messages, or null if none.
-  async function findLatestAssistantText(sessionId: string): Promise<string | null> {
-    const messages = await forgeClient.session.messages({ sessionID: sessionId, directory, limit: PLAN_CAPTURE_MESSAGE_LIMIT })
-    const msgs = (messages ?? []) as Array<{ info: { role?: string }; parts: Array<{ type: string; text?: string }> }>
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const msg = msgs[i]
-      if (msg.info.role !== 'assistant') continue
-      for (const part of msg.parts) {
-        if (part.type === 'text' && part.text) return part.text
-      }
-    }
-    return null
-  }
-
-  function inspectStoredArchitectPlan(sessionId: string) {
-    const plan = plansRepo.getForSession(projectId, sessionId)
-    return plan ? inspectArchitectPlanReadiness(plan.content) : null
-  }
-
-  // Execution service shared by group launches, TUI loop restarts, and TUI plan execution.
+  // Execution service shared by TUI loop restarts and TUI plan execution.
   // Built once and reused (stateless dispatch) so the dependency wiring lives in a single place.
   const executionService = createForgeExecutionService({
     projectId,
@@ -857,6 +830,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     client: forgeClient,
     plansRepo,
     loopsRepo,
+    goalsRepo,
     loopHandler,
     loop: loopHandler.loop,
     sandboxManager,
@@ -864,6 +838,83 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     reviewFindingsRepo,
     loopSessionUsageRepo,
     pendingTeardowns,
+  })
+
+  const architectAutoPlanner = createArchitectAutoPlanner({
+    client: forgeClient,
+    plansRepo,
+    projectId,
+    logger,
+  })
+
+  const orchestrator = createGoalOrchestrator({
+    projectId,
+    dataDir,
+    goalsRepo,
+    planner: architectAutoPlanner,
+    git: defaultGitService,
+    getLoopState: (loopName) => loopHandler.loop.service.getAnyState(loopName),
+    async startLoop(input) {
+      const response = await executionService.dispatch(
+        { surface: 'tool', projectId, directory: input.projectDir, sourceSessionId: input.plannerSessionId },
+        buildStartLoopCommand({
+          source: { kind: 'stored', sessionId: input.plannerSessionId },
+          hostSessionId: input.hostSessionId,
+          baseRef: input.baseRef,
+          executionModel: input.executionModel,
+          auditorModel: input.auditorModel,
+          executionVariant: input.executionVariant,
+          auditorVariant: input.auditorVariant,
+          maxIterations: input.maxIterations ?? config.loop?.defaultMaxIterations ?? 0,
+          sandbox: input.sandbox,
+          lifecycle: { startWatchdog: true },
+        }),
+      )
+      if (response.ok) {
+        return {
+          ok: true,
+          loopName: response.data.loopName,
+          branch: response.data.worktreeBranch ?? null,
+          title: response.data.displayName ?? null,
+        }
+      }
+      return { ok: false, error: response.error.message }
+    },
+    async cancelLoop(loopName) {
+      await executionService.dispatch(
+        { surface: 'tool', projectId, directory },
+        { type: 'loop.cancel', selector: { kind: 'exact', name: loopName } },
+      )
+    },
+    async deleteSession(sessionId, sessionDirectory) {
+      await deleteSessionBestEffort(
+        forgeClient,
+        { sessionID: sessionId, directory: sessionDirectory },
+        logger,
+        'goal-orchestrator: failed to delete planner session',
+      )
+    },
+    deletePlanForSession: (sessionId) => {
+      plansRepo.deleteForSession(projectId, sessionId)
+    },
+    async removeCheckout(checkoutProjectDir, checkoutDir) {
+      const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
+      await cleanupLoopWorktree({
+        worktreeDir: checkoutDir,
+        logPrefix: 'goal-orchestrator',
+        logger,
+      })
+      if (checkoutProjectDir) defaultGitService.worktreePrune(checkoutProjectDir)
+    },
+    logger,
+  })
+  goalOrchestratorRef.orchestrator = orchestrator
+
+  const goalPlannerEventHook = createGoalPlannerEventHook({
+    orchestrator,
+    goalsRepo,
+    projectId,
+    logger,
   })
 
   const tui = createTuiRpcService({
@@ -895,114 +946,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     logger,
   })
 
-  // ── Real GroupEffects ─────────────────────────────────────────────────────
-  const effects: GroupEffects = {
-    async spawnSplitterSession(prdText) {
-      return spawnAgentSession('Feature extraction', prdText, 'feature-splitter')
-    },
-
-    async readSplitterFeatures(sessionId) {
-      const text = await findLatestAssistantText(sessionId)
-      if (text === null) return { ok: false, reason: 'missing' as const }
-      return parseFeatureList(text)
-    },
-
-    async spawnArchitectSession(feature) {
-      return spawnAgentSession(`Plan: ${feature.title}`, feature.description, 'architect-auto')
-    },
-
-    async capturePlan(sessionId) {
-      const captured = await resolveSessionPlanOfRecord({
-        client: forgeClient,
-        plansRepo,
-        projectId,
-        directory,
-        logger,
-      }, sessionId)
-      if (!captured) return { captured: false }
-
-      const readiness = inspectStoredArchitectPlan(sessionId)
-      if (!readiness?.ready) {
-        logger.log(`group-orchestrator: architect ${sessionId} stored an incomplete plan: ${readiness?.reason ?? 'plan row missing after capture'}`)
-        return { captured: false }
-      }
-      return { captured: true }
-    },
-
-    async classifyArchitectFailure(sessionId) {
-      const readiness = inspectStoredArchitectPlan(sessionId)
-      if (readiness && !readiness.ready) return { reason: readiness.reason }
-
-      const text = await findLatestAssistantText(sessionId)
-      if (text === null) return { reason: 'No assistant response found' }
-      const classified = classifyArchitectOutput(text)
-      const reason = classified.kind === 'insufficient'
-        ? classified.reason
-        : 'Architect failed to produce a valid plan'
-      return { reason }
-    },
-
-    async launchLoop({ architectSessionId, loopName }) {
-      const readiness = inspectStoredArchitectPlan(architectSessionId)
-      if (!readiness?.ready) {
-        return {
-          ok: false,
-          error: readiness?.reason ?? 'Stored plan not found before launch',
-        }
-      }
-
-      const execCtx: ForgeExecutionRequestContext = {
-        surface: 'tool',
-        projectId,
-        directory,
-        sourceSessionId: architectSessionId,
-      }
-      const response = await executionService.dispatch(execCtx, {
-        type: 'loop.start',
-        source: { kind: 'stored', sessionId: architectSessionId },
-        loopName,
-        executionModel: config.executionModel,
-        auditorModel: config.auditorModel,
-        lifecycle: { startWatchdog: true },
-      })
-      if (response.ok) {
-        return { ok: true, loopName: response.data.loopName }
-      }
-      return { ok: false, error: response.error?.message ?? 'Failed to start loop' }
-    },
-
-    async cancelLoop(loopName) {
-      await executionService.dispatch(
-        { surface: 'tool', projectId, directory },
-        { type: 'loop.cancel', selector: { kind: 'exact', name: loopName } },
-      )
-    },
-
-    loopFinalOutcome(loopName) {
-      const state = loopHandler.loop.service.getAnyState(loopName)
-      return mapLoopStateToOutcome(state)
-    },
-
-    generateLoopName(base) {
-      return loopHandler.loop.service.generateUniqueLoopName(slugify(base))
-    },
-  }
-
-  groupOrchestrator = createGroupOrchestrator({
-    projectId,
-    repo: featureGroupsRepo,
-    effects,
-    cap: () => config.groupLaunch?.maxConcurrentLoops ?? 3,
-    logger,
-  })
-
-  const groupOrchestratorEventHook = createGroupOrchestratorEventHook({
-    orchestrator: groupOrchestrator,
-    repo: featureGroupsRepo,
-    projectId,
-    logger,
-  })
-
+  // ── Tool context ──────────────────────────────────────────────────────────
   const ctx: ToolContext = {
     projectId,
     directory,
@@ -1018,12 +962,12 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     plansRepo,
     reviewFindingsRepo,
     loopsRepo,
+    goalsRepo,
     sectionPlansRepo,
     loopSessionUsageRepo,
     pendingTeardowns,
+    goalOrchestrator: orchestrator,
     resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
-    featureGroupsRepo,
-    groupOrchestrator,
   }
 
   const tools = createTools(ctx)
@@ -1192,7 +1136,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
       await planCaptureEventHook(eventInput)
       await loopHandler.onEvent(eventInput)
-      await groupOrchestratorEventHook(eventInput)
+      await goalPlannerEventHook(eventInput)
       await loopPermissionPatcher.onSessionCreated(eventInput)
       await forgeSessionAttachHook(eventInput)
       await sessionHooks.onEvent(eventInput)

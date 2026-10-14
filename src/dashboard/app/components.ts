@@ -1,14 +1,13 @@
 import html from 'solid-js/html'
 import { createMemo, createSignal, createEffect, getOwner, runWithOwner, onCleanup, untrack, batch } from 'solid-js'
-import type { DashboardLoop, DashboardProject, DashboardGroup, DashboardUnexecutedPlan } from './types'
+import type { DashboardLoop, DashboardProject, DashboardGoal, DashboardUnexecutedPlan } from './types'
 import type { AmendmentDiff, AmendmentDiffLine } from '../amendment-diff'
-import type { GroupFeatureRow } from '../../storage'
 import type { RepoSection, SortMode } from './helpers'
 import type { MarkdownHeading } from './helpers'
 import {
   statusClass,
   sectionStatusClass,
-  featureStageClass,
+  goalBadgeClass,
   fmtTime,
   formatSectionDuration,
   formatSpanDuration,
@@ -208,10 +207,10 @@ function deriveRepoIndex(entries: MatchedEntry[], labels: Map<string, string>): 
 
 // ── Unofficial projects ────────────────────────────────────────────────────
 
-// A project discovered only from feature groups or unexecuted plans has no
-// projectDir, so the repo menu cannot label it. The repo index lists it here
-// instead, with its unexecuted plans inline for viewing and deletion. Rows cap
-// like every other dashboard list, per project.
+// A project discovered only from unexecuted plans has no projectDir, so the
+// repo menu cannot label it. The repo index lists it here instead, with its
+// unexecuted plans inline for viewing and deletion. Rows cap like every other
+// dashboard list, per project.
 function UnofficialProjectBlock(props: {
   project: DashboardProject
   onPlansChanged: () => void
@@ -471,12 +470,12 @@ export function Breadcrumb(props: {
 
 export function SectionNav(props: {
   section: RepoSection
-  counts: { loops: number; groups: number; findings: number; plans: number }
+  counts: { loops: number; goals: number; findings: number; plans: number }
   onNavigate: (section: RepoSection) => void
 }) {
   const items: { key: RepoSection; label: string; count: number }[] = [
     { key: 'loops', label: 'Loops', count: props.counts.loops },
-    { key: 'groups', label: 'Groups', count: props.counts.groups },
+    { key: 'goals', label: 'Goals', count: props.counts.goals },
     { key: 'findings', label: 'Findings', count: props.counts.findings },
     { key: 'plans', label: 'Plans', count: props.counts.plans },
   ]
@@ -919,7 +918,6 @@ function LoopDetailHeader(props: {
     const env: Node[] = [
       LoopDetailCell({ label: 'Branch', value: () => lp().worktreeBranch ?? '—', title: () => lp().worktreeBranch ?? '', size: 'stat' }),
       LoopDetailCell({ label: 'Sandbox', value: () => (lp().sandbox ? 'on' : 'off'), size: 'stat' }),
-      LoopDetailCell({ label: 'Kind', value: () => lp().kind ?? '—', size: 'stat' }),
       LoopDetailCell({ label: 'Audits', value: () => String(lp().auditCount), size: 'stat' }),
       LoopDetailCell({ label: 'Errors', value: () => String(lp().errorCount), size: 'stat' }),
     ]
@@ -1204,7 +1202,6 @@ function TabBar(props: {
 function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; now: () => number; onOpenAmendment: (amendmentId: number) => void }) {
   const dl = () => props.dashLoop
   const lp = () => dl().loop
-  const hasGoal = createMemo(() => !!dl().goal)
   const reportSrc = createMemo(() => dl().postActionReport ?? lp().completionSummary ?? null)
   const reportLabel = createMemo(() => dl().postActionReport ? 'Post-Action Report' : 'Completion Summary')
   const hasReport = createMemo(() => !!reportSrc())
@@ -1213,7 +1210,6 @@ function OverviewTabBody(props: { dashLoop: DashboardLoop; split: () => Split; n
   return html`<div class="overview-tab">
     ${() => PhaseBar({ spans: () => phaseState().spans, variant: 'md' })}
     ${() => PhaseLegend({ spans: () => phaseState().spans })}
-    ${() => (hasGoal() ? MarkdownSection({ label: 'Goal', src: () => dl().goal }) : '')}
     ${LoopDetailHeader({ dashLoop: props.dashLoop, split: props.split, onOpenAmendment: props.onOpenAmendment })}
     ${() => (hasReport() ? MarkdownSection({ label: reportLabel, src: () => reportSrc() }) : '')}
     ${() => (hasAudit() ? MarkdownSection({ label: 'Last Audit Result', src: () => dl().lastAuditResult }) : '')}
@@ -1347,7 +1343,7 @@ function LoopLink(props: {
       section: 'loops',
       loopName: props.loopName,
       tab: 'overview',
-      groupId: null,
+      goalId: null,
       statuses: [],
       query: '',
     })
@@ -1501,41 +1497,44 @@ export function EmptyState() {
   return html`<div class="empty-state">No loops match the current filters.</div>`
 }
 
-const TERMINAL_GROUP_STATUSES = new Set(['completed', 'cancelled', 'errored'])
+const GOAL_TERMINAL_STAGES = new Set(['completed', 'cancelled'])
 
-function groupFeaturesMeter(features: GroupFeatureRow[]): { completed: number; total: number } {
-  const total = features.length
-  const completed = features.filter(f => f.stage === 'completed').length
+function goalChunkMeter(goal: DashboardGoal): { completed: number; total: number } {
+  const total = goal.chunks.length
+  const completed = goal.chunks.filter(c => c.stage === 'completed').length
   return { completed, total }
 }
 
-function groupStatusClass(base: 'group-row' | 'group-header', status: string): string {
-  const terminal = TERMINAL_GROUP_STATUSES.has(status)
-  return base + (terminal ? ` ${base}-terminal` : ` ${base}-active`)
+/** Stage of the goal's current chunk: the first unfinished chunk, else the last chunk. */
+function goalCurrentStage(goal: DashboardGoal): string | null {
+  const current = goal.chunks.find(c => !GOAL_TERMINAL_STAGES.has(c.stage))
+  return (current ?? goal.chunks[goal.chunks.length - 1])?.stage ?? null
 }
 
-export function GroupsPanel(props: {
-  groups: () => DashboardGroup[]
-  onOpen: (groupId: string) => void
+export function GoalsPanel(props: {
+  goals: () => DashboardGoal[]
+  onOpen: (goalId: string) => void
 }) {
-  return html`<div class="groups-panel">
-    <h4>Groups</h4>
+  const [showAll, setShowAll] = createSignal(false)
+  const view = createMemo(() => capList(props.goals(), MAX_RENDERED_LOOP_ROWS, showAll()))
+  return html`<div class="goals-panel">
+    <h4>Goals <span class="goals-panel-count">${() => view().total}</span></h4>
+    ${() => (view().capped
+      ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'goals', onShowAll: () => setShowAll(true) })
+      : '')}
     ${() => {
-      const groups = props.groups()
-      if (groups.length === 0) return html`<div class="tab-empty">No feature groups for this repo.</div>`
-      return html`<div class="groups-list">
-        ${groups.map(g => {
-          const gr = g.group
-          const meter = createMemo(() => groupFeaturesMeter(g.features))
-          return html`<div class=${() => groupStatusClass('group-row', gr.status)} data-group-status=${() => gr.status} onclick=${() => props.onOpen(gr.groupId)}>
-            <span class=${() => statusClass(gr.status)}>${() => gr.status}</span>
-            <span class="group-row-title">${() => gr.title}</span>
+      const goals = view().rows
+      if (goals.length === 0) return html`<div class="tab-empty">No goals for this repo.</div>`
+      return html`<div class="goals-list">
+        ${goals.map(goal => {
+          const meter = createMemo(() => goalChunkMeter(goal))
+          return html`<div class="goal-row" data-goal-status=${() => goal.status} onclick=${() => props.onOpen(goal.goalId)}>
+            <span class=${() => goalBadgeClass(goal.status)}>${() => goal.status}</span>
+            <span class="goal-row-title">${() => goal.title}</span>
             ${MiniMeter({ current: () => meter().completed, total: () => meter().total })}
-            <span class="group-row-meta">max ${() => gr.maxConcurrent}</span>
-            <span class="group-row-time">
-              <span class="group-row-created">Created ${() => fmtTime(gr.createdAt)}</span>
-              ${() => (gr.completedAt ? html`<span class="group-row-completed">Completed ${() => fmtTime(gr.completedAt)}</span>` : '')}
-            </span>
+            <span class="goal-row-stage">${() => goalCurrentStage(goal) ?? ''}</span>
+            <span class="goal-row-max">max ${() => goal.maxChunks}</span>
+            ${() => (goal.error ? html`<span class="goal-row-error">${() => goal.error}</span>` : '')}
           </div>`
         })}
       </div>`
@@ -1543,51 +1542,60 @@ export function GroupsPanel(props: {
   </div>`
 }
 
-export function GroupDetail(props: {
-  group: () => DashboardGroup | null
+export function GoalDetail(props: {
+  goal: () => DashboardGoal | null
   loopNames: () => Set<string>
   projectId: () => string | null
   onBack: () => void
   onOpenLoop: (loopName: string) => void
 }) {
-  return html`<div class="group-detail">
-    <div class="back-to-groups" onclick=${props.onBack}>← Back to groups</div>
+  return html`<div class="goal-detail">
+    <div class="back-to-goals" onclick=${props.onBack}>← Back to goals</div>
     ${() => {
-      const dg = props.group()
-      if (!dg) return html`<div class="tab-empty">Group not found.</div>`
-      const gr = dg.group
-      const meter = createMemo(() => groupFeaturesMeter(dg.features))
+      const goal = props.goal()
+      if (!goal) return html`<div class="tab-empty">Goal not found.</div>`
+      const meter = createMemo(() => goalChunkMeter(goal))
       // Single root element: solid-js/html generates invalid code for a
       // template whose top level is a fragment of sibling roots.
-      return html`<div class="group-detail-body">
-        <div class=${() => groupStatusClass('group-header', gr.status)} data-group-status=${() => gr.status}>
-          <div class="group-header-top">
-            <span class=${() => statusClass(gr.status)}>${() => gr.status}</span>
-            <h3 class="group-header-title">${() => gr.title}</h3>
-            <span class="group-header-meta">max ${() => gr.maxConcurrent}</span>
+      return html`<div class="goal-detail-body">
+        <div class="goal-header" data-goal-status=${() => goal.status}>
+          <div class="goal-header-top">
+            <span class=${() => goalBadgeClass(goal.status)}>${() => goal.status}</span>
+            <h3 class="goal-header-title">${() => goal.title}</h3>
+            <span class="goal-header-meta">max ${() => goal.maxChunks} chunks</span>
           </div>
-          <div class="group-header-stats">
-            <span class="group-header-stat">${() => 'Features ' + meter().completed + '/' + meter().total}</span>
-            <span class="group-header-stat">Created ${() => fmtTime(gr.createdAt)}</span>
-            ${() => (gr.completedAt ? html`<span class="group-header-stat">Completed ${() => fmtTime(gr.completedAt)}</span>` : '')}
-            ${() => (gr.error ? html`<span class="group-header-error">${() => gr.error}</span>` : '')}
+          <div class="goal-header-stats">
+            <span class="goal-header-stat">${() => 'Chunks ' + meter().completed + '/' + meter().total}</span>
+            <span class="goal-header-stat">Created ${() => fmtTime(goal.createdAt)}</span>
+            ${() => (goal.completedAt ? html`<span class="goal-header-stat">Completed ${() => fmtTime(goal.completedAt)}</span>` : '')}
+            ${() => (goal.error ? html`<span class="goal-header-error">${() => goal.error}</span>` : '')}
           </div>
-          ${() => (gr.prdPreview ? html`<div class="markdown-section">
-            <div class="markdown-heading-row"><h4 class="section-label">PRD preview</h4></div>
-            <pre class="prd-preview">${() => gr.prdPreview || ''}</pre>
+          <div class="goal-objective">
+            <div class="goal-section-label">Objective</div>
+            <pre class="goal-objective-text">${() => goal.objectivePreview}</pre>
+          </div>
+          ${() => (goal.tasks.length > 0 ? html`<div class="goal-tasks">
+            <div class="goal-section-label">Tasks</div>
+            ${goal.tasks.map(task => html`<div class="goal-task-row">
+              ${() => (task.ref ? html`<span class="goal-task-ref">${() => task.ref}</span>` : '')}
+              <span class="goal-task-title">${() => task.title}</span>
+            </div>`)}
           </div>` : '')}
         </div>
-        <div class="features-list">
-          ${dg.features.map(f => html`<div class="feature-row" data-stage=${() => f.stage}>
-            <span class="feature-index">#${() => f.featureIndex}</span>
-            <span class="feature-title">${() => f.title}</span>
-            <span class=${() => featureStageClass(f.stage)}>${() => f.stage}</span>
-            <span class="feature-attempts">${() => f.attempts} attempts</span>
-            ${() => (!!f.loopName && props.loopNames().has(f.loopName)
-              ? LoopLink({ className: 'feature-loop-link', projectId: props.projectId, loopName: f.loopName, onOpen: props.onOpenLoop })
-              : '')}
-            ${() => (f.error ? html`<span class="feature-error">${() => f.error}</span>` : '')}
-          </div>`)}
+        <div class="goal-chunks">
+          <div class="goal-section-label">Chunks</div>
+          ${() => (goal.chunks.length === 0
+            ? html`<div class="tab-empty">No chunks recorded yet.</div>`
+            : goal.chunks.map(chunk => html`<div class="goal-chunk-row" data-chunk-stage=${() => chunk.stage}>
+                <span class="goal-chunk-index">${() => 'chunk ' + (chunk.chunkIndex + 1)}</span>
+                <span class=${() => goalBadgeClass(chunk.stage)}>${() => chunk.stage}</span>
+                <span class="goal-chunk-title">${() => chunk.title ?? ''}</span>
+                ${() => (chunk.branch ? html`<span class="goal-chunk-branch">${() => chunk.branch}</span>` : '')}
+                ${() => (chunk.loopName && props.loopNames().has(chunk.loopName)
+                  ? LoopLink({ className: 'goal-chunk-loop-link', projectId: props.projectId, loopName: chunk.loopName, onOpen: props.onOpenLoop })
+                  : '')}
+                ${() => (chunk.summaryPreview ? html`<span class="goal-chunk-summary">${() => chunk.summaryPreview}</span>` : '')}
+              </div>`))}
         </div>
       </div>`
     }}

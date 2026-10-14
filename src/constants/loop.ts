@@ -9,23 +9,21 @@ export type PermissionRule = { permission: string; pattern: string; action: 'all
 export const MAX_TOTAL_SECTIONS = 24
 
 /**
- * Tools that author the session-scoped plan of record. Architect agents may
- * call them; implementation, audit, splitter, and loop permission rules deny
- * this one list rather than repeating the names.
+ * Tools that author the session's plan or goal of record. Architect agents may
+ * call them; implementation and audit sessions deny this one list rather than
+ * repeating the names, and the code agent excludes it.
  */
-export const PLAN_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const
+export const PLAN_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit', 'goal-write'] as const
 
 /** Structural deny names shared by both loop and audit rulesets, in emit order. */
 export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
   ...PLAN_AUTHORING_TOOL_NAMES,
   'execute-plan',
-  'execute-goal',
   'question',
   'loop-cancel',
   'loop-status',
-  'launch-group',
-  'group-status',
-  'group-cancel',
+  'goal-cancel',
+  'goal-status',
 ] as const
 
 /** Structural deny names exclusive to loop sessions (review tools). */

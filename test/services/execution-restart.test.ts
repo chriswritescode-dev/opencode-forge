@@ -126,6 +126,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     executionModel: string | null
     executionVariant: string | null
     startedAt: number
+    baseCommit: string | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -143,6 +144,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       executionModel: null as string | null,
       executionVariant: null as string | null,
       startedAt: Date.now(),
+      baseCommit: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -176,6 +178,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
+      baseCommit: opts.baseCommit,
     }, { lastAuditResult: null })
   }
 
@@ -714,6 +717,111 @@ describe('handleLoopRestart from stall_timeout', () => {
     const newState = loopService.getActiveState('worktree-loop')!
     expect(newState.workspaceId).toBe('ws_new')
     expect(newState.iteration).toBe(1)
+  })
+
+  test('restart preserves the stored baseCommit unchanged', async () => {
+    const baseCommit = 'f'.repeat(40)
+    insertLoop({
+      loopName: 'based-loop',
+      status: 'errored',
+      terminationReason: 'max_iterations',
+      iteration: 3,
+      worktree: true,
+      workspaceId: 'ws_old',
+      baseCommit,
+    })
+
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'based-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-based' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: {
+        create: async () => ({ id: 'ws_new', directory: '/tmp', branch: 'forge/based-loop' }),
+        list: async () => [
+          {
+            id: 'ws_old',
+            type: 'forge',
+            name: 'based-loop',
+            branch: null,
+            directory: '/tmp',
+            projectID: PROJECT_ID,
+            extra: { baseRef: 'stale-ref-from-start' },
+          },
+        ],
+        remove: async () => {},
+        warp: async () => {},
+      },
+      toast: async () => {},
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: 'based-loop' } },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(loopsRepo.get(PROJECT_ID, 'based-loop')!.baseCommit).toBe(baseCommit)
+    expect(loopService.getActiveState('based-loop')!.baseCommit).toBe(baseCommit)
+    // The restart reuses the branch; a stale baseRef from the original create
+    // must not be replayed (it would make the adapter refuse to reuse the branch).
+    const createArgs = (client.workspace.create as any).mock.calls[0][0]
+    expect(createArgs.extra).not.toHaveProperty('baseRef')
   })
 
   test('restart keeps portable permission rules from the previous workspace (no permission widening)', async () => {
@@ -2432,10 +2540,7 @@ describe('handleLoopRestart restartability rules', () => {
     worktreeBranch: string | null
     projectDir: string
     workspaceId: string | null
-    kind: 'plan' | 'goal'
     hostSessionId: string | null
-    executorSessionId: string | null
-    goal: string | null
     startedAt: number
     sandboxSettings: { enabled?: boolean; resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string } } | null
   }> = {}) {
@@ -2453,10 +2558,7 @@ describe('handleLoopRestart restartability rules', () => {
       worktreeBranch: null as string | null,
       projectDir: '/tmp',
       workspaceId: null as string | null,
-      kind: 'plan' as 'plan' | 'goal',
       hostSessionId: null as string | null,
-      executorSessionId: null as string | null,
-      goal: null as string | null,
       startedAt: Date.now(),
       sandboxSettings: null as { enabled?: boolean; resources?: { memory?: string; cpus?: string; dockerDisk?: string; cacheDisk?: string } } | null,
     }
@@ -2479,7 +2581,6 @@ describe('handleLoopRestart restartability rules', () => {
       auditorModel: null,
       executionVariant: null,
       auditorVariant: null,
-      kind: opts.kind,
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -2489,12 +2590,11 @@ describe('handleLoopRestart restartability rules', () => {
       completionSummary: null,
       workspaceId: opts.workspaceId,
       hostSessionId: opts.hostSessionId,
-      executorSessionId: opts.executorSessionId,
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
       sandboxSettings: opts.sandboxSettings,
-    }, { lastAuditResult: null, goal: opts.goal })
+    }, { lastAuditResult: null })
   }
 
   async function createMockService(opts?: { sandboxManager?: unknown; terminate?: (name: string, reason: any) => Promise<boolean>; config?: Record<string, any>; handleAuditorProviderLimit?: (name: string, message: string) => Promise<boolean>; runExclusive?: (name: string, fn: () => Promise<any>) => Promise<any> }) {
@@ -2511,7 +2611,7 @@ describe('handleLoopRestart restartability rules', () => {
       terminate: (name, opts) => loopService.terminate(name, opts),
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
-      buildContinuationPrompt: () => 'goal restart prompt',
+      buildContinuationPrompt: () => 'continuation prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
@@ -3045,46 +3145,6 @@ describe('handleLoopRestart restartability rules', () => {
 
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeNull()
-  })
-
-  test('goal loop restart repoints executorSessionId to the new session while preserving hostSessionId', async () => {
-    const loopName = 'goal-restart-binding'
-    insertLoop({
-      loopName,
-      status: 'cancelled',
-      terminationReason: 'user_aborted',
-      phase: 'auditing',
-      kind: 'goal',
-      // Pre-restart state: a stale executor binding and a distinct host redirect.
-      hostSessionId: 'original-host-session',
-      executorSessionId: 'original-executor-session',
-      goal: 'Ship the /health endpoint with tests.',
-    })
-
-    const { service, client } = await createMockService()
-    const result = await service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
-    )
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-
-    const newState = loopService.getActiveState(loopName)!
-    expect(newState).not.toBeNull()
-    expect(newState.kind).toBe('goal')
-    expect(newState.goal).toBe('Ship the /health endpoint with tests.')
-    // The executor binding is repointed at the freshly-created restart session.
-    expect(newState.executorSessionId).toBe('new-session-restart')
-    expect(newState.sessionId).toBe('new-session-restart')
-    // The host redirect target is preserved across restart (not reinterpreted as executor).
-    expect(newState.hostSessionId).toBe('original-host-session')
-
-    // The restart prompt went to the new executor session as a code prompt.
-    const codePrompt = (client.session.promptAsync as any).mock.calls.find(
-      (c: any[]) => c[0]?.agent === 'code' && c[0]?.sessionID === 'new-session-restart',
-    )
-    expect(codePrompt).toBeDefined()
   })
 
   test('restart prompt failure with provider limit terminates loop instead of rolling back', async () => {
@@ -3856,7 +3916,7 @@ describe('handleLoopRestart restartability rules', () => {
       terminate: (name, opts) => loopService.terminate(name, opts),
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
-      buildContinuationPrompt: () => 'goal restart prompt',
+      buildContinuationPrompt: () => 'continuation prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),

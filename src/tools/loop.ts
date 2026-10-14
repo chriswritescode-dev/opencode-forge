@@ -67,6 +67,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
       client: ctx.client,
       plansRepo: ctx.plansRepo,
       loopsRepo: ctx.loopsRepo,
+      goalsRepo: ctx.goalsRepo,
       loopHandler: ctx.loopHandler,
       loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
@@ -180,6 +181,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
         lines.push(`Loop name: ${result.data.loopName}`)
         lines.push(`Worktree: ${result.data.worktreeDir}`)
         lines.push(`Branch: ${result.data.worktreeBranch ?? 'unknown'}`)
+        if (result.data.goalId) {
+          lines.push(`Goal: ${result.data.goalId} — this loop is chunk 1; later chunks start automatically.`)
+        }
 
         lines.push(
           `Model: ${modelInfo}`,
@@ -189,60 +193,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
           'Your job is done — just confirm to the user that the loop has been launched.',
           'The user can run loop-status or loop-cancel later if needed.',
         )
-
-        const scopeWarning = await projectScopeWarning(result.data.sessionId)
-        if (scopeWarning) lines.push(scopeWarning)
-
-        return lines.join('\n')
-      },
-    }),
-
-    'execute-goal': tool({
-      description: 'Start a managed goal loop that runs in a new dedicated session: creates an isolated Forge worktree and code session, sends the goal as the initial prompt, registers the new session as the loop executor, and starts the watchdog. The invoking session remains hostSessionId and is not warped or mutated.',
-      args: {
-        goal: z.string().describe('The goal to execute. Non-empty free text; the first line is used to derive a title/loop name when omitted.'),
-        title: z.string().optional().describe('Short title for the loop (derived from the goal when omitted)'),
-        loopName: z.string().optional().describe('Short name for the loop (auto-incremented if collision exists; derived from the title when omitted)'),
-        maxIterations: z.number().optional().describe('Maximum loop iterations (defaults to plugin config loop.defaultMaxIterations)'),
-      },
-      execute: async (args, context) => {
-        const goalText = (args.goal ?? '').trim()
-        if (!goalText) {
-          return 'Goal text is required. Pass a non-empty goal argument.'
-        }
-
-        logger.log(`loop: starting goal loop for goal="${goalText.slice(0, 80)}"`)
-
-        const { service, execCtx } = makeService(context.sessionID)
-        const result = await service.dispatch(execCtx, {
-          type: 'goal.start',
-          goal: goalText,
-          title: args.title,
-          loopName: args.loopName,
-          maxIterations: args.maxIterations,
-          executorSessionId: context.sessionID,
-        })
-
-        if (!result.ok) {
-          logger.error('loop: failed to start goal loop', result.error)
-          return `Failed to start goal loop: ${result.error.message}`
-        }
-
-        const maxInfo = result.data.maxIterations > 0 ? result.data.maxIterations.toString() : 'unlimited'
-        const lines: string[] = [
-          'Goal loop activated!',
-          '',
-          `Session: ${result.data.sessionId} (new dedicated session)`,
-          `Loop name: ${result.data.loopName}`,
-          `Worktree: ${result.data.worktreeDir}`,
-          `Branch: ${result.data.worktreeBranch ?? 'unknown'}`,
-          `Max iterations: ${maxInfo}`,
-          '',
-          'A new code session has been created in the worktree with the goal as the initial prompt.',
-          'That session implements the goal — NOT this one. Do not edit files or attempt the goal here.',
-          'Your job is done — just confirm to the user that the goal loop has been launched.',
-          'The user can run loop-status or loop-cancel later if needed.',
-        ]
 
         const scopeWarning = await projectScopeWarning(result.data.sessionId)
         if (scopeWarning) lines.push(scopeWarning)
@@ -497,7 +447,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
         }
 
         const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
-        const specification = state.kind === 'goal' ? state.goal : state.prompt
+        const specification = state.prompt
         const specificationPreview = specification && specification.length > 100 ? `${specification.substring(0, 97)}...` : (specification ?? '')
 
         let sessionStatus = 'unknown'
@@ -614,7 +564,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
           ...(stallError ? [`Last stall error: ${stallError}`] : []),
           ...(secondsSinceActivity !== null ? [`Last activity: ${secondsSinceActivity}s ago`] : []),
           '',
-          `${state.kind === 'goal' ? 'Goal' : 'Prompt'}: ${specificationPreview}`,
+          `Prompt: ${specificationPreview}`,
         )
 
         return statusLines.join('\n')
