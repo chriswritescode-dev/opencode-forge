@@ -110,6 +110,13 @@ async function installBundle(
       continue
     }
 
+    if (file.state === 'pristine') {
+      if (!opts.dryRun) installFile(file, manifest)
+      result.overwritten.push(file.rel)
+      changed = true
+      continue
+    }
+
     // The installed copy differs from the bundled version — a real conflict.
     const choice = await prompter.fileConflict(file)
     if (choice === 'overwrite') {
