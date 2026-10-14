@@ -195,14 +195,14 @@ A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stri
 - `location.shutdown` - Run cleanup when the location shuts down
 - Plan approval events via `createPlanApprovalEventHook`
 - Plan capture from streaming message parts via `createPlanCaptureEventHook`
-- Goal planner idle events via `createGoalPlannerEventHook` (`src/hooks/goal-orchestrator.ts`) — routes a chunk planner session's idle event to the goal orchestrator; ownership is proven by the persisted planner-session row, so an unrelated session's idle is ignored.
+- Goal planner idle and error events via `createGoalPlannerEventHook` (`src/hooks/goal-orchestrator.ts`) — routes a chunk planner session's idle event to the goal orchestrator; ownership is proven by the persisted planner-session row, so an unrelated session's idle is ignored. A normalized `session.error` for the same session (a provider failure or an interrupted execution) is routed to `onPlannerError`, which abandons the chunk and pauses the goal; a premature idle that yields no output keeps the chunk planning.
 
 ### Additional Hooks
 
 - **Plan Capture** (`src/hooks/plan-capture.ts`) - Captures the session plan of record. The primary authoring path is the `plan-write` / `plan-edit` tools, which write directly to the session-scoped `plans` row. Marker capture of `<!-- forge-plan:start -->...end-->` from assistant messages is the fallback path and runs on streaming `message.part.updated` events.
 - **Forge Session Attach** (`src/hooks/forge-session-attach.ts`) - Automatically attaches loops when new sessions are created
 - **Watchdog** (`src/hooks/watchdog.ts`) - Stall detection and recovery for loops
-- **Goal Orchestrator** (`src/hooks/goal-orchestrator.ts`) - Routes chunk planner idle events into the goal orchestrator
+- **Goal Orchestrator** (`src/hooks/goal-orchestrator.ts`) - Routes chunk planner idle and `session.error` events into the goal orchestrator
 - **Loop-change notifier** (`src/host/forge-core.ts`) - `createLoopChangeNotifier` fires the `settled` reason once a loop's teardown side effects (teardown commit, sandbox stop, worktree cleanup) finish and hands it to the goal orchestrator; the `terminate` reason, fired when the terminal status is persisted but before teardown, never advances a goal.
 
 ## Storage Architecture
@@ -252,7 +252,7 @@ The plugin follows this initialization sequence within `createForgeCore()`:
 6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, transitions, planAmendments, attempts, goals, sessionSandboxPreferences, sessionAutoApprove)
 7. **Loop Event Handler** - Connect loop runtime to events and state management
 8. **Session Sandbox Controller** - Reconcile the host-session sandbox selection
-9. **Goal Orchestrator** - Build the `ArchitectAutoPlanner` and the goal orchestrator that plans and launches sequential goal chunks, plus the loop-change notifier that feeds it `settled` events
+9. **Goal Orchestrator** - Build the `ArchitectAutoPlanner` and the goal orchestrator that plans and launches sequential goal chunks, plus the loop-change notifier that feeds it `settled` events. The orchestrator writes through a process-shared database handle (`acquireGoalOrchestratorDb` in `src/services/goal-orchestrator.ts`), so a chunk's `settled` callback advances the goal even after the plugin instance that owned it is disposed.
 10. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
 11. **Hooks** - Final registration of all hook points
 

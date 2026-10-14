@@ -79,7 +79,6 @@ describe('section-read tool', () => {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
-      kind: 'plan',
     }, { lastAuditResult: null })
   }
 

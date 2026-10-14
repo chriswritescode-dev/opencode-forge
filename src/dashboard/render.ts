@@ -268,9 +268,8 @@ export function renderDashboardHtml(): string {
   .status-cancelled { background: var(--status-idle); color: #fff; }
   .status-errored { background: var(--status-error-solid); color: #fff; }
   .status-stalled { background: var(--status-attention); color: #fff; }
-  .status-extracting { background: var(--link); color: #fff; }
-  .status-planning { background: var(--link); color: #fff; }
-  .status-interrupted { background: var(--status-attention); color: #fff; }
+  .status-draft { background: var(--surface); color: var(--fg-1); }
+  .status-paused { background: var(--status-attention); color: #fff; }
   .loop-detail { padding: var(--sp-3) var(--sp-4) var(--sp-4); border-top: 1px solid var(--divider); font-size: var(--fs-md); }
   .loop-detail h4 { color: var(--fg-bright); margin: 8px 0 4px; font-size: var(--fs-lg); }
   .loop-detail h4:first-child { margin-top: 0; }
@@ -737,10 +736,6 @@ export function renderDashboardHtml(): string {
     border-radius: 4px; background: var(--bg-0); font-size: var(--fs-md);
   }
   .goal-row:hover { background: var(--panel); }
-  .goal-row[data-goal-status="running"] { border-left-color: var(--ph-coding); }
-  .goal-row[data-goal-status="paused"] { border-left-color: var(--status-attention); }
-  .goal-row[data-goal-status="completed"],
-  .goal-row[data-goal-status="cancelled"] { border-left-color: var(--status-idle); }
   .goal-row-title {
     flex: 1 1 auto; color: var(--fg-bright); font-weight: 600; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -754,17 +749,15 @@ export function renderDashboardHtml(): string {
     color: var(--status-error); font-size: var(--fs-sm); min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .goal-badge {
+  .chunk-stage-badge {
     display: inline-block; padding: 2px var(--sp-3); border-radius: 10px;
     font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase;
   }
-  .goal-badge-draft { background: var(--surface); color: var(--fg-1); }
-  .goal-badge-planning,
-  .goal-badge-launching { background: var(--link); color: #fff; }
-  .goal-badge-running { background: var(--status-running); color: #fff; }
-  .goal-badge-paused { background: var(--status-attention); color: #fff; }
-  .goal-badge-completed { background: var(--status-ok-solid); color: #fff; }
-  .goal-badge-cancelled { background: var(--status-idle); color: #fff; }
+  .chunk-stage-planning,
+  .chunk-stage-launching { background: var(--link); color: #fff; }
+  .chunk-stage-running { background: var(--status-running); color: #fff; }
+  .chunk-stage-completed { background: var(--status-ok-solid); color: #fff; }
+  .chunk-stage-cancelled { background: var(--status-idle); color: #fff; }
   .goal-detail,
   .goal-detail-body { display: flex; flex-direction: column; gap: var(--sp-4); }
   .back-to-goals {
@@ -777,8 +770,12 @@ export function renderDashboardHtml(): string {
     background: var(--panel); display: flex; flex-direction: column; gap: 10px;
     border-left: 3px solid var(--divider);
   }
+  .goal-row[data-goal-status="running"],
   .goal-header[data-goal-status="running"] { border-left-color: var(--ph-coding); }
+  .goal-row[data-goal-status="paused"],
   .goal-header[data-goal-status="paused"] { border-left-color: var(--status-attention); }
+  .goal-row[data-goal-status="completed"],
+  .goal-row[data-goal-status="cancelled"],
   .goal-header[data-goal-status="completed"],
   .goal-header[data-goal-status="cancelled"] { border-left-color: var(--status-idle); }
   .goal-header-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

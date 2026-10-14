@@ -16,7 +16,7 @@ import type { ReviewFindingRow } from '../storage'
 import type { LoopUsageAggregate } from '../storage'
 import type { LoopTransitionRow } from '../storage'
 import type { PlanAmendmentRow } from '../storage'
-import type { GoalStatus, GoalChunkStage } from '../storage'
+import type { GoalStatus, GoalTask, GoalChunkRow } from '../storage'
 import { summarizeAmendmentSnapshots, type AmendmentChangeSummary } from './amendment-diff'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { extractPlanTitle } from '../utils/plan-execution'
@@ -61,17 +61,10 @@ export interface DashboardLoop {
 }
 
 /** One entry of a goal's ordered task list, typically a ticket reference. */
-export interface DashboardGoalTask {
-  ref?: string
-  title: string
-}
+export type DashboardGoalTask = Pick<GoalTask, 'ref' | 'title'>
 
-export interface DashboardGoalChunk {
-  chunkIndex: number
-  stage: GoalChunkStage
-  title: string | null
-  loopName: string | null
-  branch: string | null
+export interface DashboardGoalChunk
+  extends Pick<GoalChunkRow, 'chunkIndex' | 'stage' | 'title' | 'loopName' | 'branch'> {
   summaryPreview: string | null
 }
 
@@ -104,6 +97,8 @@ export interface DashboardProject {
   projectDir: string | null
   loops: DashboardLoop[]
   goals: DashboardGoal[]
+  /** Number of goal rows. Always populated; `goals` rows ship only for the scoped project. */
+  goalCount: number
   /**
    * Session-scoped plans no loop has executed, newest first. Content itself is
    * not shipped — only the derived title and size — because a project can retain
@@ -185,19 +180,19 @@ function reposFor(db: Database): DashboardRepos {
 
 /**
  * Goals for one project, newest first, with capped text previews. Returns an
- * empty list when the goals table is absent (older databases). `projectDir` is
- * the newest goal's persisted directory, null for a goal that has not launched
- * its first chunk.
+ * empty list when the goals table is absent (older databases) or when the
+ * project is not the scoped one. Every goal's chunks come from one
+ * `listChunksByProject` query rather than a query per goal.
  */
 function collectProjectGoals(
   goalsRepo: ReturnType<typeof createGoalsRepo> | null,
   projectId: string,
-): { goals: DashboardGoal[]; projectDir: string | null } {
-  if (!goalsRepo) return { goals: [], projectDir: null }
+  shipGoals: boolean,
+): DashboardGoal[] {
+  if (!goalsRepo || !shipGoals) return []
   const repo = goalsRepo
-  const rows = repo.listGoals(projectId)
-  const projectDir = rows.find(row => row.projectDir)?.projectDir ?? null
-  const goals = rows.map(row => ({
+  const chunksByGoal = repo.listChunksByProject(projectId)
+  return repo.listGoals(projectId).map(row => ({
     id: row.goalId,
     goalId: row.goalId,
     title: row.title,
@@ -211,7 +206,7 @@ function collectProjectGoals(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     completedAt: row.completedAt,
-    chunks: repo.listChunks(projectId, row.goalId).map(chunk => ({
+    chunks: (chunksByGoal.get(row.goalId) ?? []).map(chunk => ({
       chunkIndex: chunk.chunkIndex,
       stage: chunk.stage,
       title: chunk.title,
@@ -220,7 +215,6 @@ function collectProjectGoals(
       summaryPreview: chunk.summary ? chunk.summary.slice(0, GOAL_PREVIEW_MAX) : null,
     })),
   }))
-  return { goals, projectDir }
 }
 
 /**
@@ -236,18 +230,26 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
     'SELECT DISTINCT project_id FROM loops ORDER BY project_id'
   ).all() as { project_id: string }[]
 
-  const goalProjectIds = goalsRepo
-    ? (db.prepare(
-        'SELECT DISTINCT project_id FROM goals ORDER BY project_id'
-      ).all() as { project_id: string }[])
+  const goalStats = goalsRepo
+    ? (db.prepare(`
+        SELECT project_id, COUNT(*) AS count,
+          (SELECT g2.project_dir FROM goals g2
+           WHERE g2.project_id = goals.project_id AND g2.project_dir IS NOT NULL
+           ORDER BY g2.created_at DESC, g2.goal_id DESC LIMIT 1) AS project_dir
+        FROM goals
+        GROUP BY project_id
+      `).all() as { project_id: string; count: number; project_dir: string | null }[])
     : []
+
+  const goalCountByProject = new Map(goalStats.map(r => [r.project_id, r.count]))
+  const goalDirByProject = new Map(goalStats.map(r => [r.project_id, r.project_dir]))
 
   const unexecutedCounts = plansRepo.unexecutedCountsByProject()
 
   const projectIds = Array.from(
     new Set([
       ...loopProjectIds.map(r => r.project_id),
-      ...goalProjectIds.map(r => r.project_id),
+      ...goalStats.map(r => r.project_id),
       ...unexecutedCounts.keys(),
     ])
   ).sort()
@@ -257,9 +259,10 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
     const loopRows = loopsRepo.listAll(projectId)
     const hasLoops = loopRows.length > 0
 
-    const { goals: projectGoals, projectDir: goalProjectDir } = collectProjectGoals(goalsRepo, projectId)
+    const inScopedProject = scope.projectId !== null && projectId === scope.projectId
+    const projectGoals = collectProjectGoals(goalsRepo, projectId, inScopedProject)
 
-    const projectDir = hasLoops ? loopRows[0].projectDir : goalProjectDir
+    const projectDir = hasLoops ? loopRows[0].projectDir : (goalDirByProject.get(projectId) ?? null)
 
     // Sort: running first, then by startedAt desc within each group
     const sortedLoops = [...loopRows].sort((a, b) => {
@@ -270,7 +273,6 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       return b.startedAt - a.startedAt
     })
 
-    const inScopedProject = scope.projectId !== null && projectId === scope.projectId
     const planLoopNames = new Set(plansRepo.listLoopNames(projectId))
     const sectionCounts = sectionPlansRepo.countsByLoop(projectId)
     const bugCounts = reviewFindingsRepo.bugCountsByLoop(projectId)
@@ -342,6 +344,7 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       projectDir,
       loops: dashboardLoops,
       goals: projectGoals,
+      goalCount: goalCountByProject.get(projectId) ?? 0,
       unexecutedPlans,
       unexecutedPlanCount,
     })

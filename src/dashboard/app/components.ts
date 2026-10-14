@@ -7,7 +7,7 @@ import type { MarkdownHeading } from './helpers'
 import {
   statusClass,
   sectionStatusClass,
-  goalBadgeClass,
+  chunkStageClass,
   fmtTime,
   formatSectionDuration,
   formatSpanDuration,
@@ -45,6 +45,7 @@ import {
 } from './helpers'
 import type { LoopTab, PhaseSpan } from './helpers'
 import { formatDuration } from '../../utils/duration'
+import { findCurrentGoalChunk } from '../../utils/goal-chunks'
 import { LoopMachineGraph } from './machine-graph'
 
 type DashboardSection = NonNullable<DashboardLoop['sections']>[number]
@@ -1497,18 +1498,16 @@ export function EmptyState() {
   return html`<div class="empty-state">No loops match the current filters.</div>`
 }
 
-const GOAL_TERMINAL_STAGES = new Set(['completed', 'cancelled'])
-
 function goalChunkMeter(goal: DashboardGoal): { completed: number; total: number } {
   const total = goal.chunks.length
   const completed = goal.chunks.filter(c => c.stage === 'completed').length
   return { completed, total }
 }
 
-/** Stage of the goal's current chunk: the first unfinished chunk, else the last chunk. */
+/** Stage of the goal's current chunk (an active stage), else the last chunk's stage. */
 function goalCurrentStage(goal: DashboardGoal): string | null {
-  const current = goal.chunks.find(c => !GOAL_TERMINAL_STAGES.has(c.stage))
-  return (current ?? goal.chunks[goal.chunks.length - 1])?.stage ?? null
+  const current = findCurrentGoalChunk(goal.chunks) ?? goal.chunks[goal.chunks.length - 1]
+  return current?.stage ?? null
 }
 
 export function GoalsPanel(props: {
@@ -1529,7 +1528,7 @@ export function GoalsPanel(props: {
         ${goals.map(goal => {
           const meter = createMemo(() => goalChunkMeter(goal))
           return html`<div class="goal-row" data-goal-status=${() => goal.status} onclick=${() => props.onOpen(goal.goalId)}>
-            <span class=${() => goalBadgeClass(goal.status)}>${() => goal.status}</span>
+            <span class=${() => statusClass(goal.status)}>${() => goal.status}</span>
             <span class="goal-row-title">${() => goal.title}</span>
             ${MiniMeter({ current: () => meter().completed, total: () => meter().total })}
             <span class="goal-row-stage">${() => goalCurrentStage(goal) ?? ''}</span>
@@ -1560,7 +1559,7 @@ export function GoalDetail(props: {
       return html`<div class="goal-detail-body">
         <div class="goal-header" data-goal-status=${() => goal.status}>
           <div class="goal-header-top">
-            <span class=${() => goalBadgeClass(goal.status)}>${() => goal.status}</span>
+            <span class=${() => statusClass(goal.status)}>${() => goal.status}</span>
             <h3 class="goal-header-title">${() => goal.title}</h3>
             <span class="goal-header-meta">max ${() => goal.maxChunks} chunks</span>
           </div>
@@ -1588,7 +1587,7 @@ export function GoalDetail(props: {
             ? html`<div class="tab-empty">No chunks recorded yet.</div>`
             : goal.chunks.map(chunk => html`<div class="goal-chunk-row" data-chunk-stage=${() => chunk.stage}>
                 <span class="goal-chunk-index">${() => 'chunk ' + (chunk.chunkIndex + 1)}</span>
-                <span class=${() => goalBadgeClass(chunk.stage)}>${() => chunk.stage}</span>
+                <span class=${() => chunkStageClass(chunk.stage)}>${() => chunk.stage}</span>
                 <span class="goal-chunk-title">${() => chunk.title ?? ''}</span>
                 ${() => (chunk.branch ? html`<span class="goal-chunk-branch">${() => chunk.branch}</span>` : '')}
                 ${() => (chunk.loopName && props.loopNames().has(chunk.loopName)

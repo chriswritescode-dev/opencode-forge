@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import type { Logger, LoopSandboxSettings } from '../../types'
+import { GOAL_ACTIVE_CHUNK_STAGES } from '../../utils/goal-chunks'
 import { parseSandboxSettings, serializeSandboxSettings } from './loops-repo'
 
 export type GoalStatus = 'draft' | 'running' | 'paused' | 'completed' | 'cancelled'
@@ -94,7 +95,6 @@ export interface GoalsRepo {
   saveDraft(input: SaveGoalDraftInput): GoalRow
   getGoal(projectId: string, goalId: string): GoalRow | null
   listGoals(projectId: string): GoalRow[]
-  getDraftForSession(projectId: string, hostSessionId: string): GoalRow | null
   getActiveForSession(projectId: string, hostSessionId: string): GoalRow | null
   attachFirstChunk(
     projectId: string,
@@ -111,8 +111,10 @@ export interface GoalsRepo {
   ): boolean
   setMaxChunks(projectId: string, goalId: string, maxChunks: number): boolean
   listChunks(projectId: string, goalId: string): GoalChunkRow[]
+  listChunksByProject(projectId: string): Map<string, GoalChunkRow[]>
   getChunkByLoopName(projectId: string, loopName: string): GoalChunkRow | null
   getChunkByPlannerSession(projectId: string, sessionId: string): GoalChunkRow | null
+  isChunkLoopName(projectId: string, loopName: string): boolean
   insertPlanningChunk(
     projectId: string,
     goalId: string,
@@ -182,6 +184,8 @@ const GOAL_COLUMNS = `project_id, goal_id, title, objective, tasks, host_session
 
 const CHUNK_COLUMNS = `project_id, goal_id, chunk_index, stage, title, planner_session_id,
   planning_dir, base_commit, loop_name, branch, summary, created_at, updated_at`
+
+const GOAL_ACTIVE_STAGE_SQL = GOAL_ACTIVE_CHUNK_STAGES.map((stage) => `'${stage}'`).join(', ')
 
 /** Reads a persisted tasks JSON column; malformed content hydrates as an empty list. */
 function parseTasks(value: string): GoalTask[] {
@@ -319,10 +323,24 @@ export function createGoalsRepo(db: Database, _logger?: Logger): GoalsRepo {
     ORDER BY chunk_index ASC
   `)
 
+  const listChunksByProjectStmt = db.prepare(`
+    SELECT ${CHUNK_COLUMNS}
+    FROM goal_chunks
+    WHERE project_id = ?
+    ORDER BY goal_id ASC, chunk_index ASC
+  `)
+
   const getChunkByLoopNameStmt = db.prepare(`
     SELECT ${CHUNK_COLUMNS}
     FROM goal_chunks
     WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const isChunkLoopNameStmt = db.prepare(`
+    SELECT 1 AS found
+    FROM goal_chunks
+    WHERE project_id = ? AND loop_name = ?
+    LIMIT 1
   `)
 
   const getChunkByPlannerSessionStmt = db.prepare(`
@@ -390,7 +408,7 @@ export function createGoalsRepo(db: Database, _logger?: Logger): GoalsRepo {
 
   const cancelChunksStmt = db.prepare(`
     UPDATE goal_chunks SET stage = 'cancelled', updated_at = ?
-    WHERE project_id = ? AND goal_id = ? AND stage IN ('planning', 'launching', 'running')
+    WHERE project_id = ? AND goal_id = ? AND stage IN (${GOAL_ACTIVE_STAGE_SQL})
   `)
 
   function getGoal(projectId: string, goalId: string): GoalRow | null {
@@ -534,11 +552,6 @@ export function createGoalsRepo(db: Database, _logger?: Logger): GoalsRepo {
       return rows.map(mapGoalRow)
     },
 
-    getDraftForSession(projectId: string, hostSessionId: string): GoalRow | null {
-      const row = getDraftForSessionStmt.get(projectId, hostSessionId) as GoalRowRaw | null
-      return row ? mapGoalRow(row) : null
-    },
-
     getActiveForSession(projectId: string, hostSessionId: string): GoalRow | null {
       const row = getActiveForSessionStmt.get(projectId, hostSessionId) as GoalRowRaw | null
       return row ? mapGoalRow(row) : null
@@ -558,9 +571,25 @@ export function createGoalsRepo(db: Database, _logger?: Logger): GoalsRepo {
       return rows.map(mapChunkRow)
     },
 
+    listChunksByProject(projectId: string): Map<string, GoalChunkRow[]> {
+      const rows = listChunksByProjectStmt.all(projectId) as GoalChunkRowRaw[]
+      const byGoal = new Map<string, GoalChunkRow[]>()
+      for (const row of rows) {
+        const chunk = mapChunkRow(row)
+        const bucket = byGoal.get(chunk.goalId)
+        if (bucket) bucket.push(chunk)
+        else byGoal.set(chunk.goalId, [chunk])
+      }
+      return byGoal
+    },
+
     getChunkByLoopName(projectId: string, loopName: string): GoalChunkRow | null {
       const row = getChunkByLoopNameStmt.get(projectId, loopName) as GoalChunkRowRaw | null
       return row ? mapChunkRow(row) : null
+    },
+
+    isChunkLoopName(projectId: string, loopName: string): boolean {
+      return Boolean(isChunkLoopNameStmt.get(projectId, loopName))
     },
 
     getChunkByPlannerSession(projectId: string, sessionId: string): GoalChunkRow | null {

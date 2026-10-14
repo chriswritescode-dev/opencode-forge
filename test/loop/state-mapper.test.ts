@@ -43,7 +43,6 @@ function makeRow(overrides: Partial<LoopRow> = {}): LoopRow {
     executionVariant: null,
     auditorVariant: null,
     baseCommit: null,
-    kind: 'plan',
     ...overrides,
   }
 }

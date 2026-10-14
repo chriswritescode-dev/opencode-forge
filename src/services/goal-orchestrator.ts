@@ -1,28 +1,28 @@
-import type { Logger, LoopSandboxSettings } from '../types'
+import type { Logger } from '../types'
+import type { Database } from 'bun:sqlite'
 import type { LoopState } from '../loop/state'
 import type { GitService } from '../utils/git-service'
 import type { ArchitectAutoPlanner } from './architect-auto-planner'
+import type { BuildStartLoopCommandInput } from './execution'
 import type { GoalChunkRow, GoalRow, GoalsRepo } from '../storage/repos/goals-repo'
 import { GOAL_CHUNK_SUMMARY_MAX_CHARS, GOAL_COMPLETE_MARKER, goalPlanningDir } from '../constants/goal'
 import { classifyArchitectOutput } from '../utils/architect-auto-output'
 import { processShared } from '../utils/process-shared'
+import { initializeDatabase } from '../storage'
+import { resolveForgeDbPath } from '../utils/opencode-paths'
+import { errorMessage } from '../utils/error-message'
 
 /**
  * The launch settings a chunk loop starts with, snapshotted from the goal so
  * every chunk of one goal runs with the same models, variants, sandbox, and
  * iteration cap.
  */
-export interface GoalStartLoopInput {
+export type GoalStartLoopInput = Pick<
+  BuildStartLoopCommandInput,
+  'hostSessionId' | 'baseRef' | 'executionModel' | 'auditorModel' | 'executionVariant' | 'auditorVariant' | 'sandbox' | 'maxIterations'
+> & {
   plannerSessionId: string
   projectDir: string
-  hostSessionId: string
-  baseRef: string
-  executionModel?: string
-  auditorModel?: string
-  executionVariant?: string
-  auditorVariant?: string
-  sandbox?: LoopSandboxSettings
-  maxIterations?: number
 }
 
 export type GoalStartLoopResult =
@@ -58,10 +58,20 @@ export interface GoalOrchestrator {
   onLoopSettled(loopName: string): Promise<void>
   /** Handles a planner session going idle: launches the chunk, declares the goal complete, or abandons the plan. */
   onPlannerIdle(sessionId: string): Promise<void>
+  /** Handles a planner session error: abandons its chunk and pauses the goal with the failure. */
+  onPlannerError(sessionId: string, message: string): Promise<void>
   /** User-facing recovery: cleans a stale planning chunk or resumes a paused goal. Returns a status message. */
   restart(goalId: string, opts?: { maxChunks?: number; force?: boolean }): Promise<string>
   /** Cancels a goal, cleaning up planning chunks and optionally cancelling running loops. Returns a status message. */
   cancel(goalId: string, opts?: { cancelRunningLoops?: boolean }): Promise<string>
+}
+
+/** Shared recovery hint shown whenever a chunk loop needs an explicit restart. */
+const LOOP_RESTART_HINT = 'Restart it with loop-status restart=true; the goal resumes when it completes.'
+
+/** Trims a chunk summary to the cap carried into the next chunk's planner prompt. */
+function truncateChunkSummary(summary: string | null): string | null {
+  return summary ? summary.slice(0, GOAL_CHUNK_SUMMARY_MAX_CHARS) : null
 }
 
 /** Builds the planner prompt for the next chunk of a goal. */
@@ -97,8 +107,8 @@ export function buildGoalChunkPlannerPrompt(input: {
     completedChunks.forEach((chunk, index) => {
       const label = chunk.title ?? chunk.loopName ?? `chunk ${chunk.chunkIndex + 1}`
       const branch = chunk.branch ?? '(no branch)'
-      const summary = chunk.summary ? ` — ${chunk.summary.slice(0, GOAL_CHUNK_SUMMARY_MAX_CHARS)}` : ''
-      lines.push(`${index + 1}. ${label} (branch ${branch})${summary}`)
+      const summary = truncateChunkSummary(chunk.summary)
+      lines.push(`${index + 1}. ${label} (branch ${branch})${summary ? ` — ${summary}` : ''}`)
     })
   } else {
     lines.push('No chunks have completed yet.')
@@ -120,6 +130,24 @@ const goalPlanningInFlight = processShared('goal-planning-inflight.v1', () => ne
 
 function inflightKey(projectId: string, goalId: string, chunkIndex: number): string {
   return `${projectId}\u0000${goalId}\u0000${chunkIndex}`
+}
+
+const goalOrchestratorDatabases = processShared('goal-orchestrator-db.v1', () => new Map<string, Database>())
+
+/**
+ * The database handle goal orchestration writes through: one per forge database
+ * path for the whole process. A chunk loop's `settled` callback runs after its
+ * worktree is removed and can outlive the plugin instance that owned it, whose
+ * own database handle is closed on disposal, so goal advancement must never
+ * depend on an instance's database lifetime.
+ */
+export function acquireGoalOrchestratorDb(dataDir: string, completedLoopTtlMs?: number): Database {
+  const dbPath = resolveForgeDbPath(dataDir)
+  const existing = goalOrchestratorDatabases.get(dbPath)
+  if (existing) return existing
+  const db = initializeDatabase(dataDir, completedLoopTtlMs === undefined ? undefined : { completedLoopTtlMs })
+  goalOrchestratorDatabases.set(dbPath, db)
+  return db
 }
 
 export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestrator {
@@ -175,6 +203,14 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
   async function discardPlanning(chunk: GoalChunkRow, goal: GoalRow): Promise<void> {
     await cleanupPlanningResources(chunk, goal)
     goalsRepo.deleteChunk(projectId, chunk.goalId, chunk.chunkIndex)
+  }
+
+  async function cancelOrphanedLoop(loopName: string): Promise<void> {
+    try {
+      await cancelLoop(loopName)
+    } catch (err) {
+      logger.error('goal-orchestrator: failed to cancel orphaned chunk loop', err as Error)
+    }
   }
 
   async function abandonPlanning(chunk: GoalChunkRow, reason: string): Promise<void> {
@@ -261,13 +297,12 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
       const reason = state?.terminationReason ?? 'unknown'
       pauseGoal(
         chunk.goalId,
-        `Chunk ${chunk.chunkIndex + 1} loop ${loopName} ended ${status} (${reason}). Restart it with loop-status restart=true; the goal resumes when it completes.`,
+        `Chunk ${chunk.chunkIndex + 1} loop ${loopName} ended ${status} (${reason}). ${LOOP_RESTART_HINT}`,
       )
       return
     }
 
-    const rawSummary = state.completionSummary ?? state.postActionReport ?? null
-    const summary = rawSummary ? rawSummary.slice(0, GOAL_CHUNK_SUMMARY_MAX_CHARS) : null
+    const summary = truncateChunkSummary(state.completionSummary ?? state.postActionReport ?? null)
     if (!goalsRepo.completeChunk(projectId, chunk.goalId, chunk.chunkIndex, summary)) return
 
     if (goal.status === 'paused') {
@@ -286,10 +321,11 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
 
     const planningDir = chunk.planningDir ?? goalPlanningDir(dataDir, chunk.goalId, chunk.chunkIndex)
     const text = await planner.latestAssistantText(sessionId, planningDir)
+    const classified = text === null ? null : classifyArchitectOutput(text)
 
-    if (text !== null && text.includes(GOAL_COMPLETE_MARKER)) {
-      await cleanupPlanningResources(chunk, goal)
-      goalsRepo.deleteChunk(projectId, chunk.goalId, chunk.chunkIndex)
+    if (classified?.kind === 'goal-complete') {
+      logger.log(`goal-orchestrator: goal ${chunk.goalId} complete: ${classified.reason}`)
+      await discardPlanning(chunk, goal)
       goalsRepo.updateStatus(projectId, chunk.goalId, ['running'], 'completed', { error: null, completedAt: Date.now() })
       onChange?.(chunk.goalId)
       return
@@ -299,8 +335,7 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
     if (text === null) {
       if (!readiness.ready) return
     } else if (!readiness.ready) {
-      const classified = classifyArchitectOutput(text)
-      const reason = classified.kind === 'insufficient' ? classified.reason : readiness.reason
+      const reason = classified?.kind === 'insufficient' ? classified.reason : readiness.reason
       await abandonPlanning(chunk, `Planner could not plan chunk ${chunk.chunkIndex + 1}: ${reason}`)
       return
     }
@@ -326,20 +361,32 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
       return
     }
 
-    const marked = goalsRepo.markChunkRunning(projectId, chunk.goalId, chunk.chunkIndex, {
-      loopName: result.loopName,
-      branch: result.branch,
-      title: result.title,
-    })
+    let marked: boolean
+    try {
+      marked = goalsRepo.markChunkRunning(projectId, chunk.goalId, chunk.chunkIndex, {
+        loopName: result.loopName,
+        branch: result.branch,
+        title: result.title,
+      })
+    } catch (err) {
+      await cancelOrphanedLoop(result.loopName)
+      await abandonPlanning(
+        chunk,
+        `Could not record chunk ${chunk.chunkIndex + 1} loop ${result.loopName}: ${errorMessage(err)}. The started loop was cancelled; restart the goal to try again.`,
+      )
+      return
+    }
     if (!marked) {
-      try {
-        await cancelLoop(result.loopName)
-      } catch (err) {
-        logger.error('goal-orchestrator: failed to cancel orphaned chunk loop', err as Error)
-      }
+      await cancelOrphanedLoop(result.loopName)
     }
     await cleanupPlanningResources(chunk, goal)
     onChange?.(chunk.goalId)
+  }
+
+  async function onPlannerError(sessionId: string, message: string): Promise<void> {
+    const chunk = goalsRepo.getChunkByPlannerSession(projectId, sessionId)
+    if (!chunk || chunk.stage !== 'planning') return
+    await abandonPlanning(chunk, `Planner failed for chunk ${chunk.chunkIndex + 1}: ${message}`)
   }
 
   async function restart(goalId: string, opts?: { maxChunks?: number; force?: boolean }): Promise<string> {
@@ -373,7 +420,19 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
         await onLoopSettled(runningChunk.loopName)
         return `Chunk ${runningChunk.chunkIndex + 1} loop ${runningChunk.loopName} already completed; the goal advanced.`
       }
-      return `Chunk ${runningChunk.chunkIndex + 1} loop ${runningChunk.loopName} is ${state?.status ?? 'missing'}. Restart it with loop-status restart=true; the goal resumes when it completes.`
+      if (!state) {
+        goalsRepo.claimChunkStage(projectId, goalId, runningChunk.chunkIndex, 'running', 'cancelled')
+        if (goal.status === 'paused') {
+          goalsRepo.updateStatus(projectId, goalId, ['paused'], 'running', { error: null })
+        }
+        onChange?.(goalId)
+        await advance(goalId)
+        const branch = runningChunk.branch ?? '(no branch recorded)'
+        const abandoned = `Chunk ${runningChunk.chunkIndex + 1} loop ${runningChunk.loopName} is missing; cancelled it (branch ${branch}) and advanced from the last completed chunk.`
+        const after = goalsRepo.getGoal(projectId, goalId)
+        return after?.status === 'paused' ? `${abandoned} Goal ${goalId} is paused: ${after.error ?? 'unknown reason'}` : abandoned
+      }
+      return `Chunk ${runningChunk.chunkIndex + 1} loop ${runningChunk.loopName} is ${state.status}. ${LOOP_RESTART_HINT}`
     }
 
     const resumed = goal.status === 'paused'
@@ -422,5 +481,5 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
     return parts.join(' ')
   }
 
-  return { onLoopSettled, onPlannerIdle, restart, cancel }
+  return { onLoopSettled, onPlannerIdle, onPlannerError, restart, cancel }
 }

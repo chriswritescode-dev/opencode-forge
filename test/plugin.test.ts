@@ -100,7 +100,6 @@ function runningLoopRow(projectId: string, directory: string, overrides: Partial
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
-    kind: 'plan',
     ...overrides,
   }
 }

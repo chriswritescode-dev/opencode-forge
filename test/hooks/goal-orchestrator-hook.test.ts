@@ -16,6 +16,7 @@ function createHarness() {
 
   const orchestrator = {
     onPlannerIdle: vi.fn(async (_sessionId: string) => {}),
+    onPlannerError: vi.fn(async (_sessionId: string, _message: string) => {}),
   } as unknown as GoalOrchestrator
 
   const errors: unknown[] = []
@@ -33,6 +34,15 @@ function createHarness() {
 
 function idleEvent(sessionId: string) {
   return { event: { type: 'session.status', properties: { sessionID: sessionId, status: { type: 'idle' } } } }
+}
+
+function errorEvent(sessionId: string, message = 'provider exploded') {
+  return {
+    event: {
+      type: 'session.error',
+      properties: { sessionID: sessionId, error: { name: 'ProviderError', data: { message } } },
+    },
+  }
 }
 
 describe('createGoalPlannerEventHook', () => {
@@ -67,6 +77,47 @@ describe('createGoalPlannerEventHook', () => {
     vi.mocked(orchestrator.onPlannerIdle).mockRejectedValue(new Error('boom'))
 
     await expect(hook(idleEvent(PLANNER_SESSION))).resolves.toBeUndefined()
+    expect(errors).toHaveLength(1)
+  })
+
+  test('routes a planner session error to onPlannerError with the failure message', async () => {
+    const { hook, orchestrator } = createHarness()
+
+    await hook(errorEvent(PLANNER_SESSION, 'provider exploded'))
+
+    expect(orchestrator.onPlannerError).toHaveBeenCalledWith(PLANNER_SESSION, 'provider exploded')
+    expect(orchestrator.onPlannerIdle).not.toHaveBeenCalled()
+  })
+
+  test('falls back to a default message when the error carries none', async () => {
+    const { hook, orchestrator } = createHarness()
+
+    await hook({ event: { type: 'session.error', properties: { sessionID: PLANNER_SESSION, error: { name: 'ProviderError' } } } })
+
+    expect(orchestrator.onPlannerError).toHaveBeenCalledWith(PLANNER_SESSION, 'unknown error')
+  })
+
+  test('ignores a session error for a session that is not a planner session', async () => {
+    const { hook, orchestrator } = createHarness()
+
+    await hook(errorEvent('some-other-session'))
+
+    expect(orchestrator.onPlannerError).not.toHaveBeenCalled()
+  })
+
+  test('ignores a session error with no session id', async () => {
+    const { hook, orchestrator } = createHarness()
+
+    await hook({ event: { type: 'session.error', properties: { error: { data: { message: 'boom' } } } } })
+
+    expect(orchestrator.onPlannerError).not.toHaveBeenCalled()
+  })
+
+  test('catches and logs an onPlannerError failure', async () => {
+    const { hook, orchestrator, errors } = createHarness()
+    vi.mocked(orchestrator.onPlannerError).mockRejectedValue(new Error('boom'))
+
+    await expect(hook(errorEvent(PLANNER_SESSION))).resolves.toBeUndefined()
     expect(errors).toHaveLength(1)
   })
 })

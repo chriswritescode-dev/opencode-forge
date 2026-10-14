@@ -24,7 +24,6 @@ import {
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
-import { generateUniqueName } from './name-uniqueness'
 import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
@@ -85,7 +84,6 @@ export interface LoopService {
   getAttemptHistory(name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[]
   bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void
   resetSectionRecurrence(name: string, sectionIndex: number): void
-  generateUniqueLoopName(baseName: string): string
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
   resetError(name: string): void
@@ -415,14 +413,6 @@ export function createLoopService(
 
   function hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean {
     return getOutstandingFindings(loopName, severity).length > 0
-  }
-
-  function generateUniqueLoopName(baseName: string): string {
-    const existing = listRecent()
-    const active = listActive()
-    const allNames = [...existing, ...active].map((s) => s.loopName)
-    
-    return generateUniqueName(baseName, allNames)
   }
 
   function setCoderDecisions(name: string, decisions: string | null): void {
@@ -1036,7 +1026,6 @@ export function createLoopService(
     getAttemptHistory,
     bumpFindingRecurrence,
     resetSectionRecurrence,
-    generateUniqueLoopName,
     getPlanText,
     incrementError,
     resetError,

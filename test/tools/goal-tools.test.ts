@@ -76,13 +76,13 @@ describe('goal-write', () => {
     expect(result).toContain(`Max chunks: ${DEFAULT_GOAL_MAX_CHUNKS}`)
     expect(result).toContain('Next: write the detailed loop plan for chunk 1')
 
-    const goal = goalsRepo.getDraftForSession(PROJECT, SESSION)
+    const goal = goalsRepo.listGoals(PROJECT)[0]
     expect(goal).not.toBeNull()
-    expect(goal!.goalId).toBe(goalId)
-    expect(goal!.status).toBe('draft')
-    expect(goal!.maxChunks).toBe(DEFAULT_GOAL_MAX_CHUNKS)
-    expect(goal!.hostSessionId).toBe(SESSION)
-    expect(goal!.tasks).toEqual([
+    expect(goal.goalId).toBe(goalId)
+    expect(goal.status).toBe('draft')
+    expect(goal.maxChunks).toBe(DEFAULT_GOAL_MAX_CHUNKS)
+    expect(goal.hostSessionId).toBe(SESSION)
+    expect(goal.tasks).toEqual([
       { ref: 'GH-1', title: 'First ticket', details: 'Do the first thing' },
       { title: 'Second task' },
     ])
@@ -92,16 +92,16 @@ describe('goal-write', () => {
     const result = await call({ title: 'Solo', objective: 'Just one thing' })
 
     expect(result).toContain('Tasks: 0')
-    expect(goalsRepo.getDraftForSession(PROJECT, SESSION)!.tasks).toEqual([])
+    expect(goalsRepo.listGoals(PROJECT)[0].tasks).toEqual([])
   })
 
   test('replaces an earlier draft for the same session', async () => {
     await call({ title: 'First', objective: 'First objective' })
-    const first = goalsRepo.getDraftForSession(PROJECT, SESSION)!
+    const first = goalsRepo.listGoals(PROJECT)[0]
 
     await call({ title: 'Second', objective: 'Second objective' })
 
-    const draft = goalsRepo.getDraftForSession(PROJECT, SESSION)!
+    const draft = goalsRepo.listGoals(PROJECT)[0]
     expect(draft.title).toBe('Second')
     expect(goalsRepo.getGoal(PROJECT, first.goalId)).toBeNull()
     expect(goalsRepo.listGoals(PROJECT)).toHaveLength(1)
@@ -109,12 +109,12 @@ describe('goal-write', () => {
 
   test('honours an explicit maxChunks', async () => {
     await call({ title: 'Capped', objective: 'Capped objective', maxChunks: 5 })
-    expect(goalsRepo.getDraftForSession(PROJECT, SESSION)!.maxChunks).toBe(5)
+    expect(goalsRepo.listGoals(PROJECT)[0].maxChunks).toBe(5)
   })
 
   test('refuses when the session already has a running goal', async () => {
     await call({ title: 'Running', objective: 'Running objective' })
-    const draft = goalsRepo.getDraftForSession(PROJECT, SESSION)!
+    const draft = goalsRepo.listGoals(PROJECT)[0]
     goalsRepo.attachFirstChunk(PROJECT, SESSION, snapshot(), {
       loopName: 'loop-0',
       branch: null,
@@ -132,7 +132,7 @@ describe('goal-write', () => {
 
   test('refuses when the session already has a paused goal', async () => {
     await call({ title: 'Paused', objective: 'Paused objective' })
-    const draft = goalsRepo.getDraftForSession(PROJECT, SESSION)!
+    const draft = goalsRepo.listGoals(PROJECT)[0]
     goalsRepo.attachFirstChunk(PROJECT, SESSION, snapshot(), {
       loopName: 'loop-0',
       branch: null,
@@ -186,6 +186,7 @@ describe('goal-status and goal-cancel', () => {
     onPlannerIdle: ReturnType<typeof vi.fn>
   }
   let tools: ReturnType<typeof createGoalTools>
+  let loopInspect: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     db = createTestDb()
@@ -196,11 +197,13 @@ describe('goal-status and goal-cancel', () => {
       onLoopSettled: vi.fn(async () => {}),
       onPlannerIdle: vi.fn(async () => {}),
     }
+    loopInspect = vi.fn(() => null)
     const ctx = {
       projectId: PROJECT,
       logger: mockLogger,
       goalsRepo,
       goalOrchestrator: orchestrator,
+      loop: { inspect: loopInspect },
     } as unknown as ToolContext
     tools = createGoalTools(ctx)
   })
@@ -263,6 +266,47 @@ describe('goal-status and goal-cancel', () => {
     const result = await status({})
 
     expect(result).toContain('  Current: chunk 1 running loop alpha-loop')
+  })
+
+  test('shows the loop status and a restart hint when the current chunk loop is not running', async () => {
+    seedGoal('alpha', 'Alpha')
+    loopInspect.mockReturnValue({ status: 'errored' })
+
+    const result = await status({})
+
+    expect(result).toContain(
+      '  Current: chunk 1 running (loop alpha-loop: errored — restart it with loop-status restart=true)',
+    )
+  })
+
+  test('omits the loop status note while the current chunk loop is running', async () => {
+    seedGoal('alpha', 'Alpha')
+    loopInspect.mockReturnValue({ status: 'running' })
+
+    const result = await status({})
+
+    expect(result).toContain('  Current: chunk 1 running loop alpha-loop')
+    expect(result).not.toContain('restart it with loop-status restart=true')
+  })
+
+  test('a cancelled chunk is not reported as the current chunk', async () => {
+    seedGoal('alpha', 'Alpha')
+    expect(goalsRepo.claimChunkStage(PROJECT, 'alpha', 0, 'running', 'cancelled')).toBe(true)
+
+    const result = await status({})
+
+    expect(result).not.toContain('  Current:')
+  })
+
+  test('the detail view flags a current chunk whose loop is not running', async () => {
+    seedGoal('alpha', 'Alpha')
+    loopInspect.mockReturnValue({ status: 'stalled' })
+
+    const result = await status({ goalId: 'alpha' })
+
+    expect(result).toContain(
+      '   Loop: alpha-loop (loop alpha-loop: stalled — restart it with loop-status restart=true)',
+    )
   })
 
   test('reports no goals when the project has none', async () => {

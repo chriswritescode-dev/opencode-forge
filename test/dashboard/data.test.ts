@@ -800,6 +800,7 @@ describe('collectDashboardData', () => {
     )
     const payload = collectDashboardData(db!)
     expect(payload.projects[0].goals).toEqual([])
+    expect(payload.projects[0].goalCount).toBe(0)
   })
 
   test('a goal exposes its tasks, ordered chunks, and capped previews', () => {
@@ -826,9 +827,10 @@ describe('collectDashboardData', () => {
     goalsRepo.insertPlanningChunk(projectId, 'g-1', 1, { planningDir: '/tmp/plan', baseCommit: 'def' })
     goalsRepo.completeChunk(projectId, 'g-1', 0, 'S'.repeat(1000))
 
-    const payload = collectDashboardData(db!)
+    const payload = collectDashboardData(db!, { projectId, loopName: null })
     const proj = payload.projects.find(p => p.projectId === projectId)!
     expect(proj.goals).toHaveLength(1)
+    expect(proj.goalCount).toBe(1)
     const goal = proj.goals[0]
     expect(goal.id).toBe('g-1')
     expect(goal.goalId).toBe('g-1')
@@ -870,8 +872,34 @@ describe('collectDashboardData', () => {
     db!.prepare('UPDATE goals SET created_at = ? WHERE project_id = ? AND goal_id = ?').run(1000, 'p1', 'g-old')
     db!.prepare('UPDATE goals SET created_at = ? WHERE project_id = ? AND goal_id = ?').run(2000, 'p1', 'g-new')
 
-    const payload = collectDashboardData(db!)
+    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: null })
     expect(payload.projects[0].goals.map(g => g.goalId)).toEqual(['g-new', 'g-old'])
+  })
+
+  test('unscoped payload ships only goalCount while the scoped project ships goal rows', () => {
+    const goalsRepo = createGoalsRepo(db!)
+    goalsRepo.saveDraft({
+      projectId: 'p1', goalId: 'g-1', title: 'Goal One', objective: 'obj', tasks: [],
+      hostSessionId: 'host-1', maxChunks: 2,
+    })
+    goalsRepo.saveDraft({
+      projectId: 'p2', goalId: 'g-2', title: 'Goal Two', objective: 'obj', tasks: [],
+      hostSessionId: 'host-2', maxChunks: 2,
+    })
+
+    const unscoped = collectDashboardData(db!)
+    for (const proj of unscoped.projects) {
+      expect(proj.goals).toEqual([])
+      expect(proj.goalCount).toBe(1)
+    }
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: null })
+    const p1 = scoped.projects.find(p => p.projectId === 'p1')!
+    expect(p1.goalCount).toBe(1)
+    expect(p1.goals.map(g => g.goalId)).toEqual(['g-1'])
+    const p2 = scoped.projects.find(p => p.projectId === 'p2')!
+    expect(p2.goalCount).toBe(1)
+    expect(p2.goals).toEqual([])
   })
 
   test('a database without the goals table returns goals: [] and does not throw', () => {
@@ -886,6 +914,7 @@ describe('collectDashboardData', () => {
     expect(() => collectDashboardData(db!)).not.toThrow()
     const payload = collectDashboardData(db!)
     expect(payload.projects[0].goals).toEqual([])
+    expect(payload.projects[0].goalCount).toBe(0)
   })
 
   test('a project containing only a goal is discovered with its project_dir label', () => {
@@ -907,8 +936,11 @@ describe('collectDashboardData', () => {
     expect(proj.projectId).toBe('p1')
     expect(proj.projectDir).toBe('/tmp/goal-only')
     expect(proj.loops).toEqual([])
-    expect(proj.goals).toHaveLength(1)
-    expect(proj.goals[0].goalId).toBe('g-1')
+    expect(proj.goals).toEqual([])
+    expect(proj.goalCount).toBe(1)
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: null })
+    expect(scoped.projects[0].goals.map(g => g.goalId)).toEqual(['g-1'])
   })
 
   test('a project containing only an unlaunched goal is discovered with no projectDir', () => {
@@ -922,6 +954,7 @@ describe('collectDashboardData', () => {
     expect(payload.projects).toHaveLength(1)
     expect(payload.projects[0].projectId).toBe('p2')
     expect(payload.projects[0].projectDir).toBeNull()
-    expect(payload.projects[0].goals).toHaveLength(1)
+    expect(payload.projects[0].goals).toEqual([])
+    expect(payload.projects[0].goalCount).toBe(1)
   })
 })

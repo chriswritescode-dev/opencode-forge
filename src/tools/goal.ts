@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 import { slugify } from '../utils/logger'
+import { findCurrentGoalChunk } from '../utils/goal-chunks'
 import { DEFAULT_GOAL_MAX_CHUNKS, MAX_GOAL_MAX_CHUNKS } from '../constants/goal'
 import type { GoalChunkRow, GoalRow, GoalTask } from '../storage/repos/goals-repo'
 
@@ -25,22 +26,42 @@ function goalModelsLine(goal: GoalRow): string {
   return `Models: execution ${execution} (variant ${goal.executionVariant ?? 'default'}) | auditor ${auditor} (variant ${goal.auditorVariant ?? 'default'})`
 }
 
-function formatGoalListItem(goal: GoalRow, chunks: GoalChunkRow[]): string[] {
+/** One task-list bullet, shared by the goal-write response and the goal detail view. */
+function formatGoalTaskLine(task: GoalTask): string {
+  return task.ref ? `- [${task.ref}] ${task.title}` : `- ${task.title}`
+}
+
+type LoopStatusLookup = (loopName: string) => string | null
+
+/**
+ * A note appended when a chunk's loop is no longer running, so the reader knows
+ * the chunk stalled and how to recover it. Null while the loop runs (or is
+ * unknown), leaving the plain "loop <name>" text.
+ */
+function stalledLoopNote(loopName: string | null, loopStatus: LoopStatusLookup): string | null {
+  if (!loopName) return null
+  const status = loopStatus(loopName)
+  if (!status || status === 'running') return null
+  return `(loop ${loopName}: ${status} — restart it with loop-status restart=true)`
+}
+
+function formatGoalListItem(goal: GoalRow, chunks: GoalChunkRow[], loopStatus: LoopStatusLookup): string[] {
   const completed = chunks.filter((chunk) => chunk.stage === 'completed').length
   const lines = [
     `- ${goal.title} (${goal.goalId})`,
     `  Status: ${goal.status} | Chunks: ${completed}/${chunks.length} | Tasks: ${goal.tasks.length}`,
   ]
-  const current = chunks.find((chunk) => chunk.stage !== 'completed')
+  const current = findCurrentGoalChunk(chunks)
   if (current) {
-    const loop = current.loopName ? ` loop ${current.loopName}` : ''
-    lines.push(`  Current: chunk ${current.chunkIndex + 1} ${current.stage}${loop}`)
+    const note = stalledLoopNote(current.loopName, loopStatus)
+    if (note) lines.push(`  Current: chunk ${current.chunkIndex + 1} ${current.stage} ${note}`)
+    else lines.push(`  Current: chunk ${current.chunkIndex + 1} ${current.stage}${current.loopName ? ` loop ${current.loopName}` : ''}`)
   }
   if (goal.error) lines.push(`  Error: ${goal.error}`)
   return lines
 }
 
-function formatGoalDetail(goal: GoalRow, chunks: GoalChunkRow[]): string {
+function formatGoalDetail(goal: GoalRow, chunks: GoalChunkRow[], loopStatus: LoopStatusLookup): string {
   const lines = [
     `Goal: ${goal.goalId}`,
     `Title: ${goal.title}`,
@@ -54,16 +75,20 @@ function formatGoalDetail(goal: GoalRow, chunks: GoalChunkRow[]): string {
     lines.push('- (none)')
   } else {
     for (const task of goal.tasks) {
-      lines.push(task.ref ? `- [${task.ref}] ${task.title}` : `- ${task.title}`)
+      lines.push(formatGoalTaskLine(task))
     }
   }
+  const current = findCurrentGoalChunk(chunks)
   lines.push('', 'Chunks:')
   if (chunks.length === 0) {
     lines.push('- (none)')
   } else {
     for (const chunk of chunks) {
       lines.push(`${chunk.chunkIndex + 1}. ${chunk.title ?? '(planning)'} — ${chunk.stage}`)
-      if (chunk.loopName) lines.push(`   Loop: ${chunk.loopName}`)
+      if (chunk.loopName) {
+        const note = chunk === current ? stalledLoopNote(chunk.loopName, loopStatus) : null
+        lines.push(note ? `   Loop: ${chunk.loopName} ${note}` : `   Loop: ${chunk.loopName}`)
+      }
       if (chunk.branch) lines.push(`   Branch: ${chunk.branch}`)
       if (chunk.summary) lines.push(`   Summary: ${firstLine(chunk.summary)}`)
     }
@@ -72,6 +97,8 @@ function formatGoalDetail(goal: GoalRow, chunks: GoalChunkRow[]): string {
 }
 
 export function createGoalTools(ctx: ToolContext): Record<string, ToolDefinition> {
+  const loopStatus: LoopStatusLookup = (loopName) => ctx.loop?.inspect(loopName)?.status ?? null
+
   return {
     'goal-write': tool({
       description:
@@ -151,7 +178,7 @@ export function createGoalTools(ctx: ToolContext): Record<string, ToolDefinition
           `Tasks: ${goal.tasks.length}`,
         ]
         for (const task of goal.tasks) {
-          lines.push(task.ref ? `- [${task.ref}] ${task.title}` : `- ${task.title}`)
+          lines.push(formatGoalTaskLine(task))
         }
         lines.push(
           `Max chunks: ${goal.maxChunks}`,
@@ -187,15 +214,16 @@ export function createGoalTools(ctx: ToolContext): Record<string, ToolDefinition
         if (args.goalId) {
           const goal = ctx.goalsRepo.getGoal(ctx.projectId, args.goalId)
           if (!goal) return `Goal ${args.goalId} not found.`
-          return formatGoalDetail(goal, ctx.goalsRepo.listChunks(ctx.projectId, goal.goalId))
+          return formatGoalDetail(goal, ctx.goalsRepo.listChunks(ctx.projectId, goal.goalId), loopStatus)
         }
 
         const goals = ctx.goalsRepo.listGoals(ctx.projectId)
         if (goals.length === 0) return 'No goals found.'
 
+        const chunksByGoal = ctx.goalsRepo.listChunksByProject(ctx.projectId)
         const lines = [`Goals (${goals.length})`, '']
         for (const goal of goals) {
-          lines.push(...formatGoalListItem(goal, ctx.goalsRepo.listChunks(ctx.projectId, goal.goalId)))
+          lines.push(...formatGoalListItem(goal, chunksByGoal.get(goal.goalId) ?? [], loopStatus))
           lines.push('')
         }
         lines.push('Use goal-status <goalId> for details, or goal-cancel <goalId> to cancel a goal.')

@@ -24,7 +24,7 @@ Worktree loops require a git repository with at least one commit. If OpenCode st
 
 ## A goal is paused or stuck planning
 
-A goal pauses instead of retrying when a chunk loop ends not-completed, when the chunk planner fails to produce a plan, or when the chunk cap is reached; a goal is also left paused if the plugin restarts while a chunk was planning. `goal-status <goalId>` shows the reason and each chunk's stage.
+A goal pauses instead of retrying when a chunk loop ends not-completed, when the chunk planner fails to produce a plan or its session errors, or when the chunk cap is reached. Plugin boot never mutates goals, so a plugin restart while a chunk was planning leaves the goal `running` with a stale `planning` chunk (or a chunk whose loop ended without a `settled` notification), not paused. `goal-status <goalId>` shows the goal and each chunk's stage, and `goal-status restart` recovers it (`force` discards planning still marked in flight).
 
 Recover with `goal-status restart`:
 
@@ -34,3 +34,7 @@ Recover with `goal-status restart`:
 - A paused goal whose chunk loop ended cancelled, errored, or stalled resumes automatically once you restart that loop (`loop-status name=<loop> restart=true`) and it completes.
 
 If a goal is paused with "Chunk N has no branch" or "Could not resolve branch", the previous chunk's branch is gone or unreadable; restore it and restart the goal. `goal-cancel goalId=<goalId>` (optionally `cancelRunningLoops=true`) abandons the goal.
+
+## Upgrading from a goal-kind-loop version
+
+Migration 150 deletes every old goal-kind loop row — including running or restartable ones — together with its per-loop data, and migration 151 drops the feature-group tables (`feature_groups`, `group_features`). The orphaned worktrees are later removed by the stale-workspace sweep **without a commit**, so uncommitted work in such loops is lost. Finish or cancel any goal loops before upgrading to this version.

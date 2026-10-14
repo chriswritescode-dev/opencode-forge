@@ -46,7 +46,7 @@ import { createLoopPermissionPatcher } from '../hooks/loop-permission'
 import { createSandboxMessageHook } from '../hooks/sandbox-message'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { createArchitectAutoPlanner } from '../services/architect-auto-planner'
-import { createGoalOrchestrator, type GoalOrchestrator } from '../services/goal-orchestrator'
+import { createGoalOrchestrator, acquireGoalOrchestratorDb, type GoalOrchestrator } from '../services/goal-orchestrator'
 import { deleteSessionBestEffort } from '../utils/loop-session'
 import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
@@ -840,9 +840,13 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     pendingTeardowns,
   })
 
+  const goalDb = acquireGoalOrchestratorDb(dataDir, config.completedLoopTtlMs)
+  const goalGoalsRepo = createGoalsRepo(goalDb)
+  const goalPlansRepo = createPlansRepo(goalDb)
+
   const architectAutoPlanner = createArchitectAutoPlanner({
     client: forgeClient,
-    plansRepo,
+    plansRepo: goalPlansRepo,
     projectId,
     logger,
   })
@@ -850,7 +854,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const orchestrator = createGoalOrchestrator({
     projectId,
     dataDir,
-    goalsRepo,
+    goalsRepo: goalGoalsRepo,
     planner: architectAutoPlanner,
     git: defaultGitService,
     getLoopState: (loopName) => loopHandler.loop.service.getAnyState(loopName),
@@ -895,7 +899,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       )
     },
     deletePlanForSession: (sessionId) => {
-      plansRepo.deleteForSession(projectId, sessionId)
+      goalPlansRepo.deleteForSession(projectId, sessionId)
     },
     async removeCheckout(checkoutProjectDir, checkoutDir) {
       const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
@@ -1049,6 +1053,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       loopName: response.data.loopName,
       ...(response.data.worktreeDir ? { worktreeDir: response.data.worktreeDir } : {}),
       ...(response.data.workspaceId ? { workspaceId: response.data.workspaceId } : {}),
+      ...(response.data.goalId ? { goalId: response.data.goalId } : {}),
     }
   }
 

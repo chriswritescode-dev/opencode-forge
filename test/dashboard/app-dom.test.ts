@@ -80,6 +80,8 @@ function makePayload(over: Record<string, any> = {}): any {
   delete over.goals
   const unexecutedPlans = over.unexecutedPlans ?? []
   delete over.unexecutedPlans
+  const goalCount = over.goalCount ?? goals.length
+  delete over.goalCount
   return {
     generatedAt: Date.now(),
     projects: [
@@ -89,6 +91,7 @@ function makePayload(over: Record<string, any> = {}): any {
         projectDir: '/proj/p1',
         loops: loops ?? [makeLoop({ ...dashLoopOver, loop: loopOver })],
         goals,
+        goalCount,
         unexecutedPlans,
         unexecutedPlanCount: over.unexecutedPlanCount ?? unexecutedPlans.length,
       },
@@ -4467,6 +4470,8 @@ describe('dashboard App findings and plans sections', () => {
           projectId: 'p1',
           projectDir: '/proj/p1',
           loops: [makeLoop()],
+          goals: [],
+          goalCount: 0,
           unexecutedPlans: [],
           unexecutedPlanCount: 0,
         },
@@ -4475,6 +4480,8 @@ describe('dashboard App findings and plans sections', () => {
           projectId: 'p2',
           projectDir: null,
           loops: [],
+          goals: [],
+          goalCount: 0,
           unexecutedPlans: [makeUnexecutedPlan({ projectId: 'p2' })],
           unexecutedPlanCount: 1,
         },
@@ -4766,7 +4773,7 @@ describe('dashboard App goals section', () => {
     const a = rows.find(r => r.querySelector('.goal-row-title')?.textContent === 'A')!
     expect(a.querySelector('.lt-meter-text')?.textContent).toBe('1/2')
     expect(a.querySelector('.goal-row-stage')?.textContent).toBe('running')
-    expect(a.querySelector('.goal-badge')?.textContent).toBe('running')
+    expect(a.querySelector('.status-badge')?.textContent).toBe('running')
     const b = rows.find(r => r.querySelector('.goal-row-title')?.textContent === 'B')!
     expect(b.querySelector('.goal-row-error')?.textContent).toBe('boom')
     // Loop table is hidden on the goals section.
@@ -4804,6 +4811,8 @@ describe('dashboard App goals section', () => {
     expect(rows[0].querySelector('.goal-chunk-title')?.textContent).toBe('First')
     expect(rows[0].querySelector('.goal-chunk-branch')?.textContent).toBe('feat/a')
     expect(rows[0].querySelector('.goal-chunk-summary')?.textContent).toBe('summary text')
+    expect(rows[0].querySelector('.chunk-stage-badge')?.textContent).toBe('completed')
+    expect(rows[1].querySelector('.chunk-stage-badge')?.textContent).toBe('running')
     const link = rows[0].querySelector('.goal-chunk-loop-link') as HTMLAnchorElement
     expect(link).toBeTruthy()
     expect(link.getAttribute('href')).toBe('#p1/loop/loop-linked')
@@ -4846,6 +4855,28 @@ describe('dashboard App goals section', () => {
     const goalsItem = navItems.find(i => i.textContent?.startsWith('Goals'))!
     expect(goalsItem).toBeTruthy()
     expect(goalsItem.querySelector('.section-nav-count')?.textContent).toBe('3')
+  })
+
+  test('the Goals nav count comes from goalCount while goal rows ship only for the scoped project', async () => {
+    window.location.hash = '#p1/goals'
+    payload = makePayload({ goals: [], goalCount: 4 })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
+    const goalsItem = navItems.find(i => i.textContent?.startsWith('Goals'))!
+    expect(goalsItem.querySelector('.section-nav-count')?.textContent).toBe('4')
+    expect(container.querySelectorAll('.goal-row').length).toBe(0)
+    expect(container.querySelector('.goals-panel .tab-empty')?.textContent).toContain('No goals')
+  })
+
+  test('the goal detail view shows not-found when the payload omitted goal rows', async () => {
+    window.location.hash = '#p1/goals/g-abc'
+    payload = makePayload({ goals: [], goalCount: 1 })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.goal-detail .tab-empty')?.textContent).toContain('Goal not found')
   })
 
   test('#p1/goals with no goals shows an empty state, not the loops table', async () => {

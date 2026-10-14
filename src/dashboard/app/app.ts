@@ -203,7 +203,7 @@ export function App() {
       }
       if (matched.length > 0) {
         result.push({ proj, loops: matched })
-      } else if (((proj.goals?.length ?? 0) > 0 || proj.unexecutedPlanCount > 0) && (!q || label.toLowerCase().indexOf(q) !== -1)) {
+      } else if ((proj.goalCount > 0 || proj.unexecutedPlanCount > 0) && (!q || label.toLowerCase().indexOf(q) !== -1)) {
         result.push({ proj, loops: [] })
       }
     }
@@ -267,7 +267,7 @@ export function App() {
       findings += dl.findings.length
       if (dl.hasPlan) plans++
     }
-    return { loops: proj.loops.length, goals: proj.goals?.length ?? 0, findings, plans: plans + proj.unexecutedPlanCount }
+    return { loops: proj.loops.length, goals: proj.goalCount, findings, plans: plans + proj.unexecutedPlanCount }
   })
 
   const repoLoopOptions = createMemo<LoopOption[]>(() => {

@@ -58,6 +58,10 @@ From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`
 
 Loop worktrees use OpenCode 2's native worktree and location model: no environment variable and no version floor. See [Workspace Integration](_media/workspaces.md).
 
+### Upgrading
+
+Migration 150 deletes every old goal-kind loop row — including running or restartable ones — together with its per-loop data, and migration 151 drops the feature-group tables (`feature_groups`, `group_features`). The orphaned worktrees are later removed by the stale-workspace sweep **without a commit**, so uncommitted work in such loops is lost. Finish or cancel any goal loops before upgrading to this version. See [Loop System → Goals](_media/loop-system.md#goals).
+
 ## What Forge Adds
 
 Forge ships two plugin entrypoints plus standalone management surfaces:

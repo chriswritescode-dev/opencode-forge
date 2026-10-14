@@ -34,7 +34,7 @@ import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminat
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
-import { loopBranchExists } from '../workspace/forge-naming'
+import { loopBranchExists, forgeBranchName } from '../workspace/forge-naming'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
@@ -950,8 +950,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const title = command.title ?? displayName
     const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
     
-    // Generate unique loop name
-    const uniqueLoopName = deps.loop.generateUniqueLoopName(command.loopName ?? executionName)
+    const uniqueLoopName = deps.loop.generateUniqueLoopName(
+      command.loopName ?? executionName,
+      (name) =>
+        deps.goalsRepo?.isChunkLoopName(ctx.projectId, name) === true ||
+        git.branchExists(ctx.directory, forgeBranchName(name)),
+    )
 
     // In-flight dedupe: suppress concurrent starts for the same source
     const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`

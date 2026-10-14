@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, existsSync } from 'fs'
 import { openSqliteWithIntegrityGuard } from './sqlite-open'
 import { migrations } from './migrations'
-import { sweepExpiredLoops } from './sweep'
+import { sweepExpiredGoals, sweepExpiredLoops } from './sweep'
 import { resolveForgeDbPath } from '../utils/opencode-paths'
 
 // Path resolvers live in a sqlite-free module so lightweight consumers (e.g. permission
@@ -91,6 +91,7 @@ export function openForgeDatabase(dbPath: string, options?: ForgeDatabaseOptions
 
   const ttlMs = options?.completedLoopTtlMs ?? DEFAULT_COMPLETED_LOOP_TTL_MS
   sweepExpiredLoops(db, ttlMs)
+  sweepExpiredGoals(db, ttlMs)
 
   return db
 }

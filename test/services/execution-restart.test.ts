@@ -165,7 +165,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditorModel: opts.auditorModel,
       executionVariant: opts.executionVariant,
       auditorVariant: opts.auditorVariant,
-      kind: 'plan',
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -254,7 +253,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'stall-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -297,7 +295,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -423,7 +420,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'bug-restart-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -466,7 +462,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -548,7 +543,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'iter-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -591,7 +585,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -646,7 +639,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'worktree-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -689,7 +681,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -747,7 +738,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'based-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -800,7 +790,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -851,7 +840,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'portable-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -910,7 +898,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -992,7 +979,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'final-audit-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -1035,7 +1021,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -1126,7 +1111,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'final-audit-snapshot',
     }
 
     const { client } = createFakeForgeClient({
@@ -1169,7 +1153,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -1253,7 +1236,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'final-audit-model-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -1296,7 +1278,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -1364,7 +1345,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'post-action-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -1407,7 +1387,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -1479,7 +1458,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'race-loop',
     }
 
     let capturedResolvedNew: string | null | undefined
@@ -1520,7 +1498,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -1605,7 +1582,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'audit-restart-loop',
     }
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
@@ -1628,7 +1604,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -1721,7 +1696,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'final-audit-race',
     }
 
     const { client } = createFakeForgeClient({
@@ -1774,7 +1748,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -1884,7 +1857,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: () => 'final-audit-failed-restart-race',
     }
 
     const { client } = createFakeForgeClient({
@@ -1938,7 +1910,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -2024,7 +1995,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildPostActionPrompt: () => 'should-not-be-called',
       buildSectionInitialPrompt: () => 'should-not-be-called',
       buildFinalAuditPrompt: () => 'should-not-be-called',
-      generateUniqueLoopName: () => 'post-action-disabled-loop',
     }
 
     const { client } = createFakeForgeClient({
@@ -2068,7 +2038,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -2124,7 +2093,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: (name) => name,
     }
 
     const { client } = createFakeForgeClient({
@@ -2165,7 +2133,6 @@ describe('handleLoopRestart from stall_timeout', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
         } as any,
@@ -2301,7 +2268,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditorModel: 'prov/oldaud',
       executionVariant: 'med',
       auditorVariant: 'high',
-      kind: 'plan',
       modelFailed: true,
       sandbox: false,
       sandboxContainer: null,
@@ -2616,7 +2582,6 @@ describe('handleLoopRestart restartability rules', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: (name) => name,
     }
 
     const { client } = createFakeForgeClient({
@@ -2710,7 +2675,6 @@ describe('handleLoopRestart restartability rules', () => {
           listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           terminate: opts?.terminate ?? defaultTerminate,
@@ -3921,7 +3885,6 @@ describe('handleLoopRestart restartability rules', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
-      generateUniqueLoopName: (name) => name,
     }
 
     const { client } = createFakeForgeClient({
@@ -3978,7 +3941,6 @@ describe('handleLoopRestart restartability rules', () => {
         listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
         listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
         setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-        generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
         terminate: terminateSpy,

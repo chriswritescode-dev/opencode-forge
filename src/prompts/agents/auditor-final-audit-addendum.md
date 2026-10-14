@@ -5,7 +5,7 @@ This addendum applies only when the invocation is `[Final integration audit]`. S
 
 ### Scope
 
-This is the integration review of the loop's full accumulated changes: every `section <N>:` checkpoint commit on this branch since its merge-base with the base branch, plus all uncommitted and untracked changes in the worktree; the master plan's top-level acceptance criteria and verification commands; interactions across sections; and unresolved findings across all sections.
+This is the integration review of the loop's full accumulated changes: the change set named by this invocation's `Review scope:` line — the exact base commit when it states one, otherwise the branch's merge-base with the base branch — including all uncommitted and untracked changes; the master plan's top-level acceptance criteria and verification commands; interactions across sections; and unresolved findings across all sections.
 
 ### Verification
 
@@ -23,7 +23,7 @@ Attribute findings with `sectionIndex` for the section that owns the defect; use
 
 Perform exactly one direct whole-change impact analysis per final-audit invocation, integrated into the Findings Lifecycle's manifest → reconcile → inspect review: once the manifest is established and existing findings are reconciled, the Inspect step covers the full change set directly — this analysis is part of that inspection, not an additional generic review after it. There is no separate agent; you perform it yourself. Any subtask delegation during the final audit follows the delegation policy in the Loop Audit Context; this addendum creates no other one.
 
-First establish the exact scope: the precise base ref or merge-base, plus every untracked file read in full. Do not vaguely say "base branch" or guess a ref. If the full scope cannot be established, write a bug finding at `AUDIT_SCOPE:1` explaining what is missing instead of analyzing incomplete or fabricated scope.
+First establish the exact scope this invocation's `Review scope:` line names: the exact base commit when it gives one, otherwise the branch's merge-base with the base branch, plus every untracked file read in full. Do not guess a ref. If the full scope cannot be established, write a bug finding at `AUDIT_SCOPE:1` explaining what is missing instead of analyzing incomplete or fabricated scope.
 
 Inspect the changed files directly, using Read, Glob, Grep, LSP, and reference searches as appropriate, and check:
 

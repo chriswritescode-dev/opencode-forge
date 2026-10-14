@@ -176,7 +176,7 @@ Loops always run in an isolated git worktree. Sandbox is optional and controlled
 
 Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, TUI loop launch, and the launch of a goal chunk before creating workspaces or sessions when this precondition is not met.
 
-Every loop records a **`base_commit`** — the worktree `HEAD` resolved right after the workspace is created — and preserves it across restart. It is the exact commit the worktree branched from, so an audit scopes to `git diff <base_commit>` (committed, staged, and unstaged tracked changes) plus untracked files instead of relying on a branch merge-base. The final audit, the final-audit fix prompt, and the non-sectioned audit prompt all use this scope. Rows persisted before base commits were recorded fall back to the legacy merge-base wording.
+Every loop records a **`base_commit`** — the worktree `HEAD` resolved right after the workspace is created — and preserves it across restart. It is the exact commit the worktree branched from, so an audit scopes to `git diff <base_commit>` (committed, staged, and unstaged tracked changes) plus untracked files instead of relying on a branch merge-base. The final audit, the final-audit fix prompt, and the non-sectioned audit prompt all use this scope, and the final-audit invocation's `Review scope:` line states the exact base commit. Rows persisted before base commits were recorded fall back to the legacy merge-base wording.
 
 > Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
 
@@ -321,12 +321,16 @@ On `settled` for a **completed** chunk loop:
 
 Why a plain detached checkout instead of a Forge workspace: a Forge workspace with no matching loop row is reclaimed by the stale-workspace sweep after a 5-minute grace window, so a planning workspace would be removed out from under the planner.
 
+Planner failures pause the goal. A normalized `session.error` for a chunk planner session — a provider failure or an interrupted/aborted execution — abandons the chunk and pauses the goal with `Planner failed for chunk <n>: <reason>`. A premature idle that yields neither assistant text nor a stored plan leaves the chunk planning rather than failing it.
+
 ### Pause, resume, restart, and cancel
 
 - A chunk loop that ends **not completed** (cancelled, errored, stalled, or with a missing worktree) pauses the goal. Restarting that loop with `loop-status restart=true` and completing it resumes the goal automatically.
 - Reaching `maxChunks` (default `20`, hard max `100`) pauses the goal; raise the cap with `goal-status restart` and `maxChunks`.
 - **No automatic retries.** Every failure pauses the goal and waits for an explicit action; plugin boot never mutates a goal.
+- If the running chunk's loop row is gone (swept or deleted), `goal-status restart <goalId>` cancels that chunk, advances the goal from the last completed chunk, and names the abandoned branch in its message.
 - Recovery is `goal-status restart <goalId>`: it re-plans an interrupted planning chunk, catches a missed settle (a completed chunk loop that never advanced the goal), and — with `force` — discards planning still marked in flight. `maxChunks` raises the cap.
+- `goal-status` list and detail show the current chunk's loop status whenever that loop is resolvable and not running, with the restart hint; a cancelled chunk is never shown as the current chunk.
 - `goal-cancel <goalId>` cancels the goal, cleaning up any planning chunks and optionally cancelling the running chunk loop.
 
 ### `execute-plan` loop vs `/goal`
@@ -339,6 +343,8 @@ Why a plain detached checkout instead of a Forge workspace: a Forge workspace wi
 | Branching | One worktree and branch | One worktree and branch per chunk, stacked on the previous chunk's commit |
 | Advancement trigger | Section transitions inside the loop | The `settled` notification after each chunk's teardown |
 | Slash command | `/execute-plan` | `/goal` |
+
+> **Upgrading:** migration 150 deletes every old goal-kind loop row — including running or restartable ones — together with its per-loop data, and migration 151 drops the feature-group tables (`feature_groups`, `group_features`). The orphaned worktrees are later removed by the stale-workspace sweep **without a commit**, so uncommitted work in such loops is lost. Finish or cancel any goal loops before upgrading to this version.
 
 ## Cancellation
 
@@ -388,7 +394,8 @@ Variants use override → matching config value → last-used loop value. The au
 
 - **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel.
 - **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel.
-- **Cleanup**: terminal loops and their loop-scoped plans are swept automatically once `completedLoopTtlMs` passes after completion. Session-scoped plans have no TTL and are removed by `bun scripts/cleanup-plans.ts [--older-than=30d] [--project=<id>] [--dry-run]` (bulk purge) or from the dashboard's Plans section on a loopback bind; `bun scripts/cleanup-loop.ts <loopName>` wipes one loop's row, its plans, worktree, branch, and sandbox. These scripts are source-checkout only, like `pnpm dashboard`.
+- **Loop names**: a new loop start reserves a unique name (`src/loop/name-uniqueness.ts`) that no goal chunk references (`goal_chunks.loop_name`) and that has no live `forge/<name>` branch, taking a `-N` suffix; a restart reuses its own name and branch.
+- **Cleanup**: terminal loops and their loop-scoped plans are swept automatically once `completedLoopTtlMs` passes after completion. Completed and cancelled goals and their chunks are swept after the same TTL, as are draft goals not updated within it; running and paused goals are never swept. Session-scoped plans have no TTL and are removed by `bun scripts/cleanup-plans.ts [--older-than=30d] [--project=<id>] [--dry-run]` (bulk purge) or from the dashboard's Plans section on a loopback bind; `bun scripts/cleanup-loop.ts <loopName>` wipes one loop's row, its plans, worktree, branch, and sandbox. These scripts are source-checkout only, like `pnpm dashboard`.
 
 ## Tool Restrictions
 

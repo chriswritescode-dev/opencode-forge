@@ -9,6 +9,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import { createLoopService } from '../../src/loop/service'
+import { generateUniqueName } from '../../src/loop/name-uniqueness'
 import { createForgeExecutionService } from '../../src/services/execution'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -36,7 +37,17 @@ const MOCK_BASE_COMMIT = 'a'.repeat(40)
 
 const mockGitService = {
   revParseHead: () => ({ ok: true, status: 0, stdout: `${MOCK_BASE_COMMIT}\n`, stderr: '' }),
+  branchExists: () => false,
 } as any
+
+function uniqueLoopNameFor(
+  service: LoopService,
+  baseName: string,
+  isTaken?: (name: string) => boolean,
+): string {
+  const existing = [...service.listActive(), ...service.listRecent()].map((s) => s.loopName)
+  return generateUniqueName(baseName, existing, isTaken)
+}
 
 const PROJECT_ID = 'test-project'
 
@@ -128,7 +139,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -233,7 +244,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -320,7 +331,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -407,7 +418,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -489,7 +500,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -556,7 +567,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loop: {
         service: loopService,
         listActive: (...args: any[]) => loopService.listActive(...args),
-        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+        generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
         findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
@@ -655,7 +666,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -718,7 +729,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -780,7 +791,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -859,7 +870,7 @@ describe('handleStartLoop variant config fallback', () => {
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -933,7 +944,7 @@ describe('handleStartLoop variant config fallback', () => {
       plansRepo, loopsRepo, loop: {
           service: loopService,
           listActive: (...args: any[]) => loopService.listActive(...args),
-          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
           findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
@@ -991,7 +1002,7 @@ describe('handleStartLoop base ref and base commit', () => {
       loop: {
         service: opts.loopService,
         listActive: (...args: any[]) => opts.loopService.listActive(...args),
-        generateUniqueLoopName: (...args: any[]) => opts.loopService.generateUniqueLoopName(...args),
+        generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(opts.loopService, baseName, isTaken),
         findMatchByName: (...args: any[]) => opts.loopService.findMatchByName(...args),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
@@ -1060,7 +1071,7 @@ describe('handleStartLoop base ref and base commit', () => {
 
   test('rolls back the start when the base commit cannot be resolved', async () => {
     const h = buildHarness()
-    const failingGit = { revParseHead: () => ({ ok: false, status: 128, stdout: '', stderr: 'not a repo' }) }
+    const failingGit = { revParseHead: () => ({ ok: false, status: 128, stdout: '', stderr: 'not a repo' }), branchExists: () => false }
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService: failingGit,
@@ -1148,7 +1159,7 @@ describe('handleStartLoop goal attach', () => {
       loop: {
         service: h.loopService,
         listActive: (...args: any[]) => h.loopService.listActive(...args),
-        generateUniqueLoopName: (...args: any[]) => h.loopService.generateUniqueLoopName(...args),
+        generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(h.loopService, baseName, isTaken),
         findMatchByName: (...args: any[]) => h.loopService.findMatchByName(...args),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
@@ -1282,6 +1293,74 @@ describe('handleStartLoop goal attach', () => {
     expect(r1.ok).toBe(true)
     expect(r2.ok).toBe(true)
     expect(h.goalsRepo.getGoal(PROJECT_ID, 'goal-draft')!.status).toBe('running')
+
+    h.db.close()
+  })
+
+  test('skips a name still referenced by a goal chunk and attaches chunk 1 with the suffixed name', async () => {
+    const h = buildHarness()
+    h.goalsRepo.saveDraft({
+      projectId: PROJECT_ID,
+      goalId: 'goal-old',
+      title: 'Old goal',
+      objective: 'Old objective',
+      tasks: [{ title: 'Old task' }],
+      hostSessionId: 'host-old',
+      maxChunks: 3,
+    })
+    h.goalsRepo.attachFirstChunk(
+      PROJECT_ID,
+      'host-old',
+      {
+        projectDir: '/tmp/test',
+        executionModel: null,
+        auditorModel: null,
+        executionVariant: null,
+        auditorVariant: null,
+        sandboxSettings: null,
+        maxIterations: null,
+      },
+      { loopName: 'shared-name', branch: 'forge/shared-name', title: 'Old chunk', baseCommit: MOCK_BASE_COMMIT },
+    )
+    saveDraft(h, 'host-new')
+    const service = createForgeExecutionService(buildDeps(h))
+
+    const result = await service.dispatch(ctx, {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Shared Plan\n\nBody.' },
+      loopName: 'shared-name',
+      hostSessionId: 'host-new',
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.loopName).toBe('shared-name-1')
+    expect(result.data.goalId).toBe('goal-draft')
+
+    const chunks = h.goalsRepo.listChunks(PROJECT_ID, 'goal-draft')
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0].loopName).toBe('shared-name-1')
+
+    h.db.close()
+  })
+
+  test('skips a name whose forge branch already exists', async () => {
+    const h = buildHarness()
+    const gitWithBranch = {
+      ...mockGitService,
+      branchExists: (_cwd: string, branch: string) => branch === 'forge/taken-branch',
+    }
+    const service = createForgeExecutionService({ ...buildDeps(h), gitService: gitWithBranch })
+
+    const result = await service.dispatch(ctx, {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Taken Plan\n\nBody.' },
+      loopName: 'taken-branch',
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.loopName).toBe('taken-branch-1')
 
     h.db.close()
   })

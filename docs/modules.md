@@ -155,7 +155,7 @@ Translates OpenCode events into loop actions and manages lifecycle side-effects.
 | `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
 | `sandbox-message.ts` | Adds the container note to every sandboxed request and, once the sandbox is turned off, the host note to every request until it is turned back on |
-| `goal-orchestrator.ts` | Routes a chunk planner session's idle event to the goal orchestrator |
+| `goal-orchestrator.ts` | Routes a chunk planner session's idle and `session.error` events to the goal orchestrator |
 | `tool-hook-types.ts` | Shared tool before/after hook types |
 
 ### Public API (barrel exports from `hooks/index.ts`)
@@ -174,7 +174,7 @@ Additional hooks available via direct imports (not re-exported by the barrel):
 - `createForgeSessionAttachHook()` / `createForgeSessionMessageAttachHook()` — auto-attach loops on session events (`forge-session-attach.ts`)
 - `createLoopPermissionPatcher()` — patch subagent permissions on `session.created` (`loop-permission.ts`)
 - `createPlanCaptureEventHook()` — plan marker extraction from streaming parts (`plan-capture.ts`)
-- `createGoalPlannerEventHook()` — route a chunk planner session's idle event to the goal orchestrator (`goal-orchestrator.ts`)
+- `createGoalPlannerEventHook()` — route a chunk planner session's idle event, and a normalized `session.error` that pauses the goal, to the goal orchestrator (`goal-orchestrator.ts`)
 
 Source: [src/hooks/index.ts](../src/hooks/index.ts)
 
@@ -201,7 +201,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
-| `name-uniqueness.ts` | Reserve a unique loop identity before any side effects |
+| `name-uniqueness.ts` | Reserve a unique loop identity before any side effects, refusing a name still referenced by a goal chunk or whose `forge/<slug>` branch exists |
 | `session-output.ts` | Fetch session output for loop display |
 
 ### Key Types
@@ -274,7 +274,7 @@ isAwaitingBusy(sessionId): boolean
 isAwaitingBusyExpired(sessionId): boolean
 
 // Name uniqueness
-generateUniqueName(baseName: string, existingNames: readonly string[]): string
+generateUniqueName(baseName: string, existingNames: readonly string[], isTaken?: (name: string) => boolean): string
 
 // Session output
 fetchSessionOutput(client, sessionId, directory, logger?, options?): LoopSessionOutput | null
@@ -301,7 +301,7 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | `section-bootstrap.ts` | Build the initial milestone rows for a loop |
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
 | `architect-auto-planner.ts` | Plan a work item with the `architect-auto` agent inside a caller-chosen worktree: spawn a session, read its newest assistant text, and resolve the session's stored plan with its structural readiness (`createArchitectAutoPlanner()`) |
-| `goal-orchestrator.ts` | Drive a goal's sequential chunk loops: on a chunk loop's `settled` completion, plan the next chunk in a detached checkout and launch it from that exact commit; pause on failure; restart/cancel (`createGoalOrchestrator()`) |
+| `goal-orchestrator.ts` | Drive a goal's sequential chunk loops: on a chunk loop's `settled` completion, plan the next chunk in a detached checkout and launch it from that exact commit; pause on planner failure or a non-completed chunk loop; restart/cancel (`createGoalOrchestrator()`). Writes through a process-shared database handle (`acquireGoalOrchestratorDb`) so advancement survives the launching instance's disposal |
 | `tui-rpc-service.ts` | Server-side TUI RPC service: loop list/sidebar, session plan, loop restart (rejected when the loop was restarted after the dialog read it, checked under the shared loop lock), host-sandbox desired/applied state, and the worktree list |
 | `worktree-log.ts` | Log worktree completions |
 

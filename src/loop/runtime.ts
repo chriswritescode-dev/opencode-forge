@@ -131,7 +131,7 @@ export interface Loop {
   superviseOwnedLoops(): string[]
   getStallInfo(name: string): LoopWatchdogStallInfo | null
   restart(name: string, params: { newState: LoopState; newSessionId: string }): void
-  generateUniqueLoopName(baseName: string): string
+  generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string
   /** Transition a running loop's phase. */
   setPhase(name: string, phase: LoopState['phase']): void
   /**
@@ -3122,12 +3122,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return watchdog.getStallInfo(name)
   }
 
-  function generateUniqueLoopName(baseName: string): string {
+  function generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string {
     const existing = listActive()
       .map(s => s.loopName)
     const recent = listRecent()
       .map(s => s.loopName)
-    return generateUniqueName(baseName, [...existing, ...recent])
+    return generateUniqueName(baseName, [...existing, ...recent], isTaken)
   }
 
   function start(input: StartLoopInput): void {

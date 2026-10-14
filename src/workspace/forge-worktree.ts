@@ -60,7 +60,7 @@ export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extr
 }
 
 /** Workspace `extra` key carrying the explicit base ref a loop worktree is branched from. */
-export const FORGE_BASE_REF_EXTRA_KEY = 'baseRef'
+const FORGE_BASE_REF_EXTRA_KEY = 'baseRef'
 
 /** Reads the optional explicit base ref a loop worktree is branched from, or undefined when absent. */
 export function getForgeWorkspaceBaseRef(entry: { extra?: unknown }): string | undefined {

@@ -33,6 +33,7 @@
 - `LoopService.resolveActiveLoopForSession` is the only correct "is this session inside a running loop" check. `resolveLoopName` matches terminated loops too.
 - Goal chunks advance only on the `settled` loop-change notification (fired after the teardown commit); never advance a goal on `terminate`. `createLoopChangeNotifier` in `src/host/forge-core.ts` is the only dispatch point.
 - The goal orchestrator always uses `goal.projectDir`, never the plugin instance directory: `settled` fires in the dying chunk worktree's instance, so the instance that advances a goal is not necessarily the one that launched it.
+- Goal orchestration writes through a process-shared database handle (`acquireGoalOrchestratorDb` in `src/services/goal-orchestrator.ts`, wired in `src/host/forge-core.ts`): a chunk loop's `settled` callback can outlive the plugin instance that owned it, so advancing a goal must never depend on an instance's database lifetime.
 - Plugin boot never mutates goals. A goal advances only on `settled` or an explicit `goal-status restart`; recovery is always explicit, and there are no automatic retries.
 - Next-chunk planning uses a plain detached `git worktree` checkout under the worktrees root (`goalPlanningDir` in `src/constants/goal.ts`), not a Forge workspace: the stale sweep reclaims a loopless workspace after its 5-minute grace window.
 

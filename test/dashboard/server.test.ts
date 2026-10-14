@@ -35,7 +35,6 @@ function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
-    kind: 'plan',
     ...overrides,
   }
 }

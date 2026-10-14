@@ -9,7 +9,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | Option | Default | Description |
 |---|---:|---|
 | `dataDir` | `""` | Data directory for `forge.db` and worktrees. Empty resolves to the platform data dir. It does not relocate the default log path, which is always derived from the platform data dir; set `logging.file` to move logs. |
-| `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before cleanup sweep. |
+| `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops, and for completed/cancelled goals and stale draft goals, before the cleanup sweep. Running and paused goals are never swept. |
 | `executionModel` | `""` | Fallback model override for plan execution sessions. Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |

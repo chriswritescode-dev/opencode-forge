@@ -205,12 +205,12 @@ export function sectionStatusClass(s: string): string {
 }
 
 /**
- * Single badge family for both goal statuses and chunk stages. The two
- * vocabularies overlap (running/completed/cancelled), so one class family keeps
- * the CSS from drifting into parallel copies.
+ * Badge family for goal chunk stages. Goal statuses use `statusClass`; chunk
+ * stages have their own `chunk-stage-*` vocabulary because the two are distinct
+ * sets (a chunk is never a goal draft/paused, a goal is never planning).
  */
-export function goalBadgeClass(value: string): string {
-  return 'goal-badge goal-badge-' + value
+export function chunkStageClass(value: string): string {
+  return 'chunk-stage-badge chunk-stage-' + value
 }
 
 export type SortMode = 'recent' | 'cost' | 'duration' | 'findings'

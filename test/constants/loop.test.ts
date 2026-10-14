@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS, AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS } from '../../src/constants/loop'
 
 describe('MAX_TOTAL_SECTIONS', () => {
   it('is the single canonical section cap', () => {
@@ -10,6 +10,14 @@ describe('MAX_TOTAL_SECTIONS', () => {
 describe('PLAN_AUTHORING_TOOL_NAMES', () => {
   it('is the single list of plan-authoring tools every deny path derives from', () => {
     expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit', 'goal-write'])
+  })
+})
+
+describe('AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS', () => {
+  it('is every shared structural deny except the plan-of-record tools the autonomous architect keeps', () => {
+    expect([...AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS].sort()).toEqual(
+      ['execute-plan', 'goal-cancel', 'goal-status', 'goal-write', 'loop-cancel', 'loop-status', 'question'],
+    )
   })
 })
 

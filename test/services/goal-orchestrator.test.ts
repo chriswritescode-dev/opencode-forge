@@ -455,6 +455,25 @@ describe('createGoalOrchestrator', () => {
       expect(h.cancelLoop).toHaveBeenCalledWith('chunk-1-loop')
     })
 
+    test('cancels the started loop and pauses when the chunk cannot be marked running', async () => {
+      h = createHarness()
+      await setupPlanningChunk()
+      vi.mocked(h.planner.latestAssistantText).mockResolvedValue('plan text')
+      vi.mocked(h.planner.capturePlan).mockResolvedValue({ ready: true })
+      vi.spyOn(h.goalsRepo, 'markChunkRunning').mockImplementation(() => {
+        throw new Error('UNIQUE constraint failed: goal_chunks.project_id, goal_chunks.loop_name')
+      })
+
+      await h.orchestrator.onPlannerIdle('planner-session-1')
+
+      expect(h.cancelLoop).toHaveBeenCalledWith('chunk-1-loop')
+      const goal = h.goalsRepo.getGoal(PROJECT, GOAL)
+      expect(goal?.status).toBe('paused')
+      expect(goal?.error).toContain('Could not record chunk 2 loop chunk-1-loop')
+      expect(goal?.error).toContain('UNIQUE constraint failed')
+      expect(h.goalsRepo.listChunks(PROJECT, GOAL)).toHaveLength(1)
+    })
+
     test('ignores a planner session that is not in the planning stage', async () => {
       h = createHarness()
       await setupPlanningChunk()
@@ -465,6 +484,52 @@ describe('createGoalOrchestrator', () => {
 
       expect(h.startLoop).not.toHaveBeenCalled()
       expect(vi.mocked(h.planner.latestAssistantText)).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('onPlannerError', () => {
+    async function setupPlanningChunk() {
+      h.seedRunningGoal()
+      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      await h.orchestrator.onLoopSettled('chunk-0-loop')
+      h.plansRepo.writeForSession(PROJECT, 'planner-session-1', '# stored plan')
+    }
+
+    test('abandons planning and pauses the goal with the planner failure', async () => {
+      h = createHarness()
+      await setupPlanningChunk()
+
+      await h.orchestrator.onPlannerError('planner-session-1', 'provider exploded')
+
+      const goal = h.goalsRepo.getGoal(PROJECT, GOAL)
+      expect(goal?.status).toBe('paused')
+      expect(goal?.error).toBe('Planner failed for chunk 2: provider exploded')
+      expect(h.goalsRepo.listChunks(PROJECT, GOAL)).toHaveLength(1)
+      expect(h.deleteSession).toHaveBeenCalledWith('planner-session-1', goalPlanningDir(DATA_DIR, GOAL, 1))
+      expect(h.removeCheckout).toHaveBeenCalledWith(PROJECT_DIR, goalPlanningDir(DATA_DIR, GOAL, 1))
+      expect(h.startLoop).not.toHaveBeenCalled()
+    })
+
+    test('makes a later idle for the failed planner session a no-op', async () => {
+      h = createHarness()
+      await setupPlanningChunk()
+
+      await h.orchestrator.onPlannerError('planner-session-1', 'provider exploded')
+      vi.mocked(h.planner.latestAssistantText).mockClear()
+      await h.orchestrator.onPlannerIdle('planner-session-1')
+
+      expect(h.startLoop).not.toHaveBeenCalled()
+      expect(h.planner.latestAssistantText).not.toHaveBeenCalled()
+    })
+
+    test('ignores a session error for a session that is not planning', async () => {
+      h = createHarness()
+      h.seedRunningGoal()
+
+      await h.orchestrator.onPlannerError('not-a-planner', 'boom')
+
+      expect(h.goalsRepo.getGoal(PROJECT, GOAL)?.status).toBe('running')
+      expect(h.goalsRepo.listChunks(PROJECT, GOAL)).toHaveLength(1)
     })
   })
 
@@ -510,6 +575,32 @@ describe('createGoalOrchestrator', () => {
       h.loopStates.set('chunk-0-loop', loopState({ status: 'errored', terminationReason: 'stall_timeout' }))
 
       await expect(h.orchestrator.restart(GOAL)).resolves.toContain('loop-status restart=true')
+    })
+
+    test('cancels a running chunk whose loop is missing and advances from the last completed chunk', async () => {
+      h = createHarness()
+      h.seedRunningGoal()
+      h.goalsRepo.completeChunk(PROJECT, GOAL, 0, 'done')
+      h.goalsRepo.insertPlanningChunk(PROJECT, GOAL, 1, {
+        planningDir: goalPlanningDir(DATA_DIR, GOAL, 1),
+        baseCommit: 'sha-1',
+      })
+      h.goalsRepo.claimChunkStage(PROJECT, GOAL, 1, 'planning', 'launching')
+      h.goalsRepo.markChunkRunning(PROJECT, GOAL, 1, {
+        loopName: 'chunk-1-loop',
+        branch: 'forge/chunk-1',
+        title: 'Chunk 1',
+      })
+      h.goalsRepo.updateStatus(PROJECT, GOAL, ['running'], 'paused', { error: 'paused' })
+
+      const message = await h.orchestrator.restart(GOAL)
+
+      expect(message).toContain('chunk-1-loop')
+      expect(message).toContain('forge/chunk-1')
+      const chunks = h.goalsRepo.listChunks(PROJECT, GOAL)
+      expect(chunks.find((chunk) => chunk.chunkIndex === 1)?.stage).toBe('cancelled')
+      expect(chunks.find((chunk) => chunk.chunkIndex === 2)?.stage).toBe('planning')
+      expect(h.goalsRepo.getGoal(PROJECT, GOAL)?.status).toBe('running')
     })
 
     test('resumes a paused goal and advances it', async () => {

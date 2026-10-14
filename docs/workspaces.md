@@ -22,6 +22,8 @@ When a worktree loop starts, Forge:
 
 The adapter's `remove` hook commits in-flight changes (when teardown context allows), stops the sandbox container if any, and removes the worktree directory unless the loop is restartable. Branches are preserved for later restart or merge. Workspaces are listed, reported, and removed from the persisted metadata; a record whose directory is gone is pruned.
 
+A loop name is reserved before any side effects (`src/loop/name-uniqueness.ts`): a new loop start never reuses a name still referenced by a goal chunk (`goal_chunks.loop_name`) or whose `forge/<slug>` branch still exists, taking a `-N` suffix instead. A restart is exempt — it reuses the loop's own name and branch.
+
 Forge deliberately does not register a `worktree.transform` strategy: that would silently become the default for every worktree of the user. The built-in git strategy is also rejected because its `--detach` add bypasses Forge's branch, orphan, config, and sandbox handling.
 
 ## Based worktrees and goal planning checkouts

@@ -100,7 +100,6 @@ describe('createForgeCore', () => {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
-      kind: 'plan',
     }
   }
 

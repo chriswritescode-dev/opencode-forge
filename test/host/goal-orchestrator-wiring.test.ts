@@ -1,6 +1,10 @@
 import { describe, test, expect, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { createLoopChangeNotifier } from '../../src/host/forge-core'
-import type { GoalOrchestrator } from '../../src/services/goal-orchestrator'
+import { acquireGoalOrchestratorDb, type GoalOrchestrator } from '../../src/services/goal-orchestrator'
+import { closeDatabase, hasTable, initializeDatabase } from '../../src/storage'
 import type { Logger } from '../../src/types'
 
 function createHarness() {
@@ -67,5 +71,33 @@ describe('createLoopChangeNotifier', () => {
 
     notify('settled', 'chunk-loop')
     await vi.waitFor(() => expect(errors).toHaveLength(1))
+  })
+})
+
+describe('acquireGoalOrchestratorDb', () => {
+  test('shares one handle per forge database path', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'forge-goal-db-'))
+    try {
+      const first = acquireGoalOrchestratorDb(dataDir)
+      const second = acquireGoalOrchestratorDb(dataDir)
+
+      expect(second).toBe(first)
+      expect(hasTable(first, 'goals')).toBe(true)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('outlives an instance database handle that closes', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'forge-goal-db-'))
+    try {
+      const shared = acquireGoalOrchestratorDb(dataDir)
+      const instanceDb = initializeDatabase(dataDir, { completedLoopTtlMs: 1234 })
+      closeDatabase(instanceDb)
+
+      expect(hasTable(shared, 'goal_chunks')).toBe(true)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 })

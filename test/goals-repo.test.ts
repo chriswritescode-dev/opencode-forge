@@ -86,16 +86,17 @@ describe('GoalsRepo', () => {
       expect(replacement.goalId).toBe('goal-new')
       expect(repo.getGoal(PROJECT, 'goal-old')).toBeNull()
       expect(repo.listGoals(PROJECT).map((g) => g.goalId)).toEqual(['goal-new'])
-      expect(repo.getDraftForSession(PROJECT, SESSION_A)?.goalId).toBe('goal-new')
+      expect(repo.getGoal(PROJECT, 'goal-new')?.status).toBe('draft')
     })
 
     test('drafts for different sessions coexist', () => {
       saveDraft({ goalId: 'goal-a', hostSessionId: SESSION_A })
       saveDraft({ goalId: 'goal-b', hostSessionId: SESSION_B })
 
-      expect(repo.getDraftForSession(PROJECT, SESSION_A)?.goalId).toBe('goal-a')
-      expect(repo.getDraftForSession(PROJECT, SESSION_B)?.goalId).toBe('goal-b')
-      expect(repo.listGoals(PROJECT)).toHaveLength(2)
+      const drafts = repo.listGoals(PROJECT)
+      expect(drafts).toHaveLength(2)
+      expect(repo.getGoal(PROJECT, 'goal-a')?.hostSessionId).toBe(SESSION_A)
+      expect(repo.getGoal(PROJECT, 'goal-b')?.hostSessionId).toBe(SESSION_B)
     })
 
     test('the unique draft index rejects a second draft for the same session', () => {
@@ -380,6 +381,31 @@ describe('GoalsRepo', () => {
 
       expect(repo.getChunkByLoopName(PROJECT, 'missing')).toBeNull()
       expect(repo.getChunkByPlannerSession(PROJECT, 'missing')).toBeNull()
+    })
+
+    test('listChunksByProject groups every goal\'s chunks in one query, ordered by goal then index', () => {
+      attach()
+      saveDraft({ goalId: 'goal-2', hostSessionId: SESSION_B })
+      repo.attachFirstChunk(PROJECT, SESSION_B, snapshot(), {
+        loopName: 'loop-2-0',
+        branch: null,
+        title: null,
+        baseCommit: null,
+      })
+      repo.insertPlanningChunk(PROJECT, GOAL_1, 1, { planningDir: '/tmp/plan-1', baseCommit: 'base1' })
+
+      const byGoal = repo.listChunksByProject(PROJECT)
+      expect([...byGoal.keys()].sort()).toEqual([GOAL_1, 'goal-2'])
+      expect(byGoal.get(GOAL_1)!.map((c) => c.chunkIndex)).toEqual([0, 1])
+      expect(byGoal.get('goal-2')!.map((c) => c.chunkIndex)).toEqual([0])
+      expect(repo.listChunksByProject('other-project').size).toBe(0)
+    })
+
+    test('isChunkLoopName reports whether a loop belongs to a goal chunk', () => {
+      attach()
+      expect(repo.isChunkLoopName(PROJECT, 'loop-0')).toBe(true)
+      expect(repo.isChunkLoopName(PROJECT, 'missing')).toBe(false)
+      expect(repo.isChunkLoopName('other-project', 'loop-0')).toBe(false)
     })
 
     test('deleteChunk removes the row and reports whether it existed', () => {

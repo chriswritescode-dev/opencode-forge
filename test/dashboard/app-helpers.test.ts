@@ -5,7 +5,7 @@ import {
   fmtTime,
   statusClass,
   sectionStatusClass,
-  goalBadgeClass,
+  chunkStageClass,
   loopMatchesFilters,
   sortLoops,
   dataHash,
@@ -708,6 +708,8 @@ describe('statusClass', () => {
     expect(statusClass('running')).toBe('status-badge status-running')
     expect(statusClass('completed')).toBe('status-badge status-completed')
     expect(statusClass('errored')).toBe('status-badge status-errored')
+    expect(statusClass('draft')).toBe('status-badge status-draft')
+    expect(statusClass('paused')).toBe('status-badge status-paused')
   })
 })
 
@@ -720,12 +722,13 @@ describe('sectionStatusClass', () => {
   })
 })
 
-describe('goalBadgeClass', () => {
-  test('returns goal-badge goal-badge-<value> for goal statuses and chunk stages', () => {
-    expect(goalBadgeClass('running')).toBe('goal-badge goal-badge-running')
-    expect(goalBadgeClass('paused')).toBe('goal-badge goal-badge-paused')
-    expect(goalBadgeClass('planning')).toBe('goal-badge goal-badge-planning')
-    expect(goalBadgeClass('launching')).toBe('goal-badge goal-badge-launching')
+describe('chunkStageClass', () => {
+  test('returns chunk-stage-badge chunk-stage-<stage> for chunk stages', () => {
+    expect(chunkStageClass('planning')).toBe('chunk-stage-badge chunk-stage-planning')
+    expect(chunkStageClass('launching')).toBe('chunk-stage-badge chunk-stage-launching')
+    expect(chunkStageClass('running')).toBe('chunk-stage-badge chunk-stage-running')
+    expect(chunkStageClass('completed')).toBe('chunk-stage-badge chunk-stage-completed')
+    expect(chunkStageClass('cancelled')).toBe('chunk-stage-badge chunk-stage-cancelled')
   })
 })
 

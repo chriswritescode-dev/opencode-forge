@@ -194,7 +194,7 @@ Arguments:
 
 ### `goal-status`
 
-Lists goals when called with no arguments; pass `goalId` for a goal's detail (status, models, objective, tasks, and chunks with their stage, loop, branch, and summary). With `restart`, resumes a paused or interrupted goal.
+Lists goals when called with no arguments; pass `goalId` for a goal's detail (status, models, objective, tasks, and chunks with their stage, loop, branch, and summary). List and detail show the current chunk's loop status whenever that loop is not running, with a restart hint; a cancelled chunk is never shown as the current chunk. With `restart`, resumes a paused or interrupted goal; when the running chunk's loop row is gone, it cancels that chunk, advances the goal from the last completed chunk, and names the abandoned branch.
 
 Arguments:
 
