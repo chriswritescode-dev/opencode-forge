@@ -268,7 +268,7 @@ export function createSessionDirectoryLookup(
 export function buildArchitectReminder(): string {
   return `<system-reminder>
 READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
-Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
+Before designing, settle the route with grouped \`question\` rounds after research until every route decision is settled. Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Once the plan is stored, do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
 </system-reminder>`
 }
 

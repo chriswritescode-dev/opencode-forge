@@ -292,9 +292,10 @@ A **goal** is an objective executed as a sequential series of ordinary plan loop
 The `/goal <objective>` command runs as the `architect` agent. It:
 
 1. Resolves the work strictly read-only with the tools already in the session (`gh issue list`/`gh issue view`, a tracker's MCP tools, or a plain task breakdown), never commenting on, assigning, labelling, transitioning, or closing a ticket.
-2. Orders the tasks dependencies-first, **one task per chunk** (two tickets merge into one task only when they cannot be implemented separately).
-3. Saves the draft with `goal-write` — title, objective, the ordered task list, and an optional `maxChunks`.
-4. Plans **chunk 1 only** with `plan-write`/`plan-edit`, naming the goal and the task ref in the Objective.
+2. Settles the route after researching the goal: the objective is the fixed outcome, so the rounds settle how to reach it. It calls `question` with one grouped set of questions that settles the route — one per decision group (placement and ownership, reuse versus extending versus new code, data and interface shape, edge-case and error policy, sequencing, verification strategy, plus any group research surfaced), each with 2–4 research-backed options and the recommended one first — and repeats a fresh grouped round after each answer set, re-researching newly opened paths, until every route decision is settled. These rounds also cover chunk 1.
+3. Orders the tasks dependencies-first, **one task per chunk** (two tickets merge into one task only when they cannot be implemented separately).
+4. Saves the draft with `goal-write` — title, objective (the objective verbatim followed by a `Route decisions:` list of every settled route decision), the ordered task list, and an optional `maxChunks`. Later `architect-auto` chunks treat those recorded route decisions as binding.
+5. Plans **chunk 1 only** with `plan-write`/`plan-edit`, naming the goal and the task ref in the Objective.
 
 Later chunks are never planned up front: each is planned against the code the previous chunks produced.
 

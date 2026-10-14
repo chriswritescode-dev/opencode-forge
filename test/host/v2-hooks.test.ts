@@ -659,6 +659,13 @@ describe('createForgeCore integration', () => {
     expect(built.architectReminderFor(undefined)).toBeNull()
   })
 
+  test('architect reminder narrows with grouped question rounds before storing', () => {
+    const reminder = buildArchitectReminder()
+
+    expect(reminder).toContain('grouped `question` rounds')
+    expect(reminder).toContain('Once the plan is stored, do not call the `question` tool')
+  })
+
   test('omits the architect reminder when the transform is disabled', async () => {
     const built = await buildCore({ messagesTransform: { enabled: false } })
 

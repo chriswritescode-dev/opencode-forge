@@ -9,10 +9,10 @@ See also: [Tools](tools.md), [Configuration](configuration.md), [Loop System](lo
 | Agent | Mode | Description |
 |---|---|---|
 | `code` | `all` | Primary implementation agent. |
-| `architect` | `primary` | Read-only planning agent. Authors and validates the stored plan with `plan-write`/`plan-edit` before approval. |
+| `architect` | `primary` | Read-only planning agent. Researches the goal, settles the implementation route with grouped `question` rounds, then authors and validates the stored plan with `plan-write`/`plan-edit` before approval. |
 | `auditor` | `subagent` | Read-only code review agent for convention-aware reviews. |
 | `auditor-loop` | `primary`, hidden | Internal auditor used by loop audit sessions. |
-| `architect-auto` | `primary`, hidden | Non-interactive planning agent that authors a stored plan from a single prompt, without `question` or execution tools. Used by the goal orchestrator to plan each subsequent goal chunk. |
+| `architect-auto` | `primary`, hidden | Non-interactive planning agent that authors a stored plan from a single prompt, without `question` or execution tools, following route decisions recorded in its brief. Used by the goal orchestrator to plan each subsequent goal chunk. |
 
 Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.ts`](../src/agents/architect.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts).
 

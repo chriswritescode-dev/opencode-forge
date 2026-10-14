@@ -8,7 +8,7 @@
 
 > **createParentSessionLookup**(`__namedParameters`): (`sessionId`) => `Promise`\<`string` \| `null`\>
 
-Defined in: [host/forge-core.ts:159](https://github.com/chriswritescode-dev/opencode-forge/blob/3e479a084889cc58e9e6abd7816c8684c69ac209/src/host/forge-core.ts#L159)
+Defined in: [host/forge-core.ts:159](https://github.com/chriswritescode-dev/opencode-forge/blob/922f6a3ab7ff6c2e56bbb878cd5cebb484b8629d/src/host/forge-core.ts#L159)
 
 ## Parameters
 
