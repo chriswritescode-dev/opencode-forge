@@ -97,6 +97,27 @@ describe('GitService', () => {
         if (existsSync(wtDir)) rmSync(wtDir, { recursive: true, force: true })
       }
     })
+
+    it('branches the worktree from the given start point', () => {
+      const rand = String(Math.random()).slice(2)
+      const wtDir = join(repo, '..', `wt-start-${rand}`)
+      try {
+        writeFileSync(join(repo, 'a.txt'), 'a', 'utf-8')
+        execSync('git add a.txt && git commit -m second', { cwd: repo, encoding: 'utf-8' })
+        const startPoint = execSync('git rev-parse HEAD~1', { cwd: repo, encoding: 'utf-8' }).trim()
+        const projectHead = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf-8' }).trim()
+        expect(startPoint).not.toBe(projectHead)
+
+        const addResult = git.worktreeAdd(repo, wtDir, 'forge/based', true, startPoint)
+        expect(addResult.ok).toBe(true)
+        expect(existsSync(wtDir)).toBe(true)
+
+        const wtHead = execSync('git rev-parse HEAD', { cwd: wtDir, encoding: 'utf-8' }).trim()
+        expect(wtHead).toBe(startPoint)
+      } finally {
+        if (existsSync(wtDir)) rmSync(wtDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('addAll / statusPorcelain / commit roundtrip', () => {
@@ -153,6 +174,43 @@ describe('GitService', () => {
     it('returns not-ok for a non-repo directory', () => {
       const result = git.revParseHead(nonRepo)
       expect(result.ok).toBe(false)
+    })
+  })
+
+  describe('revParse', () => {
+    it('resolves a ref to its commit sha', () => {
+      const head = git.revParseHead(repo).stdout.trim()
+      const result = git.revParse(repo, 'HEAD')
+      expect(result.ok).toBe(true)
+      expect(result.stdout.trim()).toBe(head)
+    })
+
+    it('returns not-ok for a ref that does not exist', () => {
+      const result = git.revParse(repo, 'refs/heads/nope')
+      expect(result.ok).toBe(false)
+    })
+  })
+
+  describe('worktreeAddDetached', () => {
+    it('creates a detached worktree checked out at the given commit', () => {
+      const rand = String(Math.random()).slice(2)
+      const wtDir = join(repo, '..', `wt-detached-${rand}`)
+      try {
+        writeFileSync(join(repo, 'detached.txt'), 'x', 'utf-8')
+        execSync('git add detached.txt && git commit -m detached-base', { cwd: repo, encoding: 'utf-8' })
+        const commit = git.revParseHead(repo).stdout.trim()
+
+        const result = git.worktreeAddDetached(repo, wtDir, commit)
+        expect(result.ok).toBe(true)
+        expect(existsSync(wtDir)).toBe(true)
+
+        const wtHead = execSync('git rev-parse HEAD', { cwd: wtDir, encoding: 'utf-8' }).trim()
+        expect(wtHead).toBe(commit)
+        const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: wtDir, encoding: 'utf-8' }).trim()
+        expect(branch).toBe('HEAD')
+      } finally {
+        if (existsSync(wtDir)) rmSync(wtDir, { recursive: true, force: true })
+      }
     })
   })
 })

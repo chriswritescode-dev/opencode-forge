@@ -168,8 +168,6 @@ describe('Loop', () => {
         current_section_index: 0,
         total_sections: 0,
         final_audit_done: 0,
-        loop_kind: 'plan',
-        executor_session_id: null as string | null,
       }
       const values = { ...defaults, ...overrides }
       db.run(
@@ -652,8 +650,6 @@ describe('Loop', () => {
         current_section_index: 1,
         total_sections: 4,
         final_audit_done: 0,
-        loop_kind: 'plan',
-        executor_session_id: null as string | null,
       }
       const values = { ...defaults, ...overrides }
       db.run(
@@ -739,27 +735,6 @@ describe('Loop', () => {
         { index: 2, title: 'New Phase 2', content: 'new c2' },
         { index: 3, title: 'New Phase 3', content: 'new c3' },
       ])
-    })
-
-    test('rejects goal loops', async () => {
-      insertLoop({ loop_kind: 'goal' })
-      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
-      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
-      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
-
-      const { service, planAmendmentsRepo } = buildService()
-
-      const result = await service.adjustRemainingSections('adj-loop', {
-        sections: [{ title: 'X', content: 'x' }],
-        rationale: 'should be rejected',
-        auditorSessionId: 'sess-adj',
-      })
-
-      expect(result.ok).toBe(false)
-      if (!result.ok) {
-        expect(result.error).toMatch(/goal/i)
-      }
-      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
     })
 
     test('rejects when totalSections === 0', async () => {
@@ -1277,9 +1252,8 @@ describe('Loop', () => {
         modelFailed: false, sandbox: false, sandboxContainer: null,
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
-        executorSessionId: null, currentSectionIndex: 1, totalSections: 2,
+        currentSectionIndex: 1, totalSections: 2,
         finalAuditDone: 0, executionVariant: null, auditorVariant: null,
-        kind: 'plan',
       } as any, { lastAuditResult: null, postActionReport: null })
 
       service.setCurrentSectionIndex('adj', 2)
@@ -1305,9 +1279,8 @@ describe('Loop', () => {
         modelFailed: false, sandbox: false, sandboxContainer: null,
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
-        executorSessionId: null, currentSectionIndex: 4, totalSections: 5,
+        currentSectionIndex: 4, totalSections: 5,
         finalAuditDone: 0, executionVariant: null, auditorVariant: null,
-        kind: 'plan',
       } as any, { lastAuditResult: null, postActionReport: null })
 
       service.setTotalSections('adj', 3)
@@ -1352,9 +1325,8 @@ describe('Loop', () => {
         modelFailed: false, sandbox: false, sandboxContainer: null,
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
-        executorSessionId: null, currentSectionIndex: 0, totalSections: 2,
+        currentSectionIndex: 0, totalSections: 2,
         finalAuditDone: 0, executionVariant: null, auditorVariant: null,
-        kind: 'plan',
       } as any, { lastAuditResult: null, postActionReport: null })
 
       dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj', 0, 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])
@@ -1421,9 +1393,8 @@ describe('Loop', () => {
         modelFailed: false, sandbox: false, sandboxContainer: null,
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
-        executorSessionId: null, currentSectionIndex: 0, totalSections: 3,
+        currentSectionIndex: 0, totalSections: 3,
         finalAuditDone: 0, executionVariant: null, auditorVariant: null,
-        kind: 'plan',
       } as any, { lastAuditResult: null, postActionReport: null })
 
       dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 0, 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])

@@ -41,13 +41,9 @@ describe('registerForgeAgentsV2', () => {
         'plan-write',
         'plan-edit',
         'execute-plan',
-        'execute-goal',
         'question',
         'loop-cancel',
         'loop-status',
-        'launch-group',
-        'group-status',
-        'group-cancel',
       ]),
     )
     expect(denies).not.toContain('write')

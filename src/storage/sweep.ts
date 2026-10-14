@@ -44,3 +44,48 @@ export function sweepExpiredLoops(db: Database, ttlMs: number): number {
 
   return run(cutoff)
 }
+
+/**
+ * Sweeps expired terminal goals and stale drafts from the database.
+ *
+ * Deletes rows from `goals` where:
+ * - status is 'completed' or 'cancelled' and completed_at + ttlMs < now()
+ * - status is 'draft' and updated_at + ttlMs < now()
+ *
+ * Running and paused goals are never deleted. `goal_chunks` rows are removed in
+ * the same transaction; when the connection has foreign keys ON the delete also
+ * cascades from `goals`.
+ *
+ * @param db - Database instance
+ * @param ttlMs - TTL in milliseconds for terminal goals and stale drafts
+ * @returns Number of rows deleted from the goals table
+ */
+export function sweepExpiredGoals(db: Database, ttlMs: number): number {
+  const cutoff = Date.now() - ttlMs
+  const foreignKeysOn =
+    (db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number } | null)?.foreign_keys === 1
+
+  const deleteChunks = db.prepare(`
+    DELETE FROM goal_chunks
+    WHERE (project_id, goal_id) IN (
+      SELECT project_id, goal_id FROM goals
+      WHERE (status IN ('completed', 'cancelled') AND completed_at IS NOT NULL AND completed_at < ?)
+         OR (status = 'draft' AND updated_at < ?)
+    )
+  `)
+
+  const deleteGoals = db.prepare(`
+    DELETE FROM goals
+    WHERE (status IN ('completed', 'cancelled') AND completed_at IS NOT NULL AND completed_at < ?)
+       OR (status = 'draft' AND updated_at < ?)
+  `)
+
+  const run = db.transaction((cutoffMs: unknown) => {
+    const cutoff = Number(cutoffMs)
+    if (!foreignKeysOn) deleteChunks.run(cutoff, cutoff)
+    const goalsResult = deleteGoals.run(cutoff, cutoff) as unknown as { changes: number }
+    return Number(goalsResult.changes)
+  }) as (cutoffMs: number) => number
+
+  return run(cutoff)
+}

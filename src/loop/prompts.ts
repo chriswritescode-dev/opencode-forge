@@ -206,94 +206,7 @@ export function buildAttemptHistoryBlock(ctx: PromptContext, state: LoopState, r
   return lines.join('\n')
 }
 
-/**
- * Goal-loop executor prompt used for both the initial/recovery coding pass and
- * continuation after an audit. Goal loops have no plan, sections, or
- * approval/planning flow — the agent implements and verifies the goal directly.
- * The exact goal text is always restated so every iteration remains anchored to
- * what was requested.
- */
-function buildGoalCodingPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
-  const goal = state.goal ?? '(goal text missing)'
-
-  let systemLine = `Goal loop iteration ${String(state.iteration)}`
-  if (state.maxIterations > 0) {
-    systemLine += ` / ${String(state.maxIterations)}`
-  } else {
-    systemLine += ` | No max iterations set - loop runs until auditor all-clear or cancelled`
-  }
-
-  let prompt = `[${systemLine}]\n\n## Goal\n${goal}`
-
-  prompt += '\n\n---\nInstructions:\n- Implement the goal above directly in this worktree. Do not create a plan, decompose the goal into sections, or ask for approval — just do the work.\n- Write or update tests for the changes and run the project\'s verification (lint/typecheck/tests) before finishing.\n- Keep changes scoped to what the goal requires; reuse existing helpers and patterns rather than introducing speculative abstractions.'
-
-  prompt += buildLoopNoticeBlock(notice)
-  prompt += buildAttemptHistoryBlock(ctx, state, 'coder')
-  prompt += buildOutstandingFindingsCoderBlock(ctx.getOutstandingFindings(state.loopName))
-  prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
-
-  return prompt + CODER_DECISIONS_INSTRUCTION
-}
-
-/**
- * Goal-loop audit prompt. The auditor must verify BOTH that the goal is fully
- * achieved AND that the code is correct/conventional. An unmet goal is reported
- * as a `severity: "bug"` finding on the stable `GOAL` pseudo-path (line 1) so it
- * blocks termination the same way code defects do. The loop runtime blocks
- * completion while ANY outstanding finding (bug or warning) remains, so the
- * auditor must delete resolved findings and may leave none outstanding to
- * authorize termination.
- */
-function buildGoalAuditPrompt(ctx: PromptContext, state: LoopState): string {
-  const goal = state.goal ?? '(goal text missing)'
-  const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
-  const coderDecisions = ctx.getCoderDecisions(state.loopName)
-
-  const parts: string[] = [
-    `Post-iteration ${String(state.iteration)} goal review${branchInfo}.`,
-    '',
-    'Goal:',
-    goal,
-    '',
-    'Use review-read to load the existing findings for this loop. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.',
-  ]
-
-  if (coderDecisions) {
-    parts.push('', '---', buildCoderDecisionsAuditorBlock(coderDecisions, false))
-  }
-
-  parts.push(buildAttemptHistoryBlock(ctx, state, 'auditor'))
-
-  parts.push(
-    '',
-    'Review the code changes in this worktree against the goal above. Verify BOTH:',
-    '1. Goal completion: every part of the goal is implemented and working.',
-    '2. Code correctness: bugs, logic errors, missing error handling, and convention violations.',
-    'If you find bugs in related code that affect the correctness of this task, report them — even if the buggy code was not directly modified.',
-    '',
-    'Goal completeness check:',
-    '- For every part of the goal, verify it is implemented and working.',
-    '- If any part is unimplemented, partially implemented, or not working, you MUST write a `severity: "bug"` finding describing exactly which part of the goal is missing and what is required. Use `file` = the relevant source file when possible, otherwise use the stable pseudo-path `GOAL` with `line` = 1.',
-    '- When a previously reported goal-incomplete finding is now resolved, delete it with review-delete.',
-    '',
-    'For each existing finding, verify whether it has been resolved. Delete resolved findings with review-delete and keep any unresolved finding that still applies.',
-    'Outstanding findings block loop termination — the loop cannot complete while any finding (bug or warning) remains. Zero remaining findings authorizes termination.',
-    '',
-    'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
-  )
-
-  const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
-  if (recurringBlock) {
-    parts.push('', recurringBlock)
-  }
-
-  return parts.join('\n')
-}
-
 export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
-  if (state.kind === 'goal') {
-    return buildGoalCodingPrompt(ctx, state, notice, outstandingBugs)
-  }
   if (state.totalSections > 0) {
     return buildSectionContinuationPrompt(ctx, state, notice, outstandingBugs)
   }
@@ -315,10 +228,19 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, no
   return prompt + CODER_DECISIONS_INSTRUCTION
 }
 
-export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
-  if (state.kind === 'goal') {
-    return buildGoalAuditPrompt(ctx, state)
+/**
+ * The audit review scope shared by every audit prompt: the loop's own commits
+ * since the exact base commit its worktree branched from, or the legacy
+ * merge-base wording for rows persisted before base commits were recorded.
+ */
+function auditChangeScope(state: Pick<LoopState, 'baseCommit'>): string {
+  if (state.baseCommit) {
+    return `every commit since base commit \`${state.baseCommit}\` (\`git diff ${state.baseCommit}\` covers committed, staged and unstaged tracked changes) plus untracked files`
   }
+  return "every `section <N>:` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes"
+}
+
+export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
   if (state.totalSections > 0) {
     if (state.phase === 'final_auditing') {
       return buildFinalAuditPrompt(ctx, state)
@@ -338,6 +260,10 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     '',
     'Use review-read to load the existing findings for this loop. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.',
   ]
+
+  if (state.baseCommit) {
+    parts.splice(1, 0, '', `Review scope: ${auditChangeScope(state)}.`)
+  }
 
   if (coderDecisions) {
     parts.push('', '---', buildCoderDecisionsAuditorBlock(coderDecisions, false))
@@ -488,7 +414,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, o
 
   header += buildOutstandingFindingsCoderBlock(outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug'))
 
-  header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final integration audit re-runs over the loop's full accumulated changes — every \`section <N>:\` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes — and the affected integration paths.`
+  header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final integration audit re-runs over the loop's full accumulated changes — ${auditChangeScope(state)} — and the affected integration paths.`
 
   header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
@@ -517,7 +443,7 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
   if (opts.skill) {
     parts.push(
       '',
-      `Load the \`${opts.skill}\` skill with the Skill tool and execute its workflow against this worktree's changes.`,
+      `Load the \`${opts.skill}\` skill with the Skill tool and execute its full workflow against this worktree's changes. No user is available: if the skill has an unattended or non-interactive mode, use it and follow it completely, including the fixes and validation it prescribes.`,
     )
   }
 
@@ -527,8 +453,8 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
 
   parts.push(
     '',
-    'This runs unattended — do NOT use the question tool. Auto-defer any finding that would require clarification',
-    'and report it; apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.',
+    'This runs unattended — do NOT use the question tool. Auto-defer any finding that would require clarification and report it.',
+    ...(opts.skill ? [] : ['Apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.']),
     '',
     POST_ACTION_COMPLETION_RULE,
   )
@@ -569,7 +495,7 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
   const verificationScope = effectiveSectionPlan
     ? 'Verify the master plan\'s objective and top-level Verification commands, then verify the requirements in the Effective section plan.'
     : 'Verify the master plan\'s objective and top-level Verification commands.'
-  header += `\n\n---\nFinal audit instructions:\n- Review scope: the loop's full accumulated changes — every \`section <N>:\` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes.\n- Delta-first ordering from the attempt history may prioritize what you verify first, but the full integration scope above stays mandatory — the delta never narrows this final gate.\n- ${verificationScope}\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Use review-read to load findings; {attempts: true, beforeId: <id>, limit: <n>} pages older attempt history.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
+  header += `\n\n---\nFinal audit instructions:\n- Review scope: the loop's full accumulated changes — ${auditChangeScope(state)}.\n- Delta-first ordering from the attempt history may prioritize what you verify first, but the full integration scope above stays mandatory — the delta never narrows this final gate.\n- ${verificationScope}\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Use review-read to load findings; {attempts: true, beforeId: <id>, limit: <n>} pages older attempt history.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {

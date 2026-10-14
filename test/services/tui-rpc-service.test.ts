@@ -46,7 +46,6 @@ function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
     finalAuditDone: 0,
     executionVariant: 'high',
     auditorVariant: 'low',
-    kind: 'plan',
     ...overrides,
   }
 }

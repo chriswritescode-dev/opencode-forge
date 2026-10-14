@@ -19,8 +19,6 @@ function baseCtx(overrides: Partial<ToolContext>): ToolContext {
     reviewFindingsRepo: {} as never,
     loopsRepo: {} as never,
     sectionPlansRepo: {} as never,
-    featureGroupsRepo: {} as never,
-    groupOrchestrator: {} as never,
     pendingTeardowns: {} as never,
     resolveActiveLoopForSession: async () => null,
     ...overrides,

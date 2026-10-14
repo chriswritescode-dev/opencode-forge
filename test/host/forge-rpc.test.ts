@@ -49,6 +49,8 @@ describe('FORGE_RPC', () => {
   test('readForgeExecutePlanOutput keeps a launch result and surfaces errors', () => {
     expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'loop-a', worktreeDir: '/wt' }))
       .toEqual({ sessionId: 'ses_1', loopName: 'loop-a', worktreeDir: '/wt' })
+    expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'chunk-1-loop', goalId: 'goal-1' }))
+      .toEqual({ sessionId: 'ses_1', loopName: 'chunk-1-loop', goalId: 'goal-1' })
     expect(readForgeExecutePlanOutput({ error: 'Loops are disabled' })).toEqual({ error: 'Loops are disabled' })
     expect(readForgeExecutePlanOutput({})).toEqual({ error: 'Forge returned no session for the plan execution' })
     expect(readForgeExecutePlanOutput(null)).toEqual({ error: 'Forge returned an invalid plan execution result' })

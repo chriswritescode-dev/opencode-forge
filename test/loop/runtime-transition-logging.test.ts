@@ -103,7 +103,6 @@ describe('Runtime transition logging', () => {
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
-      kind: 'plan',
       ...overrides,
     } as LoopState
   }

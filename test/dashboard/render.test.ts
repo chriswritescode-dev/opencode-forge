@@ -61,8 +61,6 @@ function mediaBlock(style: string, query: string): string {
  * only stylesheet, so a class it does not define ships as unstyled markup.
  */
 const UNSTYLED_BY_DESIGN = new Set([
-  'group-row-completed',
-  'group-row-created',
   'loop-picker-input',
   'lt-findings',
   'markdown-section',

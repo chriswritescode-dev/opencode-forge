@@ -8,6 +8,7 @@ The loop system provides autonomous iterative development with automatic code au
 
 - **Plugin boot does not mutate loop rows.** Initialization loads storage and runtime services only.
 - No loops are recovered, cancelled, restarted, or reconciled during plugin startup.
+- **Plugin boot does not mutate goals either.** A goal is advanced only by a loop's `settled` notification or an explicit `goal-status restart`; startup never resumes, re-plans, or reconciles one.
 - Loop recovery and restart are explicit user actions via `loop-status restart=true`.
 
 ### Restartability
@@ -56,13 +57,13 @@ stateDiagram-v2
 
 A loop has five persisted phases:
 
-1. **`coding`** — a code session works on the current section, plan, or goal.
+1. **`coding`** — a code session works on the current section or plan.
 2. **`auditing`** — the auditor reviews the change against conventions and stored findings.
 3. **`final_auditing`** — audits the whole accumulated diff (sectioned plan loops only).
 4. **`final_audit_fix`** — a coding pass that fixes final-audit findings without a section rewind.
-5. **`post_action`** — an optional best-effort action after a clean audit (plan loops only; never goal loops).
+5. **`post_action`** — an optional best-effort action after a clean audit.
 
-Each completed code or audit pass rotates to a fresh session, and audit findings feed back into the next coding iteration. Goal loops skip sections, the final audit, and the post-action phase.
+Each completed code or audit pass rotates to a fresh session, and audit findings feed back into the next coding iteration.
 
 ## Loop States
 
@@ -99,8 +100,6 @@ interface LoopState {
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
-  kind?: 'plan' | 'goal'             // Discriminator: plan loops persist a plan; goal loops persist goal text
-  goal?: string                      // Goal text for goal loops (undefined for plan loops)
 }
 ```
 
@@ -118,7 +117,7 @@ Each iteration runs in a **fresh session** to keep context small and prioritize 
 
 Rotated sessions are deleted from the OpenCode server right after their usage is captured, so a running loop has exactly one session: the current one. When a loop completes and its worktree is removed, its final session is deleted too, and the TUI removes any loop session whose worktree directory no longer exists. Loop sessions therefore drop out of OpenCode's session list once the loop moves on; loop history lives in `loop-status` and the [Dashboard](dashboard.md). A TUI can briefly keep showing deleted loop sessions from its local cache or tabs until it next refreshes the list from the server.
 
-Continuation prompts are built by `buildContinuationPrompt` in `src/loop/prompts.ts`, which routes by loop kind: goal loops build the goal coding prompt, sectioned loops build the section continuation prompt, and non-sectioned plan loops build the generic iteration prompt. Each variant composes the loop notice, the persisted attempt history, the outstanding review findings read from the review store (bug findings scoped to the current section for sectioned loops), and any recurring-findings block. Findings are inlined in full through the shared finding renderer; the auditor's response prose is never injected into a coder prompt.
+Continuation prompts are built by `buildContinuationPrompt` in `src/loop/prompts.ts`, which routes sectioned loops to the section continuation prompt and non-sectioned plan loops to the generic iteration prompt. Each variant composes the loop notice, the persisted attempt history, the outstanding review findings read from the review store (bug findings scoped to the current section for sectioned loops), and any recurring-findings block. Findings are inlined in full through the shared finding renderer; the auditor's response prose is never injected into a coder prompt.
 
 ## Usage Tracking
 
@@ -169,13 +168,15 @@ At the start of each audit:
 2. Resolved findings are deleted via `review-delete`
 3. Unresolved findings are carried forward
 
-Outstanding `severity: 'bug'` findings block completion of a sectioned plan loop; goal loops and non-sectioned plan loops require zero outstanding findings of any severity. The loop terminates only when the auditor has run at least once and no blocking findings remain.
+Outstanding `severity: 'bug'` findings block completion of a sectioned plan loop; non-sectioned plan loops require zero outstanding findings of any severity. The loop terminates only when the auditor has run at least once and no blocking findings remain.
 
 ## Worktree Isolation
 
 Loops always run in an isolated git worktree. Sandbox is optional and controlled by `sandbox.enabled` (default `true`) with driver `sandbox.mode = 'msb'`: when enabled, a sandbox is provisioned automatically. If the `msb` CLI is unavailable or the host cannot run microVMs, sandbox startup fails and the loop start is rolled back rather than silently falling back to the host; set `sandbox.enabled: false` to run worktree-only.
 
-Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
+Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, TUI loop launch, and the launch of a goal chunk before creating workspaces or sessions when this precondition is not met.
+
+Every loop records a **`base_commit`** — the worktree `HEAD` resolved right after the workspace is created — and preserves it across restart. It is the exact commit the worktree branched from, so an audit scopes to `git diff <base_commit>` (committed, staged, and unstaged tracked changes) plus untracked files instead of relying on a branch merge-base. The final audit, the final-audit fix prompt, and the non-sectioned audit prompt all use this scope, and the final-audit invocation's `Review scope:` line states the exact base commit. Rows persisted before base commits were recorded fall back to the legacy merge-base wording.
 
 > Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
 
@@ -222,7 +223,7 @@ Decomposition is a one-shot preprocessing step at loop start (`services/determin
 
 ### Plan Amendments
 
-After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`, which is destructive — an omitted milestone is deleted). The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. `plan-adjust` performs no semantic validation of the amended instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. Amendments are only accepted while the loop is in the `auditing` phase; `plan-adjust` remains rejected outside section auditing — including the final audit — so no final-audit amendment can append sections.
+After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`, which is destructive — an omitted milestone is deleted). The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. `plan-adjust` performs no semantic validation of the amended instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed, non-sectioned loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. Amendments are only accepted while the loop is in the `auditing` phase; `plan-adjust` remains rejected outside section auditing — including the final audit — so no final-audit amendment can append sections.
 
 ### Transition Log
 
@@ -236,7 +237,7 @@ A loop completes when the active phase emits a clean audit result (optionally fo
 - Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
 - Dirty section audits rotate back to coding for the same section so findings can be addressed.
 - Dirty final audits rotate to a coding session in the `final_audit_fix` phase (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
-- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Normal confirmed completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion; see [Behavior](#behavior) for the best-effort completion that follows exhausted or failed continuation attempts and the abort-with-reply exceptions. Goal loops never enter this phase.
+- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Normal confirmed completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion; see [Behavior](#behavior) for the best-effort completion that follows exhausted or failed continuation attempts and the abort-with-reply exceptions.
 
 ## Termination
 
@@ -248,7 +249,7 @@ In addition to a clean audit, the loop terminates when:
 
 ## Post-Completion Action Phase
 
-After a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops), before worktree teardown, the loop may run a **post-completion action** configured via `loop.postAction` in `forge-config.jsonc`. This phase is best-effort — it is not re-audited and relies only on safe, scoped fixes. The post-action runs as the `code` agent in a fresh session inside the worktree. Goal loops never run it.
+After a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops), before worktree teardown, the loop may run a **post-completion action** configured via `loop.postAction` in `forge-config.jsonc`. This phase is best-effort — it is not re-audited. When a skill is configured, that skill's unattended workflow governs its fixes and validation; without one, it relies only on safe, scoped fixes. The post-action runs as the `code` agent in a fresh session inside the worktree.
 
 ```jsonc
 {
@@ -269,18 +270,81 @@ After a clean audit (a clean final audit for sectioned loops, `audit-clear` for 
 | `loop.postAction.enabled` | `boolean` | `false` | Enable the post-completion action phase. |
 | `loop.postAction.skill` | `string` | — | Name of a skill to load via the Skill tool at action time (e.g. `"pr-review"`). Must be installed host-side. |
 | `loop.postAction.prompt` | `string` | — | Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. |
-| `loop.postAction.model` | `string` | — | Optional `provider/model` for the post-action session. Falls back to the loop's auditor model when unset or when the configured model fails. |
+| `loop.postAction.model` | `string` | — | Optional `provider/model` for the post-action session, sent without a variant. Falls back to the loop's auditor model — with the auditor's variant — when unset or when the configured model fails. |
 
 ### Behavior
 
-- Runs only after a clean audit completes (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops); goal loops never run it.
+- Runs only after a clean audit completes (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops).
 - Runs **inside the worktree** as the `code` agent, with access to the full worktree state (including uncommitted changes).
-- **Best-effort:** The post-action result is not re-audited; it applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
+- **Best-effort:** The post-action result is not re-audited. When a skill is configured, that skill's unattended workflow governs the fixes and validation; without one, the phase applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
 - **Completion confirmation:** The prompt requires the agent to finish every step (subagents, merges, saved records) before ending its turn, and to end its final reply with the line `<!-- forge:post-action-complete -->` (`POST_ACTION_COMPLETE_MARKER` in `src/loop/prompts.ts`). When the session goes idle, Forge first waits until every loop session, subagents included, is idle and no prompt is queued in the session inbox; the wait is bounded by `busyStallTimeoutMs`, after which the loop terminates with an error because the worktree cannot be torn down safely. It then checks the final reply for the marker. Without it, Forge sends a continue prompt asking the agent to finish, up to 3 times; after the third, or if the continue prompt fails to send, the loop completes best-effort.
 - On a confirmed (or best-effort) `post-action-complete`, the loop terminates normally.
 - If the post-action session is aborted after it has replied, the reply is processed as-is: the settle wait and marker check are skipped.
 - If the post-action session fails to create, the loop terminates as completed without retrying.
 - **Outcome capture:** On `post-action-complete`, the post-action session's full assistant transcript (including any continue-prompt turns) is stored in the loop's `postActionReport`, and its final assistant message, with the completion marker removed, is stored in `completion_summary`. `loop-status` and the dashboard prefer the full **Post-Action Report** and fall back to **Completion Summary** when no report was captured. The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the audit; the report only provides context (alternate-review verdict, CI result, etc.). Completion summary and report are captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave them empty.
+
+## Goals
+
+A **goal** is an objective executed as a sequential series of ordinary plan loops called **chunks**. The orchestrator runs one chunk at a time, each stacked on the previous chunk's branch, until every task is done, the planner declares the goal complete, or the goal is paused.
+
+### Defining a goal
+
+The `/goal <objective>` command runs as the `architect` agent. It:
+
+1. Resolves the work strictly read-only with the tools already in the session (`gh issue list`/`gh issue view`, a tracker's MCP tools, or a plain task breakdown), never commenting on, assigning, labelling, transitioning, or closing a ticket.
+2. Orders the tasks dependencies-first, **one task per chunk** (two tickets merge into one task only when they cannot be implemented separately).
+3. Saves the draft with `goal-write` — title, objective, the ordered task list, and an optional `maxChunks`.
+4. Plans **chunk 1 only** with `plan-write`/`plan-edit`, naming the goal and the task ref in the Objective.
+
+Later chunks are never planned up front: each is planned against the code the previous chunks produced.
+
+### Launching chunk 1
+
+Launching that plan as a loop from the drafting session — through **any** surface: the TUI execution dialog, the plan-approval `Loop` path (which instructs the architect to call `execute-plan`), or the `execute-plan` tool directly — attaches it as **chunk 1**. The draft is promoted to `running`, the chunk records the loop name, branch, and base commit, and the goal snapshots the launch settings from that first chunk: execution/auditor model and variant, sandbox settings, `maxIterations`, and the project directory. Every later chunk reuses that snapshot.
+
+### Chunk lifecycle
+
+Each chunk is a normal plan loop: sections, final audit, and the configured `loop.postAction` all run as usual, and teardown is unchanged — commit, sandbox stop, worktree removed on completion, and the `forge/<loop>` branch kept. There is no goal-specific post-action and no goal-specific audit.
+
+### Advancement on `settled`
+
+Goal advancement is driven **only** by the loop-change `settled` notification, which fires once a loop's termination side effects — the teardown commit, sandbox stop, and worktree cleanup — have finished. The earlier `terminate` notification (fired when the terminal status is persisted, before teardown) never advances a goal, so a chunk's work is always committed before the next chunk is based on it.
+
+On `settled` for a **completed** chunk loop:
+
+1. The chunk is marked `completed` with a capped summary — the loop's `completionSummary`, else its `postActionReport`, truncated to `GOAL_CHUNK_SUMMARY_MAX_CHARS`.
+2. A detached, read-only planning checkout of the previous chunk branch tip is created at `<dataDir>/worktrees/.goal-plan-<goalId>-<chunkIndex>`.
+3. `architect-auto` plans the next task there with the goal's **auditor** model and variant; the planner prompt carries the objective, the ordered task list, and the completed-chunk summaries. The planner either:
+   - **writes a plan** — the chunk loop launches with `baseRef` set to that exact commit and the snapshotted settings, so each chunk gets its own branch stacked on the previous chunk's commit;
+   - **emits `<!-- forge-goal:complete -->`** (`GOAL_COMPLETE_MARKER`) — the goal is marked `completed`;
+   - **fails** — the goal is **paused** with the reason.
+
+Why a plain detached checkout instead of a Forge workspace: a Forge workspace with no matching loop row is reclaimed by the stale-workspace sweep after a 5-minute grace window, so a planning workspace would be removed out from under the planner.
+
+Planner failures pause the goal. A normalized `session.error` for a chunk planner session — a provider failure or an interrupted/aborted execution — abandons the chunk and pauses the goal with `Planner failed for chunk <n>: <reason>`. A premature idle that yields neither assistant text nor a stored plan leaves the chunk planning rather than failing it.
+
+### Pause, resume, restart, and cancel
+
+- A chunk loop that ends **not completed** (cancelled, errored, stalled, or with a missing worktree) pauses the goal. Restarting that loop with `loop-status restart=true` and completing it resumes the goal automatically.
+- Reaching `maxChunks` (default `20`, hard max `100`) pauses the goal; raise the cap with `goal-status restart` and `maxChunks`.
+- **No automatic retries.** Every failure pauses the goal and waits for an explicit action; plugin boot never mutates a goal.
+- If the running chunk's loop row is gone (swept or deleted), `goal-status restart <goalId>` cancels that chunk, advances the goal from the last completed chunk, and names the abandoned branch in its message.
+- Recovery is `goal-status restart <goalId>`: it re-plans an interrupted planning chunk, catches a missed settle (a completed chunk loop that never advanced the goal), and — with `force` — discards planning still marked in flight. `maxChunks` raises the cap.
+- `goal-status` list and detail show the current chunk's loop status whenever that loop is resolvable and not running, with the restart hint; a cancelled chunk is never shown as the current chunk.
+- `goal-cancel <goalId>` cancels the goal, cleaning up any planning chunks and optionally cancelling the running chunk loop.
+
+### `execute-plan` loop vs `/goal`
+
+| Aspect | `execute-plan` loop | `/goal` |
+|---|---|---|
+| Input | One stored plan | An objective plus an ordered task list |
+| Unit of work | One loop, decomposed into sections | A sequence of chunk loops, one per task |
+| Who plans the next unit | The plan's sections (deterministic decomposer at loop start) | `architect-auto` after each chunk settles |
+| Branching | One worktree and branch | One worktree and branch per chunk, stacked on the previous chunk's commit |
+| Advancement trigger | Section transitions inside the loop | The `settled` notification after each chunk's teardown |
+| Slash command | `/execute-plan` | `/goal` |
+
+> **Upgrading:** migration 150 deletes every old goal-kind loop row — including running or restartable ones — together with its per-loop data, and migration 151 drops the feature-group tables (`feature_groups`, `group_features`). The orphaned worktrees are later removed by the stale-workspace sweep **without a commit**, so uncommitted work in such loops is lost. Finish or cancel any goal loops before upgrading to this version.
 
 ## Cancellation
 
@@ -303,43 +367,6 @@ Cancellation:
 | Audit retry limit | Loop terminates with `terminationReason: 'audit_retry_exhausted'` |
 | Final audit retry limit | Loop terminates with `terminationReason: 'final_audit_retry_exhausted'` |
 | Stall timeout | Loop terminates with `terminationReason: 'stall_timeout'` after the configured consecutive stall limit |
-
-## Goal Loops
-
-A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. It is started by the `/execute-goal <prompt>` slash command (or the `execute-goal` tool) with free-text goal text.
-
-### Lifecycle differences from plan loops
-
-- **No plan, no decomposition, no approval.** The goal text is persisted in `loop_large_fields.goal` (never in the `plans` table) and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase.
-- **Dedicated rotating sessions.** Forge creates a code session in the isolated worktree, sends the goal as its initial prompt, and leaves the invoking session unchanged as the post-completion host redirect target. As with plan loops, each completed code or audit pass is retired before the next session takes over.
-- **Idle-driven audits.** When the executor goes idle, the loop runner starts a fresh `auditor-loop` session against the worktree (same as plan loops). The auditor verifies both goal completion and code correctness, and may block termination with `severity: "bug"` findings (using the stable pseudo-path `GOAL` with `line: 1` when no source location applies for an unmet part of the goal).
-- **Dirty audits create a fresh code session.** When findings remain, Forge creates and selects a new code session in the worktree and sends a continuation prompt containing the goal and outstanding findings. That session goes idle to trigger the next audit.
-- **Clean audits terminate immediately.** When a completed auditor pass leaves zero outstanding review findings (any severity), the loop terminates with `completed` — no final audit, no post-completion action.
-
-### Completion rule
-
-A goal loop completes only after the auditor has run at least once and leaves no open review findings. The configured `loop.postAction` is never invoked for goal loops.
-
-### Iteration cap
-
-`maxIterations` bounds the number of coding iterations (`0` = unlimited, the default unless overridden by the command or `loop.defaultMaxIterations`). When the cap is reached with findings still open, the loop terminates with `max_iterations`.
-
-### Visibility, cancellation, and recursion
-
-Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, and restartable with `loop-status ... restart=true`. Restart preserves the goal kind and goal text, skips plan decomposition, and resumes from a fresh session.
-
-`execute-goal` is added to the same loop/audit denial lists as `execute-plan`, `launch-group`, and the group tools, so an active executor or auditor session cannot recursively start another goal loop. Auditors exclude `execute-goal` from their tools.
-
-### Differences from `execute-plan` and `launch-group`
-
-| Aspect | `execute-plan` (loop) | `execute-goal` | `launch-group` |
-|---|---|---|---|
-| Input | Structured plan (persisted in `plans`) | Free-text goal | PRD / pre-split feature list |
-| Sections / milestones | Yes (decomposed) | No | Per feature (each feature is its own loop) |
-| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh session per feature loop |
-| Final audit | Yes (after all sections) | No | Per feature loop |
-| Post-completion action | Yes (when configured) | Never | Per feature loop |
-| Slash command | `/execute-plan` | `/execute-goal` | `/launch-group` |
 
 ## Model Configuration
 
@@ -367,12 +394,12 @@ Variants use override → matching config value → last-used loop value. The au
 
 - **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel.
 - **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel.
-- **Cleanup**: terminal loops and their loop-scoped plans are swept automatically once `completedLoopTtlMs` passes after completion. Session-scoped plans have no TTL and are removed by `bun scripts/cleanup-plans.ts [--older-than=30d] [--project=<id>] [--dry-run]` (bulk purge) or from the dashboard's Plans section on a loopback bind; `bun scripts/cleanup-loop.ts <loopName>` wipes one loop's row, its plans, worktree, branch, and sandbox. These scripts are source-checkout only, like `pnpm dashboard`.
+- **Loop names**: a new loop start reserves a unique name (`src/loop/name-uniqueness.ts`) that no goal chunk references (`goal_chunks.loop_name`) and that has no live `forge/<name>` branch, taking a `-N` suffix; a restart reuses its own name and branch.
+- **Cleanup**: terminal loops and their loop-scoped plans are swept automatically once `completedLoopTtlMs` passes after completion. Completed and cancelled goals and their chunks are swept after the same TTL, as are draft goals not updated within it; running and paused goals are never swept. Session-scoped plans have no TTL and are removed by `bun scripts/cleanup-plans.ts [--older-than=30d] [--project=<id>] [--dry-run]` (bulk purge) or from the dashboard's Plans section on a loopback bind; `bun scripts/cleanup-loop.ts <loopName>` wipes one loop's row, its plans, worktree, branch, and sandbox. These scripts are source-checkout only, like `pnpm dashboard`.
 
 ## Tool Restrictions
 
 Inside active loop sessions:
 - `git push` is not denied by default; add a scoped `loop.permissions.deny` entry such as `{ "permission": "bash", "pattern": "git push *" }` to deny it
 - `execute-plan` is blocked (tool hooks)
-- `execute-goal` is blocked (tool hooks)
 - `question` is blocked (tool hooks)

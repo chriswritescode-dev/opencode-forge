@@ -3,6 +3,7 @@ import { existsSync, readFileSync, appendFileSync } from 'fs'
 import type { Logger, LoopSandboxSettings } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { LOOP_SANDBOX_EXTRA_KEY, readLoopSandboxSettings } from '../sandbox/loop-settings'
+import { getForgeWorkspaceBaseRef } from './forge-worktree'
 import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
@@ -219,46 +220,72 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
 
       // Detect orphan state from a prior failed run: branch may exist without a live worktree.
       const branchExists = git.branchExists(projectDir, info.branch)
+      const baseRef = getForgeWorkspaceBaseRef(info)
 
       // Prune dead worktree records first so `git worktree add` can re-use an orphaned branch.
       git.worktreePrune(projectDir)
 
-      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
-      let reusedOrphan = false
-      if (!res.ok) {
-        const stderr = res.stderr.trim() || 'unknown error'
-        const isAlreadyExists = /already exists/i.test(stderr) || /is already (checked out|registered)/i.test(stderr)
-        if (isAlreadyExists && existsSync(info.directory)) {
-          const existingBranch = git.currentBranch(info.directory)
-          if (existingBranch === info.branch) {
-            logger.log(`forge-adapter: reusing existing worktree ${info.directory} on branch ${info.branch}`)
-            reusedOrphan = true
-          } else {
-            logger.log(`forge-adapter: worktree directory ${info.directory} already exists; cleaning up orphan and retrying`)
+      if (baseRef) {
+        if (branchExists) {
+          throw new Error(`forge workspace adapter: branch ${info.branch} already exists; refusing to reuse it for a loop based on ${baseRef}`)
+        }
+        const res = git.worktreeAdd(projectDir, info.directory, info.branch, true, baseRef)
+        if (!res.ok) {
+          const stderr = res.stderr.trim() || 'unknown error'
+          logger.error(`forge-adapter: git worktree add failed: ${stderr}`)
+          if (existsSync(info.directory)) {
             const cleanup = await cleanupLoopWorktree({
               worktreeDir: info.directory,
-              logPrefix: 'forge-adapter:create:orphan-cleanup',
+              logPrefix: 'forge-adapter:create:based-cleanup',
               logger,
               git,
             })
             if (!cleanup.removed) {
-              logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
-              throw new Error(`git worktree add failed: ${stderr}`)
+              logger.error(`forge-adapter: cleanup after failed based create failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
             }
-            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
-            if (!res.ok) {
-              const retryStderr = res.stderr.trim() || 'unknown error'
-              logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
-              throw new Error(`git worktree add failed: ${retryStderr}`)
-            }
-            reusedOrphan = true
           }
-        } else {
-          logger.error(`forge-adapter: git worktree add failed: ${stderr}`)
+          git.worktreePrune(projectDir)
           throw new Error(`git worktree add failed: ${stderr}`)
         }
+        logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch} (based on ${baseRef})`)
+      } else {
+        let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
+        let reusedOrphan = false
+        if (!res.ok) {
+          const stderr = res.stderr.trim() || 'unknown error'
+          const isAlreadyExists = /already exists/i.test(stderr) || /is already (checked out|registered)/i.test(stderr)
+          if (isAlreadyExists && existsSync(info.directory)) {
+            const existingBranch = git.currentBranch(info.directory)
+            if (existingBranch === info.branch) {
+              logger.log(`forge-adapter: reusing existing worktree ${info.directory} on branch ${info.branch}`)
+              reusedOrphan = true
+            } else {
+              logger.log(`forge-adapter: worktree directory ${info.directory} already exists; cleaning up orphan and retrying`)
+              const cleanup = await cleanupLoopWorktree({
+                worktreeDir: info.directory,
+                logPrefix: 'forge-adapter:create:orphan-cleanup',
+                logger,
+                git,
+              })
+              if (!cleanup.removed) {
+                logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
+                throw new Error(`git worktree add failed: ${stderr}`)
+              }
+              res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
+              if (!res.ok) {
+                const retryStderr = res.stderr.trim() || 'unknown error'
+                logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
+                throw new Error(`git worktree add failed: ${retryStderr}`)
+              }
+              reusedOrphan = true
+            }
+          } else {
+            logger.error(`forge-adapter: git worktree add failed: ${stderr}`)
+            throw new Error(`git worktree add failed: ${stderr}`)
+          }
+        }
+        logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)
       }
-      logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)
 
       // Idempotently add .forge/ (overflow/scratch) and any forge-written
       // opencode config to git exclude so they never enter loop commits.

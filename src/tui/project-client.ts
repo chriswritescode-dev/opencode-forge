@@ -55,7 +55,7 @@ export interface ForgeProjectClient {
     execute(
       sessionId: string,
       req: ExecutePlanRequest,
-    ): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | { error: string } | null>
+    ): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string; goalId?: string } | { error: string } | null>
   }
 
   /** Navigate the TUI to a session. */

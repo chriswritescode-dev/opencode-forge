@@ -24,7 +24,6 @@ import {
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
-import { generateUniqueName } from './name-uniqueness'
 import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
@@ -38,8 +37,13 @@ function isBlank(value: string): boolean {
   return value.trim().length === 0
 }
 
+/**
+ * Reasons a loop row changed. `terminate` fires when the terminal status is
+ * persisted; `settled` fires once afterwards, once termination side effects
+ * (teardown commit, sandbox stop, worktree cleanup) have finished.
+ */
 export type LoopChangeReason =
-  | 'insert' | 'delete' | 'terminate'
+  | 'insert' | 'delete' | 'terminate' | 'settled'
   | 'rotate' | 'phase' | 'iteration'
   | 'status' | 'session'
   | 'sandbox' | 'workspace' | 'audit-result' | 'post-action-report'
@@ -80,7 +84,6 @@ export interface LoopService {
   getAttemptHistory(name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[]
   bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void
   resetSectionRecurrence(name: string, sectionIndex: number): void
-  generateUniqueLoopName(baseName: string): string
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
   resetError(name: string): void
@@ -99,7 +102,7 @@ export interface LoopService {
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
-  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void
+  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getSectionPlans(state: LoopState): SectionPlanRow[]
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
@@ -200,8 +203,6 @@ export function createLoopService(
     const large: LoopLargeFields = {
       lastAuditResult: state.lastAuditResult ?? null,
       postActionReport: state.postActionReport ?? null,
-      // Goal loops persist their goal solely in loop_large_fields, never in plans.
-      goal: row.kind === 'goal' ? (state.goal ?? null) : null,
     }
     if (mode === 'insert') {
       const ok = loopsRepo.insert(row, large)
@@ -211,7 +212,7 @@ export function createLoopService(
     } else {
       loopsRepo.restore(row, large)
     }
-    if (row.kind !== 'goal' && state.prompt) {
+    if (state.prompt) {
       plansRepo.writeForLoop(projectId, name, state.prompt)
     }
     notifyLoopChange(mode === 'insert' ? 'insert' : 'rotate', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
@@ -279,7 +280,7 @@ export function createLoopService(
     return null
   }
 
-  function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void {
+  function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
     const state = getAnyState(name)
     const replace = () => loopsRepo.replaceSession(projectId, name, {
       sessionId: opts.newSessionId,
@@ -288,7 +289,6 @@ export function createLoopService(
       resetError: opts.resetError,
       auditCount: opts.auditCount,
       lastAuditResult: opts.lastAuditResult,
-      executorSessionId: opts.executorSessionId,
     })
     if (state && loopAttemptsRepo && (opts.phase === 'auditing' || opts.phase === 'final_auditing')) {
       loopAttemptsRepo.bindAudit(projectId, name, auditScope({ ...state, phase: opts.phase }), state.sessionId, opts.newSessionId, replace)
@@ -415,14 +415,6 @@ export function createLoopService(
     return getOutstandingFindings(loopName, severity).length > 0
   }
 
-  function generateUniqueLoopName(baseName: string): string {
-    const existing = listRecent()
-    const active = listActive()
-    const allNames = [...existing, ...active].map((s) => s.loopName)
-    
-    return generateUniqueName(baseName, allNames)
-  }
-
   function setCoderDecisions(name: string, decisions: string | null): void {
     if (!decisions) {
       coderDecisionsByLoop.delete(name)
@@ -436,7 +428,7 @@ export function createLoopService(
   }
 
   function attemptPlanHash(state: LoopState): string {
-    const plan = state.kind === 'goal' ? state.goal : getPlanTextForState(state)
+    const plan = getPlanTextForState(state)
     const sections = getSectionPlans(state).map(s => [s.sectionIndex, s.content])
     return createHash('sha256').update(JSON.stringify([auditScope(state), plan, sections])).digest('hex')
   }
@@ -887,9 +879,6 @@ export function createLoopService(
           if (row.status !== 'running') {
             return { ok: false as const, error: `loop ${name} is not active` }
           }
-          if (row.kind === 'goal') {
-            return { ok: false as const, error: 'goal loops do not support section amendment' }
-          }
           if (row.totalSections === 0) {
             return { ok: false as const, error: 'loop has no sectioned plan' }
           }
@@ -1037,7 +1026,6 @@ export function createLoopService(
     getAttemptHistory,
     bumpFindingRecurrence,
     resetSectionRecurrence,
-    generateUniqueLoopName,
     getPlanText,
     incrementError,
     resetError,

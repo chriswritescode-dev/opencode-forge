@@ -1,3 +1,3 @@
-import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardGroup, DashboardUnexecutedPlan, LoopRow, LoopTransitionRow } from '../data'
+import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardGoal, DashboardUnexecutedPlan, LoopRow, LoopTransitionRow } from '../data'
 
-export type { DashboardPayload, DashboardProject, DashboardLoop, DashboardGroup, DashboardUnexecutedPlan, LoopRow, LoopTransitionRow }
+export type { DashboardPayload, DashboardProject, DashboardLoop, DashboardGoal, DashboardUnexecutedPlan, LoopRow, LoopTransitionRow }

@@ -5,6 +5,7 @@ import {
   fmtTime,
   statusClass,
   sectionStatusClass,
+  chunkStageClass,
   loopMatchesFilters,
   sortLoops,
   dataHash,
@@ -74,7 +75,6 @@ function mockLoopRow(overrides: Partial<DashboardLoop['loop']> = {}): DashboardL
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
-    kind: 'plan',
     ...overrides,
   }
 }
@@ -161,7 +161,7 @@ describe('parseDashboardHash / buildDashboardHash', () => {
       section: 'loops',
       loopName: null,
       tab: 'overview',
-      groupId: null,
+      goalId: null,
       statuses: [],
       query: '',
     })
@@ -173,19 +173,6 @@ describe('parseDashboardHash / buildDashboardHash', () => {
     expect(r.section).toBe('loops')
     expect(r.loopName).toBeNull()
     expect(r.tab).toBe('overview')
-  })
-
-  test('groups section keyword sets section groups', () => {
-    const r = parseDashboardHash('#p1/groups')
-    expect(r.projectId).toBe('p1')
-    expect(r.section).toBe('groups')
-    expect(r.groupId).toBeNull()
-  })
-
-  test('group detail sets groupId', () => {
-    const r = parseDashboardHash('#p1/groups/g-abc')
-    expect(r.section).toBe('groups')
-    expect(r.groupId).toBe('g-abc')
   })
 
   test('canonical loop route sets loopName with default overview tab', () => {
@@ -221,6 +208,18 @@ describe('parseDashboardHash / buildDashboardHash', () => {
     expect(r.loopName).toBeNull()
   })
 
+  test('goals section keyword sets section goals', () => {
+    const r = parseDashboardHash('#p1/goals')
+    expect(r.section).toBe('goals')
+    expect(r.goalId).toBeNull()
+  })
+
+  test('goal detail sets goalId', () => {
+    const r = parseDashboardHash('#p1/goals/g-abc')
+    expect(r.section).toBe('goals')
+    expect(r.goalId).toBe('g-abc')
+  })
+
   test('filters parse status and query', () => {
     const r = parseDashboardHash('#p1?status=running,errored&q=post')
     expect(r.statuses).toEqual(['running', 'errored'])
@@ -250,11 +249,36 @@ describe('parseDashboardHash / buildDashboardHash', () => {
         section: 'loops',
         loopName: null,
         tab: 'overview',
-        groupId: null,
+        goalId: null,
         statuses: [],
         query: '',
       }),
     ).toBe('#p1')
+  })
+
+  test('buildDashboardHash emits the goals section and detail routes', () => {
+    expect(
+      buildDashboardHash({
+        projectId: 'p1',
+        section: 'goals',
+        loopName: null,
+        tab: 'overview',
+        goalId: null,
+        statuses: [],
+        query: '',
+      }),
+    ).toBe('#p1/goals')
+    expect(
+      buildDashboardHash({
+        projectId: 'p1',
+        section: 'goals',
+        loopName: null,
+        tab: 'overview',
+        goalId: 'goal a/b',
+        statuses: [],
+        query: '',
+      }),
+    ).toBe('#p1/goals/goal%20a%2Fb')
   })
 
   test('round-trip property for canonical hashes', () => {
@@ -263,10 +287,10 @@ describe('parseDashboardHash / buildDashboardHash', () => {
     // 13, so they are excluded from the literal round-trip set below.
     const hashes = [
       '#p1',
-      '#p1/groups',
-      '#p1/groups/g-abc',
       '#p1/loop/my-loop',
       '#p1/loop/my-loop/timeline',
+      '#p1/goals',
+      '#p1/goals/g-abc',
       '#p1?status=running,errored&q=post',
       '#p1/loop/x/usage?status=running',
       '#' + encodeURIComponent('proj x/y') + '/loop/' + encodeURIComponent('loop a/b'),
@@ -299,10 +323,16 @@ describe('parseDashboardHash / buildDashboardHash', () => {
       section: 'loops',
       loopName: null,
       tab: 'overview',
-      groupId: null,
+      goalId: null,
       statuses: [],
       query: '',
     })
+  })
+
+  test('malformed percent escape in goals segment does not throw', () => {
+    const r = parseDashboardHash('#p1/goals/%GG')
+    expect(r.section).toBe('goals')
+    expect(r.goalId).toBe('%GG')
   })
 
   test('malformed percent escape in loop segment does not throw', () => {
@@ -310,12 +340,6 @@ describe('parseDashboardHash / buildDashboardHash', () => {
     expect(r.projectId).toBe('p1')
     expect(r.loopName).toBe('%')
     expect(r.tab).toBe('overview')
-  })
-
-  test('malformed percent escape in groups segment does not throw', () => {
-    const r = parseDashboardHash('#p1/groups/%GG')
-    expect(r.section).toBe('groups')
-    expect(r.groupId).toBe('%GG')
   })
 
   test('malformed percent escape in query value does not throw', () => {
@@ -412,7 +436,7 @@ describe('tabsForLoop', () => {
     expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'timeline', 'sections', 'findings', 'plan', 'usage'])
   })
 
-  test('goal loop with zero sections omits the sections tab', () => {
+  test('loop with zero sections omits the sections tab', () => {
     const loop = mockDashLoop({ hasPlan: false, sectionCount: 0 })
     expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'timeline', 'findings', 'usage'])
   })
@@ -508,7 +532,6 @@ describe('sortLoops', () => {
       loop: mockLoopRow(),
       lastAuditResult: null,
       postActionReport: null,
-      goal: null,
       plan: null,
       hasPlan: false,
       sections: [],
@@ -685,6 +708,8 @@ describe('statusClass', () => {
     expect(statusClass('running')).toBe('status-badge status-running')
     expect(statusClass('completed')).toBe('status-badge status-completed')
     expect(statusClass('errored')).toBe('status-badge status-errored')
+    expect(statusClass('draft')).toBe('status-badge status-draft')
+    expect(statusClass('paused')).toBe('status-badge status-paused')
   })
 })
 
@@ -694,6 +719,16 @@ describe('sectionStatusClass', () => {
     expect(sectionStatusClass('in_progress')).toBe('section-status section-in_progress')
     expect(sectionStatusClass('completed')).toBe('section-status section-completed')
     expect(sectionStatusClass('failed')).toBe('section-status section-failed')
+  })
+})
+
+describe('chunkStageClass', () => {
+  test('returns chunk-stage-badge chunk-stage-<stage> for chunk stages', () => {
+    expect(chunkStageClass('planning')).toBe('chunk-stage-badge chunk-stage-planning')
+    expect(chunkStageClass('launching')).toBe('chunk-stage-badge chunk-stage-launching')
+    expect(chunkStageClass('running')).toBe('chunk-stage-badge chunk-stage-running')
+    expect(chunkStageClass('completed')).toBe('chunk-stage-badge chunk-stage-completed')
+    expect(chunkStageClass('cancelled')).toBe('chunk-stage-badge chunk-stage-cancelled')
   })
 })
 

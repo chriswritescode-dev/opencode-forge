@@ -5,6 +5,7 @@ import {
   inspectArchitectPlanReadiness,
 } from '../../src/utils/architect-auto-output'
 import { PLAN_START_MARKER, PLAN_END_MARKER } from '../../src/utils/marked-plan-parser'
+import { GOAL_COMPLETE_MARKER } from '../../src/constants/goal'
 
 describe('classifyArchitectOutput', () => {
   it('returns kind plan for a valid marked plan', () => {
@@ -53,6 +54,44 @@ describe('classifyArchitectOutput', () => {
   it('returns kind none when no markers are present', () => {
     const result = classifyArchitectOutput('just some random text')
     expect(result).toEqual({ kind: 'none' })
+  })
+
+  it('returns kind goal-complete with the reason from the marker line remainder', () => {
+    const text = `${GOAL_COMPLETE_MARKER} everything shipped`
+
+    const result = classifyArchitectOutput(text)
+    expect(result).toEqual({ kind: 'goal-complete', reason: 'everything shipped' })
+  })
+
+  it('returns kind goal-complete with a default reason when the marker has no remainder', () => {
+    const result = classifyArchitectOutput(`\n  ${GOAL_COMPLETE_MARKER}  \n`)
+    expect(result).toEqual({ kind: 'goal-complete', reason: 'Goal complete.' })
+  })
+
+  it('detects a goal-complete marker mentioned mid-line per findMarkerLine semantics', () => {
+    const text = `see ${GOAL_COMPLETE_MARKER} all done`
+
+    const result = classifyArchitectOutput(text)
+    expect(result).toEqual({ kind: 'goal-complete', reason: 'all done' })
+  })
+
+  it('prefers a valid marked plan over the goal-complete marker', () => {
+    const text = [
+      PLAN_START_MARKER,
+      'the plan content',
+      PLAN_END_MARKER,
+      `${GOAL_COMPLETE_MARKER} done`,
+    ].join('\n')
+
+    const result = classifyArchitectOutput(text)
+    expect(result).toEqual({ kind: 'plan', planText: 'the plan content' })
+  })
+
+  it('prefers the goal-complete marker over the none marker', () => {
+    const text = [`${GOAL_COMPLETE_MARKER} done`, PLAN_NONE_MARKER].join('\n')
+
+    const result = classifyArchitectOutput(text)
+    expect(result).toEqual({ kind: 'goal-complete', reason: 'done' })
   })
 
   it('returns kind none for empty string', () => {

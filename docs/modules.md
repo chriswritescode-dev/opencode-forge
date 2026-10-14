@@ -122,15 +122,14 @@ Defines roles and system prompts for each AI agent used in the forge pipeline.
 | `code.ts` | Code execution agent |
 | `architect.ts` | Read-only planning/design agent |
 | `auditor.ts` | Code review agent + auditor-loop variant |
-| `architect-auto.ts` | Autonomous architect agent |
-| `feature-splitter.ts` | Splits a PRD into features for a group |
+| `architect-auto.ts` | Non-interactive planning agent |
 
 ### Public API
 
 ```typescript
 buildAgents(): Record<AgentRole, AgentDefinition>
 
-type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'architect-auto' | 'feature-splitter'
+type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'architect-auto'
 ```
 
 Source: [src/agents/index.ts](../src/agents/index.ts)
@@ -156,7 +155,7 @@ Translates OpenCode events into loop actions and manages lifecycle side-effects.
 | `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
 | `sandbox-message.ts` | Adds the container note to every sandboxed request and, once the sandbox is turned off, the host note to every request until it is turned back on |
-| `group-orchestrator.ts` | Advances queued features when a group loop terminates |
+| `goal-orchestrator.ts` | Routes a chunk planner session's idle and `session.error` events to the goal orchestrator |
 | `tool-hook-types.ts` | Shared tool before/after hook types |
 
 ### Public API (barrel exports from `hooks/index.ts`)
@@ -175,7 +174,7 @@ Additional hooks available via direct imports (not re-exported by the barrel):
 - `createForgeSessionAttachHook()` / `createForgeSessionMessageAttachHook()` — auto-attach loops on session events (`forge-session-attach.ts`)
 - `createLoopPermissionPatcher()` — patch subagent permissions on `session.created` (`loop-permission.ts`)
 - `createPlanCaptureEventHook()` — plan marker extraction from streaming parts (`plan-capture.ts`)
-- `createGroupOrchestratorEventHook()` — group scheduling on loop termination (`group-orchestrator.ts`)
+- `createGoalPlannerEventHook()` — route a chunk planner session's idle event, and a normalized `session.error` that pauses the goal, to the goal orchestrator (`goal-orchestrator.ts`)
 
 Source: [src/hooks/index.ts](../src/hooks/index.ts)
 
@@ -202,7 +201,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
-| `name-uniqueness.ts` | Reserve a unique loop identity before any side effects |
+| `name-uniqueness.ts` | Reserve a unique loop identity before any side effects, refusing a name still referenced by a goal chunk or whose `forge/<slug>` branch exists |
 | `session-output.ts` | Fetch session output for loop display |
 
 ### Key Types
@@ -275,7 +274,7 @@ isAwaitingBusy(sessionId): boolean
 isAwaitingBusyExpired(sessionId): boolean
 
 // Name uniqueness
-generateUniqueName(baseName: string, existingNames: readonly string[]): string
+generateUniqueName(baseName: string, existingNames: readonly string[], isTaken?: (name: string) => boolean): string
 
 // Session output
 fetchSessionOutput(client, sessionId, directory, logger?, options?): LoopSessionOutput | null
@@ -301,8 +300,8 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | `deterministic-decomposer.ts` | Slice a plan into milestones (`section_plans` rows) deterministically — called once at loop start by `execution.ts`, not a runtime loop phase |
 | `section-bootstrap.ts` | Build the initial milestone rows for a loop |
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
-| `group-orchestrator.ts` | Feature-group scheduling and per-feature loop launch |
-| `group-scheduler.ts` | Ordering and concurrency cap for a group's features |
+| `architect-auto-planner.ts` | Plan a work item with the `architect-auto` agent inside a caller-chosen worktree: spawn a session, read its newest assistant text, and resolve the session's stored plan with its structural readiness (`createArchitectAutoPlanner()`) |
+| `goal-orchestrator.ts` | Drive a goal's sequential chunk loops: on a chunk loop's `settled` completion, plan the next chunk in a detached checkout and launch it from that exact commit; pause on planner failure or a non-completed chunk loop; restart/cancel (`createGoalOrchestrator()`). Writes through a process-shared database handle (`acquireGoalOrchestratorDb`) so advancement survives the launching instance's disposal |
 | `tui-rpc-service.ts` | Server-side TUI RPC service: loop list/sidebar, session plan, loop restart (rejected when the loop was restarted after the dialog read it, checked under the shared loop lock), host-sandbox desired/applied state, and the worktree list |
 | `worktree-log.ts` | Log worktree completions |
 
@@ -421,14 +420,14 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `LoopTransitionsRepo` | `loop_transitions` | `LoopTransitionRow` — append-only phase-transition log per loop |
 | `PlanAmendmentsRepo` | `plan_amendments` | `PlanAmendmentRow` — append-only plan-amendment audit trail |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
-| `FeatureGroupsRepo` | `feature_groups` | `FeatureGroupsRepo` — grouped-execution state |
 | `LoopAttemptsRepo` | `loop_attempts` | `LoopAttemptsRepo` — durable audit-attempt history |
+| `GoalsRepo` | `goals`, `goal_chunks` | `GoalRow`, `GoalChunkRow`, `GoalTask` — a goal's ordered task list, snapshot launch settings, and per-chunk lifecycle |
 | `SessionSandboxPreferencesRepo` | `tui_preferences` (JSON keys `session-sandbox.desired` / `.applied` / `.controller`) | `SessionSandboxPreferencesRepo` — host-session sandbox desired/applied state |
 | `SessionAutoApproveRepo` | `tui_preferences` (TTL-scoped JSON keys `session-auto-approve.<sessionId>`) | `SessionAutoApproveRepo` — per-session auto-approve state |
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–149; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–153; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -453,9 +452,11 @@ Implements tools callable by AI agents during conversations.
 | `section-read` | `section-read.ts` | Retrieve the current, specified, or (with `pending_suffix`) ordered pending sections of an active loop's plan; titles are display labels, section content is the executable requirement |
 | `plan-adjust` | `plan-adjust.ts` | Auditor-only, section-audit-only: revise the section under audit (`currentSection`) and/or destructively replace the pending suffix (`sections`) of the active loop plan's executable section instructions; the stored master plan row is unchanged. Logged as a plan amendment |
 | `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
-| `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
 | `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
+| `goal-write` | `goal.ts` | Architect-only: save the ordered goal (objective + task list) for this session as a draft; the next loop launched from the session becomes chunk 1. Args: `title`, `objective` required; `tasks`, `maxChunks` optional |
+| `goal-status` | `goal.ts` | List goals, show one goal's detail, or restart a paused/interrupted goal (`restart` requires `goalId`; `force` discards in-flight planning; `maxChunks` raises the cap) |
+| `goal-cancel` | `goal.ts` | Cancel a goal by `goalId`, optionally cancelling its running chunk loop |
 
 `tool.ts` is the local `tool()` helper every definition uses; its `schema` is zod 4, and the V2 tool registrar converts each definition's args to JSON Schema.
 
@@ -479,10 +480,10 @@ interface ToolContext {
   plansRepo: PlansRepo
   reviewFindingsRepo: ReviewFindingsRepo
   loopsRepo: LoopsRepo
+  goalsRepo: GoalsRepo
+  goalOrchestrator: GoalOrchestrator
   sectionPlansRepo: SectionPlansRepo
   loopSessionUsageRepo?: LoopSessionUsageRepo
-  featureGroupsRepo: FeatureGroupsRepo
-  groupOrchestrator: GroupOrchestrator
   pendingTeardowns: PendingTeardownRegistry
   resolveActiveLoopForSession: (sessionID) => Promise<ResolvedLoop | null>
 }
@@ -531,7 +532,7 @@ Cross-cutting helpers (~40 files) organized by concern:
 | TUI | `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI preferences and models |
 | Workspace | `worktree-cleanup.ts`, `git-service.ts` | Worktree cleanup and git operations |
 | Sandbox | `sandbox-ready.ts` | Sandbox readiness probe |
-| Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `format.ts`, `duration.ts`, `is-record.ts`, `toast.ts`, `architect-auto-output.ts`, `feature-list-parser.ts`, `review-format.ts`, `cli-flags.ts`, `bundled-sync.ts` | Various helpers |
+| Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `format.ts`, `duration.ts`, `is-record.ts`, `toast.ts`, `architect-auto-output.ts`, `review-format.ts`, `cli-flags.ts`, `bundled-sync.ts` | Various helpers |
 
 ---
 
@@ -554,6 +555,8 @@ Workspace-aware resolution (merges portable `extra.permissionRules` persisted in
 lives in `resolveLoopPermissionOptionsForWorkspace`.
 
 Source: [src/utils/loop-permission-options.ts](../src/utils/loop-permission-options.ts)
+
+`src/constants/goal.ts` owns the goal constants: `DEFAULT_GOAL_MAX_CHUNKS` (20), `MAX_GOAL_MAX_CHUNKS` (100), `GOAL_COMPLETE_MARKER` (`<!-- forge-goal:complete -->`), `GOAL_CHUNK_SUMMARY_MAX_CHARS`, and `goalPlanningDir()` (the detached `.goal-plan-<goalId>-<chunkIndex>` checkout path).
 
 ---
 
@@ -591,7 +594,7 @@ Other modules do NOT have barrel files (utils, sandbox, services, workspace).
 ### Repository Pattern
 
 All data access goes through typed repo interfaces:
-- `LoopsRepo`, `PlansRepo`, `ReviewFindingsRepo`, `SectionPlansRepo`, `LoopSessionUsageRepo`, `FeatureGroupsRepo`
+- `LoopsRepo`, `PlansRepo`, `ReviewFindingsRepo`, `SectionPlansRepo`, `LoopSessionUsageRepo`, `GoalsRepo`
 - Each created via `createXxxRepo(db)` with project-scoped queries.
 - Rows are mapped to domain objects via `loopRowToState()` etc.
 
@@ -605,7 +608,7 @@ The loop follows a strict phase-based state machine:
 
 ### Notification Pattern
 
-A `LoopChangeNotifier` callback is threaded through all state mutation calls. It fires on insert, delete, terminate, rotate, phase, iteration, status, session, sandbox, workspace, audit-result, error, reconcile events.
+A `LoopChangeNotifier` callback is threaded through all state mutation calls. It fires on insert, delete, terminate, `settled`, rotate, phase, iteration, status, session, sandbox, workspace, audit-result, error, and reconcile events. `terminate` fires when the terminal status is persisted; `settled` fires once afterwards, after the termination side effects (teardown commit, sandbox stop, worktree cleanup) finish, and is the only reason the goal orchestrator advances on.
 
 ### Plugin Hook Pattern
 

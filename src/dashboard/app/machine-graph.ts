@@ -66,7 +66,7 @@ const EDGES: MgEdge[] = [
     labelX: 145,
     labelY: 18,
   },
-  // Goal-audit clear path: auditing skips final_auditing straight to post_action.
+  // Non-sectioned plan loops: auditing skips final_auditing straight to post_action.
   {
     key: 'auditing→post_action',
     d: 'M 220 42 Q 370 8 520 42',

@@ -54,7 +54,7 @@ Edits are collected until the sandbox is turned on or off, or the settings are a
 
 ## Execution Dialog
 
-Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. With no stored plan the dialog opens with `Plan: none`; the `Plan` row pastes a plan, which is also how a plan is entered manually. With no open session the dialog opens in restart mode instead (a toast when nothing is restartable).
+Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. With no stored plan the dialog opens with `Plan: none`; the `Plan` row pastes a plan, which is also how a plan is entered manually. With no open session the dialog opens in restart mode instead (a toast when nothing is restartable). A successful Loop launch shows a success toast: `Loop started: <loopName>`, or `Goal <goalId>: chunk 1 started` when the launch attached as a goal's first chunk.
 
 The dialog provides full control over execution parameters.
 

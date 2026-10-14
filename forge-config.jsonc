@@ -78,11 +78,6 @@
     // }
   },
 
-  // Max loops from one group running concurrently. Also bounds concurrent planning passes. Default 3.
-  "groupLaunch": {
-    "maxConcurrentLoops": 3
-  },
-
   "sandbox": {
     "enabled": true,
     "mode": "msb",

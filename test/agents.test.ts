@@ -3,7 +3,6 @@ import { buildArchitectAgent } from '../src/agents/architect'
 import { buildCodeAgent } from '../src/agents/code'
 import { buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
 import { buildArchitectAutoAgent } from '../src/agents/architect-auto'
-import { buildFeatureSplitterAgent } from '../src/agents/feature-splitter'
 import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
@@ -12,7 +11,6 @@ describe('Agent definitions', () => {
   const auditorAgent = buildAuditorAgent()
   const auditorLoopAgent = buildAuditorLoopAgent()
   const architectAutoAgent = buildArchitectAutoAgent()
-  const featureSplitterAgent = buildFeatureSplitterAgent()
 
   describe('metadata stability', () => {
     test('architect agent has stable metadata', () => {
@@ -51,7 +49,6 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toContain('edit')
       expect(auditorAgent.tools?.exclude).toContain('write')
       expect(auditorAgent.tools?.exclude).toContain('execute-plan')
-      expect(auditorAgent.tools?.exclude).toContain('execute-goal')
       expect(auditorAgent.tools?.exclude).toContain('question')
       expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
       expect(auditorAgent.tools?.exclude).toContain('loop-status')
@@ -86,10 +83,9 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('target files do not overlap')
       expect(prompt).toContain('inspect and reconcile')
       expect(prompt).toContain('files changed, behavior implemented, validation run')
-      expect(prompt).toContain('execute-goal')
       expect(prompt).toContain('execute-plan')
-      expect(prompt).toContain('launch-group')
       expect(prompt).toContain('loop-cancel')
+      expect(prompt).toContain('goal-cancel')
       expect(prompt).toContain('unless the user explicitly asks you to')
       expect(prompt).toContain('Never attempt to remove, delete, or clear review findings')
     })
@@ -221,25 +217,6 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.tools?.exclude).toBeDefined()
       expect(architectAutoAgent.tools?.exclude).toContain('question')
       expect(architectAutoAgent.tools?.exclude).toContain('execute-plan')
-      expect(architectAutoAgent.tools?.exclude).toContain('execute-goal')
-      expect(architectAutoAgent.tools?.exclude).toContain('launch-group')
-    })
-
-    test('feature-splitter agent has stable metadata', () => {
-      expect(featureSplitterAgent.role).toBe('feature-splitter')
-      expect(featureSplitterAgent.id).toBe('opencode-feature-splitter')
-      expect(featureSplitterAgent.displayName).toBe('feature-splitter')
-      expect(featureSplitterAgent.mode).toBe('primary')
-      expect(featureSplitterAgent.hidden).toBe(true)
-    })
-
-    test('feature-splitter agent excludes question, write, edit, and plan-authoring tools', () => {
-      expect(featureSplitterAgent.tools?.exclude).toBeDefined()
-      expect(featureSplitterAgent.tools?.exclude).toContain('question')
-      expect(featureSplitterAgent.tools?.exclude).toContain('write')
-      expect(featureSplitterAgent.tools?.exclude).toContain('edit')
-      expect(featureSplitterAgent.tools?.exclude).toContain('plan-write')
-      expect(featureSplitterAgent.tools?.exclude).toContain('plan-edit')
     })
 
     test('architect agents retain plan-authoring tools', () => {
@@ -249,23 +226,36 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.tools?.exclude).not.toContain('plan-edit')
     })
 
-    test('hidden group agents preserve overlap-aware planning guidance', () => {
-      expect(featureSplitterAgent.systemPrompt).toContain('implementation-coherent features')
-      expect(featureSplitterAgent.systemPrompt).toContain('small, independently reviewable plans/PRs')
-      expect(featureSplitterAgent.systemPrompt).toContain('Same-file edits alone are not enough to group')
+    test('goal-write is available to the architect and excluded everywhere else', () => {
+      expect(architectAgent.tools?.exclude).not.toContain('goal-write')
+      expect(codeAgent.tools?.exclude).toContain('goal-write')
+      expect(auditorAgent.tools?.exclude).toContain('goal-write')
+      expect(auditorLoopAgent.tools?.exclude).toContain('goal-write')
+      expect(architectAutoAgent.tools?.exclude).toContain('goal-write')
+    })
+
+    test('goal-status and goal-cancel are excluded from architect-auto and auditors but kept by code', () => {
+      for (const agent of [auditorAgent, auditorLoopAgent, architectAutoAgent]) {
+        expect(agent.tools?.exclude).toContain('goal-status')
+        expect(agent.tools?.exclude).toContain('goal-cancel')
+      }
+      expect(codeAgent.tools?.exclude).not.toContain('goal-status')
+      expect(codeAgent.tools?.exclude).not.toContain('goal-cancel')
+    })
+
+    test('architect-auto agent preserves overlap-aware planning guidance', () => {
       expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
     })
 
-    test('buildAgents returns all 6 agent roles', () => {
+    test('buildAgents returns all 5 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)
-      expect(roles).toHaveLength(6)
+      expect(roles).toHaveLength(5)
       expect(roles).toContain('code')
       expect(roles).toContain('architect')
       expect(roles).toContain('auditor')
       expect(roles).toContain('auditor-loop')
       expect(roles).toContain('architect-auto')
-      expect(roles).toContain('feature-splitter')
     })
   })
 
@@ -417,7 +407,7 @@ describe('Agent definitions', () => {
     })
 
     test('agent prompts avoid deprecated graph tooling names', () => {
-      for (const agent of [architectAgent, codeAgent, auditorAgent, auditorLoopAgent, architectAutoAgent, featureSplitterAgent]) {
+      for (const agent of [architectAgent, codeAgent, auditorAgent, auditorLoopAgent, architectAutoAgent]) {
         expect(agent.systemPrompt).not.toContain('graph-query')
         expect(agent.systemPrompt).not.toContain('graph-symbols')
         expect(agent.systemPrompt).not.toContain('graph-analyze')
