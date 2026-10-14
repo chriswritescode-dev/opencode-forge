@@ -23,12 +23,14 @@ function readSessionErrorMessage(error: unknown): string {
 /**
  * Event hook that routes a chunk planner session's idle event to the goal
  * orchestrator. Ownership is proven by the persisted planner-session row, so an
- * unrelated session's idle is ignored. A premature idle needs no guard here:
- * `onPlannerIdle` itself stays in planning when there is neither assistant text
- * nor a stored plan yet. A normalized `session.error` for the same session (a
- * provider failure, or an interrupted/aborted execution) pauses the goal through
- * `onPlannerError`; the later idle that follows it finds no planning chunk and is
- * a no-op.
+ * unrelated session's idle is ignored. The idle status carries the OpenCode
+ * interrupt reason when the execution was interrupted: `inactivity` means the
+ * location was evicted after being idle too long, so the goal is paused through
+ * `onPlannerError`; `superseded` means a new execution of the same session
+ * follows and is ignored; any other reason falls through to `onPlannerIdle`. A
+ * normalized `session.error` for the same session (a provider failure, or an
+ * interrupted/aborted execution) pauses the goal through `onPlannerError`; the
+ * later idle that follows it finds no planning chunk and is a no-op.
  */
 export function createGoalPlannerEventHook(deps: GoalPlannerEventHookDeps) {
   const { orchestrator, goalsRepo, projectId, logger } = deps
@@ -58,7 +60,18 @@ export function createGoalPlannerEventHook(deps: GoalPlannerEventHookDeps) {
 
     if (!goalsRepo.getChunkByPlannerSession(projectId, sessionId)) return
 
+    const interruptReason = event.properties?.interruptReason as string | undefined
+
+    if (interruptReason === 'superseded') return
+
     try {
+      if (interruptReason === 'inactivity') {
+        await orchestrator.onPlannerError(
+          sessionId,
+          'Planner session was interrupted by OpenCode after 60 minutes without activity',
+        )
+        return
+      }
       await orchestrator.onPlannerIdle(sessionId)
     } catch (err) {
       logger.error(`goal-orchestrator-hook: error handling idle for planner session ${sessionId}:`, err as Error)

@@ -360,7 +360,7 @@ describe('createGoalOrchestrator', () => {
       expect(h.startLoop).not.toHaveBeenCalled()
     })
 
-    test('stays planning on a premature idle with no text and no stored plan', async () => {
+    test('abandons the chunk and pauses the goal on a premature idle with no text and no stored plan', async () => {
       h = createHarness()
       await setupPlanningChunk()
       vi.mocked(h.planner.latestAssistantText).mockResolvedValue(null)
@@ -368,8 +368,11 @@ describe('createGoalOrchestrator', () => {
 
       await h.orchestrator.onPlannerIdle('planner-session-1')
 
-      expect(h.goalsRepo.listChunks(PROJECT, GOAL)[1].stage).toBe('planning')
-      expect(h.goalsRepo.getGoal(PROJECT, GOAL)?.status).toBe('running')
+      const goal = h.goalsRepo.getGoal(PROJECT, GOAL)
+      expect(goal?.status).toBe('paused')
+      expect(goal?.error).toContain('Planner could not plan chunk 2')
+      expect(h.goalsRepo.listChunks(PROJECT, GOAL)).toHaveLength(1)
+      expect(h.deleteSession).toHaveBeenCalledWith('planner-session-1', goalPlanningDir(DATA_DIR, GOAL, 1))
       expect(h.startLoop).not.toHaveBeenCalled()
     })
 

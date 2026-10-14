@@ -1322,6 +1322,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       iteration: 3,
       totalSections: 0,
       phase: 'post_action',
+      auditorVariant: 'audit-high',
+      executionVariant: 'thinking-max',
     })
 
     const noopFn = () => {}
@@ -1415,6 +1417,12 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(buildPostActionPromptSpy).toHaveBeenCalledWith(expect.any(Object), { skill: 'pr-review', prompt: undefined })
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
     expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
+
+    // No configured post-action model → the auditor model is used, sent with the
+    // auditor's variant (not the persisted execution variant).
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'aud' })
+    expect(promptCall.variant).toBe('audit-high')
   })
 
   test('restart commits new current_session_id BEFORE runExclusive releases (no stale-event race)', async () => {

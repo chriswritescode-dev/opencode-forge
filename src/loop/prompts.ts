@@ -443,7 +443,7 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
   if (opts.skill) {
     parts.push(
       '',
-      `Load the \`${opts.skill}\` skill with the Skill tool and execute its workflow against this worktree's changes.`,
+      `Load the \`${opts.skill}\` skill with the Skill tool and execute its full workflow against this worktree's changes. No user is available: if the skill has an unattended or non-interactive mode, use it and follow it completely, including the fixes and validation it prescribes.`,
     )
   }
 
@@ -453,8 +453,8 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
 
   parts.push(
     '',
-    'This runs unattended — do NOT use the question tool. Auto-defer any finding that would require clarification',
-    'and report it; apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.',
+    'This runs unattended — do NOT use the question tool. Auto-defer any finding that would require clarification and report it.',
+    ...(opts.skill ? [] : ['Apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.']),
     '',
     POST_ACTION_COMPLETION_RULE,
   )

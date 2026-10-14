@@ -1917,6 +1917,118 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const fallbackPrompts = codePrompts.filter(c => !(c.params as any)?.variant)
       expect(fallbackPrompts.length).toBeGreaterThan(0)
     })
+
+    test('post-action prompt with no configured model sends auditor model and auditor variant', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({
+        client,
+        loopConfig: {
+          loop: {
+            enabled: true,
+            defaultMaxIterations: 5,
+            postAction: { enabled: true, skill: 'pr-review' },
+          },
+        },
+      })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+        executionVariant: 'thinking-max',
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)!
+      expect(afterState.phase).toBe('post_action')
+
+      const postActionPrompts = calls.filter(
+        c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === afterState.sessionId,
+      )
+      expect(postActionPrompts.length).toBeGreaterThan(0)
+      for (const call of postActionPrompts) {
+        expect((call.params as any)?.model).toEqual({ providerID: 'test', modelID: 'auditor' })
+        expect((call.params as any)?.variant).toBe('audit-high')
+      }
+    })
+
+    test('post-action prompt with configured model omits the variant on the primary and uses the auditor variant on the fallback', async () => {
+      let failCount = 2
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+          ],
+          promptAsync: async () => {
+            if (failCount > 0) {
+              failCount--
+              throw Object.assign(new Error('simulated model failure'), { name: 'TestError', data: { message: 'simulated model failure' } })
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({
+        client,
+        loopConfig: {
+          loop: {
+            enabled: true,
+            defaultMaxIterations: 5,
+            postAction: { enabled: true, skill: 'pr-review', model: 'cfg/post' },
+          },
+        },
+      })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+        executionVariant: 'thinking-max',
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)!
+      expect(afterState.phase).toBe('post_action')
+
+      const postActionPrompts = calls.filter(
+        c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === afterState.sessionId,
+      )
+      const primaryAttempts = postActionPrompts.filter(c => (c.params as any)?.model?.modelID === 'post')
+      expect(primaryAttempts.length).toBe(2)
+      for (const call of primaryAttempts) {
+        expect((call.params as any)?.variant).toBeUndefined()
+      }
+      const fallbackAttempts = postActionPrompts.filter(c => (c.params as any)?.model?.modelID === 'auditor')
+      expect(fallbackAttempts.length).toBe(1)
+      expect((fallbackAttempts[0].params as any)?.variant).toBe('audit-high')
+    })
   })
 
   describe('coder decisions in final-audit fix', () => {

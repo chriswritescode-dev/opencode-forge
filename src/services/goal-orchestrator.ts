@@ -332,9 +332,7 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
     }
 
     const readiness = await planner.capturePlan(sessionId, planningDir)
-    if (text === null) {
-      if (!readiness.ready) return
-    } else if (!readiness.ready) {
+    if (!readiness.ready) {
       const reason = classified?.kind === 'insufficient' ? classified.reason : readiness.reason
       await abandonPlanning(chunk, `Planner could not plan chunk ${chunk.chunkIndex + 1}: ${reason}`)
       return

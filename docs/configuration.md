@@ -105,7 +105,7 @@ The phase is enabled only when `enabled === true` and at least one of `skill` or
 | `loop.postAction.enabled` | `false` | Enable the post-action phase. |
 | `loop.postAction.skill` | unset | Skill name to load with the Skill tool. |
 | `loop.postAction.prompt` | unset | Extra instruction text, or standalone prompt when no skill is set. |
-| `loop.postAction.model` | unset | Optional model override. Defaults to the auditor model chain. |
+| `loop.postAction.model` | unset | Optional model override, sent without a variant. Defaults to the auditor model chain, which carries the auditor's variant. |
 
 Example:
 

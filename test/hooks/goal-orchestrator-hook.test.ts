@@ -32,8 +32,17 @@ function createHarness() {
   return { hook, orchestrator, goalsRepo, errors }
 }
 
-function idleEvent(sessionId: string) {
-  return { event: { type: 'session.status', properties: { sessionID: sessionId, status: { type: 'idle' } } } }
+function idleEvent(sessionId: string, interruptReason?: string) {
+  return {
+    event: {
+      type: 'session.status',
+      properties: {
+        sessionID: sessionId,
+        status: { type: 'idle' },
+        ...(interruptReason === undefined ? {} : { interruptReason }),
+      },
+    },
+  }
 }
 
 function errorEvent(sessionId: string, message = 'provider exploded') {
@@ -52,6 +61,27 @@ describe('createGoalPlannerEventHook', () => {
     await hook(idleEvent(PLANNER_SESSION))
 
     expect(orchestrator.onPlannerIdle).toHaveBeenCalledWith(PLANNER_SESSION)
+  })
+
+  test('routes an inactivity-interrupted idle to onPlannerError', async () => {
+    const { hook, orchestrator } = createHarness()
+
+    await hook(idleEvent(PLANNER_SESSION, 'inactivity'))
+
+    expect(orchestrator.onPlannerError).toHaveBeenCalledWith(
+      PLANNER_SESSION,
+      'Planner session was interrupted by OpenCode after 60 minutes without activity',
+    )
+    expect(orchestrator.onPlannerIdle).not.toHaveBeenCalled()
+  })
+
+  test('ignores a superseded idle because a new execution of the session follows', async () => {
+    const { hook, orchestrator } = createHarness()
+
+    await hook(idleEvent(PLANNER_SESSION, 'superseded'))
+
+    expect(orchestrator.onPlannerIdle).not.toHaveBeenCalled()
+    expect(orchestrator.onPlannerError).not.toHaveBeenCalled()
   })
 
   test('ignores an idle for a session that is not a planner session', async () => {

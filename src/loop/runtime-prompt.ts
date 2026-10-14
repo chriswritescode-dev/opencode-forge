@@ -24,6 +24,9 @@ export interface SendPromptInput {
    *  session/default model. */
   fallbackModel?: { providerID: string; modelID: string } | null
   variant?: string
+  /** Variant used for the fallbackModel attempt; when unset, the fallback attempt
+   *  sends no variant. Ignored when the attempt is not the fallbackModel. */
+  fallbackVariant?: string
 }
 
 export interface PromptDispatch {
@@ -71,6 +74,8 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')
         markPromptSent(projectId, loopName, sessionId, logger)
+        const isFallbackAttempt = input.fallbackModel != null && model === input.fallbackModel
+        const variant = isFallbackAttempt ? input.fallbackVariant : input.variant
         try {
           await client.session.promptAsync({
             sessionID: sessionId,
@@ -78,7 +83,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
             ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
             agent: 'code',
             parts: [{ type: 'text' as const, text: promptText }],
-            ...(model ? { model, ...(input.variant ? { variant: input.variant } : {}) } : {}),
+            ...(model ? { model, ...(variant ? { variant } : {}) } : {}),
           })
           return {}
         } catch (err) {

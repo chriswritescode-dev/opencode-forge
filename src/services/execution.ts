@@ -1800,13 +1800,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
         markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
+        const variant = stoppedState.phase === 'post_action'
+          ? (postActionCfg?.model && model === loopModel ? undefined : restartAuditorChoice.variant)
+          : restartVariant
         try {
           await deps.client.session.promptAsync({
             sessionID: effectiveSessionId,
             directory: stoppedState.worktreeDir,
             parts: [{ type: 'text' as const, text: promptText }],
             agent: promptAgent,
-            ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
+            ...(model ? { model, ...(variant ? { variant } : {}) } : {}),
             ...workspaceParam,
           })
           return {}

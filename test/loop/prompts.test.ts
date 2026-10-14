@@ -445,7 +445,7 @@ describe('prompt builders (src/loop/prompts)', () => {
   })
 
   describe('buildPostActionPrompt', () => {
-    test('includes skill name, plan, branch, prompt text, and autonomy instruction when skill provided', () => {
+    test('includes skill name, plan, branch, prompt text, and unattended skill instruction when skill provided', () => {
       const ctx = makeCtx()
       const state = { ...defaultState, worktreeBranch: 'feat/my-branch', phase: 'post_action' as const }
       const result = buildPostActionPrompt(ctx, state, { skill: 'pr-review', prompt: 'extra notes' })
@@ -454,18 +454,21 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('Mock plan content')
       expect(result).toContain('pr-review')
       expect(result).toContain('Load the `pr-review` skill with the Skill tool')
+      expect(result).toContain('unattended or non-interactive mode')
       expect(result).toContain('feat/my-branch')
       expect(result).toContain('extra notes')
       expect(result).toContain('do NOT use the question tool')
       expect(result).toContain('Auto-defer any finding')
+      expect(result).not.toContain('Apply only safe, scoped fixes')
     })
 
-    test('omits Skill-tool line when no skill is configured but includes prompt and autonomy instruction', () => {
+    test('omits Skill-tool line when no skill is configured but includes prompt, safe-fix instruction, and question-tool line', () => {
       const ctx = makeCtx()
       const state = { ...defaultState, worktreeBranch: 'feat/my-branch', phase: 'post_action' as const }
       const result = buildPostActionPrompt(ctx, state, { prompt: 'just review' })
       expect(result).toContain('[Post-implementation action]')
       expect(result).toContain('just review')
+      expect(result).toContain('Apply only safe, scoped fixes')
       expect(result).toContain('do NOT use the question tool')
       expect(result).not.toContain('Load the')
       expect(result).not.toContain('Skill tool')

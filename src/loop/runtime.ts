@@ -766,7 +766,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
-    const { error } = await sendPostActionPrompt(loopName, currentState, created.sessionId, prompt)
+    const { error } = await sendPostActionPrompt(loopName, created.sessionId, prompt)
     if (error) {
       const targetState = loopService.getActiveState(loopName) ?? currentState
       logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
@@ -777,19 +777,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  /** Sends a prompt to the post-action session on the configured post-action model, falling back to the loop's auditor model. */
-  function sendPostActionPrompt(loopName: string, state: LoopState, sessionId: string, promptText: string) {
+  /** Sends a prompt to the post-action session on the configured post-action model, falling back to the loop's auditor model. The auditor model is always sent with the auditor's variant; a configured post-action model has no variant. */
+  function sendPostActionPrompt(loopName: string, sessionId: string, promptText: string) {
     const cfg = resolvePostActionConfig(getConfig())
-    const auditorModel = resolveLoopAuditorChoice(getConfig(), loopService, loopName).model
+    const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
     const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
     return sendPromptWithFallback({
       loopName,
       sessionId,
       promptText,
       agent: 'code',
-      model: configuredModel ?? auditorModel,
-      fallbackModel: configuredModel ? auditorModel : undefined,
-      variant: state.executionVariant,
+      model: configuredModel ?? auditorChoice.model,
+      fallbackModel: configuredModel ? auditorChoice.model : undefined,
+      variant: configuredModel ? undefined : auditorChoice.variant,
+      fallbackVariant: configuredModel ? auditorChoice.variant : undefined,
     })
   }
 
@@ -2453,7 +2454,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (attempts < MAX_POST_ACTION_CONTINUES) {
           postActionContinueAttempts.set(loopName, attempts + 1)
           logger.log(`Loop: post-action reply for ${loopName} has no completion marker; prompting the session to finish (attempt ${attempts + 1}/${MAX_POST_ACTION_CONTINUES})`)
-          const { error } = await sendPostActionPrompt(loopName, currentState, currentState.sessionId, buildPostActionContinuePromptText())
+          const { error } = await sendPostActionPrompt(loopName, currentState.sessionId, buildPostActionContinuePromptText())
           if (!error) {
             watchdog.recordActivity(loopName, 'post-action-continue')
             return
