@@ -38,7 +38,7 @@ interface StubCoreOptions {
   resolveSandboxForDirectory?: ForgeHooksV2Core['resolveSandboxForDirectory']
   resolveShellSandbox?: ForgeHooksV2Core['resolveShellSandbox']
   autoApprovesPermissions?: ForgeHooksV2Core['autoApprovesPermissions']
-  isGoalPlannerSession?: ForgeHooksV2Core['isGoalPlannerSession']
+  isUnattendedGoalPlannerSession?: ForgeHooksV2Core['isUnattendedGoalPlannerSession']
   autoApproveDenyRules?: ForgeHooksV2Core['autoApproveDenyRules']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
@@ -86,7 +86,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     resolveSandboxForDirectory: options.resolveSandboxForDirectory ?? (async () => null),
     resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
     autoApprovesPermissions: options.autoApprovesPermissions ?? (async () => false),
-    isGoalPlannerSession: options.isGoalPlannerSession ?? (() => false),
+    isUnattendedGoalPlannerSession: options.isUnattendedGoalPlannerSession ?? (() => false),
     autoApproveDenyRules: options.autoApproveDenyRules ?? [],
     shellShimPath: options.shellShimPath ?? null,
   }
@@ -202,7 +202,7 @@ describe('registerForgeHooksV2 permission hook', () => {
     const { ctx, hooks } = createFakeV2Context()
     const autoApprovesPermissions = vi.fn(async () => true)
     const { core } = createStubCore({
-      isGoalPlannerSession: (sessionID) => sessionID === 'ses_planner',
+      isUnattendedGoalPlannerSession: (sessionID) => sessionID === 'ses_planner',
       autoApprovesPermissions,
     })
     await registerForgeHooksV2(ctx, core)
@@ -219,7 +219,7 @@ describe('registerForgeHooksV2 permission hook', () => {
     const { ctx, hooks } = createFakeV2Context()
     const autoApprovesPermissions = vi.fn(async () => true)
     const { core } = createStubCore({
-      isGoalPlannerSession: (sessionID) => sessionID === 'ses_planner',
+      isUnattendedGoalPlannerSession: (sessionID) => sessionID === 'ses_planner',
       autoApprovesPermissions,
     })
     await registerForgeHooksV2(ctx, core)

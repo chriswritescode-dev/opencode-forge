@@ -27,7 +27,7 @@ export type ForgeHooksV2Core = Pick<
   | 'resolveSandboxForDirectory'
   | 'resolveShellSandbox'
   | 'autoApprovesPermissions'
-  | 'isGoalPlannerSession'
+  | 'isUnattendedGoalPlannerSession'
   | 'autoApproveDenyRules'
   | 'shellShimPath'
 >
@@ -82,14 +82,14 @@ const GOAL_PLANNER_PERMISSION_DENIED_MESSAGE =
   'Blocked in goal planning: the chunk planner runs unattended, so requests that need approval are denied. Continue without it and report what was skipped.'
 
 /**
- * Resolves a permission `ask` for the session. A goal chunk planner session runs unattended, so its
- * `ask` is denied with a message. Otherwise, when auto-approve applies, requests matching a configured
+ * Resolves a permission `ask` for the session. A goal chunk planner session running unattended denies its
+ * `ask` with a message. Otherwise, when auto-approve applies, requests matching a configured
  * `autoApprove.deny` rule deny with a message and every other `ask` is allowed. OpenCode `deny` (and
  * `allow`) decisions are never touched.
  */
 async function resolvePermissionAsk(core: ForgeHooksV2Core, event: AutoApprovePermissionEvent): Promise<void> {
   if (event.effect !== 'ask') return
-  if (core.isGoalPlannerSession(event.sessionID)) {
+  if (core.isUnattendedGoalPlannerSession(event.sessionID)) {
     event.effect = 'deny'
     event.message = GOAL_PLANNER_PERMISSION_DENIED_MESSAGE
     return

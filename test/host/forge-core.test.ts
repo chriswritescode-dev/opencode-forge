@@ -63,6 +63,40 @@ describe('createForgeCore', () => {
     return { core, calls, adapters, projectId }
   }
 
+  /**
+   * Seeds a running goal with a planning chunk whose planner session is `ses_planner`, and returns the goals repo.
+   */
+  function seedGoalPlannerChunk(projectId: string, goalId: string): ReturnType<typeof createGoalsRepo> {
+    const goalsRepo = createGoalsRepo(acquireGoalOrchestratorDb(join(testDir, 'memory')))
+    const hostSessionId = 'ses_host_1'
+    goalsRepo.saveDraft({
+      projectId,
+      goalId,
+      title: 'Ship it',
+      objective: 'Deliver the feature',
+      tasks: [],
+      hostSessionId,
+      maxChunks: 2,
+    })
+    goalsRepo.attachFirstChunk(
+      projectId,
+      hostSessionId,
+      {
+        projectDir: testDir,
+        executionModel: null,
+        auditorModel: null,
+        executionVariant: null,
+        auditorVariant: null,
+        sandboxSettings: null,
+        maxIterations: null,
+      },
+      { loopName: 'goal-loop', branch: null, title: 'Chunk 0', baseCommit: null },
+    )
+    goalsRepo.insertPlanningChunk(projectId, goalId, 1, { planningDir: testDir, baseCommit: 'sha-1' })
+    goalsRepo.setChunkPlanner(projectId, goalId, 1, 'ses_planner')
+    return goalsRepo
+  }
+
   function autoApproveExpiresAt(db: ReturnType<typeof initializeDatabase>, projectId: string, sessionId: string): number | null {
     const row = db
       .prepare('SELECT expires_at FROM tui_preferences WHERE project_id = ? AND key = ?')
@@ -134,40 +168,24 @@ describe('createForgeCore', () => {
     await expect(built.core.autoApprovesPermissions('ses_other')).resolves.toBe(false)
   })
 
-  test('isGoalPlannerSession recognizes a recorded goal chunk planner session', async () => {
+  test('isUnattendedGoalPlannerSession recognizes a recorded goal chunk planner session', async () => {
     const built = await buildCore()
+    const goalsRepo = seedGoalPlannerChunk(built.projectId, 'goal-planner')
 
-    const goalsRepo = createGoalsRepo(acquireGoalOrchestratorDb(join(testDir, 'memory')))
-    const goalId = 'goal-planner'
-    const hostSessionId = 'ses_host_1'
-    goalsRepo.saveDraft({
-      projectId: built.projectId,
-      goalId,
-      title: 'Ship it',
-      objective: 'Deliver the feature',
-      tasks: [],
-      hostSessionId,
-      maxChunks: 2,
-    })
-    goalsRepo.attachFirstChunk(
-      built.projectId,
-      hostSessionId,
-      {
-        projectDir: testDir,
-        executionModel: null,
-        auditorModel: null,
-        executionVariant: null,
-        auditorVariant: null,
-        sandboxSettings: null,
-        maxIterations: null,
-      },
-      { loopName: 'goal-loop', branch: null, title: 'Chunk 0', baseCommit: null },
-    )
-    goalsRepo.insertPlanningChunk(built.projectId, goalId, 1, { planningDir: testDir, baseCommit: 'sha-1' })
-    goalsRepo.setChunkPlanner(built.projectId, goalId, 1, 'ses_planner')
+    expect(built.core.isUnattendedGoalPlannerSession('ses_planner')).toBe(true)
+    expect(built.core.isUnattendedGoalPlannerSession('ses_other')).toBe(false)
 
-    expect(built.core.isGoalPlannerSession('ses_planner')).toBe(true)
-    expect(built.core.isGoalPlannerSession('ses_other')).toBe(false)
+    goalsRepo.updateStatus(built.projectId, 'goal-planner', ['running'], 'paused', { error: 'paused' })
+    expect(built.core.isUnattendedGoalPlannerSession('ses_planner')).toBe(false)
+  })
+
+  test('isUnattendedGoalPlannerSession answers false when the planner chunk is no longer planning', async () => {
+    const built = await buildCore()
+    const goalsRepo = seedGoalPlannerChunk(built.projectId, 'goal-launching')
+
+    goalsRepo.claimChunkStage(built.projectId, 'goal-launching', 1, 'planning', 'launching')
+
+    expect(built.core.isUnattendedGoalPlannerSession('ses_planner')).toBe(false)
   })
 
   test('getSessionAutoApproveState reports own, inherited, and disabled states', async () => {
