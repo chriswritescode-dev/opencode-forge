@@ -292,9 +292,10 @@ A **goal** is an objective executed as a sequential series of ordinary plan loop
 The `/goal <objective>` command runs as the `architect` agent. It:
 
 1. Resolves the work strictly read-only with the tools already in the session (`gh issue list`/`gh issue view`, a tracker's MCP tools, or a plain task breakdown), never commenting on, assigning, labelling, transitioning, or closing a ticket.
-2. Orders the tasks dependencies-first, **one task per chunk** (two tickets merge into one task only when they cannot be implemented separately).
-3. Saves the draft with `goal-write` — title, objective, the ordered task list, and an optional `maxChunks`.
-4. Plans **chunk 1 only** with `plan-write`/`plan-edit`, naming the goal and the task ref in the Objective.
+2. Settles the route after researching the goal: the objective is the fixed outcome, so the rounds settle how to reach it. It calls `question` with one grouped set of questions that settles the route — one per decision group (placement and ownership, reuse versus extending versus new code, data and interface shape, edge-case and error policy, sequencing, verification strategy, plus any group research surfaced), each with 2–4 research-backed options and the recommended one first — and repeats a fresh grouped round after each answer set, re-researching newly opened paths, until every route decision is settled. These rounds also cover chunk 1.
+3. Orders the tasks dependencies-first, **one task per chunk** (two tickets merge into one task only when they cannot be implemented separately).
+4. Saves the draft with `goal-write` — title, objective (the objective verbatim followed by a `Route decisions:` list of every settled route decision), the ordered task list, and an optional `maxChunks`. Later `architect-auto` chunks treat those recorded route decisions as binding.
+5. Plans **chunk 1 only** with `plan-write`/`plan-edit`, naming the goal and the task ref in the Objective.
 
 Later chunks are never planned up front: each is planned against the code the previous chunks produced.
 
@@ -314,14 +315,14 @@ On `settled` for a **completed** chunk loop:
 
 1. The chunk is marked `completed` with a capped summary — the loop's `completionSummary`, else its `postActionReport`, truncated to `GOAL_CHUNK_SUMMARY_MAX_CHARS`.
 2. A detached, read-only planning checkout of the previous chunk branch tip is created at `<dataDir>/worktrees/.goal-plan-<goalId>-<chunkIndex>`.
-3. `architect-auto` plans the next task there with the goal's **auditor** model and variant; the planner prompt carries the objective, the ordered task list, and the completed-chunk summaries. The planner either:
+3. `architect-auto` plans the next task there with the goal's **auditor** model and variant; the planner prompt carries the objective, the ordered task list, and the completed-chunk summaries. While the goal is running the planner runs unattended, so any request OpenCode would `ask` about is denied before per-session or sandbox auto-approve applies, with `Blocked in goal planning: the chunk planner runs unattended, so requests that need approval are denied. Continue without it and report what was skipped.` OpenCode `allow` and `deny` decisions are untouched. A planner session kept for inspection after the goal pauses is no longer unattended and prompts normally. The planner either:
    - **writes a plan** — the chunk loop launches with `baseRef` set to that exact commit and the snapshotted settings, so each chunk gets its own branch stacked on the previous chunk's commit;
    - **emits `<!-- forge-goal:complete -->`** (`GOAL_COMPLETE_MARKER`) — the goal is marked `completed`;
    - **fails** — the goal is **paused** with the reason.
 
 Why a plain detached checkout instead of a Forge workspace: a Forge workspace with no matching loop row is reclaimed by the stale-workspace sweep after a 5-minute grace window, so a planning workspace would be removed out from under the planner.
 
-Planner failures pause the goal. A normalized `session.error` for a chunk planner session — a provider failure or an interrupted/aborted execution — abandons the chunk and pauses the goal with `Planner failed for chunk <n>: <reason>`. A premature idle that yields neither assistant text nor a stored plan leaves the chunk planning rather than failing it.
+Planner failures pause the goal. A normalized `session.error` for a chunk planner session — a provider failure or an interrupted/aborted execution — or an execution OpenCode interrupts for inactivity pauses the goal with `Planner failed for chunk <n>: <reason> (kept planner session <id> and checkout <dir> for inspection; goal-status restart discards them and re-plans chunk <n>)`. The chunk stays in stage `planning`, and its planner session, stored plan, and detached planning checkout are kept for inspection; `goal-status restart` (no `force` needed) discards them and re-plans the chunk, and cancelling the goal also cleans them up. A later idle for that session is a no-op because the goal is paused. Other planning failures — no stored plan, an insufficient brief, or a loop start failure — still discard the planning resources. A premature idle that yields neither assistant text nor a stored plan leaves the chunk planning rather than failing it.
 
 ### Pause, resume, restart, and cancel
 

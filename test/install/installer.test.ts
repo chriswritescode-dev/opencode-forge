@@ -139,4 +139,84 @@ describe('runInteractiveInstall', () => {
     expect(existsSync(join(dest, 'f.md'))).toBe(false)
     expect(existsSync(manifestPath)).toBe(false)
   })
+
+  test('refreshes a pristine file without prompting and records the new hash', async () => {
+    const src = tmpDir('src')
+    const dest = tmpDir('dest')
+    const manifestPath = tmpDir('m') + '.json'
+    mkdirSync(src, { recursive: true })
+    writeFileSync(join(src, 'f.md'), 'BUNDLE_V2')
+    mkdirSync(dest, { recursive: true })
+    writeFileSync(join(dest, 'f.md'), 'BUNDLE_V1')
+    writeFileSync(manifestPath, JSON.stringify({ 'f.md': sha256('BUNDLE_V1') }, null, 2))
+
+    let conflicts = 0
+    const prompterWithSpy: InstallerPrompter = {
+      fileConflict: async () => {
+        conflicts += 1
+        return 'keep'
+      },
+      orphan: async () => 'keep',
+    }
+
+    const summary = await runInteractiveInstall([makeSpec(src, dest, manifestPath)], prompterWithSpy, {
+      prune: true,
+      dryRun: false,
+    })
+
+    expect(conflicts).toBe(0)
+    expect(readFileSync(join(dest, 'f.md'), 'utf-8')).toBe('BUNDLE_V2')
+    expect(summary.bundles[0].overwritten).toContain('f.md')
+    expect(readManifest(manifestPath)['f.md']).toBe(sha256('BUNDLE_V2'))
+  })
+
+  test('still prompts for a genuinely edited file and preserves it', async () => {
+    const src = tmpDir('src')
+    const dest = tmpDir('dest')
+    const manifestPath = tmpDir('m') + '.json'
+    mkdirSync(src, { recursive: true })
+    writeFileSync(join(src, 'f.md'), 'BUNDLE_V2')
+    mkdirSync(dest, { recursive: true })
+    writeFileSync(join(dest, 'f.md'), 'USER EDIT')
+    writeFileSync(manifestPath, JSON.stringify({ 'f.md': sha256('BUNDLE_V1') }, null, 2))
+
+    let conflicts = 0
+    const prompterWithSpy: InstallerPrompter = {
+      fileConflict: async () => {
+        conflicts += 1
+        return 'keep'
+      },
+      orphan: async () => 'keep',
+    }
+
+    const summary = await runInteractiveInstall([makeSpec(src, dest, manifestPath)], prompterWithSpy, {
+      prune: true,
+      dryRun: false,
+    })
+
+    expect(conflicts).toBe(1)
+    expect(readFileSync(join(dest, 'f.md'), 'utf-8')).toBe('USER EDIT')
+    expect(summary.bundles[0].kept).toContain('f.md')
+  })
+
+  test('dry run leaves a pristine file and its manifest untouched', async () => {
+    const src = tmpDir('src')
+    const dest = tmpDir('dest')
+    const manifestPath = tmpDir('m') + '.json'
+    mkdirSync(src, { recursive: true })
+    writeFileSync(join(src, 'f.md'), 'BUNDLE_V2')
+    mkdirSync(dest, { recursive: true })
+    writeFileSync(join(dest, 'f.md'), 'BUNDLE_V1')
+    const originalManifest = JSON.stringify({ 'f.md': sha256('BUNDLE_V1') }, null, 2)
+    writeFileSync(manifestPath, originalManifest)
+
+    const summary = await runInteractiveInstall([makeSpec(src, dest, manifestPath)], prompter('keep', 'keep'), {
+      prune: true,
+      dryRun: true,
+    })
+
+    expect(readFileSync(join(dest, 'f.md'), 'utf-8')).toBe('BUNDLE_V1')
+    expect(readFileSync(manifestPath, 'utf-8')).toBe(originalManifest)
+    expect(summary.bundles[0].overwritten).toContain('f.md')
+  })
 })

@@ -24,11 +24,12 @@ Worktree loops require a git repository with at least one commit. If OpenCode st
 
 ## A goal is paused or stuck planning
 
-A goal pauses instead of retrying when a chunk loop ends not-completed, when the chunk planner fails to produce a plan or its session errors, or when the chunk cap is reached. Plugin boot never mutates goals, so a plugin restart while a chunk was planning leaves the goal `running` with a stale `planning` chunk (or a chunk whose loop ended without a `settled` notification), not paused. `goal-status <goalId>` shows the goal and each chunk's stage, and `goal-status restart` recovers it (`force` discards planning still marked in flight).
+A goal pauses instead of retrying when a chunk loop ends not-completed, when the chunk planner fails to produce a plan or its session errors, or when the chunk cap is reached. When the chunk planner's session errors (a provider failure or an interrupted execution), the goal pauses and keeps the planner session, stored plan, and planning checkout, named in the pause message for inspection. While the goal is running a planner session runs unattended, so any request OpenCode would prompt for is denied rather than shown; a planner session kept for inspection after the goal pauses prompts normally. Plugin boot never mutates goals, so a plugin restart while a chunk was planning leaves the goal `running` with a stale `planning` chunk (or a chunk whose loop ended without a `settled` notification), not paused. `goal-status <goalId>` shows the goal and each chunk's stage, and `goal-status restart` recovers it (`force` discards planning still marked in flight).
 
 Recover with `goal-status restart`:
 
 - `goal-status goalId=<goalId> restart=true` re-plans an interrupted planning chunk, or catches a completed chunk loop whose `settled` notification never advanced the goal.
+- After a planner-session error, `restart=true` (no `force`) discards the kept planner session, stored plan, and planning checkout and re-plans that chunk; `goal-cancel` also cleans them up.
 - Add `force=true` when the chunk is still marked as planning in flight and you want to discard it (for example after the planner session was lost).
 - Add `maxChunks=<n>` when the goal paused at its chunk cap.
 - A paused goal whose chunk loop ended cancelled, errored, or stalled resumes automatically once you restart that loop (`loop-status name=<loop> restart=true`) and it completes.

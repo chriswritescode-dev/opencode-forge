@@ -102,6 +102,13 @@ export interface ForgeCore {
    * Any resolution failure answers false so the prompt is still shown.
    */
   autoApprovesPermissions(sessionID: string): Promise<boolean>
+  /**
+   * True when `sessionID` is the planner session of a goal chunk that is still planning while its goal
+   * is running — the planner runs unattended, so a request that would ask is denied instead of waiting.
+   * A planner session kept for inspection after its goal paused answers false so its prompts are shown.
+   * A lookup failure answers false.
+   */
+  isUnattendedGoalPlannerSession(sessionID: string): boolean
   /** Resolves whether per-session auto-approve is on for `sessionID`, whether that is inherited, and the session that owns the flag. */
   getSessionAutoApproveState(sessionID: string): Promise<ForgeAutoApproveState>
   /**
@@ -268,7 +275,7 @@ export function createSessionDirectoryLookup(
 export function buildArchitectReminder(): string {
   return `<system-reminder>
 READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
-Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
+Before designing, settle the route with grouped \`question\` rounds after research until every route decision is settled. Finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning, then summarize the plan in chat and stop. Once the plan is stored, do not call the \`question\` tool and do not launch anything — the user decides whether and how to execute.
 </system-reminder>`
 }
 
@@ -1208,6 +1215,16 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         return (await resolveShellSandbox(sessionID)) !== null
       } catch (err) {
         logger.log(`[sandbox] permission auto-approval skipped for ${sessionID}: ${errorMessage(err)}`)
+        return false
+      }
+    },
+    isUnattendedGoalPlannerSession: (sessionID) => {
+      try {
+        const chunk = goalGoalsRepo.getChunkByPlannerSession(projectId, sessionID)
+        if (chunk?.stage !== 'planning') return false
+        return goalGoalsRepo.getGoal(projectId, chunk.goalId)?.status === 'running'
+      } catch (err) {
+        logger.log(`[goal] planner session lookup failed for ${sessionID}: ${errorMessage(err)}`)
         return false
       }
     },

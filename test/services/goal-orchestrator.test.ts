@@ -498,18 +498,27 @@ describe('createGoalOrchestrator', () => {
       h.plansRepo.writeForSession(PROJECT, 'planner-session-1', '# stored plan')
     }
 
-    test('abandons planning and pauses the goal with the planner failure', async () => {
+    test('keeps the planning chunk, session, and checkout and pauses the goal with the planner failure', async () => {
       h = createHarness()
       await setupPlanningChunk()
+      h.removeCheckout.mockClear()
 
       await h.orchestrator.onPlannerError('planner-session-1', 'provider exploded')
 
       const goal = h.goalsRepo.getGoal(PROJECT, GOAL)
       expect(goal?.status).toBe('paused')
-      expect(goal?.error).toBe('Planner failed for chunk 2: provider exploded')
-      expect(h.goalsRepo.listChunks(PROJECT, GOAL)).toHaveLength(1)
-      expect(h.deleteSession).toHaveBeenCalledWith('planner-session-1', goalPlanningDir(DATA_DIR, GOAL, 1))
-      expect(h.removeCheckout).toHaveBeenCalledWith(PROJECT_DIR, goalPlanningDir(DATA_DIR, GOAL, 1))
+      expect(goal?.error?.startsWith('Planner failed for chunk 2: provider exploded')).toBe(true)
+      expect(goal?.error).toContain('planner-session-1')
+      expect(goal?.error).toContain(goalPlanningDir(DATA_DIR, GOAL, 1))
+
+      const chunks = h.goalsRepo.listChunks(PROJECT, GOAL)
+      expect(chunks).toHaveLength(2)
+      expect(chunks[1].stage).toBe('planning')
+      expect(chunks[1].plannerSessionId).toBe('planner-session-1')
+
+      expect(h.deleteSession).not.toHaveBeenCalled()
+      expect(h.removeCheckout).not.toHaveBeenCalled()
+      expect(h.plansRepo.getForSession(PROJECT, 'planner-session-1')).not.toBeNull()
       expect(h.startLoop).not.toHaveBeenCalled()
     })
 
@@ -523,6 +532,39 @@ describe('createGoalOrchestrator', () => {
 
       expect(h.startLoop).not.toHaveBeenCalled()
       expect(h.planner.latestAssistantText).not.toHaveBeenCalled()
+    })
+
+    test('restart discards the kept planning chunk and re-plans it', async () => {
+      h = createHarness()
+      await setupPlanningChunk()
+
+      await h.orchestrator.onPlannerError('planner-session-1', 'provider exploded')
+
+      await expect(h.orchestrator.restart(GOAL)).resolves.toBe(`Goal ${GOAL} resumed.`)
+
+      expect(h.deleteSession).toHaveBeenCalledWith('planner-session-1', goalPlanningDir(DATA_DIR, GOAL, 1))
+      expect(h.removeCheckout).toHaveBeenCalledWith(PROJECT_DIR, goalPlanningDir(DATA_DIR, GOAL, 1))
+      expect(h.plansRepo.getForSession(PROJECT, 'planner-session-1')).toBeNull()
+      expect(h.goalsRepo.getGoal(PROJECT, GOAL)?.status).toBe('running')
+
+      const chunks = h.goalsRepo.listChunks(PROJECT, GOAL)
+      expect(chunks).toHaveLength(2)
+      expect(chunks[1].stage).toBe('planning')
+      expect(chunks[1].plannerSessionId).toBe('planner-session-2')
+    })
+
+    test('cancel cleans up the kept planning chunk', async () => {
+      h = createHarness()
+      await setupPlanningChunk()
+
+      await h.orchestrator.onPlannerError('planner-session-1', 'provider exploded')
+
+      const message = await h.orchestrator.cancel(GOAL)
+
+      expect(message).toContain('cancelled')
+      expect(h.goalsRepo.getGoal(PROJECT, GOAL)?.status).toBe('cancelled')
+      expect(h.deleteSession).toHaveBeenCalledWith('planner-session-1', goalPlanningDir(DATA_DIR, GOAL, 1))
+      expect(h.removeCheckout).toHaveBeenCalledWith(PROJECT_DIR, goalPlanningDir(DATA_DIR, GOAL, 1))
     })
 
     test('ignores a session error for a session that is not planning', async () => {
