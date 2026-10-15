@@ -315,14 +315,14 @@ On `settled` for a **completed** chunk loop:
 
 1. The chunk is marked `completed` with a capped summary — the loop's `completionSummary`, else its `postActionReport`, truncated to `GOAL_CHUNK_SUMMARY_MAX_CHARS`.
 2. A detached, read-only planning checkout of the previous chunk branch tip is created at `<dataDir>/worktrees/.goal-plan-<goalId>-<chunkIndex>`.
-3. `architect-auto` plans the next task there with the goal's **auditor** model and variant; the planner prompt carries the objective, the ordered task list, and the completed-chunk summaries. The planner either:
+3. `architect-auto` plans the next task there with the goal's **auditor** model and variant; the planner prompt carries the objective, the ordered task list, and the completed-chunk summaries. The planner runs unattended, so any request OpenCode would `ask` about is denied before per-session or sandbox auto-approve applies, with `Blocked in goal planning: the chunk planner runs unattended, so requests that need approval are denied. Continue without it and report what was skipped.` OpenCode `allow` and `deny` decisions are untouched. The planner either:
    - **writes a plan** — the chunk loop launches with `baseRef` set to that exact commit and the snapshotted settings, so each chunk gets its own branch stacked on the previous chunk's commit;
    - **emits `<!-- forge-goal:complete -->`** (`GOAL_COMPLETE_MARKER`) — the goal is marked `completed`;
    - **fails** — the goal is **paused** with the reason.
 
 Why a plain detached checkout instead of a Forge workspace: a Forge workspace with no matching loop row is reclaimed by the stale-workspace sweep after a 5-minute grace window, so a planning workspace would be removed out from under the planner.
 
-Planner failures pause the goal. A normalized `session.error` for a chunk planner session — a provider failure or an interrupted/aborted execution — abandons the chunk and pauses the goal with `Planner failed for chunk <n>: <reason>`. A premature idle that yields neither assistant text nor a stored plan leaves the chunk planning rather than failing it.
+Planner failures pause the goal. A normalized `session.error` for a chunk planner session — a provider failure or an interrupted/aborted execution — or an execution OpenCode interrupts for inactivity pauses the goal with `Planner failed for chunk <n>: <reason> (kept planner session <id> and checkout <dir> for inspection; goal-status restart discards them and re-plans chunk <n>)`. The chunk stays in stage `planning`, and its planner session, stored plan, and detached planning checkout are kept for inspection; `goal-status restart` (no `force` needed) discards them and re-plans the chunk, and cancelling the goal also cleans them up. A later idle for that session is a no-op because the goal is paused. Other planning failures — no stored plan, an insufficient brief, or a loop start failure — still discard the planning resources. A premature idle that yields neither assistant text nor a stored plan leaves the chunk planning rather than failing it.
 
 ### Pause, resume, restart, and cancel
 

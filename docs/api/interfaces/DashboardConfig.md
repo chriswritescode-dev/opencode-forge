@@ -6,7 +6,7 @@
 
 # Interface: DashboardConfig
 
-Defined in: [types.ts:261](https://github.com/chriswritescode-dev/opencode-forge/blob/922f6a3ab7ff6c2e56bbb878cd5cebb484b8629d/src/types.ts#L261)
+Defined in: [types.ts:261](https://github.com/chriswritescode-dev/opencode-forge/blob/7584d84e45d2081a0f943c97373069aaa685ea56/src/types.ts#L261)
 
 Configuration for the database-backed observability dashboard HTTP server.
 The dashboard is unauthenticated: binding to a non-loopback address exposes
@@ -20,7 +20,7 @@ for the canonical warning text rendered by launch surfaces.
 
 > `optional` **host?**: `string`
 
-Defined in: [types.ts:263](https://github.com/chriswritescode-dev/opencode-forge/blob/922f6a3ab7ff6c2e56bbb878cd5cebb484b8629d/src/types.ts#L263)
+Defined in: [types.ts:263](https://github.com/chriswritescode-dev/opencode-forge/blob/7584d84e45d2081a0f943c97373069aaa685ea56/src/types.ts#L263)
 
 Bind hostname or IP. Defaults to "localhost". Use "0.0.0.0" to listen on all interfaces.
 
@@ -30,6 +30,6 @@ Bind hostname or IP. Defaults to "localhost". Use "0.0.0.0" to listen on all int
 
 > `optional` **port?**: `number`
 
-Defined in: [types.ts:265](https://github.com/chriswritescode-dev/opencode-forge/blob/922f6a3ab7ff6c2e56bbb878cd5cebb484b8629d/src/types.ts#L265)
+Defined in: [types.ts:265](https://github.com/chriswritescode-dev/opencode-forge/blob/7584d84e45d2081a0f943c97373069aaa685ea56/src/types.ts#L265)
 
 Base bind port. Defaults to 4747. Consecutive ports are tried when busy.

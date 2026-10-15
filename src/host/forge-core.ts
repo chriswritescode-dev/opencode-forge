@@ -102,6 +102,11 @@ export interface ForgeCore {
    * Any resolution failure answers false so the prompt is still shown.
    */
   autoApprovesPermissions(sessionID: string): Promise<boolean>
+  /**
+   * True when `sessionID` is a goal chunk planner session. Planner sessions run unattended, so a
+   * permission request that would ask is denied instead of waiting for an answer. A lookup failure answers false.
+   */
+  isGoalPlannerSession(sessionID: string): boolean
   /** Resolves whether per-session auto-approve is on for `sessionID`, whether that is inherited, and the session that owns the flag. */
   getSessionAutoApproveState(sessionID: string): Promise<ForgeAutoApproveState>
   /**
@@ -1208,6 +1213,14 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         return (await resolveShellSandbox(sessionID)) !== null
       } catch (err) {
         logger.log(`[sandbox] permission auto-approval skipped for ${sessionID}: ${errorMessage(err)}`)
+        return false
+      }
+    },
+    isGoalPlannerSession: (sessionID) => {
+      try {
+        return goalGoalsRepo.getChunkByPlannerSession(projectId, sessionID) !== null
+      } catch (err) {
+        logger.log(`[goal] planner session lookup failed for ${sessionID}: ${errorMessage(err)}`)
         return false
       }
     },

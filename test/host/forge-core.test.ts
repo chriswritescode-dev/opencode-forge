@@ -14,6 +14,7 @@ import {
 } from '../../src/storage'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 import type { AutoApproveDenyRule, PluginConfig } from '../../src/types'
+import { acquireGoalOrchestratorDb } from '../../src/services/goal-orchestrator'
 import { resolveSessionAutoApproveFlag } from '../../src/utils/session-auto-approve-flag'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 
@@ -131,6 +132,42 @@ describe('createForgeCore', () => {
 
     await expect(built.core.autoApprovesPermissions('ses_host_1')).resolves.toBe(true)
     await expect(built.core.autoApprovesPermissions('ses_other')).resolves.toBe(false)
+  })
+
+  test('isGoalPlannerSession recognizes a recorded goal chunk planner session', async () => {
+    const built = await buildCore()
+
+    const goalsRepo = createGoalsRepo(acquireGoalOrchestratorDb(join(testDir, 'memory')))
+    const goalId = 'goal-planner'
+    const hostSessionId = 'ses_host_1'
+    goalsRepo.saveDraft({
+      projectId: built.projectId,
+      goalId,
+      title: 'Ship it',
+      objective: 'Deliver the feature',
+      tasks: [],
+      hostSessionId,
+      maxChunks: 2,
+    })
+    goalsRepo.attachFirstChunk(
+      built.projectId,
+      hostSessionId,
+      {
+        projectDir: testDir,
+        executionModel: null,
+        auditorModel: null,
+        executionVariant: null,
+        auditorVariant: null,
+        sandboxSettings: null,
+        maxIterations: null,
+      },
+      { loopName: 'goal-loop', branch: null, title: 'Chunk 0', baseCommit: null },
+    )
+    goalsRepo.insertPlanningChunk(built.projectId, goalId, 1, { planningDir: testDir, baseCommit: 'sha-1' })
+    goalsRepo.setChunkPlanner(built.projectId, goalId, 1, 'ses_planner')
+
+    expect(built.core.isGoalPlannerSession('ses_planner')).toBe(true)
+    expect(built.core.isGoalPlannerSession('ses_other')).toBe(false)
   })
 
   test('getSessionAutoApproveState reports own, inherited, and disabled states', async () => {
