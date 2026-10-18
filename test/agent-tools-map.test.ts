@@ -39,13 +39,6 @@ describe('per-agent tools.exclude (regression guard)', () => {
     }
   })
 
-  test('feature-splitter excludes plan-authoring tools', () => {
-    const excluded = agents['feature-splitter'].tools?.exclude ?? []
-    for (const tool of ['plan-write', 'plan-edit']) {
-      expect(excluded).toContain(tool)
-    }
-  })
-
   test('architect and architect-auto retain plan-authoring tools', () => {
     for (const role of ['architect', 'architect-auto'] as const) {
       const excluded = agents[role].tools?.exclude ?? []

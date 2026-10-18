@@ -107,27 +107,22 @@ describe('Tool Blocking Logic', () => {
 
   describe('Blocked tools list', () => {
     test('includes question tool', () => {
-      const blockedTools = ['question', 'execute-plan', 'execute-goal']
+      const blockedTools = ['question', 'execute-plan', 'loop-status']
       expect(blockedTools).toContain('question')
     })
 
     test('includes loop tool', () => {
-      const blockedTools = ['question', 'execute-plan', 'execute-goal']
+      const blockedTools = ['question', 'execute-plan', 'loop-status']
       expect(blockedTools).toContain('execute-plan')
     })
 
-    test('includes execute-goal tool so active loops cannot recurse', () => {
-      const blockedTools = ['question', 'execute-plan', 'execute-goal']
-      expect(blockedTools).toContain('execute-goal')
-    })
-
     test('does not include memory-read tool', () => {
-      const blockedTools = ['question', 'execute-plan', 'execute-goal']
+      const blockedTools = ['question', 'execute-plan', 'loop-status']
       expect(blockedTools).not.toContain('memory-read')
     })
 
     test('does not include memory-write tool', () => {
-      const blockedTools = ['question', 'execute-plan', 'execute-goal']
+      const blockedTools = ['question', 'execute-plan', 'loop-status']
       expect(blockedTools).not.toContain('memory-write')
     })
   })
@@ -137,16 +132,15 @@ describe('Tool Blocking Logic', () => {
       const messages: Record<string, string> = {
         'question': 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
         'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
-        'execute-goal': 'The execute-goal tool is not available during a loop. Focus on executing the current task.',
       }
       expect(messages['question']).toContain('question tool is not available')
-      expect(messages['execute-goal']).toContain('execute-goal tool is not available')
+      expect(messages['execute-plan']).toContain('execute-plan tool is not available')
     })
   })
 
-  describe('Goal-loop recursion blocking during auditing', () => {
-    const hostLoopName = 'goal-loop-auditing'
-    const auditorSessionId = 'goal-auditor-toolblock'
+  describe('Recursion blocking during auditing', () => {
+    const hostLoopName = 'loop-auditing'
+    const auditorSessionId = 'auditor-toolblock'
     const unrelatedSessionId = 'unrelated-session-toolblock'
 
     function setStateAuditing(loopService: ReturnType<typeof createLoopService>): void {
@@ -155,7 +149,7 @@ describe('Tool Blocking Logic', () => {
         sessionId: auditorSessionId,
         loopName: hostLoopName,
         worktreeDir: '/test/worktree',
-        worktreeBranch: 'opencode/loop-goal',
+        worktreeBranch: 'opencode/loop-auditing',
         projectDir: '/test/project',
         iteration: 1,
         maxIterations: 5,
@@ -175,9 +169,7 @@ describe('Tool Blocking Logic', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: false,
-        hostSessionId: 'goal-host-toolblock',
-        kind: 'goal',
-        goal: 'Add a /health endpoint with a test.',
+        hostSessionId: 'host-toolblock',
       })
       loopService.registerLoopSession(auditorSessionId, hostLoopName)
     }
@@ -203,12 +195,54 @@ describe('Tool Blocking Logic', () => {
         resolveActiveLoopForSession: resolver.resolveActiveLoopForSession,
       })!
 
-      await expect(hook({ tool: 'execute-goal', sessionID: auditorSessionId, callID: 'c-aud' }, { args: {} }))
-        .rejects.toThrow('execute-goal tool is not available')
+      await expect(hook({ tool: 'execute-plan', sessionID: auditorSessionId, callID: 'c-aud' }, { args: {} }))
+        .rejects.toThrow('execute-plan tool is not available')
       await expect(hook({ tool: 'execute-plan', sessionID: auditorSessionId, callID: 'c-aud-plan' }, { args: {} }))
         .rejects.toThrow('execute-plan tool is not available')
 
-      await expect(hook({ tool: 'execute-goal', sessionID: unrelatedSessionId, callID: 'c-unrel' }, { args: {} }))
+      await expect(hook({ tool: 'execute-plan', sessionID: unrelatedSessionId, callID: 'c-unrel' }, { args: {} }))
+        .resolves.toBeUndefined()
+    })
+
+    test('resolver-backed before hook blocks goal-write inside a loop session', async () => {
+      setStateAuditing(loopService)
+      const resolver = createSessionLoopResolver({
+        loop: {
+          service: loopService,
+          listActive: () => [],
+        },
+        getParentSessionId: async () => null,
+        logger: createMockLogger(),
+      })
+      const hook = createToolExecuteBeforeHook(makeCtx(loopService), {
+        resolveActiveLoopForSession: resolver.resolveActiveLoopForSession,
+      })!
+
+      await expect(hook({ tool: 'goal-write', sessionID: auditorSessionId, callID: 'c-goal' }, { args: {} }))
+        .rejects.toThrow('goal-write tool is not available')
+      await expect(hook({ tool: 'goal-write', sessionID: unrelatedSessionId, callID: 'c-goal-unrel' }, { args: {} }))
+        .resolves.toBeUndefined()
+    })
+
+    test('resolver-backed before hook blocks the goal management tools inside a loop session', async () => {
+      setStateAuditing(loopService)
+      const resolver = createSessionLoopResolver({
+        loop: {
+          service: loopService,
+          listActive: () => [],
+        },
+        getParentSessionId: async () => null,
+        logger: createMockLogger(),
+      })
+      const hook = createToolExecuteBeforeHook(makeCtx(loopService), {
+        resolveActiveLoopForSession: resolver.resolveActiveLoopForSession,
+      })!
+
+      await expect(hook({ tool: 'goal-status', sessionID: auditorSessionId, callID: 'c-goal-status' }, { args: {} }))
+        .rejects.toThrow('goal-status tool is not available')
+      await expect(hook({ tool: 'goal-cancel', sessionID: auditorSessionId, callID: 'c-goal-cancel' }, { args: {} }))
+        .rejects.toThrow('goal-cancel tool is not available')
+      await expect(hook({ tool: 'goal-status', sessionID: unrelatedSessionId, callID: 'c-goal-status-unrel' }, { args: {} }))
         .resolves.toBeUndefined()
     })
 
@@ -216,9 +250,9 @@ describe('Tool Blocking Logic', () => {
       setStateAuditing(loopService)
       const hook = createToolExecuteBeforeHook(makeCtx(loopService))!
 
-      await expect(hook({ tool: 'execute-goal', sessionID: auditorSessionId, callID: 'c-aud' }, { args: {} }))
-        .rejects.toThrow('execute-goal tool is not available')
-      await expect(hook({ tool: 'execute-goal', sessionID: unrelatedSessionId, callID: 'c-unrel' }, { args: {} }))
+      await expect(hook({ tool: 'execute-plan', sessionID: auditorSessionId, callID: 'c-aud' }, { args: {} }))
+        .rejects.toThrow('execute-plan tool is not available')
+      await expect(hook({ tool: 'execute-plan', sessionID: unrelatedSessionId, callID: 'c-unrel' }, { args: {} }))
         .resolves.toBeUndefined()
     })
   })

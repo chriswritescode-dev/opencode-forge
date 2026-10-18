@@ -78,13 +78,13 @@ The codebase is organized into these module groups under `src/`:
 |--------|-----------|-----------|
 | `host/` | Host-neutral core plus the V2 adapter | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts`, `forge-rpc.ts` |
 | `client/` | `ForgeClient` port and the V2 adapter | `port.ts`, `v2-adapter.ts`, `v2-workspaces.ts`, `errors.ts` |
-| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant, architect-auto, feature-splitter) | `index.ts`, `types.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `architect-auto.ts`, `feature-splitter.ts` |
-| `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects, group orchestrator) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `group-orchestrator.ts`, `tool-hook-types.ts` |
+| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant, architect-auto) | `index.ts`, `types.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `architect-auto.ts` |
+| `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects, goal orchestrator) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `goal-orchestrator.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
-| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `group-orchestrator.ts`, `group-scheduler.ts`, `tui-rpc-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
+| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `architect-auto-planner.ts`, `goal-orchestrator.ts`, `tui-rpc-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
 | `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts`, `loop-settings.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
-| `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `plan-adjust.ts`, `section-read.ts`, `group.ts`, `tool.ts` |
+| `tools/` | Plugin tools callable by AI agents | `loop.ts`, `goal.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `plan-adjust.ts`, `section-read.ts`, `tool.ts` |
 | `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `forge-naming.ts`, `forge-workspace-metadata.ts`, `pending-teardown.ts`, `worktree-commit.ts`, `worktree-opencode-config.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
 | `utils/` | Shared utility modules (~40 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, `git-service.ts`, `toast.ts`, etc. |
 | `tui/` | TUI-specific components | `v2.tsx`, `host.tsx`, `execute-plan-panel.tsx`, `plan-commands.ts`, `loop-settings-dialog.ts`, `host-sandbox.ts`, `session-sandbox-store.ts`, `sandbox-build-dialog.tsx`, `session-follow.ts`, `project-client.ts`, `v2-client.ts`, `options.ts` |
@@ -173,7 +173,7 @@ The V2 adapter registers the shared core handlers through V2's hook API:
 
 ### Architect Reminder (`session.hook('context')`)
 
-`src/host/v2-hooks.ts` appends a compact `<system-reminder>` to the last user message in interactive architect sessions, reinforcing stored-plan completion, warning-free structure, and canonical approval dispatch. Agent permissions separately deny filesystem mutation tools and `subagent` while retaining the shell tool for read-only inspection plus `plan-read`, `plan-write`, and `plan-edit`; the autonomous architect also cannot invoke execution, loop, or group tools.
+`src/host/v2-hooks.ts` appends a compact `<system-reminder>` to the last user message in interactive architect sessions, reinforcing stored-plan completion, warning-free structure, and canonical approval dispatch. Agent permissions separately deny filesystem mutation tools and `subagent` while retaining the shell tool for read-only inspection plus `plan-read`, `plan-write`, and `plan-edit`; the autonomous architect also cannot invoke execution, loop, or goal tools.
 
 ### Tool Execution Hooks
 
@@ -185,7 +185,7 @@ The V2 adapter registers the shared core handlers through V2's hook API:
 Loops are autonomous and cannot answer permission prompts, but OpenCode's default subagent ruleset falls back to `ask` for most tools. To prevent deadlocks, `createLoopPermissionPatcher` listens for `session.created` events. When the new session resolves to an active loop, the hook calls `v2.session.update()` to overwrite the child session's `permission` ruleset:
 
 - If the parent session has an allow-all ruleset (e.g. an auditor subagent), the parent's ruleset is inherited so the child stays under the same constraints.
-- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree (external directories included; in a sandbox the mounts are the boundary), and explicit structural denies for `review-write`, `review-delete`, `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`. User-configured `loop.permissions` rules are layered in after the blanket allow and before these structural denies (via `resolveLoopPermissionOptions`), so they can tailor user tools without overriding a structural deny.
+- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree (external directories included; in a sandbox the mounts are the boundary), and explicit structural denies for `review-write`, `review-delete`, `plan-write`, `plan-edit`, `execute-plan`, `question`, `loop-cancel`, `loop-status`. User-configured `loop.permissions` rules are layered in after the blanket allow and before these structural denies (via `resolveLoopPermissionOptions`), so they can tailor user tools without overriding a structural deny.
 
 A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stricter `buildAuditSessionPermissionRuleset()` (blanket allow-all with structural denies for the direct mutation tools `edit`/`write`, plus the shared plan/loop structural denies).
 
@@ -195,13 +195,15 @@ A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stri
 - `location.shutdown` - Run cleanup when the location shuts down
 - Plan approval events via `createPlanApprovalEventHook`
 - Plan capture from streaming message parts via `createPlanCaptureEventHook`
+- Goal planner idle and error events via `createGoalPlannerEventHook` (`src/hooks/goal-orchestrator.ts`) — routes a chunk planner session's idle event to the goal orchestrator; ownership is proven by the persisted planner-session row, so an unrelated session's idle is ignored. A normalized `session.error` for the same session (a provider failure or an interrupted execution) is routed to `onPlannerError`, which abandons the chunk and pauses the goal; a premature idle that yields no output keeps the chunk planning.
 
 ### Additional Hooks
 
 - **Plan Capture** (`src/hooks/plan-capture.ts`) - Captures the session plan of record. The primary authoring path is the `plan-write` / `plan-edit` tools, which write directly to the session-scoped `plans` row. Marker capture of `<!-- forge-plan:start -->...end-->` from assistant messages is the fallback path and runs on streaming `message.part.updated` events.
 - **Forge Session Attach** (`src/hooks/forge-session-attach.ts`) - Automatically attaches loops when new sessions are created
 - **Watchdog** (`src/hooks/watchdog.ts`) - Stall detection and recovery for loops
-- **Group Orchestrator** (`src/hooks/group-orchestrator.ts`) - Advances queued features when a group loop terminates
+- **Goal Orchestrator** (`src/hooks/goal-orchestrator.ts`) - Routes chunk planner idle and `session.error` events into the goal orchestrator
+- **Loop-change notifier** (`src/host/forge-core.ts`) - `createLoopChangeNotifier` fires the `settled` reason once a loop's teardown side effects (teardown commit, sandbox stop, worktree cleanup) finish and hands it to the goal orchestrator; the `terminate` reason, fired when the terminal status is persisted but before teardown, never advances a goal.
 
 ## Storage Architecture
 
@@ -212,7 +214,7 @@ OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is 
 - `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
 - `closeDatabase(db: Database)` - Closes database connections on shutdown
 - `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
-- Migrations are registered explicitly in execution order (ids 100-149; not every id ships a SQL file) and tracked in a `migrations` table
+- Migrations are registered explicitly in execution order (ids 100-153; not every id ships a SQL file) and tracked in a `migrations` table
 
 ### Repository Pattern
 
@@ -227,8 +229,8 @@ All data access goes through typed repository interfaces created via factory fun
 | `LoopTransitionsRepo` | Append-only loop phase-transition log | `LoopTransitionRow` |
 | `PlanAmendmentsRepo` | Append-only audit trail of mid-loop plan amendments | `PlanAmendmentRow` |
 | `LoopSessionUsageRepo` | Per-session token/cost usage across rotated loop sessions | `LoopSessionUsageRow`, `LoopUsageAggregate` |
-| `FeatureGroupsRepo` | Feature-group state for grouped execution | `FeatureGroupsRepo` |
 | `LoopAttemptsRepo` | Durable audit-attempt history | `LoopAttemptsRepo` |
+| `GoalsRepo` | Goal rows and their sequential chunk rows | `GoalRow`, `GoalChunkRow`, `GoalTask` |
 | `SessionSandboxPreferencesRepo` | Desired/applied host-session sandbox state (stored as `tui_preferences` JSON keys) | `SessionSandboxPreferencesRepo` |
 | `SessionAutoApproveRepo` | Per-session auto-approve state (stored as TTL-scoped `tui_preferences` JSON keys) | `SessionAutoApproveRepo` |
 
@@ -247,10 +249,10 @@ The plugin follows this initialization sequence within `createForgeCore()`:
 3. **Pending Teardown Registry** - Track worktree teardown contexts
 4. **Workspace Adapter** - Register the forge workspace adapter
 5. **Database** - Initialize SQLite storage (`initializeDatabase()`)
-6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, featureGroups, transitions, planAmendments, attempts, sessionSandboxPreferences, sessionAutoApprove)
+6. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage, transitions, planAmendments, attempts, goals, sessionSandboxPreferences, sessionAutoApprove)
 7. **Loop Event Handler** - Connect loop runtime to events and state management
 8. **Session Sandbox Controller** - Reconcile the host-session sandbox selection
-9. **Group Orchestrator** - Manage grouped execution
+9. **Goal Orchestrator** - Build the `ArchitectAutoPlanner` and the goal orchestrator that plans and launches sequential goal chunks, plus the loop-change notifier that feeds it `settled` events. The orchestrator writes through a process-shared database handle (`acquireGoalOrchestratorDb` in `src/services/goal-orchestrator.ts`), so a chunk's `settled` callback advances the goal even after the plugin instance that owned it is disposed.
 10. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
 11. **Hooks** - Final registration of all hook points
 

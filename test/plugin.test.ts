@@ -9,7 +9,6 @@ import {
   initializeDatabase,
   closeDatabase,
   createLoopsRepo,
-  createFeatureGroupsRepo,
   createSessionSandboxPreferencesRepo,
 } from '../src/storage'
 import { createFakeForgeClient, type RecordedCall } from './helpers/fake-client'
@@ -101,7 +100,6 @@ function runningLoopRow(projectId: string, directory: string, overrides: Partial
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
-    kind: 'plan',
     ...overrides,
   }
 }
@@ -202,7 +200,6 @@ describe('createForgeCore', () => {
     expect(tools['ast-grep-scan']).toBeUndefined()
     // Loop tools should be registered
     expect(tools['execute-plan']).toBeDefined()
-    expect(tools['execute-goal']).toBeDefined()
     expect(tools['loop-cancel']).toBeDefined()
     expect(tools['loop-status']).toBeDefined()
   })
@@ -332,55 +329,6 @@ describe('createForgeCore', () => {
     expect(rowAfter!.completedAt).toBeNull()
     expect(rowAfter!.sandbox).toBe(true)
     expect(rowAfter!.sandboxContainer).toBe('pre-existing-container-name')
-
-    closeDatabase(dbAfter)
-  })
-
-  test('marks previously-running feature groups as interrupted on startup (no auto-resume)', async () => {
-    const projectId = uniqueProjectId()
-    const config: PluginConfig = { dataDir: join(testDir, 'memory') }
-
-    const db = initializeDatabase(config.dataDir!)
-    const featureGroupsRepo = createFeatureGroupsRepo(db)
-    featureGroupsRepo.createGroup({
-      projectId,
-      groupId: 'startup-group-1',
-      title: 'Startup Test Group',
-      status: 'running',
-      createdAt: Date.now() - 10000,
-      updatedAt: Date.now() - 10000,
-    })
-    featureGroupsRepo.insertFeatures(projectId, 'startup-group-1', [
-      { title: 'Feature A', description: 'Desc A' },
-    ])
-    featureGroupsRepo.createGroup({
-      projectId,
-      groupId: 'startup-group-2',
-      title: 'Completed Group',
-      status: 'completed',
-      createdAt: Date.now() - 10000,
-      updatedAt: Date.now() - 10000,
-      completedAt: Date.now(),
-    })
-    closeDatabase(db)
-
-    await buildCore({ config, projectId })
-
-    const dbAfter = initializeDatabase(config.dataDir!)
-    const featureGroupsRepoAfter = createFeatureGroupsRepo(dbAfter)
-
-    const group1 = featureGroupsRepoAfter.getGroup(projectId, 'startup-group-1')
-    expect(group1).not.toBeNull()
-    expect(group1!.status).toBe('interrupted')
-
-    const features1 = featureGroupsRepoAfter.listFeatures(projectId, 'startup-group-1')
-    expect(features1).toHaveLength(1)
-    expect(features1[0].title).toBe('Feature A')
-    expect(features1[0].stage).toBe('pending')
-
-    const group2 = featureGroupsRepoAfter.getGroup(projectId, 'startup-group-2')
-    expect(group2).not.toBeNull()
-    expect(group2!.status).toBe('completed')
 
     closeDatabase(dbAfter)
   })

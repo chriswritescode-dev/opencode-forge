@@ -38,7 +38,6 @@ function makeFakeLoopService(): LoopService {
     getAttemptHistory: vi.fn(() => []),
     bumpFindingRecurrence: vi.fn(),
     resetSectionRecurrence: vi.fn(),
-    generateUniqueLoopName: vi.fn(() => ''),
     getPlanText: vi.fn(() => null),
     incrementError: vi.fn(() => 1),
     resetError: vi.fn(),
@@ -208,7 +207,6 @@ describe('LoopService seam — sectioned dirty audit max-iterations safety net',
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: false,
-      kind: 'plan',
     }
     const fakeService = makeStatefulFakeLoopService(initialState)
     // An outstanding bug finding makes the audit genuinely dirty; a summary-less

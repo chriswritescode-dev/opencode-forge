@@ -135,8 +135,7 @@ async function readRecentMessages(
  * Legacy latest-message capture. Scans recent assistant messages for the
  * newest marked plan and persists it regardless of which message currently
  * completing. Used only when no session-scoped `plans` row exists yet (e.g.
- * `execute-plan` with no inline plan and no prior `plan-write`, or the group
- * orchestrator capturing an architect's freshly emitted plan). Storage is the
+ * `execute-plan` with no inline plan and no prior `plan-write`). Storage is the
  * plan of record; new writes go through marked-plan streaming capture or
  * `plan-write` so this path must not be invoked after a row exists.
  */

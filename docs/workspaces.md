@@ -8,7 +8,7 @@ See also: [Loop System](loop-system.md), [Architecture](architecture.md), [Commo
 
 Worktrees and locations are first-class in OpenCode 2.x, so there is no experimental runtime toggle, no environment variable, and no version floor. The only prerequisite is the repository requirement below.
 
-All worktree-based execution paths require a git repository with at least one root commit: `execute-plan` (Loop mode), `execute-goal` (`/execute-goal`), TUI Loop execution dialog launches, grouped execution (`/launch-group`), and group restarts all check for the root commit before creating worktrees, sessions, or group state. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry.
+All worktree-based execution paths require a git repository with at least one root commit: `execute-plan` (Loop mode), TUI Loop execution dialog launches, and the launch of a goal chunk all check for the root commit before creating worktrees or sessions. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry.
 
 ## How it works
 
@@ -22,7 +22,15 @@ When a worktree loop starts, Forge:
 
 The adapter's `remove` hook commits in-flight changes (when teardown context allows), stops the sandbox container if any, and removes the worktree directory unless the loop is restartable. Branches are preserved for later restart or merge. Workspaces are listed, reported, and removed from the persisted metadata; a record whose directory is gone is pruned.
 
+A loop name is reserved before any side effects (`src/loop/name-uniqueness.ts`): a new loop start never reuses a name still referenced by a goal chunk (`goal_chunks.loop_name`) or whose `forge/<slug>` branch still exists, taking a `-N` suffix instead. A restart is exempt — it reuses the loop's own name and branch.
+
 Forge deliberately does not register a `worktree.transform` strategy: that would silently become the default for every worktree of the user. The built-in git strategy is also rejected because its `--detach` add bypasses Forge's branch, orphan, config, and sandbox handling.
+
+## Based worktrees and goal planning checkouts
+
+When a loop carries an explicit base ref — as every goal chunk after the first does, stacked on the previous chunk's branch tip — the adapter branches the worktree from that exact commit (`git worktree add <dir> -b <branch> <baseRef>`) instead of the project `HEAD`. In this mode it **refuses to reuse an existing branch**: if `forge/<loop>` already exists it throws rather than basing the new chunk on the wrong commit. The base ref is carried on the workspace `extra.baseRef` field.
+
+A goal's next-chunk planning runs in a plain detached checkout at `<dataDir>/worktrees/.goal-plan-<goalId>-<chunkIndex>` (`git worktree add --detach <dir> <commit>`), not a Forge workspace. The leading dot keeps it from colliding with a loop worktree slug, and a Forge workspace with no matching loop row would be reclaimed by the stale-workspace sweep after its 5-minute grace window. The checkout is removed once the plan is captured or the goal is paused or cancelled.
 
 ## Failure behavior
 
@@ -30,4 +38,4 @@ If initial worktree creation fails at startup — API mismatch or a network erro
 
 ## From the TUI
 
-Loops are launched from the execution dialog (or the `execute-plan` / `execute-goal` tools); each loop runs in its worktree directory, and the sidebar lists active loops.
+Loops are launched from the execution dialog (or the `execute-plan` tool); each loop runs in its worktree directory, and the sidebar lists active loops.

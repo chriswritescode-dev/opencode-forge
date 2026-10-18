@@ -83,6 +83,7 @@ describe('createConfigHandler', () => {
       const codePermission = code.permission as Record<string, string>
 
       expect(Object.keys(codePermission).sort()).toEqual([
+        'goal-write',
         'plan-edit',
         'plan-write',
         'question',
@@ -129,7 +130,7 @@ describe('createConfigHandler', () => {
       expect(architectAutoPermission.question).toBe('deny')
       expect(architectAutoTools.question).toBe(false)
 
-      for (const tool of ['execute-plan', 'execute-goal', 'launch-group', 'group-status', 'group-cancel', 'loop-status', 'loop-cancel']) {
+      for (const tool of ['execute-plan', 'loop-status', 'loop-cancel']) {
         expect(architectTools[tool]).toBeUndefined()
         expect(architectPermission[tool]).toBeUndefined()
         expect(architectAutoTools[tool]).toBe(false)

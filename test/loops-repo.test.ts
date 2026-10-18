@@ -51,10 +51,9 @@ describe('LoopsRepo', () => {
         final_audit_attempts INTEGER NOT NULL DEFAULT 0,
       execution_variant    TEXT,
       auditor_variant      TEXT,
-      loop_kind            TEXT NOT NULL DEFAULT 'plan',
-      executor_session_id  TEXT,
       auditor_fallback_index INTEGER NOT NULL DEFAULT 0,
       sandbox_settings     TEXT,
+      base_commit          TEXT,
       PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -65,14 +64,12 @@ describe('LoopsRepo', () => {
         loop_name           TEXT NOT NULL,
         last_audit_result   TEXT,
         post_action_report  TEXT,
-        goal                TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
       )
     `)
     
     db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id) WHERE status = 'running'`)
-    db.run(`CREATE INDEX idx_loops_executor_session ON loops(project_id, executor_session_id) WHERE status = 'running' AND executor_session_id IS NOT NULL`)
     
     repo = createLoopsRepo(db)
   })
@@ -116,7 +113,7 @@ describe('LoopsRepo', () => {
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
-    kind: 'plan',
+    baseCommit: null,
   }
 
   const testLarge: LoopLargeFields = {
@@ -179,9 +176,8 @@ describe('LoopsRepo', () => {
         CREATE TABLE loop_large_fields (
           project_id          TEXT NOT NULL,
           loop_name           TEXT NOT NULL,
-          last_audit_result   TEXT,
+          last_audit_result   TEXT CHECK(last_audit_result != '__TXN_FAIL_SENTINEL__'),
           post_action_report  TEXT,
-          goal                TEXT CHECK(goal != '__TXN_FAIL_SENTINEL__'),
           PRIMARY KEY (project_id, loop_name),
           FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
         )
@@ -189,16 +185,14 @@ describe('LoopsRepo', () => {
       repo = createLoopsRepo(db)
     })
 
-    test('rolls back the loops row when the large-field write fails (goal loop)', () => {
+    test('rolls back the loops row when the large-field write fails', () => {
       const row: LoopRow = {
         ...testRow,
-        loopName: 'goal-txn-fail',
-        currentSessionId: 'goal-txn-session',
-        kind: 'goal',
+        loopName: 'txn-fail',
+        currentSessionId: 'txn-fail-session',
       }
       const large: LoopLargeFields = {
-        lastAuditResult: null,
-        goal: '__TXN_FAIL_SENTINEL__',
+        lastAuditResult: '__TXN_FAIL_SENTINEL__',
       }
 
       expect(() => repo.insert(row, large)).toThrow()
@@ -207,25 +201,22 @@ describe('LoopsRepo', () => {
       expect(repo.getLarge(row.projectId, row.loopName)).toBeNull()
     })
 
-    test('commit succeeds atomically when both writes are valid (goal loop)', () => {
+    test('commit succeeds atomically when both writes are valid', () => {
       const row: LoopRow = {
         ...testRow,
-        loopName: 'goal-txn-ok',
-        currentSessionId: 'goal-txn-ok-session',
-        kind: 'goal',
+        loopName: 'txn-ok',
+        currentSessionId: 'txn-ok-session',
       }
       const large: LoopLargeFields = {
-        lastAuditResult: null,
-        goal: 'Add a /health endpoint with tests.',
+        lastAuditResult: 'audit all clear',
       }
 
       expect(repo.insert(row, large)).toBe(true)
       const retrieved = repo.get(row.projectId, row.loopName)
       expect(retrieved).not.toBeNull()
-      expect(retrieved!.kind).toBe('goal')
       const largeRetrieved = repo.getLarge(row.projectId, row.loopName)
       expect(largeRetrieved).not.toBeNull()
-      expect(largeRetrieved!.goal).toBe('Add a /health endpoint with tests.')
+      expect(largeRetrieved!.lastAuditResult).toBe('audit all clear')
     })
   })
 
@@ -648,7 +639,6 @@ describe('LoopsRepo', () => {
         totalSections: 0,
         finalAuditDone: false,
         startedAt: Date.now(),
-        executorSessionId: null,
       })
 
       expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
@@ -700,7 +690,6 @@ describe('LoopsRepo', () => {
       totalSections: 0,
       finalAuditDone: false,
       startedAt: Date.now(),
-      executorSessionId: null,
       ...overrides,
     })
 
@@ -777,7 +766,6 @@ describe('LoopsRepo', () => {
         totalSections: 0,
         finalAuditDone: false,
         startedAt: Date.now(),
-        executorSessionId: null,
       })
 
       const large = repo.getLarge(testRow.projectId, testRow.loopName)
@@ -880,7 +868,6 @@ describe('LoopsRepo', () => {
         totalSections: 0,
         finalAuditDone: false,
         startedAt: Date.now(),
-        executorSessionId: null,
       })
       expect(repo.getLarge(testRow.projectId, 'post-action-loop')!.postActionReport).toBeNull()
 
@@ -897,7 +884,6 @@ describe('LoopsRepo', () => {
       repo.restore(restoredRow, {
         lastAuditResult: null,
         postActionReport: 'post-action report body',
-        goal: null,
       })
 
       const large = repo.getLarge(testRow.projectId, 'post-action-loop')!
@@ -921,7 +907,6 @@ describe('LoopsRepo', () => {
       totalSections: 0,
       finalAuditDone: false,
       startedAt: Date.now(),
-      executorSessionId: null,
     })
 
     test('insert + get round-trips sandboxSettings', () => {
@@ -962,6 +947,47 @@ describe('LoopsRepo', () => {
       expect(repo.get(testRow.projectId, testRow.loopName)!.sandboxSettings).toEqual({
         resources: { cpus: '2', cacheDisk: '4g' },
       })
+    })
+  })
+
+  describe('baseCommit', () => {
+    const SHA = 'abc123'.repeat(6) + 'abcd'
+
+    test('insert + get round-trips baseCommit', () => {
+      repo.insert({ ...testRow, baseCommit: SHA }, testLarge)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.baseCommit).toBe(SHA)
+    })
+
+    test('a legacy row without baseCommit reads back null', () => {
+      repo.insert({ ...testRow, baseCommit: null }, testLarge)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.baseCommit).toBeNull()
+    })
+
+    test('restore writes baseCommit', () => {
+      repo.insert(testRow, testLarge)
+      repo.restore({ ...testRow, baseCommit: SHA }, testLarge)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.baseCommit).toBe(SHA)
+    })
+
+    test('restart preserves the stored baseCommit unchanged', () => {
+      repo.insert({ ...testRow, baseCommit: SHA }, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, {
+        sessionId: 'restart-session',
+        phase: 'coding',
+        iteration: 1,
+        auditCount: 0,
+        sandbox: false,
+        sandboxContainer: null,
+        workspaceId: null,
+        auditorModel: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
+        startedAt: Date.now(),
+      })
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.baseCommit).toBe(SHA)
     })
   })
 })

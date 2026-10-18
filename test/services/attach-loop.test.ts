@@ -76,7 +76,6 @@ describe('attachLoopToSession', () => {
       loop: {
         service: loopService,
         listActive: (...args: any[]) => loopService.listActive(...args),
-        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
         findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},

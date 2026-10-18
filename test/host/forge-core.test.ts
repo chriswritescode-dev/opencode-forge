@@ -5,6 +5,7 @@ import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 import {
   closeDatabase,
+  createGoalsRepo,
   createLoopsRepo,
   createSessionAutoApproveRepo,
   initializeDatabase,
@@ -99,7 +100,6 @@ describe('createForgeCore', () => {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
-      kind: 'plan',
     }
   }
 
@@ -351,6 +351,60 @@ describe('createForgeCore', () => {
         allowLan: false,
       },
     })
+  })
+
+  test('routes a chunk planner idle event to the goal orchestrator', async () => {
+    const built = await buildCore({}, {
+      session: {
+        get: async () => ({ id: 'ses_host_1', projectID: 'ignored', directory: testDir, parentID: null }),
+        messages: async () => ([
+          { info: { role: 'assistant' }, parts: [{ type: 'text', text: '<!-- forge-goal:complete --> every task is done' }] },
+        ]),
+      },
+    })
+
+    const dataDir = join(testDir, 'memory')
+    const db = initializeDatabase(dataDir)
+    const goalsRepo = createGoalsRepo(db)
+    goalsRepo.saveDraft({
+      projectId: built.projectId,
+      goalId: 'goal-1',
+      title: 'Ship it',
+      objective: 'Ship the whole feature',
+      tasks: [],
+      hostSessionId: 'ses-host',
+      maxChunks: 3,
+    })
+    goalsRepo.attachFirstChunk(
+      built.projectId,
+      'ses-host',
+      {
+        projectDir: testDir,
+        executionModel: null,
+        auditorModel: null,
+        executionVariant: null,
+        auditorVariant: null,
+        sandboxSettings: null,
+        maxIterations: null,
+      },
+      { loopName: 'chunk-0-loop', branch: 'forge/chunk-0', title: 'Chunk 0', baseCommit: 'sha-0' },
+    )
+    goalsRepo.insertPlanningChunk(built.projectId, 'goal-1', 1, {
+      planningDir: join(testDir, 'planning'),
+      baseCommit: 'sha-1',
+    })
+    goalsRepo.setChunkPlanner(built.projectId, 'goal-1', 1, 'ses-planner')
+    closeDatabase(db)
+
+    await built.core.onEvent({
+      event: { type: 'session.status', properties: { sessionID: 'ses-planner', status: { type: 'idle' } } },
+    })
+
+    const verifyDb = initializeDatabase(dataDir)
+    const verifyRepo = createGoalsRepo(verifyDb)
+    expect(verifyRepo.getGoal(built.projectId, 'goal-1')?.status).toBe('completed')
+    expect(verifyRepo.listChunks(built.projectId, 'goal-1').some((chunk) => chunk.chunkIndex === 1)).toBe(false)
+    closeDatabase(verifyDb)
   })
 })
 

@@ -56,7 +56,7 @@ export interface ForgeExecutePlanInput {
 }
 
 export type ForgeExecutePlanOutput =
-  | { sessionId: string; loopName?: string; worktreeDir?: string; workspaceId?: string }
+  | { sessionId: string; loopName?: string; worktreeDir?: string; workspaceId?: string; goalId?: string }
   | { error: string }
 
 /**
@@ -276,6 +276,7 @@ export const FORGE_RPC = {
           loopName: OPTIONAL_STRING,
           worktreeDir: OPTIONAL_STRING,
           workspaceId: OPTIONAL_STRING,
+          goalId: OPTIONAL_STRING,
           error: OPTIONAL_STRING,
         },
         additionalProperties: false,
@@ -496,9 +497,9 @@ function readForgeRpcResult<T>(
 export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutput {
   return readForgeRpcResult(value, 'plan execution result', (record) => {
     if (typeof record.sessionId !== 'string') return { error: 'Forge returned no session for the plan execution' }
-    const optional = (key: 'loopName' | 'worktreeDir' | 'workspaceId') =>
+    const optional = (key: 'loopName' | 'worktreeDir' | 'workspaceId' | 'goalId') =>
       typeof record[key] === 'string' ? { [key]: record[key] as string } : {}
-    return { sessionId: record.sessionId, ...optional('loopName'), ...optional('worktreeDir'), ...optional('workspaceId') }
+    return { sessionId: record.sessionId, ...optional('loopName'), ...optional('worktreeDir'), ...optional('workspaceId'), ...optional('goalId') }
   })
 }
 

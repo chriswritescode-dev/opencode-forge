@@ -7,9 +7,9 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/loop/service'
+import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, type Loop } from '../../src/loop/runtime'
+import { createLoop, type Loop, type OnTerminatedCallback } from '../../src/loop/runtime'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { ForgeClient } from '../../src/client/port'
@@ -228,6 +228,8 @@ describe('Loop Runtime cancel()', () => {
 
   function createRuntime(overrides: {
     loopConfig?: Partial<PluginConfig>
+    notify?: LoopChangeNotifier
+    onTerminated?: OnTerminatedCallback
   } = {}): { loop: Loop; logger: Logger; logs: Array<{ level: string; message: string }> } {
     const { logger, logs } = createCapturingLogger()
     const config: PluginConfig = { ...mockConfig, ...(overrides.loopConfig ?? {}) }
@@ -241,6 +243,8 @@ describe('Loop Runtime cancel()', () => {
       client: createMockForgeClient(),
       logger,
       getConfig: () => config,
+      notify: overrides.notify,
+      onTerminated: overrides.onTerminated,
     })
 
     return { loop, logger, logs }
@@ -260,29 +264,6 @@ describe('Loop Runtime cancel()', () => {
       expect(terminatedState!.terminationReason).toBe('user_aborted')
     })
 
-    test('cancel preserves goal kind and goal text on a goal loop', async () => {
-      const { loop } = createRuntime()
-      const executorSessionId = 'goal-executor-cancel'
-      const goalText = 'Add a /health endpoint with a test.'
-      const state = makeActiveState({
-        sessionId: executorSessionId,
-        hostSessionId: executorSessionId,
-        kind: 'goal',
-        goal: goalText,
-        totalSections: 0,
-      })
-      loop.start({ state })
-
-      await loop.cancel(state.loopName)
-
-      const terminatedState = loopService.getAnyState(state.loopName)!
-      expect(terminatedState.active).toBe(false)
-      expect(terminatedState.terminationReason).toBe('user_aborted')
-      // Goal identity survives cancellation for inspection / restart.
-      expect(terminatedState.kind).toBe('goal')
-      expect(terminatedState.goal).toBe(goalText)
-      expect(terminatedState.hostSessionId).toBe(executorSessionId)
-    })
   })
 
   describe('cancel fires termination callbacks', () => {
@@ -314,6 +295,94 @@ describe('Loop Runtime cancel()', () => {
       expect(callbackInvoked).toBe(true)
       expect(receivedState).not.toBeNull()
       expect(receivedState!.loopName).toBe(state.loopName)
+    })
+  })
+
+  describe('settled notify after termination side effects', () => {
+    test('emits terminate before onTerminated and settled after it resolves', async () => {
+      const events: string[] = []
+      const settledHints: Array<{ projectDir?: string; worktreeDir?: string } | undefined> = []
+      const notify: LoopChangeNotifier = (reason, _loopName, hint) => {
+        events.push(`notify:${reason}`)
+        if (reason === 'settled') settledHints.push(hint)
+      }
+      const { loop } = createRuntime({
+        notify,
+        onTerminated: async () => {
+          events.push('onTerminated:start')
+          await Promise.resolve()
+          events.push('onTerminated:end')
+        },
+      })
+
+      const state = makeActiveState()
+      loop.start({ state })
+      events.length = 0
+
+      await loop.cancel(state.loopName)
+
+      expect(events).toEqual([
+        'notify:terminate',
+        'onTerminated:start',
+        'onTerminated:end',
+        'notify:settled',
+      ])
+      expect(settledHints).toEqual([{ projectDir: state.projectDir, worktreeDir: state.worktreeDir }])
+    })
+
+    test('emits settled and propagates the error when onTerminated rejects', async () => {
+      const settled: string[] = []
+      const notify: LoopChangeNotifier = (reason) => {
+        if (reason === 'settled') settled.push(reason)
+      }
+      const { loop } = createRuntime({
+        notify,
+        onTerminated: async () => {
+          throw new Error('teardown failed')
+        },
+      })
+
+      const state = makeActiveState()
+      loop.start({ state })
+
+      await expect(loop.cancel(state.loopName)).rejects.toThrow('teardown failed')
+      expect(settled).toEqual(['settled'])
+    })
+
+    test('emits exactly one settled for duplicate concurrent termination', async () => {
+      let settledCount = 0
+      const notify: LoopChangeNotifier = (reason) => {
+        if (reason === 'settled') settledCount += 1
+      }
+      const { loop } = createRuntime({
+        notify,
+        onTerminated: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        },
+      })
+
+      const state = makeActiveState()
+      loop.start({ state })
+
+      await Promise.all([
+        loop.terminate(state.loopName, { kind: 'user_aborted' }),
+        loop.terminate(state.loopName, { kind: 'user_aborted' }),
+      ])
+
+      expect(settledCount).toBe(1)
+    })
+
+    test('does not emit settled for a loop that is not active', async () => {
+      const settled: string[] = []
+      const notify: LoopChangeNotifier = (reason) => {
+        if (reason === 'settled') settled.push(reason)
+      }
+      const { loop } = createRuntime({ notify })
+
+      const result = await loop.terminate('ghost-loop', { kind: 'user_aborted' })
+
+      expect(result).toBe(false)
+      expect(settled).toEqual([])
     })
   })
 

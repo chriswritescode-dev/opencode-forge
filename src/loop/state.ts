@@ -28,8 +28,6 @@ interface LoopStateBase {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
-  /** Goal-loop coding session binding. Undefined for plan loops and while a goal loop is auditing. */
-  executorSessionId?: string
   /** Index into the auditor model fallback chain; 0 is the preferred model. */
   auditorFallbackIndex?: number
   currentSectionIndex: number
@@ -37,12 +35,10 @@ interface LoopStateBase {
   finalAuditDone: boolean
   executionVariant?: string
   auditorVariant?: string
-  /** Discriminator: plan loops persist a plan; goal loops persist goal text only. */
-  kind?: 'plan' | 'goal'
-  /** Goal text for goal loops. Undefined for plan loops. */
-  goal?: string
   /** Per-loop sandbox overrides; undefined when the loop uses config defaults. */
   sandboxSettings?: LoopSandboxSettings
+  /** Exact commit sha the loop's worktree branched from; undefined for legacy rows started before base commits were recorded. */
+  baseCommit?: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -67,9 +63,8 @@ export interface FinalAuditFixState extends LoopStateBase {
 
 export type LoopState = CodingState | AuditingState | FinalAuditingState | PostActionState | FinalAuditFixState
 
-export function auditScope(state: Pick<LoopState, 'phase' | 'kind' | 'totalSections' | 'currentSectionIndex'>): string {
+export function auditScope(state: Pick<LoopState, 'phase' | 'totalSections' | 'currentSectionIndex'>): string {
   if (state.phase === 'final_auditing' || state.phase === 'final_audit_fix') return 'final'
-  if (state.kind === 'goal') return 'goal'
   return state.totalSections > 0 ? `section:${state.currentSectionIndex}` : 'plan'
 }
 
@@ -100,16 +95,14 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
-    executorSessionId: row.executorSessionId ?? undefined,
     auditorFallbackIndex: row.auditorFallbackIndex ?? 0,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
     executionVariant: row.executionVariant ?? undefined,
     auditorVariant: row.auditorVariant ?? undefined,
-    kind: row.kind,
-    goal: large?.goal ?? undefined,
     sandboxSettings: row.sandboxSettings ?? undefined,
+    baseCommit: row.baseCommit ?? undefined,
   }
 
   switch (row.phase) {
@@ -128,7 +121,7 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
 
 /**
  * Section index recorded on a loop_transitions row: the current section for
- * sectioned loops, null for goal/non-sectioned loops. Single source of truth
+ * sectioned loops, null for non-sectioned loops. Single source of truth
  * for every transition-recording call site.
  */
 export function transitionSectionIndex(state: Pick<LoopState, 'totalSections' | 'currentSectionIndex'>): number | null {
@@ -161,14 +154,13 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     completionSummary: state.completionSummary ?? null,
     workspaceId: state.workspaceId ?? null,
     hostSessionId: state.hostSessionId ?? null,
-    executorSessionId: state.executorSessionId ?? null,
     auditorFallbackIndex: state.auditorFallbackIndex ?? 0,
     currentSectionIndex: state.currentSectionIndex,
     totalSections: state.totalSections,
     finalAuditDone: state.finalAuditDone ? 1 : 0,
     executionVariant: state.executionVariant ?? null,
     auditorVariant: state.auditorVariant ?? null,
-    kind: state.kind ?? 'plan',
     sandboxSettings: state.sandboxSettings ?? null,
+    baseCommit: state.baseCommit ?? null,
   }
 }

@@ -14,7 +14,7 @@ export interface LoopPermissionWarningSink {
  * place: warnings are always logged (cheap and useful for diagnosis), and the
  * user-facing surface fires only for non-worktree directories. A forge worktree
  * is a fresh plugin instance of the same project, so re-surfacing there would
- * spam the toast once per loop/group launch.
+ * spam the toast once per loop launch.
  */
 export function emitLoopPermissionConfigWarnings(
   config: PluginConfig | undefined,

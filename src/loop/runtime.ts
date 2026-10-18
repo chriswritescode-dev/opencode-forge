@@ -131,7 +131,7 @@ export interface Loop {
   superviseOwnedLoops(): string[]
   getStallInfo(name: string): LoopWatchdogStallInfo | null
   restart(name: string, params: { newState: LoopState; newSessionId: string }): void
-  generateUniqueLoopName(baseName: string): string
+  generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string
   /** Transition a running loop's phase. */
   setPhase(name: string, phase: LoopState['phase']): void
   /**
@@ -347,7 +347,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (stateLocks.get(key) === nextPromise) {
       stateLocks.delete(key)
     }
-  })
+  }).catch(() => undefined)
   return nextPromise
 }
 
@@ -688,8 +688,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * Single source of truth for the maxIterations check so every path routes through
    * `nextTransition({ type: 'iteration-cap' })` instead of inline divergent checks.
    *
-   * Callers that need to persist side-effects before terminating (e.g. the goal
-   * path persists audit metadata) pass an `onTerminate` wrapper; otherwise the
+   * Callers that need to persist side-effects before terminating (e.g. a path
+   * that persists audit metadata) pass an `onTerminate` wrapper; otherwise the
    * default `terminateLoop` is used.
    */
   async function nextIterationOrTerminate(
@@ -766,7 +766,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
-    const { error } = await sendPostActionPrompt(loopName, currentState, created.sessionId, prompt)
+    const { error } = await sendPostActionPrompt(loopName, created.sessionId, prompt)
     if (error) {
       const targetState = loopService.getActiveState(loopName) ?? currentState
       logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
@@ -777,19 +777,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  /** Sends a prompt to the post-action session on the configured post-action model, falling back to the loop's auditor model. */
-  function sendPostActionPrompt(loopName: string, state: LoopState, sessionId: string, promptText: string) {
+  /** Sends a prompt to the post-action session on the configured post-action model, falling back to the loop's auditor model. The auditor model is always sent with the auditor's variant; a configured post-action model has no variant. */
+  function sendPostActionPrompt(loopName: string, sessionId: string, promptText: string) {
     const cfg = resolvePostActionConfig(getConfig())
-    const auditorModel = resolveLoopAuditorChoice(getConfig(), loopService, loopName).model
+    const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
     const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
     return sendPromptWithFallback({
       loopName,
       sessionId,
       promptText,
       agent: 'code',
-      model: configuredModel ?? auditorModel,
-      fallbackModel: configuredModel ? auditorModel : undefined,
-      variant: state.executionVariant,
+      model: configuredModel ?? auditorChoice.model,
+      fallbackModel: configuredModel ? auditorChoice.model : undefined,
+      variant: configuredModel ? undefined : auditorChoice.variant,
+      fallbackVariant: configuredModel ? auditorChoice.variant : undefined,
     })
   }
 
@@ -847,7 +848,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       resetError: !assistantErrorDetected && currentState.errorCount > 0,
       auditCount: stateUpdates.auditCount,
       lastAuditResult: stateUpdates.lastAuditResult ?? null,
-      ...(currentState.kind === 'goal' ? { executorSessionId: activeSessionId } : {}),
     })
 
     if (transition) {
@@ -895,7 +895,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       newSessionId,
       phase: 'coding',
       resetError: false,
-      ...(state.kind === 'goal' ? { executorSessionId: newSessionId } : {}),
     })
     // Record the recovery transition AFTER the persisted phase commit to coding
     // so the abort/error → coding phase change is captured consistently.
@@ -1166,8 +1165,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     // Delegate host-specific side-effects to the provided callback.
     // This keeps worktree teardown, completion log, sandbox stop, TUI toast outside the core module.
-    if (onTerminated) {
-      await onTerminated(state, reason)
+    try {
+      if (onTerminated) {
+        await onTerminated(state, reason)
+      }
+    } finally {
+      notify?.('settled', loopName, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
     }
     } finally {
       terminatingLoops.delete(loopName)
@@ -1800,7 +1803,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           newSessionId: rotatedSessionId,
           phase: 'coding',
           resetError: false,
-          ...(currentState.kind === 'goal' ? { executorSessionId: rotatedSessionId } : {}),
         })
         const continuationPrompt = loopService.buildContinuationPrompt(
           { ...currentState, iteration: currentState.iteration ?? 0 },
@@ -1924,93 +1926,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.recordActivity(loopName, 'audit-created')
   }
 
-  /**
-   * Goal-loop audit result handler. Goal loops have no sections, final audit,
-   * or post-action phase: a completed auditor pass with zero outstanding review
-   * findings (any severity) terminates the loop; otherwise the auditor's
-   * findings trigger a fresh code session rotation for remediation.
-   * The new code session becomes both state.sessionId and state.executorSessionId.
-   */
-  async function runGoalAuditResult(
-    loopName: string,
-    currentState: LoopState,
-    auditText: string,
-    newAuditCount: number,
-  ): Promise<void> {
-    const auditSessionId = currentState.sessionId
-
-    const persistAuditAndTerminate = async (reason: TerminationReason): Promise<void> => {
-      loopService.replaceSession(loopName, {
-        newSessionId: auditSessionId,
-        phase: 'auditing',
-        auditCount: newAuditCount,
-        lastAuditResult: auditText || null,
-      })
-      await terminateLoop(loopName, loopService.getActiveState(loopName) ?? currentState, reason)
-    }
-
-    const outstandingFindings = loopService.getOutstandingFindings(loopName)
-    if (outstandingFindings.length === 0) {
-      logger.log(`Loop: goal audit all-clear, terminating loop=${loopName} audits=${newAuditCount}`)
-      const clearTrans = nextTransition(currentState, { type: 'audit-clear' })
-      if (clearTrans.kind === 'terminate') {
-        await persistAuditAndTerminate(clearTrans.reason)
-      }
-      return
-    }
-
-    const nextIteration = await nextIterationOrTerminate(loopName, currentState, persistAuditAndTerminate)
-    if (nextIteration === null) return
-
-    const dirtyTrans = nextTransition(currentState, { type: 'audit-dirty' })
-    if (dirtyTrans.kind !== 'continue') return
-
-    const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
-    bumpDirtyAuditRecurrence(loopName, outstandingBugs)
-
-    // Create a fresh code session and re-bind both sessionId and executorSessionId to it.
-    let newSessionId: string
-    try {
-      newSessionId = await rotateSession(loopName, currentState, {
-        iteration: nextIteration,
-      })
-    } catch (err) {
-      logger.error(`Loop: session rotation failed during goal dirty audit, continuing with existing session`, err)
-      newSessionId = currentState.sessionId
-    }
-
-    loopService.replaceSession(loopName, {
-      newSessionId,
-      phase: 'coding',
-      iteration: nextIteration,
-      auditCount: newAuditCount,
-      lastAuditResult: auditText || null,
-      executorSessionId: newSessionId,
-    })
-
-    // Record the audit-dirty → coding rotate AFTER the persisted phase commit
-    // above and BEFORE the prompt send below. A prompt-send failure that
-    // terminates the loop will then produce a terminate row whose id strictly
-    // follows this rotate row (chronological id order).
-    logTransition(loopName, currentState, { type: 'audit-dirty' }, dirtyTrans, 'coding')
-
-    const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, sessionId: newSessionId, iteration: nextIteration }
-    const continuationPrompt = loopService.buildContinuationPrompt(updatedState, undefined, outstandingBugs)
-
-    const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
-    await sendPromptWithRetryRecovery({
-      loopName,
-      sessionId: newSessionId,
-      promptText: continuationPrompt,
-      agent: 'code',
-      model: loopModel,
-      variant: currentState.executionVariant,
-      errorContext: 'goal continuation prompt',
-      errorState: updatedState,
-      activityTag: 'goal-continuation-prompt-sent',
-    })
-  }
-
   async function runAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
     let currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
@@ -2062,12 +1977,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       currentState = { ...currentState, auditorFallbackIndex: 0 }
       const newAuditCount = (currentState.auditCount ?? 0) + 1
       logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
-
-      if (currentState.kind === 'goal') {
-        loopService.finishAttempt(currentState, loopService.hasOutstandingFindings(loopName) ? 'dirty' : 'clean')
-        await runGoalAuditResult(loopName, currentState, auditText || '', newAuditCount)
-        return
-      }
 
       if (currentState.totalSections > 0) {
         const idx = currentState.currentSectionIndex
@@ -2545,7 +2454,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (attempts < MAX_POST_ACTION_CONTINUES) {
           postActionContinueAttempts.set(loopName, attempts + 1)
           logger.log(`Loop: post-action reply for ${loopName} has no completion marker; prompting the session to finish (attempt ${attempts + 1}/${MAX_POST_ACTION_CONTINUES})`)
-          const { error } = await sendPostActionPrompt(loopName, currentState, currentState.sessionId, buildPostActionContinuePromptText())
+          const { error } = await sendPostActionPrompt(loopName, currentState.sessionId, buildPostActionContinuePromptText())
           if (!error) {
             watchdog.recordActivity(loopName, 'post-action-continue')
             return
@@ -2996,7 +2905,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         // inactive state on its next microtask and short-circuits before
         // rotating the phase (which would commit a phase row after our terminal
         // row). loopService.terminate fires the 'terminate' notify synchronously
-        // here so group orchestration learns about the shutdown inline.
+        // here so the shutdown is observable inline.
       }
       if (contended.length > 0) {
         await Promise.all(contended.map((state) =>
@@ -3214,12 +3123,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return watchdog.getStallInfo(name)
   }
 
-  function generateUniqueLoopName(baseName: string): string {
+  function generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string {
     const existing = listActive()
       .map(s => s.loopName)
     const recent = listRecent()
       .map(s => s.loopName)
-    return generateUniqueName(baseName, [...existing, ...recent])
+    return generateUniqueName(baseName, [...existing, ...recent], isTaken)
   }
 
   function start(input: StartLoopInput): void {

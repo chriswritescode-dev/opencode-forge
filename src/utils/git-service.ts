@@ -20,7 +20,11 @@ export interface GitService {
   revParseGitCommonDir(cwd: string): GitResult
   revParseGitPath(cwd: string, path: string): GitResult
   revParseHead(cwd: string): GitResult
-  worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult
+  /** Resolves `ref` to its commit sha (`git rev-parse --verify <ref>^{commit}`); stdout is the sha. */
+  revParse(cwd: string, ref: string): GitResult
+  worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult
+  /** Adds a detached worktree at `directory` checked out at `commit`. */
+  worktreeAddDetached(cwd: string, directory: string, commit: string): GitResult
   worktreeList(cwd: string): GitResult
   worktreeRemove(cwd: string, directory: string): GitResult
   worktreePrune(cwd: string): GitResult
@@ -94,8 +98,17 @@ export function createGitService(): GitService {
       return runGit(['rev-parse', 'HEAD'], cwd)
     },
 
-    worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult {
-      return runGit(createBranch ? ['worktree', 'add', directory, '-b', branch] : ['worktree', 'add', directory, branch], cwd)
+    revParse(cwd: string, ref: string): GitResult {
+      return runGit(['rev-parse', '--verify', `${ref}^{commit}`], cwd)
+    },
+
+    worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult {
+      if (!createBranch) return runGit(['worktree', 'add', directory, branch], cwd)
+      return runGit(startPoint ? ['worktree', 'add', directory, '-b', branch, startPoint] : ['worktree', 'add', directory, '-b', branch], cwd)
+    },
+
+    worktreeAddDetached(cwd: string, directory: string, commit: string): GitResult {
+      return runGit(['worktree', 'add', '--detach', directory, commit], cwd)
     },
 
     worktreeList(cwd: string): GitResult {

@@ -9,7 +9,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | Option | Default | Description |
 |---|---:|---|
 | `dataDir` | `""` | Data directory for `forge.db` and worktrees. Empty resolves to the platform data dir. It does not relocate the default log path, which is always derived from the platform data dir; set `logging.file` to move logs. |
-| `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before cleanup sweep. |
+| `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops, and for completed/cancelled goals and stale draft goals, before the cleanup sweep. Running and paused goals are never swept. |
 | `executionModel` | `""` | Fallback model override for plan execution sessions. Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
@@ -81,7 +81,7 @@ Because configured rules sit between the blanket allow and Forge's structural de
 
 Loops never ask about external directories: the blanket allow covers `external_directory`, so an unattended loop cannot wait on an approval. In a sandboxed loop the sandbox mounts are the boundary instead — file tools are refused outside them (see [Sandbox → File-Tool Boundary](sandbox.md#file-tool-boundary)). A loop with `sandbox.enabled: false` has full host file access.
 
-**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan-write`, `plan-edit`, `execute-plan`, `execute-goal`, `question`, `loop-cancel`, `loop-status`, `launch-group`, `group-status`, `group-cancel`, `review-write`, `review-delete`, `edit`, and `write`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`group-*` would let a loop recurse into itself or manage other loops.
+**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan-write`, `plan-edit`, `goal-write`, `execute-plan`, `question`, `loop-cancel`, `loop-status`, `goal-cancel`, `goal-status`, `review-write`, `review-delete`, `edit`, and `write`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`goal-*` would let a loop recurse into itself or manage other loops.
 
 **Blanket denies of Forge-required permissions are rejected too**: `review-read`, `plan-read`, `section-read`, `plan-adjust`, `bash`, and `read` may not be denied outright. A loop that cannot read its findings, section plan, or plan-of-record — or cannot run `bash` or `read` at all — cannot do its job and would silently burn iterations to `maxIterations` with nothing pointing at the config. Only the blanket form (a bare tool name, or pattern `*`) is rejected; a scoped deny such as `{ "permission": "bash", "pattern": "git push *" }` is honoured.
 
@@ -96,7 +96,7 @@ The block applies to loop, audit, and post-action sessions.
 
 ### Post-Action
 
-`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops) and before teardown. Goal loops never run it. See [Post-Completion Action Phase](loop-system.md#post-completion-action-phase) for completion confirmation.
+`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops) and before teardown. See [Post-Completion Action Phase](loop-system.md#post-completion-action-phase) for completion confirmation.
 
 The phase is enabled only when `enabled === true` and at least one of `skill` or `prompt` is configured.
 
@@ -105,7 +105,7 @@ The phase is enabled only when `enabled === true` and at least one of `skill` or
 | `loop.postAction.enabled` | `false` | Enable the post-action phase. |
 | `loop.postAction.skill` | unset | Skill name to load with the Skill tool. |
 | `loop.postAction.prompt` | unset | Extra instruction text, or standalone prompt when no skill is set. |
-| `loop.postAction.model` | unset | Optional model override. Defaults to the auditor model chain. |
+| `loop.postAction.model` | unset | Optional model override, sent without a variant. Defaults to the auditor model chain, which carries the auditor's variant. |
 
 Example:
 
@@ -137,14 +137,6 @@ Notes:
 - MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the sandbox; the MCP commands themselves are not sandbox-isolated. To run an MCP server *inside* the loop's sandbox, use the placeholder below with an `msb exec` command.
 - The string `{{FORGE_SANDBOX_CONTAINER}}` in any config value is replaced with the loop's sandbox container name (`forge-<loop>`) when the file is written. For loops without a sandbox, `mcp` entries referencing the placeholder are dropped instead, so the same config works with and without the sandbox.
 
-## Group Launch
-
-`groupLaunch` configures parallel feature orchestration (see the [`launch-group`](tools.md#group-tools) tool).
-
-| Option | Default | Description |
-|---|---:|---|
-| `groupLaunch.maxConcurrentLoops` | `3` | Maximum number of loops a group runs concurrently. Clamped to a minimum of `1`. Used as the default when `launch-group` is called without a per-group `maxConcurrentLoops`; an explicit per-group value overrides it. |
-
 ## TUI
 
 | Option | Default | Description |
@@ -169,7 +161,7 @@ The TUI surface reads `tui.sidebar`, `tui.showVersion`, and the `tui.keybinds` e
 | `dashboard.host` | `"localhost"` | Bind hostname or IP. Use `"0.0.0.0"` to listen on all interfaces so the dashboard is reachable over a LAN or VPN. Blank falls back to the default. |
 | `dashboard.port` | `4747` | Base bind port. Consecutive ports (`port`..`port+9`) are tried when the port is busy. `0` lets the OS pick an ephemeral port. Invalid values fall back to the default and are reported. |
 
-> **The dashboard has no authentication.** Binding a non-loopback address exposes every loop plan, goal, audit result, finding, and session cost to anyone who can reach the port. Restrict access at the network layer with a firewall, a private LAN, or a VPN. Forge prints a warning whenever the bind is not loopback.
+> **The dashboard has no authentication.** Binding a non-loopback address exposes every loop plan, audit result, finding, and session cost to anyone who can reach the port. Restrict access at the network layer with a firewall, a private LAN, or a VPN. Forge prints a warning whenever the bind is not loopback.
 
 A value that is present but unusable — a quoted `"port": "4747"`, a fractional or out-of-range port, a non-string host — is never dropped silently: Forge falls back to the next candidate and reports which value it ignored on stderr (`pnpm dashboard`) or in the toast (TUI).
 

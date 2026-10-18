@@ -7,10 +7,10 @@ import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
-import type { FeatureGroupsRepo } from '../storage/repos/feature-groups-repo'
-import type { GroupOrchestrator } from '../services/group-orchestrator'
+import type { GoalsRepo } from '../storage/repos/goals-repo'
 import type { Loop } from '../loop'
 import type { ForgeClient } from '../client/port'
+import type { GoalOrchestrator } from '../services/goal-orchestrator'
 
 /**
  * Context passed to all tool implementations providing access to plugin services.
@@ -44,14 +44,14 @@ export interface ToolContext {
   reviewFindingsRepo: ReviewFindingsRepo
   /** Loops repo for loop storage. */
   loopsRepo: LoopsRepo
+  /** Goals repo for goal drafts and chunks. */
+  goalsRepo: GoalsRepo
+  /** Orchestrator that drives a goal's sequential chunk loops. */
+  goalOrchestrator: GoalOrchestrator
   /** Section plans repo for section-scoped plan storage. */
   sectionPlansRepo: SectionPlansRepo
   /** Loop session usage repo for usage tracking. */
   loopSessionUsageRepo?: LoopSessionUsageRepo
-  /** Feature groups repo for group-launch feature tracking. */
-  featureGroupsRepo: FeatureGroupsRepo
-  /** Group orchestrator for managing feature groups. */
-  groupOrchestrator: GroupOrchestrator
   /** Pending teardown registry for workspace removal context. */
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
   /**

@@ -12,14 +12,13 @@ See also: [Tools](tools.md), [Configuration](configuration.md), [Loop System](lo
 | `architect` | `primary` | Read-only planning agent. Authors and validates the stored plan with `plan-write`/`plan-edit` before approval. |
 | `auditor` | `subagent` | Read-only code review agent for convention-aware reviews. |
 | `auditor-loop` | `primary`, hidden | Internal auditor used by loop audit sessions. |
-| `architect-auto` | `primary`, hidden | Autonomous grouped-execution planner; only warning-free stored plans launch. |
-| `feature-splitter` | `primary`, hidden | Splits broad work into implementation-coherent feature briefs. |
+| `architect-auto` | `primary`, hidden | Non-interactive planning agent that authors a stored plan from a single prompt, without `question` or execution tools. Used by the goal orchestrator to plan each subsequent goal chunk. |
 
 Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.ts`](../src/agents/architect.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts).
 
 ## Architect restrictions
 
-The architect agents cannot use `edit`, `write`, `patch`, or `subagent`. They retain direct read/search tools, `shell` for read-only inspection and project checks, and `plan-read`, `plan-write`, and `plan-edit`; only the interactive architect can call `question` and `execute-plan`. The autonomous architect cannot invoke execution, loop, or group tools directly.
+The architect agents cannot use `edit`, `write`, `patch`, or `subagent`. They retain direct read/search tools, `shell` for read-only inspection and project checks, and `plan-read`, `plan-write`, and `plan-edit`; only the interactive architect can call `question`, `execute-plan`, and `goal-write`. The autonomous architect cannot invoke execution, loop, or goal tools directly.
 
 ## Auditor restrictions
 
@@ -31,14 +30,13 @@ Excluded tools:
 - `write`
 - `plan-write`
 - `plan-edit`
+- `goal-write`
 - `execute-plan`
-- `execute-goal`
 - `question`
 - `loop-cancel`
 - `loop-status`
-- `launch-group`
-- `group-status`
-- `group-cancel`
+- `goal-cancel`
+- `goal-status`
 
 Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 
@@ -49,10 +47,9 @@ Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 | `/review` | Run a code review. | `auditor` | yes |
 | `/review-plan` | Review a completed implementation against its original plan. | `auditor` | yes |
 | `/execute-plan` | Start an iterative development loop in a worktree (or launch the plan in a fresh standalone session with `mode: new-session`). | `code` | no |
-| `/execute-goal` | Execute a goal in rotating dedicated code and auditor sessions inside an isolated worktree. | `code` | no |
+| `/goal` | Plan a multi-chunk goal: resolve its tasks, save the ordered goal, and plan chunk 1 for launch as a loop. | `architect` | no |
 | `/loop-status` | Check status of all active loops. | `code` | no |
 | `/loop-cancel` | Cancel the active loop. | `code` | no |
-| `/launch-group` | Decompose a PRD or feature list into features and launch them as parallel planning + development loops. | `code` | no |
 
 `/review` and `/review-plan` are declared as subtask commands but run inline in the invoking session, because a plugin command cannot create a child session. Every Forge command switches the session to the command's agent for that one turn and, once the turn finishes, switches it back to the previous agent unless you selected a different agent in the meantime.
 

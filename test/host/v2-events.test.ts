@@ -223,7 +223,7 @@ describe('normalizeV2Event', () => {
     ])
   })
 
-  test('drops shutdown interruptions but idles superseded and inactivity', () => {
+  test('drops shutdown interruptions but idles superseded and inactivity with the interrupt reason', () => {
     const shutdown: V2Event = {
       id: 'evt-1',
       created: 1,
@@ -246,17 +246,17 @@ describe('normalizeV2Event', () => {
       data: { sessionID: 's1', reason: 'inactivity' },
     }
 
-    const idle = [
+    const idle = (interruptReason: string) => [
       {
         type: FORGE_EVENT_TYPES.sessionStatus,
-        properties: { sessionID: 's1', status: { type: 'idle' } },
+        properties: { sessionID: 's1', status: { type: 'idle' }, interruptReason },
       },
       { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID: 's1' } },
     ]
 
     expect(normalizeV2Event(shutdown)).toEqual([])
-    expect(normalizeV2Event(superseded)).toEqual(idle)
-    expect(normalizeV2Event(inactivity)).toEqual(idle)
+    expect(normalizeV2Event(superseded)).toEqual(idle('superseded'))
+    expect(normalizeV2Event(inactivity)).toEqual(idle('inactivity'))
   })
 
   test('maps session.created onto the V1 session.created event with a port session info', () => {

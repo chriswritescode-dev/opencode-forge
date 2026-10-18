@@ -8,25 +8,39 @@ export type PermissionRule = { permission: string; pattern: string; action: 'all
  *  and the plan-adjust cap so all four agree. */
 export const MAX_TOTAL_SECTIONS = 24
 
+/** Tools that author the loop's plan of record. Kept by the architect agents, denied to every
+ *  implementation and audit session, and excluded by the code agent. */
+export const PLAN_OF_RECORD_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const
+
 /**
- * Tools that author the session-scoped plan of record. Architect agents may
- * call them; implementation, audit, splitter, and loop permission rules deny
- * this one list rather than repeating the names.
+ * Tools that author the session's plan or goal of record. Architect agents may
+ * call them; implementation and audit sessions deny this one list rather than
+ * repeating the names, and the code agent excludes it.
  */
-export const PLAN_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const
+export const PLAN_AUTHORING_TOOL_NAMES = [
+  ...PLAN_OF_RECORD_AUTHORING_TOOL_NAMES,
+  'goal-write',
+] as const
 
 /** Structural deny names shared by both loop and audit rulesets, in emit order. */
 export const SHARED_STRUCTURAL_DENY_PERMISSIONS = [
   ...PLAN_AUTHORING_TOOL_NAMES,
   'execute-plan',
-  'execute-goal',
   'question',
   'loop-cancel',
   'loop-status',
-  'launch-group',
-  'group-status',
-  'group-cancel',
+  'goal-cancel',
+  'goal-status',
 ] as const
+
+/**
+ * Tool exclusions for the autonomous architect agent: every shared structural deny except the
+ * plan-of-record tools it must keep (`plan-write`, `plan-edit`). `goal-write` stays excluded —
+ * the autonomous architect writes a plan, never a goal.
+ */
+export const AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS = SHARED_STRUCTURAL_DENY_PERMISSIONS.filter(
+  (name) => !(PLAN_OF_RECORD_AUTHORING_TOOL_NAMES as readonly string[]).includes(name),
+)
 
 /** Structural deny names exclusive to loop sessions (review tools). */
 export const LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['review-write', 'review-delete'] as const

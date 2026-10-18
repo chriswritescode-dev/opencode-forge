@@ -28,8 +28,6 @@ export interface LoopRow {
   completionSummary: string | null
   workspaceId: string | null
   hostSessionId: string | null
-  /** Goal-loop executor session binding; null/undefined for plan loops. */
-  executorSessionId?: string | null
   /** Index into the auditor model fallback chain; 0 is the preferred model. */
   auditorFallbackIndex?: number
   currentSectionIndex: number
@@ -37,17 +35,15 @@ export interface LoopRow {
   finalAuditDone: number
   executionVariant: string | null
   auditorVariant: string | null
-  /** Discriminator between plan-backed loops and goal loops. Defaults to 'plan'. */
-  kind: 'plan' | 'goal'
   /** Per-loop sandbox overrides; null when the loop uses config defaults. */
   sandboxSettings?: LoopSandboxSettings | null
+  /** Exact commit sha the loop's worktree branched from; null for legacy rows. */
+  baseCommit: string | null
 }
 
 export interface LoopLargeFields {
   lastAuditResult: string | null
   postActionReport?: string | null
-  /** Goal text for goal loops; null for plan loops. */
-  goal?: string | null
 }
 
 export interface LoopSidebarRow {
@@ -121,7 +117,6 @@ export interface LoopsRepo {
       resetError?: boolean
       auditCount?: number
       lastAuditResult?: string | null
-      executorSessionId?: string | null
     }
   ): void
   restart(
@@ -144,8 +139,6 @@ export interface LoopsRepo {
       auditorVariant?: string | null
       executionModel?: string | null
       executionVariant?: string | null
-      /** Goal-loop executor binding to persist on restart; null for plan loops. */
-      executorSessionId: string | null
     }
   ): void
   terminate(
@@ -191,25 +184,30 @@ function mapRow(row: LoopRowRaw): LoopRow {
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
     hostSessionId: row.host_session_id,
-    executorSessionId: row.executor_session_id,
     currentSectionIndex: row.current_section_index,
     totalSections: row.total_sections,
     finalAuditDone: row.final_audit_done,
     executionVariant: row.execution_variant,
     auditorVariant: row.auditor_variant,
-    kind: (row.loop_kind === 'goal' ? 'goal' : 'plan') as LoopRow['kind'],
     auditorFallbackIndex: row.auditor_fallback_index ?? 0,
     sandboxSettings: parseSandboxSettings(row.sandbox_settings),
+    baseCommit: row.base_commit,
   }
 }
 
-function parseSandboxSettings(value: string | null): LoopSandboxSettings | null {
+/** Parses a persisted `sandbox_settings` JSON column; malformed or empty values hydrate as null. */
+export function parseSandboxSettings(value: string | null): LoopSandboxSettings | null {
   if (!value) return null
   try {
     return readLoopSandboxSettings(JSON.parse(value)) ?? null
   } catch {
     return null
   }
+}
+
+/** Serializes sandbox overrides for a `sandbox_settings` JSON column; unset settings store as null. */
+export function serializeSandboxSettings(settings: LoopSandboxSettings | null | undefined): string | null {
+  return settings ? JSON.stringify(settings) : null
 }
 
 interface LoopRowRaw {
@@ -237,15 +235,14 @@ interface LoopRowRaw {
   completion_summary: string | null
   workspace_id: string | null
   host_session_id: string | null
-  executor_session_id: string | null
   current_section_index: number
   total_sections: number
   final_audit_done: number
   execution_variant: string | null
   auditor_variant: string | null
-  loop_kind: string | null
   auditor_fallback_index: number
   sandbox_settings: string | null
+  base_commit: string | null
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
@@ -253,8 +250,8 @@ const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktre
   error_count, phase, execution_model, auditor_model,
   model_failed, sandbox, sandbox_container, started_at, completed_at,
   termination_reason, completion_summary, workspace_id, host_session_id,
-  executor_session_id, current_section_index, total_sections, final_audit_done,
-  execution_variant, auditor_variant, loop_kind, auditor_fallback_index, sandbox_settings`
+  current_section_index, total_sections, final_audit_done,
+  execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
 
@@ -265,12 +262,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const upsertLargeStmt = db.prepare(`
-    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result, post_action_report, goal)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result, post_action_report)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT (project_id, loop_name) DO UPDATE SET
       last_audit_result = excluded.last_audit_result,
-      post_action_report = COALESCE(excluded.post_action_report, loop_large_fields.post_action_report),
-      goal = COALESCE(excluded.goal, loop_large_fields.goal)
+      post_action_report = COALESCE(excluded.post_action_report, loop_large_fields.post_action_report)
   `)
 
   const getStmt = db.prepare(`
@@ -280,7 +276,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const getLargeStmt = db.prepare(`
-    SELECT last_audit_result, post_action_report, goal
+    SELECT last_audit_result, post_action_report
     FROM loop_large_fields
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -419,8 +415,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       current_session_id = ?,
       phase = ?,
       iteration = COALESCE(?, iteration),
-      audit_count = COALESCE(?, audit_count),
-      executor_session_id = COALESCE(?, executor_session_id)
+      audit_count = COALESCE(?, audit_count)
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -447,8 +442,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       completion_summary = NULL,
       current_section_index = ?,
       total_sections = ?,
-      final_audit_done = ?,
-      executor_session_id = ?
+      final_audit_done = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -471,10 +465,10 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       project_dir = ?, max_iterations = ?, iteration = ?, audit_count = ?, error_count = ?,
       phase = ?, execution_model = ?, auditor_model = ?, model_failed = ?, sandbox = ?,
       sandbox_container = ?, started_at = ?, completed_at = ?, termination_reason = ?,
-      completion_summary = ?, workspace_id = ?, host_session_id = ?, executor_session_id = ?,
+      completion_summary = ?, workspace_id = ?, host_session_id = ?,
       current_section_index = ?, total_sections = ?, final_audit_done = ?,
-      execution_variant = ?, auditor_variant = ?, loop_kind = ?, auditor_fallback_index = ?,
-      sandbox_settings = ?
+      execution_variant = ?, auditor_variant = ?, auditor_fallback_index = ?,
+      sandbox_settings = ?, base_commit = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -515,15 +509,14 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       row.completionSummary,
       row.workspaceId,
       row.hostSessionId,
-      row.executorSessionId ?? null,
       row.currentSectionIndex ?? 0,
       row.totalSections ?? 0,
       row.finalAuditDone ?? 0,
       row.executionVariant ?? null,
       row.auditorVariant ?? null,
-      row.kind ?? 'plan',
       row.auditorFallbackIndex ?? 0,
-      row.sandboxSettings ? JSON.stringify(row.sandboxSettings) : null,
+      serializeSandboxSettings(row.sandboxSettings),
+      row.baseCommit ?? null,
     ]
   }
 
@@ -538,7 +531,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         if (result.changes === 0) {
           return false
         }
-        upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null, large.goal ?? null)
+        upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null)
         return true
       })
       return runInsert()
@@ -560,7 +553,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
             ...loopRowValues(row),
           )
         }
-        upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null, large.goal ?? null)
+        upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null)
       })
       runRestore()
     },
@@ -571,12 +564,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     getLarge(projectId: string, loopName: string): LoopLargeFields | null {
-      const row = getLargeStmt.get(projectId, loopName) as { last_audit_result: string | null; post_action_report: string | null; goal: string | null } | null
+      const row = getLargeStmt.get(projectId, loopName) as { last_audit_result: string | null; post_action_report: string | null } | null
       if (!row) return null
       return {
         lastAuditResult: row.last_audit_result,
         postActionReport: row.post_action_report,
-        goal: row.goal,
       }
     },
 
@@ -708,7 +700,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     replaceSession(
       projectId: string,
       loopName: string,
-      opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }
+      opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }
     ): void {
       const runTxn = db.transaction(() => {
         replaceSessionStmt.run(
@@ -716,7 +708,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.phase,
           opts.iteration ?? null,
           opts.auditCount ?? null,
-          opts.executorSessionId ?? null,
           projectId,
           loopName
         )
@@ -757,7 +748,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.currentSectionIndex,
           opts.totalSections,
           opts.finalAuditDone ? 1 : 0,
-          opts.executorSessionId ?? null,
           projectId,
           loopName,
         )

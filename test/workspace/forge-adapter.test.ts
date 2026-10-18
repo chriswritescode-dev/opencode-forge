@@ -156,8 +156,50 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  it('create uses info.extra.projectDirectory as the git cwd, ignoring deps', async () => {
-    const realRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-projdir-'))
+  it('create branches the worktree from extra.baseRef, not the project HEAD', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-based-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      writeFileSync(join(tmpRepo, 'a.txt'), 'a', 'utf-8')
+      execSync('git add a.txt && git commit -m second', { cwd: tmpRepo, encoding: 'utf-8' })
+      const baseRef = execSync('git rev-parse HEAD~1', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      const projectHead = execSync('git rev-parse HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      expect(baseRef).not.toBe(projectHead)
+
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const info = makeInfo('based-loop', tmpRepo)
+      info.extra = { ...info.extra, baseRef }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtHead).toBe(baseRef)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create throws and creates nothing when a based branch already exists', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-based-existing-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const info = makeInfo('based-existing-loop', tmpRepo)
+      info.extra = { ...info.extra, baseRef: 'HEAD' }
+      const configured = adapter.configure(info)
+      execSync(`git branch ${configured.branch}`, { cwd: tmpRepo, encoding: 'utf-8' })
+
+      await expect(adapter.create(configured, {})).rejects.toThrow(
+        new RegExp(`branch ${configured.branch} already exists; refusing to reuse it`),
+      )
+      expect(existsSync(configured.directory)).toBe(false)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create uses info.extra.projectDirectory as the git cwd, ignoring deps', async () => {    const realRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-projdir-'))
     try {
       execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: realRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })

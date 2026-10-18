@@ -276,34 +276,6 @@ describe('Loop Runtime start()', () => {
       expect(persisted.phase).toBe('coding')
     })
 
-    test('goal loop state persists kind, goal text, host session, and executor session', () => {
-      const { loop } = createRuntime()
-      const executorSessionId = 'dedicated-executor-session'
-      const hostSessionId = 'invoking-session'
-      const goalText = 'Add a /health endpoint with a test.'
-      const state = makeState({
-        sessionId: executorSessionId,
-        hostSessionId,
-        executorSessionId,
-        kind: 'goal',
-        goal: goalText,
-        totalSections: 0,
-        phase: 'coding',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.kind).toBe('goal')
-      expect(persisted.goal).toBe(goalText)
-      expect(persisted.totalSections).toBe(0)
-      expect(persisted.sessionId).toBe(executorSessionId)
-      expect(persisted.executorSessionId).toBe(executorSessionId)
-      expect(persisted.hostSessionId).toBe(hostSessionId)
-      // Goal loops must not persist a plan prompt into the plans table.
-      expect(plansRepo.getForLoop(PROJECT_ID, state.loopName)).toBeNull()
-    })
-
   })
 
   describe('start generates unique loop names', () => {

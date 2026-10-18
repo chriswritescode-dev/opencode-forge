@@ -61,7 +61,6 @@ function insertRunningLoop(
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
-      kind: 'plan',
     },
     { lastAuditResult: null },
   )
