@@ -73,8 +73,10 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
 # create time (forge-<name>-cache-data), so unbounded package caches never fill
 # the small root filesystem and nothing written to that path at build time
 # survives to runtime. forge-cache-prune wipes its cache subtrees while
-# preserving the installed toolchains and binary dirs (rustup, uv-python,
-# uv-tools, uv-bin, cargo/bin, go/bin).
+# preserving the installed toolchains and binary dirs (uv-python, uv-tools,
+# uv-bin, cargo/bin, go/bin). The Rust toolchain ships in the image under
+# /opt/forge/.rustup (see the Rust install below), so only its registry/git
+# caches live on this disk.
 #
 # Both store-dir variables pin pnpm's content-addressable store to a
 # container-internal path: pnpm 11 reads PNPM_CONFIG_STORE_DIR while pnpm 10
@@ -89,7 +91,7 @@ ENV HOME=/opt/forge \
     XDG_CACHE_HOME=/opt/forge/cache \
     XDG_DATA_HOME=/opt/forge/.local/share \
     PNPM_HOME=/opt/forge/.local/share/pnpm \
-    PATH=/opt/forge/cache/uv-bin:/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
+    PATH=/opt/forge/.cargo/bin:/opt/forge/cache/cargo/bin:/opt/forge/cache/uv-bin:/opt/forge/.local/share/pnpm/bin:/opt/forge/.local/share/pnpm:$PATH \
     npm_config_cache=/opt/forge/cache/npm \
     npm_config_store_dir=/opt/forge/cache/pnpm/store \
     PNPM_CONFIG_STORE_DIR=/opt/forge/cache/pnpm/store \
@@ -97,10 +99,24 @@ ENV HOME=/opt/forge \
     UV_TOOL_DIR=/opt/forge/cache/uv-tools \
     UV_TOOL_BIN_DIR=/opt/forge/cache/uv-bin \
     CARGO_HOME=/opt/forge/cache/cargo \
-    RUSTUP_HOME=/opt/forge/cache/rustup \
+    RUSTUP_HOME=/opt/forge/.rustup \
     GOPATH=/opt/forge/cache/go
 RUN mkdir -p /opt/forge/cache /opt/forge/.local/share/pnpm \
     && chmod -R 0777 /opt/forge
+
+# Rust toolchain: rustup plus a stable cargo/rustc, with clippy and rustfmt.
+# The toolchain ships in the image at RUSTUP_HOME=/opt/forge/.rustup, outside
+# /opt/forge/cache, because the runtime cache-disk mount hides anything the build
+# writes under that path. rustup puts its proxies (cargo, rustc, rustup, ...) in
+# $CARGO_HOME/bin, so the build-time install uses a separate stable CARGO_HOME at
+# /opt/forge/.cargo, which the PATH in the ENV block keeps on PATH. The runtime
+# CARGO_HOME stays on the cache disk so cargo's unbounded registry/git caches
+# land there and forge-cache-prune can reclaim them.
+RUN CARGO_HOME=/opt/forge/.cargo RUSTUP_HOME=/opt/forge/.rustup \
+      sh -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable' \
+    && CARGO_HOME=/opt/forge/.cargo RUSTUP_HOME=/opt/forge/.rustup \
+       /opt/forge/.cargo/bin/rustup component add clippy rustfmt \
+    && chmod -R a+rX /opt/forge/.cargo /opt/forge/.rustup
 
 # fallow CLI — dead-code analysis tool — and Playwright's Chromium browser are
 # installed globally with the same pnpm setup used by the rest of the sandbox image.
@@ -138,6 +154,73 @@ RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin --store-dir /opt/f
     && playwright_root="$(readlink -f "$(find "$(pnpm root -g)" -maxdepth 4 -path '*/node_modules/playwright-core' -print -quit)")" \
     && node "$playwright_root/cli.js" install --with-deps chromium \
     && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$playwright_root/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium \
+    && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
+    && chmod -R 0777 /opt/forge
+
+# Ghidra 12.1.x plus a 64-bit JDK 21, for REA's native-analysis provider
+# (`rea function ... --provider ghidra`). REA requires a full JDK 21+ and a
+# Ghidra installation whose native decompiler matches the host architecture at
+# Ghidra/Features/Decompiler/os/<platform>/decompile.
+#
+# Ghidra's release archives ship native decompilers for linux_x86_64, mac_* and
+# win_*, but not linux_arm_64 — Ghidra documents Linux ARM 64-bit as a
+# "user-built native binaries" platform. This image must build on both
+# architectures (msb boots a linux/arm64 guest on Apple silicon and a linux/amd64
+# guest on x86_64), so on arm64 the decompiler is compiled from the C++ source
+# bundled in the release zip. The bundled standalone Makefile predates arm64 (its
+# OS/arch detection sends aarch64 down the x86_32 path), so ARCH_TYPE and OSDIR
+# are overridden on the command line; each target gets its own make invocation
+# because the Makefile selects its object directories by matching MAKECMDGOALS
+# exactly, and a combined goal list skips the ghi_opt/sla_opt creation. On amd64
+# the release already ships os/linux_x86_64/decompile and the build is skipped.
+#
+# Ghidra and the JDK live under /opt, off the cache disk the runtime mount
+# shadows. JAVA_HOME points at an arch-neutral symlink so its value is stable.
+ARG GHIDRA_VERSION=12.1.4
+ARG GHIDRA_BUILD_DATE=20260921
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bison \
+        flex \
+        openjdk-21-jdk-headless \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sfn "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /usr/lib/jvm/java-21 \
+    && ghidra_root="/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC" \
+    && case "$(dpkg --print-architecture)" in \
+         amd64) ghidra_platform=linux_x86_64 ;; \
+         arm64) ghidra_platform=linux_arm_64 ;; \
+         *) echo "unsupported architecture for Ghidra: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+       esac \
+    && mkdir -p /opt/ghidra \
+    && curl -fsSL -o /tmp/ghidra.zip "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_BUILD_DATE}.zip" \
+    && unzip -q /tmp/ghidra.zip -d /opt/ghidra \
+    && rm -f /tmp/ghidra.zip \
+    && if [ ! -x "$ghidra_root/Ghidra/Features/Decompiler/os/$ghidra_platform/decompile" ]; then \
+         make -C "$ghidra_root/Ghidra/Features/Decompiler/src/decompile/cpp" ARCH_TYPE= OSDIR="$ghidra_platform" -j"$(nproc)" ghidra_opt \
+         && make -C "$ghidra_root/Ghidra/Features/Decompiler/src/decompile/cpp" ARCH_TYPE= OSDIR="$ghidra_platform" -j"$(nproc)" sleigh_opt \
+         && mkdir -p "$ghidra_root/Ghidra/Features/Decompiler/os/$ghidra_platform" \
+         && cp "$ghidra_root/Ghidra/Features/Decompiler/src/decompile/cpp/ghidra_opt" "$ghidra_root/Ghidra/Features/Decompiler/os/$ghidra_platform/decompile" \
+         && cp "$ghidra_root/Ghidra/Features/Decompiler/src/decompile/cpp/sleigh_opt" "$ghidra_root/Ghidra/Features/Decompiler/os/$ghidra_platform/sleigh" \
+         && make -C "$ghidra_root/Ghidra/Features/Decompiler/src/decompile/cpp" clean; \
+       fi \
+    && chmod +x "$ghidra_root/support/analyzeHeadless" \
+    && chmod -R a+rX /opt/ghidra
+ENV GHIDRA_INSTALL_DIR=/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC \
+    JAVA_HOME=/usr/lib/jvm/java-21
+
+# REA (`rea-agents`) — the reverse-engineering CLI for application and
+# native-binary investigation — installed globally with the same pnpm pattern as
+# fallow above. The package is pure JavaScript (Ghidra compiles REA's Java bridge
+# at analysis time), so nothing native downloads at install. Node here is
+# NodeSource current (26.x), which satisfies REA's engines field; REA rejects
+# Node 23 and 25. The explicit --store-dir keeps the global on a path no runtime
+# mount shadows, for the same reason as fallow and playwright-core.
+#
+# @latest is deliberately left to pnpm 11's default 1-day minimumReleaseAge
+# supply-chain gate, so the resolved version is the newest release at least a day
+# old and can briefly trail npm's newest. REA is version-coupled to Ghidra
+# 12.1.x; pin an exact version here if that pairing needs to stop floating.
+RUN pnpm add -g rea-agents@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
     && rm -rf /opt/forge/cache/* /opt/forge/cache/.[!.]* /opt/forge/cache/..?* \
     && chmod -R 0777 /opt/forge
 
@@ -253,7 +336,7 @@ wipe() {
 for entry in "$cache"/* "$cache"/.[!.]* "$cache"/..?*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     case "$entry" in
-        "$cache"/rustup|"$cache"/uv-python|"$cache"/uv-tools|"$cache"/uv-bin) ;;
+        "$cache"/uv-python|"$cache"/uv-tools|"$cache"/uv-bin) ;;
         "$cache"/cargo)
             wipe "$cache/cargo/registry"
             wipe "$cache/cargo/git"
