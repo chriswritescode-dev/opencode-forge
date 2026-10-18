@@ -58,7 +58,11 @@ export interface GoalOrchestrator {
   onLoopSettled(loopName: string): Promise<void>
   /** Handles a planner session going idle: launches the chunk, declares the goal complete, or abandons the plan. */
   onPlannerIdle(sessionId: string): Promise<void>
-  /** Handles a planner session error: abandons its chunk and pauses the goal with the failure. */
+  /**
+   * Handles a planner session error: pauses the goal with the failure and keeps
+   * the planning chunk, its session, and its checkout for inspection until
+   * `restart` or `cancel` discards them.
+   */
   onPlannerError(sessionId: string, message: string): Promise<void>
   /** User-facing recovery: cleans a stale planning chunk or resumes a paused goal. Returns a status message. */
   restart(goalId: string, opts?: { maxChunks?: number; force?: boolean }): Promise<string>
@@ -384,7 +388,13 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
   async function onPlannerError(sessionId: string, message: string): Promise<void> {
     const chunk = goalsRepo.getChunkByPlannerSession(projectId, sessionId)
     if (!chunk || chunk.stage !== 'planning') return
-    await abandonPlanning(chunk, `Planner failed for chunk ${chunk.chunkIndex + 1}: ${message}`)
+    goalPlanningInFlight.delete(inflightKey(projectId, chunk.goalId, chunk.chunkIndex))
+    const chunkNumber = chunk.chunkIndex + 1
+    const planningDir = chunk.planningDir ?? goalPlanningDir(dataDir, chunk.goalId, chunk.chunkIndex)
+    pauseGoal(
+      chunk.goalId,
+      `Planner failed for chunk ${chunkNumber}: ${message} (kept planner session ${sessionId} and checkout ${planningDir} for inspection; goal-status restart discards them and re-plans chunk ${chunkNumber})`,
+    )
   }
 
   async function restart(goalId: string, opts?: { maxChunks?: number; force?: boolean }): Promise<string> {

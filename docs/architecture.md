@@ -195,7 +195,7 @@ A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stri
 - `location.shutdown` - Run cleanup when the location shuts down
 - Plan approval events via `createPlanApprovalEventHook`
 - Plan capture from streaming message parts via `createPlanCaptureEventHook`
-- Goal planner idle and error events via `createGoalPlannerEventHook` (`src/hooks/goal-orchestrator.ts`) — routes a chunk planner session's idle event to the goal orchestrator; ownership is proven by the persisted planner-session row, so an unrelated session's idle is ignored. A normalized `session.error` for the same session (a provider failure or an interrupted execution) is routed to `onPlannerError`, which abandons the chunk and pauses the goal; a premature idle that yields no output keeps the chunk planning.
+- Goal planner idle and error events via `createGoalPlannerEventHook` (`src/hooks/goal-orchestrator.ts`) — routes a chunk planner session's idle event to the goal orchestrator; ownership is proven by the persisted planner-session row, so an unrelated session's idle is ignored. A normalized `session.error` for the same session (a provider failure or an interrupted execution) is routed to `onPlannerError`, which pauses the goal and keeps the planning chunk, its planner session, stored plan, and detached checkout for inspection; a later `goal-status restart` discards them and re-plans the chunk, and cancelling the goal cleans them up. A premature idle that yields no output keeps the chunk planning.
 
 ### Additional Hooks
 

@@ -29,8 +29,9 @@ function readSessionErrorMessage(error: unknown): string {
  * `onPlannerError`; `superseded` means a new execution of the same session
  * follows and is ignored; any other reason falls through to `onPlannerIdle`. A
  * normalized `session.error` for the same session (a provider failure, or an
- * interrupted/aborted execution) pauses the goal through `onPlannerError`; the
- * later idle that follows it finds no planning chunk and is a no-op.
+ * interrupted/aborted execution) pauses the goal through `onPlannerError`,
+ * keeping the failed chunk's session and checkout for inspection; the later
+ * idle that follows it finds the goal paused and is a no-op.
  */
 export function createGoalPlannerEventHook(deps: GoalPlannerEventHookDeps) {
   const { orchestrator, goalsRepo, projectId, logger } = deps

@@ -38,6 +38,7 @@ interface StubCoreOptions {
   resolveSandboxForDirectory?: ForgeHooksV2Core['resolveSandboxForDirectory']
   resolveShellSandbox?: ForgeHooksV2Core['resolveShellSandbox']
   autoApprovesPermissions?: ForgeHooksV2Core['autoApprovesPermissions']
+  isUnattendedGoalPlannerSession?: ForgeHooksV2Core['isUnattendedGoalPlannerSession']
   autoApproveDenyRules?: ForgeHooksV2Core['autoApproveDenyRules']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
@@ -85,6 +86,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     resolveSandboxForDirectory: options.resolveSandboxForDirectory ?? (async () => null),
     resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
     autoApprovesPermissions: options.autoApprovesPermissions ?? (async () => false),
+    isUnattendedGoalPlannerSession: options.isUnattendedGoalPlannerSession ?? (() => false),
     autoApproveDenyRules: options.autoApproveDenyRules ?? [],
     shellShimPath: options.shellShimPath ?? null,
   }
@@ -194,6 +196,39 @@ describe('registerForgeHooksV2 permission hook', () => {
     await invokeHook(hooks, 'permission', 'evaluate', asked)
     expect(asked.effect).toBe('deny')
     expect(asked.message).toContain('matches the auto-approve deny rule')
+  })
+
+  test('denies an ask from a goal planner session without consulting auto-approve', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const autoApprovesPermissions = vi.fn(async () => true)
+    const { core } = createStubCore({
+      isUnattendedGoalPlannerSession: (sessionID) => sessionID === 'ses_planner',
+      autoApprovesPermissions,
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const asked = permissionEvent({ sessionID: 'ses_planner' })
+    await invokeHook(hooks, 'permission', 'evaluate', asked)
+
+    expect(asked.effect).toBe('deny')
+    expect(asked.message).toContain('runs unattended')
+    expect(autoApprovesPermissions).not.toHaveBeenCalled()
+  })
+
+  test('leaves a goal planner session allow untouched', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const autoApprovesPermissions = vi.fn(async () => true)
+    const { core } = createStubCore({
+      isUnattendedGoalPlannerSession: (sessionID) => sessionID === 'ses_planner',
+      autoApprovesPermissions,
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const allowed = permissionEvent({ sessionID: 'ses_planner', effect: 'allow' })
+    await invokeHook(hooks, 'permission', 'evaluate', allowed)
+
+    expect(allowed.effect).toBe('allow')
+    expect(allowed.message).toBeUndefined()
   })
 })
 
@@ -657,6 +692,13 @@ describe('createForgeCore integration', () => {
     expect(built.architectReminderFor(architect)).toBe(buildArchitectReminder())
     expect(built.architectReminderFor('code')).toBeNull()
     expect(built.architectReminderFor(undefined)).toBeNull()
+  })
+
+  test('architect reminder narrows with grouped question rounds before storing', () => {
+    const reminder = buildArchitectReminder()
+
+    expect(reminder).toContain('grouped `question` rounds')
+    expect(reminder).toContain('Once the plan is stored, do not call the `question` tool')
   })
 
   test('omits the architect reminder when the transform is disabled', async () => {

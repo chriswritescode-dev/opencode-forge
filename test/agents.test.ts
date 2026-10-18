@@ -295,8 +295,8 @@ describe('Agent definitions', () => {
       const prompt = architectAgent.systemPrompt
       for (const contract of [
         'source-backed',
-        'material ambiguity',
-        'success criteria',
+        'Restate the requested goal in chat',
+        'the intended outcome',
         'scope boundaries',
         'do not emit the full plan',
         '`plan-read`',
@@ -359,6 +359,29 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('The user decides whether and how to execute')
       expect(prompt).not.toContain('"New session", "Execute here", and "Loop"')
       expect(prompt).not.toContain('uses the stored plan automatically')
+    })
+
+    test('architect.systemPrompt narrows the goal with grouped question rounds after research', () => {
+      const prompt = architectAgent.systemPrompt
+      for (const contract of [
+        '**Capture the goal**',
+        '**Narrow**',
+        'Always, before designing, call the `question` tool',
+        'one grouped set of questions that settles the route',
+        'one question per decision group',
+        'Make no silent route decisions',
+        'repeat until every route decision is settled',
+        '`(Recommended)`',
+        'record every route decision with its source',
+        'do not call the `question` tool again',
+      ]) {
+        expect(prompt).toContain(contract)
+      }
+      expect(prompt.indexOf('**Research**')).toBeLessThan(prompt.indexOf('**Narrow**'))
+      expect(prompt.indexOf('**Narrow**')).toBeLessThan(prompt.indexOf('**Design**'))
+      expect(architectAutoAgent.systemPrompt).not.toContain('one grouped set of questions')
+      expect(architectAutoAgent.systemPrompt).toContain('Treat route decisions recorded in the brief')
+      expect(architectAutoAgent.systemPrompt).toContain('Never call the `question` tool')
     })
 
     test('architect-auto.systemPrompt keeps autonomous plan contracts aligned', () => {

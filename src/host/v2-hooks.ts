@@ -27,6 +27,7 @@ export type ForgeHooksV2Core = Pick<
   | 'resolveSandboxForDirectory'
   | 'resolveShellSandbox'
   | 'autoApprovesPermissions'
+  | 'isUnattendedGoalPlannerSession'
   | 'autoApproveDenyRules'
   | 'shellShimPath'
 >
@@ -77,15 +78,22 @@ interface AutoApprovePermissionEvent {
   message?: string
 }
 
+const GOAL_PLANNER_PERMISSION_DENIED_MESSAGE =
+  'Blocked in goal planning: the chunk planner runs unattended, so requests that need approval are denied. Continue without it and report what was skipped.'
+
 /**
- * Turns an auto-approved `ask` into allow or deny. Requests matching a configured `autoApprove.deny`
- * rule deny with a message; every other `ask` is allowed. OpenCode `deny` decisions are never touched.
+ * Resolves a permission `ask` for the session. A goal chunk planner session running unattended denies its
+ * `ask` with a message. Otherwise, when auto-approve applies, requests matching a configured
+ * `autoApprove.deny` rule deny with a message and every other `ask` is allowed. OpenCode `deny` (and
+ * `allow`) decisions are never touched.
  */
-async function resolveAutoApprovedPermission(
-  core: ForgeHooksV2Core,
-  event: AutoApprovePermissionEvent,
-): Promise<void> {
+async function resolvePermissionAsk(core: ForgeHooksV2Core, event: AutoApprovePermissionEvent): Promise<void> {
   if (event.effect !== 'ask') return
+  if (core.isUnattendedGoalPlannerSession(event.sessionID)) {
+    event.effect = 'deny'
+    event.message = GOAL_PLANNER_PERMISSION_DENIED_MESSAGE
+    return
+  }
   if (!(await core.autoApprovesPermissions(event.sessionID))) return
 
   const decision = resolveAutoApproveDecision({
@@ -132,7 +140,7 @@ export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooks
   }
 
   await ctx.permission.hook('evaluate', async (event) => {
-    await resolveAutoApprovedPermission(core, event)
+    await resolvePermissionAsk(core, event)
   })
 
   await ctx.shell.hook('create.before', async (event) => {
