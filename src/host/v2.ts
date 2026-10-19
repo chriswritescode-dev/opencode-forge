@@ -156,7 +156,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     ...(publishTuiEvent ? { publishTuiEvent } : {}),
   })
 
-  await registerForgeToolsV2(ctx, core.tools)
+  const unregisterTools = await registerForgeToolsV2(ctx, core.tools)
   const cfg = await resolveForgeConfigMaps(core.applyConfig, ctx.options)
   await registerForgeAgentsV2(ctx, cfg.agent)
   await registerForgeCommandsV2(ctx, cfg.command)
@@ -196,6 +196,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
 
   const dispose = async () => {
     controller.abort()
+    unregisterTools()
     await core.cleanup()
     const rpcDispose = disposeRpc
     disposeRpc = null
