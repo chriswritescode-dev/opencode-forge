@@ -49,44 +49,39 @@ export async function registerForgeToolsV2(
     if (registry.get(location) === tools) registry.delete(location)
   }
 
+  await ctx.tool.transform((editor) => {
+    for (const [name, def] of Object.entries(tools)) {
+      const schema = z.object(def.args)
+      editor.add({
+        name,
+        description: def.description,
+        input: toJsonSchema(schema),
+        options: { codemode: false },
+        execute: async (input, context) => {
+          const directory = await resolveSessionDirectory(ctx, context.sessionID)
+          const target = registry.get(canonicalizePath(directory))
+          if (!target) throw notLoadedError(directory)
+          const targetDef = target[name]
+          if (!targetDef) {
+            throw new Error(`Forge tool "${name}" is not registered for this session's location (${directory}).`)
+          }
+          const targetSchema = z.object(targetDef.args)
+          const parsed = targetSchema.safeParse(input)
+          if (!parsed.success) {
+            throw new Error(`Invalid arguments for tool "${name}":\n${formatIssues(parsed.error.issues)}`)
+          }
+          const output = await targetDef.execute(parsed.data, {
+            sessionID: context.sessionID,
+            messageID: context.messageID,
+            agent: context.agent,
+            signal: context.signal,
+          })
+          return { content: output }
+        },
+      })
+    }
+  })
   registry.set(location, tools)
-  try {
-    await ctx.tool.transform((editor) => {
-      for (const [name, def] of Object.entries(tools)) {
-        const schema = z.object(def.args)
-        editor.add({
-          name,
-          description: def.description,
-          input: toJsonSchema(schema),
-          options: { codemode: false },
-          execute: async (input, context) => {
-            const directory = await resolveSessionDirectory(ctx, context.sessionID)
-            const target = registry.get(canonicalizePath(directory))
-            if (!target) throw notLoadedError(directory)
-            const targetDef = target[name]
-            if (!targetDef) {
-              throw new Error(`Forge tool "${name}" is not registered for this session's location (${directory}).`)
-            }
-            const targetSchema = z.object(targetDef.args)
-            const parsed = targetSchema.safeParse(input)
-            if (!parsed.success) {
-              throw new Error(`Invalid arguments for tool "${name}":\n${formatIssues(parsed.error.issues)}`)
-            }
-            const output = await targetDef.execute(parsed.data, {
-              sessionID: context.sessionID,
-              messageID: context.messageID,
-              agent: context.agent,
-              signal: context.signal,
-            })
-            return { content: output }
-          },
-        })
-      }
-    })
-  } catch (err) {
-    unregister()
-    throw err
-  }
 
   return unregister
 }

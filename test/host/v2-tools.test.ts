@@ -133,6 +133,25 @@ describe('registerForgeToolsV2', () => {
     expect(result.content).not.toContain('project B content')
   })
 
+  test('a failed registration at an already registered location keeps the earlier registration', async () => {
+    const a = createFakeV2Context({ location: { directory: '/project-a' }, session: { get: sessionAt('/project-a') } })
+    await register(a, stubContext({
+      directory: '/project-a',
+      plansRepo: { getForSession: () => ({ content: PLAN_A }) } as never,
+    }))
+
+    const failing = createFakeV2Context({
+      location: { directory: '/project-a' },
+      tool: { transform: async () => { throw new Error('transform failed') } },
+    })
+
+    await expect(registerForgeToolsV2(failing.ctx, createTools(stubContext({ directory: '/project-a' }))))
+      .rejects.toThrow('transform failed')
+
+    const result = (await planRead(a.tools).execute({}, callContext('ses_a'))) as Record<string, unknown>
+    expect(result.content).toContain('project A content')
+  })
+
   test('rejects a session located in a directory with no registered instance', async () => {
     const fake = createFakeV2Context({
       location: { directory: '/project-b' },
