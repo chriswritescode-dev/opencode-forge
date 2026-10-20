@@ -1,10 +1,18 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, afterEach } from 'vitest'
 import { createTools } from '../../src/tools'
 import { registerForgeToolsV2 } from '../../src/host/v2-tools'
-import { createFakeV2Context, type RecordedTool } from '../helpers/fake-v2-context'
+import { createFakeV2Context, type FakeV2Context, type RecordedTool } from '../helpers/fake-v2-context'
 import type { ToolContext } from '../../src/tools/types'
 
 const PLAN = '# Plan\n\nLine A\nLine B'
+const PLAN_A = '# Plan A\n\nproject A content'
+const PLAN_B = '# Plan B\n\nproject B content'
+
+const unregisters: Array<() => void> = []
+
+afterEach(() => {
+  for (const unregister of unregisters.splice(0)) unregister()
+})
 
 function stubContext(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -40,10 +48,29 @@ function callContext(sessionID: string) {
   }
 }
 
+async function register(
+  fake: FakeV2Context,
+  context: ToolContext,
+): Promise<RecordedTool[]> {
+  unregisters.push(await registerForgeToolsV2(fake.ctx, createTools(context)))
+  return fake.tools
+}
+
 async function registerTools(context: ToolContext): Promise<RecordedTool[]> {
-  const { ctx, tools } = createFakeV2Context()
-  await registerForgeToolsV2(ctx, createTools(context))
-  return tools
+  return register(createFakeV2Context({ location: { directory: context.directory } }), context)
+}
+
+function planRead(tools: RecordedTool[]): RecordedTool {
+  return tools.find((tool) => tool.name === 'plan-read')!
+}
+
+function sessionAt(directory: string) {
+  return async (input?: { sessionID?: string }) => ({
+    id: input?.sessionID ?? 'ses_v2',
+    projectID: 'proj_fake',
+    location: { directory },
+    time: { created: 1, updated: 1 },
+  })
 }
 
 describe('registerForgeToolsV2', () => {
@@ -76,8 +103,7 @@ describe('registerForgeToolsV2', () => {
 
   test('plan-read executes through the V2 tool context and returns content only', async () => {
     const registered = await registerTools(stubContext())
-    const planRead = registered.find((tool) => tool.name === 'plan-read')!
-    const result = (await planRead.execute({}, callContext('ses_v2'))) as Record<string, unknown>
+    const result = (await planRead(registered).execute({}, callContext('ses_v2'))) as Record<string, unknown>
 
     expect(Object.keys(result)).toEqual(['content'])
     expect(result.content).toContain('1: # Plan')
@@ -85,8 +111,94 @@ describe('registerForgeToolsV2', () => {
 
   test('invalid input rejects with the zod issues', async () => {
     const registered = await registerTools(stubContext())
-    const planRead = registered.find((tool) => tool.name === 'plan-read')!
 
-    await expect(planRead.execute({ offset: 'nope' }, callContext('ses_v2'))).rejects.toThrow(/offset/)
+    await expect(planRead(registered).execute({ offset: 'nope' }, callContext('ses_v2'))).rejects.toThrow(/offset/)
+  })
+
+  test('routes a call to the instance registered for the calling session location', async () => {
+    const a = createFakeV2Context({ location: { directory: '/project-a' } })
+    const b = createFakeV2Context({ location: { directory: '/project-b' }, session: { get: sessionAt('/project-a') } })
+
+    await register(a, stubContext({
+      directory: '/project-a',
+      plansRepo: { getForSession: () => ({ content: PLAN_A }) } as never,
+    }))
+    const registeredB = await register(b, stubContext({
+      directory: '/project-b',
+      plansRepo: { getForSession: () => ({ content: PLAN_B }) } as never,
+    }))
+
+    const result = (await planRead(registeredB).execute({}, callContext('ses_a'))) as Record<string, unknown>
+    expect(result.content).toContain('project A content')
+    expect(result.content).not.toContain('project B content')
+  })
+
+  test('a failed registration at an already registered location keeps the earlier registration', async () => {
+    const a = createFakeV2Context({ location: { directory: '/project-a' }, session: { get: sessionAt('/project-a') } })
+    await register(a, stubContext({
+      directory: '/project-a',
+      plansRepo: { getForSession: () => ({ content: PLAN_A }) } as never,
+    }))
+
+    const failing = createFakeV2Context({
+      location: { directory: '/project-a' },
+      tool: { transform: async () => { throw new Error('transform failed') } },
+    })
+
+    await expect(registerForgeToolsV2(failing.ctx, createTools(stubContext({ directory: '/project-a' }))))
+      .rejects.toThrow('transform failed')
+
+    const result = (await planRead(a.tools).execute({}, callContext('ses_a'))) as Record<string, unknown>
+    expect(result.content).toContain('project A content')
+  })
+
+  test('rejects a session located in a directory with no registered instance', async () => {
+    const fake = createFakeV2Context({
+      location: { directory: '/project-b' },
+      session: { get: sessionAt('/project-nowhere') },
+    })
+    const registered = await register(fake, stubContext({ directory: '/project-b' }))
+
+    await expect(planRead(registered).execute({}, callContext('ses_foreign')))
+      .rejects.toThrow('Forge is not loaded for this session\'s location (/project-nowhere); retry once it has started.')
+  })
+
+  test('rejects with a clear error when the session lookup fails', async () => {
+    const fake = createFakeV2Context({
+      location: { directory: '/project-b' },
+      session: { get: async () => { throw new Error('session lookup failed') } },
+    })
+    const registered = await register(fake, stubContext({ directory: '/project-b' }))
+
+    await expect(planRead(registered).execute({}, callContext('ses_missing')))
+      .rejects.toThrow(/could not resolve the location of session ses_missing/)
+  })
+
+  test('unregistering a location rejects its sessions and leaves a newer registration intact', async () => {
+    const fake = createFakeV2Context({ location: { directory: '/project-a' }, session: { get: sessionAt('/project-a') } })
+
+    const unregisterOld = await registerForgeToolsV2(fake.ctx, createTools(stubContext({
+      directory: '/project-a',
+      plansRepo: { getForSession: () => ({ content: PLAN_A }) } as never,
+    })))
+    unregisterOld()
+
+    await expect(planRead(fake.tools).execute({}, callContext('ses_a')))
+      .rejects.toThrow(/Forge is not loaded for this session's location \(\/project-a\)/)
+
+    fake.tools.length = 0
+    const unregisterNew = await registerForgeToolsV2(fake.ctx, createTools(stubContext({
+      directory: '/project-a',
+      plansRepo: { getForSession: () => ({ content: PLAN_B }) } as never,
+    })))
+    unregisters.push(unregisterNew)
+
+    unregisterOld()
+    const result = (await planRead(fake.tools).execute({}, callContext('ses_a'))) as Record<string, unknown>
+    expect(result.content).toContain('project B content')
+
+    unregisterNew()
+    await expect(planRead(fake.tools).execute({}, callContext('ses_a')))
+      .rejects.toThrow(/Forge is not loaded for this session's location \(\/project-a\)/)
   })
 })

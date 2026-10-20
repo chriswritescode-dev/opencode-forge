@@ -156,11 +156,33 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     ...(publishTuiEvent ? { publishTuiEvent } : {}),
   })
 
-  await registerForgeToolsV2(ctx, core.tools)
-  const cfg = await resolveForgeConfigMaps(core.applyConfig, ctx.options)
-  await registerForgeAgentsV2(ctx, cfg.agent)
-  await registerForgeCommandsV2(ctx, cfg.command)
-  await registerForgeHooksV2(ctx, core)
+  const disposeRpcRegistration = async () => {
+    const rpcDispose = disposeRpc
+    disposeRpc = null
+    await rpcDispose?.()
+  }
+
+  let unregisterTools: () => void = () => {}
+  try {
+    unregisterTools = await registerForgeToolsV2(ctx, core.tools)
+    const cfg = await resolveForgeConfigMaps(core.applyConfig, ctx.options)
+    await registerForgeAgentsV2(ctx, cfg.agent)
+    await registerForgeCommandsV2(ctx, cfg.command)
+    await registerForgeHooksV2(ctx, core)
+  } catch (err) {
+    unregisterTools()
+    try {
+      await core.cleanup()
+    } catch (cleanupErr) {
+      console.error('[forge] failed to clean up after a failed V2 setup', cleanupErr)
+    }
+    try {
+      await disposeRpcRegistration()
+    } catch (rpcErr) {
+      console.error('[forge] failed to dispose the RPC registration after a failed V2 setup', rpcErr)
+    }
+    throw err
+  }
 
   const canonicalDirectory = canonicalizePath(directory)
   const controller = new AbortController()
@@ -196,10 +218,9 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
 
   const dispose = async () => {
     controller.abort()
+    unregisterTools()
     await core.cleanup()
-    const rpcDispose = disposeRpc
-    disposeRpc = null
-    await rpcDispose?.()
+    await disposeRpcRegistration()
   }
 
   void (async () => {
