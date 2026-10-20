@@ -156,15 +156,15 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
     ...(publishTuiEvent ? { publishTuiEvent } : {}),
   })
 
-  const unregisterTools = await registerForgeToolsV2(ctx, core.tools)
-
   const disposeRpcRegistration = async () => {
     const rpcDispose = disposeRpc
     disposeRpc = null
     await rpcDispose?.()
   }
 
+  let unregisterTools: () => void = () => {}
   try {
+    unregisterTools = await registerForgeToolsV2(ctx, core.tools)
     const cfg = await resolveForgeConfigMaps(core.applyConfig, ctx.options)
     await registerForgeAgentsV2(ctx, cfg.agent)
     await registerForgeCommandsV2(ctx, cfg.command)
