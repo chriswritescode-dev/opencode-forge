@@ -307,7 +307,7 @@ describe('createForgeCore', () => {
 
   test('emits one coalesced loopsChanged on a loop change', async () => {
     const events: ForgeTuiEvent[] = []
-    const built = await buildCore({}, undefined, { publishTuiEvent: (event) => events.push(event) })
+    const built = await buildCore({ sandbox: { enabled: false } }, undefined, { publishTuiEvent: (event) => events.push(event) })
 
     const db = initializeDatabase(join(testDir, 'memory'))
     try {
