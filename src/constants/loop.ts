@@ -4,8 +4,8 @@ import type { PluginConfig, LoopPermissionsConfig } from '../types'
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 /** Maximum number of plan sections a loop may execute. Shared by the
- *  deterministic decomposer, section bootstrap, the TUI inline-plan preview,
- *  and the plan-adjust cap so all four agree. */
+ *  deterministic decomposer, section bootstrap, the plan-structure report,
+ *  the Forge-hosted planner prompt, and the plan-adjust cap so all agree. */
 export const MAX_TOTAL_SECTIONS = 24
 
 /** Tools that author the loop's plan of record. Kept by the architect agents, denied to every
