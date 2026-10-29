@@ -4,6 +4,7 @@ vi.mock('solid-js', async () => await import('solid-js/dist/dev.js'))
 
 import { createSignal } from 'solid-js'
 import type { Plugin } from '@opencode/plugin/tui'
+import type { ForgeHostSandboxSetInput, ForgeHostSandboxState } from '../../src/host/forge-rpc'
 import { resolveV2TuiProjectId, setupForgeTuiV2 } from '../../src/tui/v2'
 import tuiModule from '../../src/tui'
 import { formatForgeTitle, resolveTuiOptions } from '../../src/tui/options'
@@ -88,13 +89,13 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const worktrees = fakeOptions.worktrees ?? { root: forgeWorktreesRoot(resolveForgeDataDir()), dirs: [] }
   const worktreesMock = vi.fn(async () => worktrees)
   const loopSidebar = vi.fn(async () => ({ loops: [] }))
-  const hostSandboxState = vi.fn(async () => ({
+  const hostSandboxState = vi.fn(async (): Promise<ForgeHostSandboxState> => ({
     configEnabled: true,
     desired: null,
     applied: null,
     controller: null,
   }))
-  const hostSandboxSet = vi.fn(async () => ({ revision: 'rev-1' }))
+  const hostSandboxSet = vi.fn(async (_input: ForgeHostSandboxSetInput) => ({ revision: 'rev-1' }))
   const autoApproveState = vi.fn(async () => ({ enabled: false, inherited: false }))
   const autoApproveSet = vi.fn(async () => ({ enabled: true, inherited: false }))
   const version = vi.fn(async () => fakeOptions.version ?? { version: VERSION })
@@ -435,6 +436,63 @@ describe('V2 TUI setup', () => {
     fake.findRpcSubscription('loopsChanged')?.handler({ data: { projectId: 'proj-1' } })
     await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(3))
     cleanup()
+  })
+
+  test('acknowledges a host sandbox toggle after the TUI switches to another project', async () => {
+    let directory = '/work/a'
+    const projects: Record<string, string> = { '/work/a': 'proj-a', '/work/b': 'proj-b' }
+    const fake = createFakeV2TuiContext()
+    Object.defineProperty(fake.ctx, 'location', { get: () => ({ directory }) })
+    fake.locationGet.mockImplementation(async (input) => ({
+      project: { id: projects[input?.location?.directory ?? ''] ?? 'unknown' },
+    }))
+    const serverState: ForgeHostSandboxState = { configEnabled: true, desired: null, applied: null, controller: null }
+    fake.hostSandboxState.mockImplementation(async () => serverState)
+    fake.hostSandboxSet.mockImplementation(async (input) => {
+      serverState.desired = {
+        version: 1,
+        revision: 'rev-b',
+        enabled: input.enabled === true,
+        sessionId: input.sessionId,
+        requestedAt: Date.now(),
+      }
+      return { revision: 'rev-b' }
+    })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(1))
+    fake.findRpcSubscription('loopsChanged')?.handler({ data: { projectId: 'proj-a' } })
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(2))
+
+    const statesBeforeSwitch = fake.hostSandboxState.mock.calls.length
+    directory = '/work/b'
+    fake.setRoute({ type: 'session', sessionID: 'ses_b' })
+    await vi.waitFor(() => expect(fake.hostSandboxState.mock.calls.length).toBeGreaterThan(statesBeforeSwitch))
+    expect(fake.hostSandboxState.mock.calls.at(-1)?.[1]).toEqual({ location: { directory: '/work/b' } })
+
+    const dialogSelect = (fake.ctx.ui as unknown as { dialog: { select: ReturnType<typeof vi.fn> } }).dialog.select
+    dialogSelect.mockResolvedValueOnce('toggle')
+    findCommand(fake, 'forge.sandbox.toggleHost').run?.()
+    await vi.waitFor(() => expect(fake.hostSandboxSet).toHaveBeenCalledTimes(1))
+
+    serverState.applied = {
+      version: 1,
+      revision: 'rev-b',
+      enabled: true,
+      sessionId: 'ses_b',
+      error: null,
+      appliedAt: Date.now(),
+    }
+    fake.findRpcSubscription('hostSandboxChanged')?.handler({ data: { projectId: 'proj-b' } })
+
+    try {
+      await vi.waitFor(() => expect(fake.toasts).toContainEqual(expect.objectContaining({
+        variant: 'success',
+        message: expect.stringContaining('Host sandbox enabled for this session'),
+      })))
+    } finally {
+      cleanup()
+    }
   })
 
   test('refetches every state on server.connected', async () => {

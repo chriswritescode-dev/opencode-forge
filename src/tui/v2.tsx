@@ -66,6 +66,10 @@ function resolveV2TuiDirectory(context: Plugin.Context): string | null {
 export async function resolveV2TuiProjectId(context: Plugin.Context): Promise<string | null> {
   const directory = resolveV2TuiDirectory(context)
   if (!directory) return null
+  return resolveV2TuiProjectIdForDirectory(context, directory)
+}
+
+async function resolveV2TuiProjectIdForDirectory(context: Plugin.Context, directory: string): Promise<string | null> {
   try {
     const info = await context.client.location.get({ location: { directory } })
     return info.project.id
@@ -439,13 +443,27 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   })
 
   const eventController = new AbortController()
-  let eventProjectId: Promise<string | null> | null = null
+  const eventProjectIds = new Map<string, Promise<string | null>>()
 
+  /**
+   * Handles an RPC event for the TUI's current project. The TUI can switch projects,
+   * so the id is resolved for the current location on every event, and a failed
+   * lookup is dropped so the next event retries it.
+   */
   const withProjectId = (handler: (projectId: string) => void): void => {
-    eventProjectId ??= resolveV2TuiProjectId(context)
-    void eventProjectId.then((projectId) => {
-      if (eventController.signal.aborted || !projectId) return
-      handler(projectId)
+    const directory = resolveV2TuiDirectory(context)
+    if (!directory) return
+    let projectId = eventProjectIds.get(directory)
+    if (!projectId) {
+      projectId = resolveV2TuiProjectIdForDirectory(context, directory)
+      eventProjectIds.set(directory, projectId)
+      void projectId.then((resolved) => {
+        if (resolved === null && eventProjectIds.get(directory) === projectId) eventProjectIds.delete(directory)
+      })
+    }
+    void projectId.then((resolved) => {
+      if (eventController.signal.aborted || !resolved) return
+      handler(resolved)
     })
   }
 
