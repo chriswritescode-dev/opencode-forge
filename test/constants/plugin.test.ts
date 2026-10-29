@@ -26,6 +26,6 @@ describe('VERIFIED_OPENCODE_VERSION', () => {
   })
 
   it('is the version docs/compatibility.md records evidence for', () => {
-    expect(compatibility).toContain(VERIFIED_OPENCODE_VERSION)
+    expect(compatibility).toContain(`Verdict: compatible as-is with OpenCode ${VERIFIED_OPENCODE_VERSION}.`)
   })
 })
