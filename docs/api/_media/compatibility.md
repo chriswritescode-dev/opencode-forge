@@ -1,8 +1,8 @@
 # OpenCode Compatibility
 
-**Verdict: compatible as-is with OpenCode 2.2.0.** No Forge source change was required for this release.
+**Verdict: compatible as-is with OpenCode 2.2.2.** No Forge source change was required for this release.
 
-Forge declares a floor of OpenCode `>=2.0.14` (`engines.opencode`) and is verified against the newest release at the time of writing, `2.2.0`. The floor is a range, not a pin: a host on `2.0.x` keeps working, but only `2.2.0` carries the evidence recorded here.
+Forge declares a floor of OpenCode `>=2.0.14` (`engines.opencode`) and is verified against the newest release at the time of writing, `2.2.2`. The floor is a range, not a pin: a host on `2.0.x` keeps working, but only `2.2.2` carries the evidence recorded here.
 
 `VERIFIED_OPENCODE_VERSION` in `src/constants/plugin.ts` is the single source of truth for the verified version. `test/constants/plugin.test.ts` fails when it drifts from the `@opencode/plugin` and `@opencode/client` pins, from the `README.md` claim, or from this document.
 
@@ -10,24 +10,24 @@ Forge declares a floor of OpenCode `>=2.0.14` (`engines.opencode`) and is verifi
 
 | Package | Pin | Why |
 | --- | --- | --- |
-| `@opencode/plugin` | `2.2.0` (dependency) | Types for `define`, `Plugin.Context`, `shell.hook`, TUI slots and keymaps. |
-| `@opencode/client` | `2.2.0` (devDependency) | `V2Event` union consumed by `src/host/v2-events.ts`. |
+| `@opencode/plugin` | `2.2.2` (dependency) | Types for `define`, `Plugin.Context`, `shell.hook`, TUI slots and keymaps. |
+| `@opencode/client` | `2.2.2` (devDependency) | `V2Event` union consumed by `src/host/v2-events.ts`. |
 | `@opentui/core` | `0.7.0` (devDependency) | Renderer the host provides to TUI plugins. |
 | `@opentui/solid` | `0.7.0` (devDependency) | JSX runtime for `src/tui.tsx`. |
 | `engines.opencode` | `>=2.0.14` | Supported floor, deliberately a range. |
 | `peerDependencies` on `@opentui/*` | `>=0.1.105` | Published range, deliberately looser than the dev pin. |
 
-`@opencode/plugin@2.2.0` declares optional peers on `@opentui/core` and `@opentui/solid` pinned exactly to `0.7.0`. Because they are optional peers, the looser published `>=0.1.105` range still installs; the TUI surface is only verified at `0.7.0`, which is what the host ships.
+`@opencode/plugin@2.2.2` declares optional peers on `@opentui/core` and `@opentui/solid` pinned exactly to `0.7.0`. Because they are optional peers, the looser published `>=0.1.105` range still installs; the TUI surface is only verified at `0.7.0`, which is what the host ships.
 
 ## Verified surfaces
 
 | Surface | What was checked | Evidence | Result |
 | --- | --- | --- | --- |
 | Server plugin API (`src/index.ts`, `src/host/v2.ts`) | `define` from `@opencode/plugin/promise/plugin`, plugin init through `setupForgeV2`, process-wide tool registration (`registerForgeToolsV2`), `shell.hook('create.before')` typing | `pnpm build` + load probe: `msg="loading plugin"` for `opencode-forge.js`, five Forge agents in `opencode debug agents`, `forge.db` created, no `level=ERROR`/`level=WARN` | Pass |
-| Event stream (`src/host/v2-events.ts`) | Whether 2.2.0 publishes `session.status` / `session.idle`, and whether `session.execution.*` still brackets a turn | Event probe: **0** `session.status` and **0** `session.idle` events; `session.execution.started` and `session.execution.succeeded` once per run | Pass — the existing drops in `normalizeV2Event` are still required |
+| Event stream (`src/host/v2-events.ts`) | Whether 2.2.2 publishes `session.status` / `session.idle`, and whether `session.execution.*` still brackets a turn | Event probe: **0** `session.status` and **0** `session.idle` events; `session.execution.started` and `session.execution.succeeded` once per run | Pass — the existing drops in `normalizeV2Event` are still required |
 | Per-location delivery (`createV2SessionOwnership`) | Whether a location's plugin instance still receives another location's session events | Two locations in one server: the `proj` instance received `session.execution.started`/`succeeded` for the session created in the `wt` worktree | Pass — per-location filtering is still required |
 | TUI plugin (`src/tui.tsx`, `@opentui` 0.7.0 provided by the host) | `cli.json` directory entry resolution and TUI plugin setup | TUI load probe: palette search for `sandbox` lists "Toggle sandbox" and "Build sandbox template" in group `Forge`; no error naming forge, `@opentui`, or `solid` | Pass (load only; see *Not verified*) |
-| RPC (`FORGE_RPC`, `src/client/v2-workspaces.ts`) | `Plugin.Context` RPC/workspace types used by the TUI client | `pnpm typecheck` against `@opencode/plugin@2.2.0`; types only, no runtime contract | Pass |
+| RPC (`FORGE_RPC`, `src/client/v2-workspaces.ts`) | `Plugin.Context` RPC/workspace types used by the TUI client | `pnpm typecheck` against `@opencode/plugin@2.2.2`; types only, no runtime contract | Pass |
 | Client types (`@opencode/client` `V2Event`) | Event union and `location` shape used by normalization and ownership | `pnpm typecheck`; event probe confirmed every observed type is in the union | Pass |
 | Dashboard | Independent of the OpenCode version; no `@opencode/*` runtime import | `pnpm test --project dom test/dashboard/app-dom.test.ts` | Pass |
 | Sandbox (`msb`) | Not exercised by these probes | `msb` runtime only; `pnpm test` covers the TypeScript facade | Not exercised |
@@ -46,6 +46,8 @@ export HOME=$PROBE/home \
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 ```
 
+The commands below use the Linux x64 binary; on macOS use `@opencode/cli-darwin-arm64` and plain `nohup` instead of `setsid`.
+
 Scratch repositories need a root commit (`git commit --allow-empty`), otherwise OpenCode cannot derive a project:
 
 ```bash
@@ -56,13 +58,13 @@ git -c user.email=probe@example.com -c user.name=probe commit --allow-empty -m i
 
 ```bash
 mkdir -p "$PROBE/cli" && cd "$PROBE/cli"
-curl -sSL -o cli.tgz https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.2.0.tgz
-tar xzf cli.tgz          # use @opencode/cli-linux-arm64 on arm64
-./package/bin/opencode --version   # opencode v2.2.0
+curl -sSL -o cli.tgz https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.2.2.tgz
+tar xzf cli.tgz          # macOS: @opencode/cli-darwin-arm64; Linux arm64: @opencode/cli-linux-arm64
+./package/bin/opencode --version   # opencode v2.2.2
 export BIN=$PROBE/cli/package/bin/opencode
 ```
 
-Result: `opencode v2.2.0`.
+Result: `opencode v2.2.2`.
 
 ### Probe 2 — server plugin load
 
@@ -265,13 +267,13 @@ kill "$(cat "$PROBE/ev/stub.pid")"
 
 Analysis of `events.log` (74 lines in the first run and 77 in a review re-run, 2 sessions; the exact count varies):
 
-- `session.status`: **0**. `session.idle`: **0**. Neither type is published by 2.2.0.
+- `session.status`: **0**. `session.idle`: **0**. Neither type is published by 2.2.2.
 - `session.execution.started` and `session.execution.succeeded`: present once per session inside its own location, **twice** for the worktree session because both plugin instances received it.
 - Cross-location delivery: the `proj` instance recorded `session.execution.started` and `session.execution.succeeded` for the session created in the `wt` location, and every other session-scoped event for it too. `createV2SessionOwnership` in `src/host/v2-events.ts` is what turns that into a single owner, so it remains required.
 
 Both runs printed `pong` and exited 0.
 
-A review re-run on 2026-10-29 reproduced probes 1–4 with the same results.
+A review re-run on 2026-10-29 reproduced probes 1–4 on 2.2.2 with the same results.
 
 ## Not verified
 
@@ -284,4 +286,4 @@ These need a real model or `msb` and remain owner manual checks:
 
 ## Follow-ups
 
-None. No Forge defect surfaced on OpenCode 2.2.0, so the probe run made no source change.
+None. No Forge defect surfaced on OpenCode 2.2.2, so the probe run made no source change.

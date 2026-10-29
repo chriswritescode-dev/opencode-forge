@@ -20,7 +20,7 @@
 pnpm add opencode-forge
 ```
 
-Forge requires OpenCode 2.x (`engines.opencode` is `>=2.0.14`) and is verified on OpenCode 2.2.0; see [OpenCode Compatibility](docs/compatibility.md).
+Forge requires OpenCode 2.x (`engines.opencode` is `>=2.0.14`) and is verified on OpenCode 2.2.2; see [OpenCode Compatibility](docs/compatibility.md).
 
 ### Install
 
