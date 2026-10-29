@@ -9,6 +9,7 @@ function readRepoFile(file: string): string {
 
 const packageJson = JSON.parse(readRepoFile('package.json'))
 const readme = readRepoFile('README.md')
+const compatibility = readRepoFile('docs/compatibility.md')
 
 describe('VERIFIED_OPENCODE_VERSION', () => {
   it('matches the @opencode/plugin and @opencode/client pins', () => {
@@ -22,5 +23,9 @@ describe('VERIFIED_OPENCODE_VERSION', () => {
 
   it('leaves engines.opencode a floor range instead of an exact pin', () => {
     expect(packageJson.engines.opencode).toMatch(/^>=/)
+  })
+
+  it('is the version docs/compatibility.md records evidence for', () => {
+    expect(compatibility).toContain(VERIFIED_OPENCODE_VERSION)
   })
 })
