@@ -54,7 +54,7 @@
     "opencode": ">=2.0.14"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.14",
+    "@opencode/plugin": "2.2.0",
     "jsonc-parser": "^3.3.1",
     "web-tree-sitter": "0.25.10",
     "zod": "4.1.8"
@@ -74,9 +74,9 @@
   "devDependencies": {
     "@esbuild/linux-arm64": "^0.21.5",
     "@eslint/js": "^10.0.1",
-    "@opencode/client": "2.0.14",
-    "@opentui/core": "0.1.105",
-    "@opentui/solid": "0.1.105",
+    "@opencode/client": "2.2.0",
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0",
     "@rollup/rollup-linux-arm64-gnu": "^4.60.3",
     "@types/node": "^25.6.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
