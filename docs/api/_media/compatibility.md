@@ -110,6 +110,15 @@ The TUI surface writes no `loading plugin` line for `cli.json` entries at the de
 
 A separate profile, without Forge, records OpenCode's own event stream so the result describes the host, not Forge's reaction to it.
 
+```bash
+export HOME=$PROBE/ev/home \
+       XDG_CONFIG_HOME=$PROBE/ev/config \
+       XDG_DATA_HOME=$PROBE/ev/data \
+       XDG_STATE_HOME=$PROBE/ev/state \
+       XDG_CACHE_HOME=$PROBE/ev/cache
+mkdir -p "$HOME" "$XDG_CONFIG_HOME/opencode/plugin" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+```
+
 `$PROBE/ev/stub.py`:
 
 ```python
@@ -117,7 +126,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-LOG = sys.argv[1] if len(sys.argv) > 1 else "/tmp/opencode/forge-probe/ev/stub.log"
+LOG = sys.argv[1]
 
 
 def log(line):
@@ -210,10 +219,10 @@ ThreadingHTTPServer(("127.0.0.1", 18765), Handler).serve_forever()
 }
 ```
 
-`<XDG_CONFIG_HOME>/opencode/plugin/event-probe.js` (the log path is absolute so both plugin copies write to one file):
+`<XDG_CONFIG_HOME>/opencode/plugin/event-probe.js` (replace `<PROBE>` with the absolute value of `$PROBE` when writing the file; the path must be absolute so both plugin copies write to one file):
 
 ```javascript
-const LOG = '/tmp/opencode/forge-probe/ev/events.log'
+const LOG = '<PROBE>/ev/events.log'
 
 export default {
   id: 'event-probe',
@@ -233,8 +242,9 @@ export default {
 Run the stub in the background, then the single-location case:
 
 ```bash
-setsid nohup python3 "$PROBE/ev/stub.py" "$PROBE/ev/stub.log" >/dev/null 2>&1 &
-cd "$PROBE/ev/proj"                      # committed repo
+setsid nohup python3 "$PROBE/ev/stub.py" "$PROBE/ev/stub.log" >/dev/null 2>&1 & echo $! > "$PROBE/ev/stub.pid"
+mkdir -p "$PROBE/ev/proj" && cd "$PROBE/ev/proj" && git init -q
+git -c user.email=probe@example.com -c user.name=probe commit --allow-empty -qm init
 $BIN run --standalone --model stub/m "ping"   # prints pong, exit 0
 ```
 
@@ -250,15 +260,18 @@ $BIN run --model stub/m "ping host"
 cd "$PROBE/ev/wt"
 $BIN run --model stub/m "ping wt"
 $BIN service stop
+kill "$(cat "$PROBE/ev/stub.pid")"
 ```
 
-Analysis of `events.log` (74 lines, 2 sessions):
+Analysis of `events.log` (74 lines in the first run and 77 in a review re-run, 2 sessions; the exact count varies):
 
 - `session.status`: **0**. `session.idle`: **0**. Neither type is published by 2.2.0.
 - `session.execution.started` and `session.execution.succeeded`: present once per session inside its own location, **twice** for the worktree session because both plugin instances received it.
 - Cross-location delivery: the `proj` instance recorded `session.execution.started` and `session.execution.succeeded` for the session created in the `wt` location, and every other session-scoped event for it too. `createV2SessionOwnership` in `src/host/v2-events.ts` is what turns that into a single owner, so it remains required.
 
 Both runs printed `pong` and exited 0.
+
+A review re-run on 2026-10-29 reproduced probes 1–4 with the same results.
 
 ## Not verified
 
