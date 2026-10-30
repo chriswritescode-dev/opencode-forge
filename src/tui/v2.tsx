@@ -446,24 +446,33 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const eventProjectIds = new Map<string, Promise<string | null>>()
 
   /**
-   * Handles an RPC event for the TUI's current project. The TUI can switch projects,
-   * so the id is resolved for the current location on every event, and a failed
-   * lookup is dropped so the next event retries it.
+   * Whether an RPC event for `projectId` belongs to the project the TUI currently shows, or null
+   * when that is unknown because the lookup failed or the TUI moved to another location meanwhile.
+   * The TUI can switch projects, so the id is resolved for the current location, cached per
+   * directory, and a failed lookup is dropped so the next event retries it.
    */
-  const withProjectId = (handler: (projectId: string) => void): void => {
+  const isCurrentProject = async (projectId: string): Promise<boolean | null> => {
     const directory = resolveV2TuiDirectory(context)
-    if (!directory) return
-    let projectId = eventProjectIds.get(directory)
-    if (!projectId) {
-      projectId = resolveV2TuiProjectIdForDirectory(context, directory)
-      eventProjectIds.set(directory, projectId)
-      void projectId.then((resolved) => {
-        if (resolved === null && eventProjectIds.get(directory) === projectId) eventProjectIds.delete(directory)
-      })
+    if (!directory) return null
+    let lookup = eventProjectIds.get(directory)
+    if (!lookup) {
+      lookup = resolveV2TuiProjectIdForDirectory(context, directory)
+      eventProjectIds.set(directory, lookup)
     }
-    void projectId.then((resolved) => {
-      if (eventController.signal.aborted || !resolved) return
-      handler(resolved)
+    const current = await lookup
+    if (current === null && eventProjectIds.get(directory) === lookup) eventProjectIds.delete(directory)
+    if (current === null || resolveV2TuiDirectory(context) !== directory) return null
+    return current === projectId
+  }
+
+  /**
+   * Re-reads state for an RPC event unless it belongs to another project. An unknown current
+   * project still refreshes: a refresh only re-reads the current location, and dropping the event
+   * could lose the acknowledgement a pending host sandbox toggle waits for.
+   */
+  const refreshForProject = (projectId: string, refresh: () => void): void => {
+    void isCurrentProject(projectId).then((current) => {
+      if (!eventController.signal.aborted && current !== false) refresh()
     })
   }
 
@@ -480,8 +489,8 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     followRpcEvent((s) => rpcEvents.subscribe('toast', { signal: s }), (event) => {
       const toast = readForgeToast(event.data)
       if (!toast) return
-      withProjectId((projectId) => {
-        if (toast.projectId !== projectId) return
+      void isCurrentProject(toast.projectId).then((current) => {
+        if (eventController.signal.aborted || current !== true) return
         context.ui.toast.show({
           title: toast.title,
           message: toast.message,
@@ -497,23 +506,17 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     followRpcEvent((s) => rpcEvents.subscribe('loopsChanged', { signal: s }), (event) => {
       const changed = readForgeLoopsChangedEvent(event.data)
       if (!changed) return
-      withProjectId((projectId) => {
-        if (changed.projectId === projectId) refreshLoops()
-      })
+      refreshForProject(changed.projectId, refreshLoops)
     }, { signal, onResubscribed: refreshLoops })
     followRpcEvent((s) => rpcEvents.subscribe('autoApproveChanged', { signal: s }), (event) => {
       const changed = readForgeAutoApproveChangedEvent(event.data)
       if (!changed) return
-      withProjectId((projectId) => {
-        if (changed.projectId === projectId) autoApprove.refresh()
-      })
+      refreshForProject(changed.projectId, autoApprove.refresh)
     }, { signal, onResubscribed: autoApprove.refresh })
     followRpcEvent((s) => rpcEvents.subscribe('hostSandboxChanged', { signal: s }), (event) => {
       const changed = readForgeHostSandboxChangedEvent(event.data)
       if (!changed) return
-      withProjectId((projectId) => {
-        if (changed.projectId === projectId) hostSandbox.refresh()
-      })
+      refreshForProject(changed.projectId, hostSandbox.refresh)
     }, { signal, onResubscribed: hostSandbox.refresh })
   } catch (err) {
     console.error('[forge] failed to subscribe to Forge RPC events', err)

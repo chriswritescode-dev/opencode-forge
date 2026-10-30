@@ -495,6 +495,49 @@ describe('V2 TUI setup', () => {
     }
   })
 
+  test('refreshes host sandbox state when the current project cannot be resolved', async () => {
+    const fake = createFakeV2TuiContext()
+    fake.locationGet.mockRejectedValue(new Error('location unavailable'))
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(1))
+
+    fake.findRpcSubscription('hostSandboxChanged')?.handler({ data: { projectId: 'proj-1' } })
+    await vi.waitFor(() => expect(fake.hostSandboxState).toHaveBeenCalledTimes(2))
+
+    fake.findRpcSubscription('toast')?.handler({ data: { projectId: 'proj-1', message: 'Unresolved toast', variant: 'info' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fake.toasts).toEqual([])
+    cleanup()
+  })
+
+  test('drops a toast whose project lookup finishes after the TUI switched location', async () => {
+    let directory = '/work/b'
+    let resolveLookup: (value: { project: { id: string } }) => void = () => {}
+    const pendingLookup = new Promise<{ project: { id: string } }>((resolve) => { resolveLookup = resolve })
+    const fake = createFakeV2TuiContext()
+    Object.defineProperty(fake.ctx, 'location', { get: () => ({ directory }) })
+    fake.locationGet.mockImplementation(async (input) => (
+      input?.location?.directory === '/work/b' ? await pendingLookup : { project: { id: 'proj-a' } }
+    ))
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    const lookupsBeforeToast = fake.locationGet.mock.calls.length
+    fake.findRpcSubscription('toast')?.handler({ data: { projectId: 'proj-b', message: 'Late toast', variant: 'info' } })
+    await vi.waitFor(() => expect(fake.locationGet.mock.calls.length).toBeGreaterThan(lookupsBeforeToast))
+
+    directory = '/work/a'
+    resolveLookup({ project: { id: 'proj-b' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fake.toasts.filter((toast) => toast.message === 'Late toast')).toEqual([])
+    expect(fake.locationGet).toHaveBeenCalledWith({ location: { directory: '/work/b' } })
+    cleanup()
+  })
+
   test('refetches every state on server.connected', async () => {
     const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_1' } })
 
