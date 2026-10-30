@@ -40,10 +40,9 @@ export interface ForgeTuiHost {
   clearDialog(): void
   select<Value>(input: ForgeTuiSelectInput<Value>): Promise<Value | undefined>
   prompt(input: ForgeTuiPromptInput): Promise<string | undefined>
-  defaultModel(): string
 }
 
-export function createV2TuiHost(context: Plugin.Context, defaultModel: () => string): ForgeTuiHost {
+export function createV2TuiHost(context: Plugin.Context): ForgeTuiHost {
   const dialog = context.ui.dialog
   return {
     colors() {
@@ -76,6 +75,5 @@ export function createV2TuiHost(context: Plugin.Context, defaultModel: () => str
       dialog.set({ size: 'large' })
       return entered
     },
-    defaultModel,
   }
 }

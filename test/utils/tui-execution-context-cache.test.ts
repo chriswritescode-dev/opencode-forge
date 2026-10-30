@@ -332,6 +332,31 @@ describe('createExecutionContextCache', () => {
     })
   })
 
+  describe('openCodeDefault', () => {
+    it('keeps each cache on its own project default after both refresh in reverse order', async () => {
+      const cacheA = createExecutionContextCache(mockProjectId, mockPluginConfig, vi.fn(async () =>
+        makeLoadResult({ openCodeDefault: 'a/default' }),
+      ))
+      const cacheB = createExecutionContextCache(mockProjectId, mockPluginConfig, vi.fn(async () =>
+        makeLoadResult({ openCodeDefault: 'b/default' }),
+      ))
+
+      await cacheB.refresh()
+      await cacheA.refresh()
+
+      expect(cacheA.snapshot()!.openCodeDefault).toBe('a/default')
+      expect(cacheB.snapshot()!.openCodeDefault).toBe('b/default')
+    })
+
+    it('falls back to an empty string when the location reports no default model', async () => {
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, vi.fn(async () => makeLoadResult()))
+
+      const snap = await cache.ensureLoaded()
+
+      expect(snap.openCodeDefault).toBe('')
+    })
+  })
+
   describe('defaults resolution', () => {
     it('uses config.executionModel when preferences is null', async () => {
       const config: PluginConfig = {

@@ -27,6 +27,8 @@ export interface ExecutionContextSnapshot {
   connectedProviderIds: string[]
   configuredProviderIds: string[]
   recents: string[]
+  /** OpenCode's default model for this project's location, as `provider/model`; empty when unknown. */
+  openCodeDefault: string
   /** Server-side loop-setting defaults; null when the server could not report them. */
   loopDefaults: ForgeLoopDefaults | null
   defaults: {
@@ -70,6 +72,7 @@ export function buildExecutionContextSnapshot(
     connectedProviderIds: result.models.connectedProviderIds || [],
     configuredProviderIds: result.models.configuredProviderIds || [],
     recents,
+    openCodeDefault: result.openCodeDefault ?? '',
     loopDefaults: result.loopDefaults ?? null,
     defaults,
   }

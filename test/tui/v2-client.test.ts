@@ -47,7 +47,6 @@ function createClient(overrides: Record<string, RpcMethod> = {}, options: { dire
   const client = createV2ForgeProjectClient(context, {
     projectId: 'proj-1',
     directory: options.directory ?? '/work/project',
-    onDefaultModel: () => {},
   })
   return { client, rpc, methods, navigate }
 }

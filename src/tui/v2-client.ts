@@ -18,7 +18,6 @@ import { providersFromProviderList, type LoopInfo, type WorkspaceForRecents } fr
 export interface V2ForgeProjectClientOptions {
   projectId: string
   directory: string
-  onDefaultModel(model: string): void
 }
 
 export function loopsToWorkspacesForRecents(projectId: string, loops: ReadonlyArray<LoopInfo>): WorkspaceForRecents[] {
@@ -215,7 +214,6 @@ export function createV2ForgeProjectClient(context: Plugin.Context, options: V2F
     },
     async loadExecutionContext() {
       const { defaultModel, ...models } = await loadModels(context, directory)
-      options.onDefaultModel(defaultModel)
       const [loopsResult, loopDefaults] = await Promise.all([
         call((rpc, location) => rpc.loops({}, location), readForgeLoops),
         call((rpc, location) => rpc.loopDefaults({}, location), readForgeLoopDefaults),

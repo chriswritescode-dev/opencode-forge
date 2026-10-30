@@ -8,8 +8,11 @@ export interface ForgePlanCommandsDeps {
   host: ForgeTuiHost
   pluginConfig: PluginConfig
   currentSessionId(): string | null
-  ensureClient(): Promise<ForgeProjectClient | null>
-  cache(): ExecutionContextCache | null
+  /**
+   * The Forge client and execution context cache for the location the TUI currently shows, or
+   * null when that project cannot be resolved.
+   */
+  ensureClient(): Promise<{ client: ForgeProjectClient; cache: ExecutionContextCache } | null>
 }
 
 export interface ForgePlanCommands {
@@ -27,8 +30,9 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
   const { host } = deps
 
   async function restartLoop(options?: { emptyMessage?: string }): Promise<void> {
-    const client = await deps.ensureClient()
-    if (!client) return
+    const ensured = await deps.ensureClient()
+    if (!ensured) return
+    const { client, cache } = ensured
     const result = await client.loadLoops()
     if ('error' in result) {
       host.toast({ message: `Could not list loops: ${result.error}`, variant: 'warning', duration: 5000 })
@@ -47,7 +51,7 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
     openExecutionDialog({
       host,
       client,
-      cache: deps.cache(),
+      cache,
       pluginConfig: deps.pluginConfig,
       planContent: '',
       sessionId: currentSessionId ?? '',
@@ -61,9 +65,10 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
       restart: {
         loops,
         async onRestart(request) {
-          const auditorModel = request.auditorModel || host.defaultModel()
+          const fallback = cache.snapshot()?.openCodeDefault ?? ''
+          const auditorModel = request.auditorModel || fallback
           if (!auditorModel) throw new Error('Select an auditor model before restarting')
-          const executionModel = request.executionModel || host.defaultModel()
+          const executionModel = request.executionModel || fallback
           if (!executionModel) throw new Error('Select an execution model before restarting')
           const restarted = await client.restartLoop({ ...request, auditorModel, executionModel })
           await client.selectSession(restarted.sessionId)
@@ -79,12 +84,13 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
         await restartLoop({ emptyMessage: 'Open a session to execute a plan' })
         return
       }
-      const client = await deps.ensureClient()
-      if (!client) return
+      const ensured = await deps.ensureClient()
+      if (!ensured) return
+      const { client, cache } = ensured
       openExecutionDialog({
         host,
         client,
-        cache: deps.cache(),
+        cache,
         pluginConfig: deps.pluginConfig,
         planContent: (await client.loadLatestPlan(sessionId)) ?? '',
         sessionId,
