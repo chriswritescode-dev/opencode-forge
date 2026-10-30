@@ -69,11 +69,11 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const initial = untrack(() => props.initial) ?? {}
   const planContent = untrack(() => props.planContent)
   const colors = () => props.host.colors()
-  const openCodeDefaultModel = () => props.host.defaultModel()
 
   const initialSnapshot = cache?.snapshot() ?? null
   const initialDefaults = initialSnapshot?.defaults
     ?? resolveExecutionDialogDefaults(pluginConfig, initialSnapshot?.preferences ?? null)
+  const [openCodeDefaultModel, setOpenCodeDefaultModel] = createSignal(initialSnapshot?.openCodeDefault ?? '')
 
   let selectRef: SelectRenderable | undefined
   claimFocusOnMount(() => selectRef)
@@ -122,6 +122,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     setModelsError(snap.modelsError)
     setLoopDefaults(snap.loopDefaults)
     setModelsLoaded(true)
+    setOpenCodeDefaultModel(snap.openCodeDefault)
     setExecutionVariant(normalizeVariantForModel(executionVariant(), modelInfoFor(executionModel())))
     setAuditorVariant(normalizeVariantForModel(auditorVariant(), modelInfoFor(auditorModel())))
   }

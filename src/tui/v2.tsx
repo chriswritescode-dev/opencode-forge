@@ -250,8 +250,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   })
 
   const lifecycle = new AbortController()
-  let defaultModel = ''
-  const host = createV2TuiHost(context, () => defaultModel)
+  const host = createV2TuiHost(context)
 
   /** The TUI can switch projects, so each location directory gets its own client and cache. */
   const projectClients = new Map<string, { client: ForgeProjectClient; cache: ExecutionContextCache }>()
@@ -271,7 +270,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     const client = createV2ForgeProjectClient(context, {
       projectId,
       directory,
-      onDefaultModel: (model) => { defaultModel = model },
     })
     const entry = {
       client,

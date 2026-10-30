@@ -65,9 +65,10 @@ export function createForgePlanCommands(deps: ForgePlanCommandsDeps): ForgePlanC
       restart: {
         loops,
         async onRestart(request) {
-          const auditorModel = request.auditorModel || host.defaultModel()
+          const fallback = cache.snapshot()?.openCodeDefault ?? ''
+          const auditorModel = request.auditorModel || fallback
           if (!auditorModel) throw new Error('Select an auditor model before restarting')
-          const executionModel = request.executionModel || host.defaultModel()
+          const executionModel = request.executionModel || fallback
           if (!executionModel) throw new Error('Select an execution model before restarting')
           const restarted = await client.restartLoop({ ...request, auditorModel, executionModel })
           await client.selectSession(restarted.sessionId)
