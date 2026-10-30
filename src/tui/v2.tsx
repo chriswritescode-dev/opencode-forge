@@ -252,26 +252,33 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const lifecycle = new AbortController()
   let defaultModel = ''
   const host = createV2TuiHost(context, () => defaultModel)
-  let projectClient: ForgeProjectClient | null = null
-  let executionContextCache: ExecutionContextCache | null = null
 
-  const ensureClient = async (): Promise<ForgeProjectClient | null> => {
-    if (projectClient) return projectClient
+  /** The TUI can switch projects, so each location directory gets its own client and cache. */
+  const projectClients = new Map<string, { client: ForgeProjectClient; cache: ExecutionContextCache }>()
+
+  const ensureClient = async (): Promise<{ client: ForgeProjectClient; cache: ExecutionContextCache } | null> => {
     const directory = resolveV2TuiDirectory(context)
-    const projectId = await resolveV2TuiProjectId(context)
+    const cached = directory ? projectClients.get(directory) : undefined
+    if (cached) return cached
+    const projectId = directory ? await resolveV2TuiProjectIdForDirectory(context, directory) : null
     if (lifecycle.signal.aborted) return null
     if (!directory || !projectId) {
       host.toast({ message: 'Forge could not resolve the current project', variant: 'warning', duration: 5000 })
       return null
     }
-    const created = createV2ForgeProjectClient(context, {
+    const existing = projectClients.get(directory)
+    if (existing) return existing
+    const client = createV2ForgeProjectClient(context, {
       projectId,
       directory,
       onDefaultModel: (model) => { defaultModel = model },
     })
-    projectClient ??= created
-    executionContextCache ??= createExecutionContextCache(projectId, pluginConfig, () => created.loadExecutionContext())
-    return projectClient
+    const entry = {
+      client,
+      cache: createExecutionContextCache(projectId, pluginConfig, () => client.loadExecutionContext()),
+    }
+    projectClients.set(directory, entry)
+    return entry
   }
 
   const currentSessionId = (): string | null => {
@@ -324,7 +331,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     pluginConfig,
     currentSessionId,
     ensureClient,
-    cache: () => executionContextCache,
   })
 
   const hostSandbox = createHostSandboxToggle({

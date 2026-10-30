@@ -82,6 +82,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const [route, setRoute] = createSignal<{ type: 'home' } | { type: 'session'; sessionID: string }>(
     fakeOptions.route ?? { type: 'home' as const },
   )
+  const [location, setLocation] = createSignal(fakeOptions.location)
 
   const sessionRemove = vi.fn(async (_input: { sessionID: string }) => {})
   const sessionList = vi.fn(async () => ({ data: [], cursor: {} }))
@@ -99,6 +100,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const autoApproveState = vi.fn(async () => ({ enabled: false, inherited: false }))
   const autoApproveSet = vi.fn(async () => ({ enabled: true, inherited: false }))
   const version = vi.fn(async () => fakeOptions.version ?? { version: VERSION })
+  const sessionPlan = vi.fn(async () => ({ plan: null }))
 
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
@@ -115,6 +117,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       autoApproveState,
       autoApproveSet,
       version,
+      sessionPlan,
       events: {
         subscribe: vi.fn((name: string, options?: { signal?: AbortSignal }) => {
           type Event = { data: Record<string, unknown> }
@@ -155,7 +158,9 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
 
   const ctx = {
     options: fakeOptions.options ?? {},
-    location: fakeOptions.location,
+    get location() {
+      return location()
+    },
     data: {
       location: {
         default: () => {
@@ -237,7 +242,9 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     autoApproveState,
     autoApproveSet,
     version,
+    sessionPlan,
     setRoute,
+    setLocation,
     findRpcSubscription: (name: string) => rpcSubscriptions.find((subscription) => subscription.name === name),
   }
 }
@@ -439,10 +446,8 @@ describe('V2 TUI setup', () => {
   })
 
   test('acknowledges a host sandbox toggle after the TUI switches to another project', async () => {
-    let directory = '/work/a'
     const projects: Record<string, string> = { '/work/a': 'proj-a', '/work/b': 'proj-b' }
-    const fake = createFakeV2TuiContext()
-    Object.defineProperty(fake.ctx, 'location', { get: () => ({ directory }) })
+    const fake = createFakeV2TuiContext({ location: { directory: '/work/a' } })
     fake.locationGet.mockImplementation(async (input) => ({
       project: { id: projects[input?.location?.directory ?? ''] ?? 'unknown' },
     }))
@@ -465,7 +470,7 @@ describe('V2 TUI setup', () => {
     await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(2))
 
     const statesBeforeSwitch = fake.hostSandboxState.mock.calls.length
-    directory = '/work/b'
+    fake.setLocation({ directory: '/work/b' })
     fake.setRoute({ type: 'session', sessionID: 'ses_b' })
     await vi.waitFor(() => expect(fake.hostSandboxState.mock.calls.length).toBeGreaterThan(statesBeforeSwitch))
     expect(fake.hostSandboxState.mock.calls.at(-1)?.[1]).toEqual({ location: { directory: '/work/b' } })
@@ -514,11 +519,9 @@ describe('V2 TUI setup', () => {
   })
 
   test('drops a toast whose project lookup finishes after the TUI switched location', async () => {
-    let directory = '/work/b'
     let resolveLookup: (value: { project: { id: string } }) => void = () => {}
     const pendingLookup = new Promise<{ project: { id: string } }>((resolve) => { resolveLookup = resolve })
-    const fake = createFakeV2TuiContext()
-    Object.defineProperty(fake.ctx, 'location', { get: () => ({ directory }) })
+    const fake = createFakeV2TuiContext({ location: { directory: '/work/b' } })
     fake.locationGet.mockImplementation(async (input) => (
       input?.location?.directory === '/work/b' ? await pendingLookup : { project: { id: 'proj-a' } }
     ))
@@ -528,7 +531,7 @@ describe('V2 TUI setup', () => {
     fake.findRpcSubscription('toast')?.handler({ data: { projectId: 'proj-b', message: 'Late toast', variant: 'info' } })
     await vi.waitFor(() => expect(fake.locationGet.mock.calls.length).toBeGreaterThan(lookupsBeforeToast))
 
-    directory = '/work/a'
+    fake.setLocation({ directory: '/work/a' })
     resolveLookup({ project: { id: 'proj-b' } })
     await new Promise((resolve) => setTimeout(resolve, 0))
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -624,6 +627,36 @@ describe('V2 TUI setup', () => {
     await vi.waitFor(() => expect(dialog.show).toHaveBeenCalledTimes(1))
     expect(fake.prompts).toEqual([])
     cleanup()
+  })
+
+  test('executes plans against the location the TUI currently shows', async () => {
+    const projects: Record<string, string> = { '/work/a': 'proj-a', '/work/b': 'proj-b' }
+    const fake = createFakeV2TuiContext({
+      location: { directory: '/work/a' },
+      route: { type: 'session', sessionID: 'ses_a' },
+    })
+    fake.locationGet.mockImplementation(async (input) => ({
+      project: { id: projects[input?.location?.directory ?? ''] ?? 'unknown' },
+    }))
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    try {
+      await findCommand(fake, 'forge.plan.execute').run?.()
+      await vi.waitFor(() => expect(fake.sessionPlan).toHaveBeenCalledWith(
+        { sessionId: 'ses_a' },
+        { location: { directory: '/work/a' } },
+      ))
+
+      fake.setLocation({ directory: '/work/b' })
+      fake.setRoute({ type: 'session', sessionID: 'ses_b' })
+      await findCommand(fake, 'forge.plan.execute').run?.()
+      await vi.waitFor(() => expect(fake.sessionPlan).toHaveBeenCalledWith(
+        { sessionId: 'ses_b' },
+        { location: { directory: '/work/b' } },
+      ))
+    } finally {
+      cleanup()
+    }
   })
 
   test('follows a loop rotation inside the viewed worktree, but not subagents or non-loop sessions', async () => {

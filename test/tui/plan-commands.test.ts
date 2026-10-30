@@ -4,6 +4,7 @@ import type { ForgeProjectClient } from '../../src/tui/project-client'
 import type { ForgeTuiHost } from '../../src/tui/host'
 import type { PluginConfig } from '../../src/types'
 import type { LoopInfo } from '../../src/utils/tui-models'
+import type { ExecutionContextCache } from '../../src/utils/tui-execution-context-cache'
 
 function loop(overrides: Partial<LoopInfo> = {}): LoopInfo {
   return {
@@ -33,8 +34,7 @@ describe('createForgePlanCommands', () => {
       host,
       pluginConfig: {} as PluginConfig,
       currentSessionId: () => sessionId,
-      ensureClient: async () => client,
-      cache: () => null,
+      ensureClient: async () => ({ client, cache: null as unknown as ExecutionContextCache }),
     })
     return { commands, toasts }
   }

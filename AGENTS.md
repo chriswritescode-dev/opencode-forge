@@ -46,6 +46,10 @@
 - `getSandboxState` is the only liveness primitive; five states: `running`, `stopped` (reusable, never create/evict), `transient` (real but not directly executable: `Created`/`Starting`/`Draining`/`Paused` map here), `unknown` (query failed), `missing` (may create or evict). `Stopped`/`Crashed` map to the reusable `stopped` state because `msb exec` starts them in place. `registerActiveSandbox` is the only place a usable sandbox is recorded.
 - `container/Dockerfile` must derive from a plain OCI base and keep the final `USER agent`; `ENTRYPOINT`/`CMD` are ignored because msb runs `agentd` as PID 1.
 
+## TUI
+
+- The TUI's `context.location` is a live getter, not a startup constant: OpenCode's session and project picker moves one TUI between locations and projects. Resolve the directory with `resolveV2TuiDirectory` per use, and key anything derived from it (project id, RPC location, project client, execution context cache) by directory; never cache it for the TUI lifetime. `createFakeV2TuiContext` in `test/tui/v2-tui.test.ts` models this with `setLocation`, so a location-dependent feature needs a test that switches location.
+
 ## Dashboard, storage, and paths
 
 - Dashboard uses `solid-js/html`, not JSX. No `<${Show}>` or `<${For}>`; use reactive thunks/memos and `.map()`. Root component returns one wrapper element. `test/dashboard/app-dom.test.ts` enforces these constraints.
