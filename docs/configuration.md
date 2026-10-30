@@ -349,7 +349,7 @@ The vendored copy mirrors the npm package layout rather than being "just dist": 
 
 #### Plugin loading
 
-Package installs expose `./tui` alongside the server entrypoint, which OpenCode can load automatically from the package entry in `opencode.json`. The config-directory installer uses explicit registrations instead (verified on 2.0.15):
+Package installs expose `./tui` alongside the server entrypoint, which OpenCode can load automatically from the package entry in `opencode.json`. The config-directory installer uses explicit registrations instead (verified on 2.0.15 and 2.2.2):
 
 - **Server** — the `plugins` array in `opencode.json`/`opencode.jsonc`, or any `*.js` file directly in `<configDir>/plugin/`. The installer uses the second: `opencode-forge.js` is a one-line re-export of the server entry. Package directories under `plugin/`, such as the vendored copy, are not loaded on their own.
 - **TUI** — the `plugins` array in `cli.json`, which resolves a directory spec's package entrypoints rather than accepting a file target. That is why the installer points `cli.json` at the built `dist` directory. Path specs resolve relative to the config file's own directory, which makes the vendored `./plugin/opencode-forge/dist` entry portable.

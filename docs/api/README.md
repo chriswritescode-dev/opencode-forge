@@ -24,7 +24,7 @@
 pnpm add opencode-forge
 ```
 
-Forge requires OpenCode 2.x (`engines.opencode` is `>=2.0.14`).
+Forge requires OpenCode 2.x (`engines.opencode` is `>=2.0.14`) and is verified on OpenCode 2.2.2; see [OpenCode Compatibility](_media/compatibility.md).
 
 ### Install
 
@@ -102,6 +102,7 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 - [Workspace Integration](_media/workspaces.md) — OpenCode workspace registration, requirements, and failure behavior.
 - [Sandbox](_media/sandbox.md) — host requirements, image building and loading, network access, secrets, bind mounts, and resource defaults.
 - [Configuration Reference](_media/configuration.md) — every option in `forge-config.jsonc`, plus the installer and bundled-asset sync.
+- [OpenCode Compatibility](_media/compatibility.md) — the verified OpenCode version, the supported floor, and the probes behind the verdict.
 - [Architecture](_media/architecture.md) — plugin architecture, module layout, hooks, storage, and data flow.
 - [Modules](_media/modules.md) — the source tree and each module's public surface.
 - [Common Issues](_media/troubleshooting.md) — worktree launch failures and workspace prerequisites.
