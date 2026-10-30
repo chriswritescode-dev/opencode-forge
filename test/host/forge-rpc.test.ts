@@ -51,9 +51,19 @@ describe('FORGE_RPC', () => {
       .toEqual({ sessionId: 'ses_1', loopName: 'loop-a', worktreeDir: '/wt' })
     expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'chunk-1-loop', goalId: 'goal-1' }))
       .toEqual({ sessionId: 'ses_1', loopName: 'chunk-1-loop', goalId: 'goal-1' })
+    expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'loop-a', branch: 'pm-61-export' }))
+      .toEqual({ sessionId: 'ses_1', loopName: 'loop-a', branch: 'pm-61-export' })
     expect(readForgeExecutePlanOutput({ error: 'Loops are disabled' })).toEqual({ error: 'Loops are disabled' })
     expect(readForgeExecutePlanOutput({})).toEqual({ error: 'Forge returned no session for the plan execution' })
     expect(readForgeExecutePlanOutput(null)).toEqual({ error: 'Forge returned an invalid plan execution result' })
+  })
+
+  test('executePlan accepts an explicit branch and baseRef', () => {
+    const method = FORGE_RPC.methods.executePlan
+    expect(method.input.properties.branch).toEqual({ type: 'string', minLength: 1 })
+    expect(method.input.properties.baseRef).toEqual({ type: 'string', minLength: 1 })
+    expect(method.output.properties.branch).toEqual({ type: 'string' })
+    expect(FORGE_RPC.methods.loops.output.properties.loops.items.properties.branch).toEqual({ type: 'string' })
   })
 
   test('executePlan accepts loop settings and loopDefaults declares an empty input', () => {
@@ -231,6 +241,8 @@ describe('FORGE_RPC', () => {
       startedAt: '2026-01-01T00:00:00.000Z',
     }]
     expect(readForgeLoops({ loops })).toEqual({ loops })
+    const loopWithBranch = { ...loops[0], branch: 'pm-61-export' }
+    expect(readForgeLoops({ loops: [loopWithBranch] })).toEqual({ loops: [loopWithBranch] })
     expect(readForgeLoops({ loops: [{ name: 'loop-a', status: 'running', restartable: true }] }))
       .toEqual({ error: 'Forge returned an invalid loop list' })
     expect(readForgeLoops({ error: 'no db' })).toEqual({ error: 'no db' })

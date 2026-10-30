@@ -37,7 +37,11 @@ const MOCK_BASE_COMMIT = 'a'.repeat(40)
 
 const mockGitService = {
   revParseHead: () => ({ ok: true, status: 0, stdout: `${MOCK_BASE_COMMIT}\n`, stderr: '' }),
+  revParse: () => ({ ok: true, status: 0, stdout: `${MOCK_BASE_COMMIT}\n`, stderr: '' }),
   branchExists: () => false,
+  checkRefFormatBranch: (_cwd: string, name: string) => ({ ok: true, status: 0, stdout: `${name}\n`, stderr: '' }),
+  worktreeList: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+  isAncestor: () => true,
 } as any
 
 function uniqueLoopNameFor(
@@ -978,7 +982,7 @@ describe('handleStartLoop variant config fallback', () => {
   })
 })
 
-describe('handleStartLoop base ref and base commit', () => {
+describe('handleStartLoop base ref, branch, and base commit', () => {
   const noopFn = () => {}
 
   function buildService(opts: {
@@ -989,12 +993,13 @@ describe('handleStartLoop base ref and base commit', () => {
     sectionPlansRepo: SectionPlansRepo
     loopService: LoopService
     client: any
+    logger?: Logger
   }) {
     return {
       projectId: PROJECT_ID,
       directory: '/tmp/test',
       config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger,
+      logger: opts.logger ?? mockLogger,
       dataDir: '/tmp',
       gitService: opts.gitService,
       plansRepo: opts.plansRepo,
@@ -1015,7 +1020,7 @@ describe('handleStartLoop base ref and base commit', () => {
     }
   }
 
-  function buildHarness() {
+  function buildHarness(workspaceCreate?: () => Promise<Record<string, unknown>>) {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-base-ref-'))
     const db = new Database(join(tempDir, 'test.db'))
     setupLoopsTestDb(db)
@@ -1026,7 +1031,7 @@ describe('handleStartLoop base ref and base commit', () => {
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
     const { client } = createFakeForgeClient({
       workspace: {
-        create: async () => ({ id: 'ws_base', directory: '/tmp/wt/base', branch: 'forge/base-loop' }),
+        create: workspaceCreate ?? (async () => ({ id: 'ws_base', directory: '/tmp/wt/base', branch: 'forge/base-loop' })),
         warp: async () => {},
       },
       session: {
@@ -1069,6 +1074,144 @@ describe('handleStartLoop base ref and base commit', () => {
     h.db.close()
   })
 
+  async function dispatchBranchStart(
+    gitOverrides: Record<string, unknown>,
+    commandExtra: { branch?: string; baseRef?: string },
+  ) {
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const h = buildHarness()
+    const service = createForgeExecutionService(buildService({
+      gitService: { ...mockGitService, ...gitOverrides },
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Branch Plan\n\nBody.' },
+        ...commandExtra,
+      },
+    )
+    return { h, result }
+  }
+
+  function expectBranchRefused(h: ReturnType<typeof buildHarness>, result: Awaited<ReturnType<typeof dispatchBranchStart>>['result']) {
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('bad_request')
+    expect(h.client.workspace.create).not.toHaveBeenCalled()
+    expect(h.client.session.create).not.toHaveBeenCalled()
+    h.db.close()
+  }
+
+  test('forwards an explicit branch and baseRef and persists the branch', async () => {
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const h = buildHarness(async () => ({ id: 'ws_custom', directory: '/tmp/wt/custom', branch: 'feature/loop' }))
+    const service = createForgeExecutionService(buildService({
+      gitService: mockGitService,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Custom Branch Plan\n\nBody.' },
+        branch: 'feature/loop',
+        baseRef: 'refs/heads/main',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(h.client.workspace.create).toHaveBeenCalledWith(
+      expect.objectContaining({ extra: expect.objectContaining({ branch: 'feature/loop', baseRef: 'refs/heads/main' }) }),
+    )
+    if (!result.ok) return
+    expect(result.data.worktreeBranch).toBe('feature/loop')
+    expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.worktreeBranch).toBe('feature/loop')
+    expect(h.loopService.getActiveState(result.data.loopName)!.worktreeBranch).toBe('feature/loop')
+
+    h.db.close()
+  })
+
+  test('a start without branch or baseRef sends neither extra key', async () => {
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const h = buildHarness()
+    const service = createForgeExecutionService(buildService({
+      gitService: mockGitService,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Plain Plan\n\nBody.' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    const createArgs = (h.client.workspace.create as any).mock.calls[0][0]
+    expect(createArgs.extra).not.toHaveProperty('branch')
+    expect(createArgs.extra).not.toHaveProperty('baseRef')
+
+    h.db.close()
+  })
+
+  test('refuses a start with an invalid branch name before creating anything', async () => {
+    const { h, result } = await dispatchBranchStart(
+      { checkRefFormatBranch: () => ({ ok: false, status: 128, stdout: '', stderr: 'fatal: invalid' }) },
+      { branch: 'bad branch' },
+    )
+    expectBranchRefused(h, result)
+  })
+
+  test('refuses a start with a branch checked out in another worktree', async () => {
+    const { h, result } = await dispatchBranchStart(
+      {
+        worktreeList: () => ({
+          ok: true,
+          status: 0,
+          stdout: 'worktree /tmp/wt/other\nHEAD abc123\nbranch refs/heads/feature/taken\n',
+          stderr: '',
+        }),
+      },
+      { branch: 'feature/taken' },
+    )
+    expectBranchRefused(h, result)
+  })
+
+  test('refuses a start whose branch diverged from the base ref', async () => {
+    const { h, result } = await dispatchBranchStart(
+      {
+        branchExists: (_cwd: string, branch: string) => branch === 'feature/diverged',
+        isAncestor: () => false,
+      },
+      { branch: 'feature/diverged', baseRef: 'refs/heads/main' },
+    )
+    expectBranchRefused(h, result)
+  })
+
+  test('refuses a start whose baseRef does not resolve', async () => {
+    const { h, result } = await dispatchBranchStart(
+      { revParse: () => ({ ok: false, status: 128, stdout: '', stderr: 'unknown ref' }) },
+      { baseRef: 'refs/heads/missing' },
+    )
+    expectBranchRefused(h, result)
+  })
+
   test('rolls back the start when the base commit cannot be resolved', async () => {
     const h = buildHarness()
     const failingGit = { revParseHead: () => ({ ok: false, status: 128, stdout: '', stderr: 'not a repo' }), branchExists: () => false }
@@ -1095,6 +1238,83 @@ describe('handleStartLoop base ref and base commit', () => {
     expect(result.error.message).toBe('Failed to resolve loop base commit')
     expect(h.client.workspace.remove).toHaveBeenCalled()
     expect(h.loopService.listActive()).toHaveLength(0)
+
+    h.db.close()
+  })
+
+  test('a concurrent duplicate start with an explicit branch returns the deduped result, not the checked-out refusal', async () => {
+    let workspaceCreateStarted = false
+    let releaseWorkspaceCreate: () => void = () => {}
+    const workspaceCreateGate = new Promise<void>((resolve) => {
+      releaseWorkspaceCreate = resolve
+    })
+
+    const h = buildHarness(async () => {
+      workspaceCreateStarted = true
+      await workspaceCreateGate
+      return { id: 'ws_race', directory: '/tmp/wt/race', branch: 'feature/race' }
+    })
+
+    let resolveDedupeLogged: () => void = () => {}
+    const dedupeLogged = new Promise<void>((resolve) => {
+      resolveDedupeLogged = resolve
+    })
+    const logger: Logger = {
+      log: (message: string) => {
+        if (message.includes('concurrent start suppressed')) resolveDedupeLogged()
+      },
+      error: () => {},
+      debug: () => {},
+    }
+
+    const gitService = {
+      ...mockGitService,
+      worktreeList: () => ({
+        ok: true,
+        status: 0,
+        stdout: workspaceCreateStarted
+          ? 'worktree /tmp/wt/race\nHEAD abc123\nbranch refs/heads/feature/race\n'
+          : '',
+        stderr: '',
+      }),
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(buildService({
+      gitService,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+      logger,
+    }))
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Race Plan\n\nBody.' },
+      hostSessionId: 'host-race',
+      branch: 'feature/race',
+    }
+
+    const first = service.dispatch(ctx, command)
+    await vi.waitFor(() => expect(workspaceCreateStarted).toBe(true))
+
+    const second = service.dispatch(ctx, command)
+    const secondOutcome = await Promise.race([
+      second.then((result) => result),
+      dedupeLogged.then(() => null),
+    ])
+    releaseWorkspaceCreate()
+
+    const [firstResult, secondResult] = await Promise.all([first, second])
+    expect(secondOutcome).toBeNull()
+    expect(firstResult.ok).toBe(true)
+    expect(secondResult.ok).toBe(true)
+    if (!secondResult.ok) return
+    expect((secondResult.data as { deduped?: boolean }).deduped).toBe(true)
+    expect(h.client.workspace.create).toHaveBeenCalledTimes(1)
 
     h.db.close()
   })

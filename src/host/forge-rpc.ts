@@ -45,6 +45,10 @@ export interface ForgeExecutePlanInput {
   title: string
   plan: string
   loopName?: string
+  /** Local branch the loop worktree uses; omitted falls back to `forge/<loopName>`. */
+  branch?: string
+  /** Commit the loop branch starts from; omitted branches from HEAD or continues an existing branch as-is. */
+  baseRef?: string
   executionModel?: string
   auditorModel?: string
   executionVariant?: string
@@ -56,7 +60,7 @@ export interface ForgeExecutePlanInput {
 }
 
 export type ForgeExecutePlanOutput =
-  | { sessionId: string; loopName?: string; worktreeDir?: string; workspaceId?: string; goalId?: string }
+  | { sessionId: string; loopName?: string; branch?: string; worktreeDir?: string; workspaceId?: string; goalId?: string }
   | { error: string }
 
 /**
@@ -185,6 +189,7 @@ const LOOP_INFO_SCHEMA = {
     executionVariant: OPTIONAL_STRING,
     auditorModel: OPTIONAL_STRING,
     auditorVariant: OPTIONAL_STRING,
+    branch: OPTIONAL_STRING,
   },
   required: ['name', 'status', 'phase', 'iteration', 'maxIterations', 'sessionId', 'restartable', 'restartRequiresForce', 'startedAt'],
   additionalProperties: false,
@@ -259,6 +264,8 @@ export const FORGE_RPC = {
           title: { type: 'string' },
           plan: { type: 'string', minLength: 1 },
           loopName: OPTIONAL_STRING,
+          branch: { type: 'string', minLength: 1 },
+          baseRef: { type: 'string', minLength: 1 },
           executionModel: OPTIONAL_STRING,
           auditorModel: OPTIONAL_STRING,
           executionVariant: OPTIONAL_STRING,
@@ -274,6 +281,7 @@ export const FORGE_RPC = {
         properties: {
           sessionId: OPTIONAL_STRING,
           loopName: OPTIONAL_STRING,
+          branch: OPTIONAL_STRING,
           worktreeDir: OPTIONAL_STRING,
           workspaceId: OPTIONAL_STRING,
           goalId: OPTIONAL_STRING,
@@ -497,9 +505,9 @@ function readForgeRpcResult<T>(
 export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutput {
   return readForgeRpcResult(value, 'plan execution result', (record) => {
     if (typeof record.sessionId !== 'string') return { error: 'Forge returned no session for the plan execution' }
-    const optional = (key: 'loopName' | 'worktreeDir' | 'workspaceId' | 'goalId') =>
+    const optional = (key: 'loopName' | 'branch' | 'worktreeDir' | 'workspaceId' | 'goalId') =>
       typeof record[key] === 'string' ? { [key]: record[key] as string } : {}
-    return { sessionId: record.sessionId, ...optional('loopName'), ...optional('worktreeDir'), ...optional('workspaceId'), ...optional('goalId') }
+    return { sessionId: record.sessionId, ...optional('loopName'), ...optional('branch'), ...optional('worktreeDir'), ...optional('workspaceId'), ...optional('goalId') }
   })
 }
 

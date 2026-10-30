@@ -1045,6 +1045,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       source,
       title: input.title,
       loopName: input.loopName?.trim() ? slugify(input.loopName) : undefined,
+      branch: input.branch?.trim() || undefined,
+      baseRef: input.baseRef?.trim() || undefined,
       maxIterations: input.maxIterations ?? config.loop?.defaultMaxIterations ?? 0,
       executionModel,
       auditorModel: input.auditorModel || undefined,
@@ -1058,6 +1060,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return {
       sessionId: response.data.sessionId,
       loopName: response.data.loopName,
+      ...(response.data.worktreeBranch ? { branch: response.data.worktreeBranch } : {}),
       ...(response.data.worktreeDir ? { worktreeDir: response.data.worktreeDir } : {}),
       ...(response.data.workspaceId ? { workspaceId: response.data.workspaceId } : {}),
       ...(response.data.goalId ? { goalId: response.data.goalId } : {}),

@@ -35,6 +35,7 @@ import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists, forgeBranchName } from '../workspace/forge-naming'
+import { validateLoopBranchRequest } from '../workspace/loop-branch'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
@@ -185,6 +186,8 @@ export interface StartLoopCommand {
   sandbox?: LoopSandboxSettings
   /** Explicit base ref the loop worktree branches from; omitted branches from the project HEAD. */
   baseRef?: string
+  /** Explicit local branch the loop worktree checks out; omitted uses forge/<slug>. */
+  branch?: string
   lifecycle?: {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
@@ -210,6 +213,7 @@ export interface BuildStartLoopCommandInput {
   hostSessionId?: string
   sandbox?: LoopSandboxSettings
   baseRef?: string
+  branch?: string
   lifecycle?: StartLoopCommand['lifecycle']
 }
 
@@ -227,6 +231,7 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     hostSessionId: input.hostSessionId,
     sandbox: input.sandbox,
     baseRef: input.baseRef,
+    branch: input.branch,
     lifecycle: input.lifecycle,
   }
 }
@@ -969,6 +974,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return prior
     }
 
+    const branchValidation = validateLoopBranchRequest(git, ctx.directory, {
+      branch: command.branch,
+      baseRef: command.baseRef,
+    })
+    if (!branchValidation.ok) return fail('bad_request', 400, branchValidation.message)
+
     // Wrapped inner async to store/clean up in-flight promise
     async function doStart(): Promise<ForgeExecutionResponse<LoopStartedResult>> {
     // Resolve models
@@ -1035,6 +1046,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         loopName: uniqueLoopName,
         directory: ctx.directory,
         baseRef: command.baseRef,
+        branch: command.branch || undefined,
         extra: loopSandboxWorkspaceExtra(command.sandbox),
       }, deps.logger)
       if (!wsResult.ok) {
@@ -1602,6 +1614,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
+          branch: stoppedState.worktreeBranch,
           extra: Object.keys(mergedExtra).length > 0 ? mergedExtra : undefined,
         }, deps.logger)
         if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }

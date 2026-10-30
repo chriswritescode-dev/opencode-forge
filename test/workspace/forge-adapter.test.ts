@@ -180,20 +180,158 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  it('create throws and creates nothing when a based branch already exists', async () => {
-    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-based-existing-'))
+  it('configure uses extra.branch as the workspace branch when present', () => {
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+    })
+    const info = makeInfo('custom-branch-loop')
+    info.extra = { ...info.extra, branch: 'pm-61-export' }
+
+    const result = adapter.configure(info)
+
+    expect(result.branch).toBe('pm-61-export')
+    expect(result.name).toBe('custom-branch-loop')
+    expect(result.directory).toBe(join(tmpDataDir, 'worktrees', 'custom-branch-loop'))
+  })
+
+  it('create refuses a based branch that diverged from baseRef and leaves it untouched', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-based-diverged-'))
     try {
       execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const initialBranch = execSync('git symbolic-ref --short HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      const branchName = 'pm-61-diverged'
+      execSync(`git branch ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' })
+
+      writeFileSync(join(tmpRepo, 'base.txt'), 'base', 'utf-8')
+      execSync('git add base.txt && git commit -m second', { cwd: tmpRepo, encoding: 'utf-8' })
+      const baseRef = execSync('git rev-parse HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+
+      execSync(`git checkout ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' })
+      writeFileSync(join(tmpRepo, 'branch.txt'), 'branch', 'utf-8')
+      execSync('git add branch.txt && git commit -m third', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync(`git checkout ${initialBranch}`, { cwd: tmpRepo, encoding: 'utf-8' })
+
+      const branchTipBefore = execSync(`git rev-parse ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+
       const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
-      const info = makeInfo('based-existing-loop', tmpRepo)
-      info.extra = { ...info.extra, baseRef: 'HEAD' }
+      const info = makeInfo('based-diverged-loop', tmpRepo)
+      info.extra = { ...info.extra, branch: branchName, baseRef }
       const configured = adapter.configure(info)
-      execSync(`git branch ${configured.branch}`, { cwd: tmpRepo, encoding: 'utf-8' })
 
       await expect(adapter.create(configured, {})).rejects.toThrow(
-        new RegExp(`branch ${configured.branch} already exists; refusing to reuse it`),
+        /forge workspace adapter: Branch .* has commits that .* does not contain; refusing to reuse it for a loop based on/,
       )
       expect(existsSync(configured.directory)).toBe(false)
+      const branchTipAfter = execSync(`git rev-parse ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      expect(branchTipAfter).toBe(branchTipBefore)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create reuses an existing based branch that equals baseRef', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-based-equal-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const branchName = 'pm-61-equal'
+      execSync(`git branch ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' })
+      const baseRef = execSync('git rev-parse HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const info = makeInfo('based-equal-loop', tmpRepo)
+      info.extra = { ...info.extra, branch: branchName, baseRef }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      expect(existsSync(configured.directory)).toBe(true)
+      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtHead).toBe(baseRef)
+      const wtBranch = execSync(`git -C "${configured.directory}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtBranch).toBe(branchName)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create fast-forwards an existing based branch that is behind baseRef', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-based-behind-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const branchName = 'pm-61-behind'
+      execSync(`git branch ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' })
+      writeFileSync(join(tmpRepo, 'second.txt'), 'second', 'utf-8')
+      execSync('git add second.txt && git commit -m second', { cwd: tmpRepo, encoding: 'utf-8' })
+      const baseRef = execSync('git rev-parse HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const info = makeInfo('based-behind-loop', tmpRepo)
+      info.extra = { ...info.extra, branch: branchName, baseRef }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtHead).toBe(baseRef)
+      const branchTip = execSync(`git rev-parse ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      expect(branchTip).toBe(baseRef)
+      expect(logger.log).toHaveBeenCalledWith(
+        expect.stringContaining(`(fast-forwarded existing branch to ${baseRef})`),
+      )
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create creates an explicit branch from HEAD when no baseRef is set', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-branch-new-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const repoHead = execSync('git rev-parse HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      const branchName = 'pm-61-new'
+
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const info = makeInfo('branch-new-loop', tmpRepo)
+      info.extra = { ...info.extra, branch: branchName }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      expect(existsSync(configured.directory)).toBe(true)
+      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtHead).toBe(repoHead)
+      const wtBranch = execSync(`git -C "${configured.directory}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtBranch).toBe(branchName)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create continues an existing explicit branch as-is when no baseRef is set', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-branch-existing-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const initialBranch = execSync('git symbolic-ref --short HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      const branchName = 'pm-61-existing'
+      execSync(`git checkout -b ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' })
+      writeFileSync(join(tmpRepo, 'work.txt'), 'work', 'utf-8')
+      execSync('git add work.txt && git commit -m work', { cwd: tmpRepo, encoding: 'utf-8' })
+      const branchTip = execSync('git rev-parse HEAD', { cwd: tmpRepo, encoding: 'utf-8' }).trim()
+      execSync(`git checkout ${initialBranch}`, { cwd: tmpRepo, encoding: 'utf-8' })
+
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const info = makeInfo('branch-existing-loop', tmpRepo)
+      info.extra = { ...info.extra, branch: branchName }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      expect(existsSync(configured.directory)).toBe(true)
+      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtHead).toBe(branchTip)
+      const wtBranch = execSync(`git -C "${configured.directory}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
+      expect(wtBranch).toBe(branchName)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

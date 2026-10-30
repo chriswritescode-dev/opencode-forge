@@ -13,7 +13,7 @@ vi.mock('../../src/services/execution', async (importOriginal) => {
         dispatched.push(command)
         return {
           ok: true as const,
-          data: { sessionId: 'ses_loop', loopName: 'loop-a', worktreeDir: '/wt', workspaceId: 'ws-1', goalId: 'goal-1' },
+          data: { sessionId: 'ses_loop', loopName: 'loop-a', worktreeDir: '/wt', workspaceId: 'ws-1', goalId: 'goal-1', worktreeBranch: 'pm-61-export' },
         }
       },
     }),
@@ -75,7 +75,7 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
       sandbox: { enabled: false, resources: { memory: '2g', cpus: '2', dockerDisk: 'bad' } },
     })
 
-    expect(result).toEqual({ sessionId: 'ses_loop', loopName: 'loop-a', worktreeDir: '/wt', workspaceId: 'ws-1', goalId: 'goal-1' })
+    expect(result).toEqual({ sessionId: 'ses_loop', loopName: 'loop-a', branch: 'pm-61-export', worktreeDir: '/wt', workspaceId: 'ws-1', goalId: 'goal-1' })
     const command = dispatched.at(-1) as Record<string, unknown>
     expect(command.type).toBe('loop.start')
     expect(command.maxIterations).toBe(3)
@@ -97,5 +97,56 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
     expect(command.type).toBe('loop.start')
     expect(command.maxIterations).toBe(5)
     expect(command.sandbox).toBeUndefined()
+    expect(command.branch).toBeUndefined()
+    expect(command.baseRef).toBeUndefined()
+  })
+
+  test('trims an explicit branch and baseRef into the start-loop command and reports the branch', async () => {
+    const built = await buildCore()
+
+    const result = await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      branch: '  pm-61-export  ',
+      baseRef: '  origin/pm-61-export  ',
+    })
+
+    const command = dispatched.at(-1) as Record<string, unknown>
+    expect(command.type).toBe('loop.start')
+    expect(command.branch).toBe('pm-61-export')
+    expect(command.baseRef).toBe('origin/pm-61-export')
+    expect(result).toMatchObject({ branch: 'pm-61-export' })
+  })
+
+  test('ignores branch and baseRef outside loop mode', async () => {
+    const built = await buildCore()
+
+    await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'new-session',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      branch: 'pm-61-export',
+      baseRef: 'origin/pm-61-export',
+    })
+    const newSession = dispatched.at(-1) as Record<string, unknown>
+    expect(newSession.type).toBe('plan.execute.newSession')
+    expect(newSession).not.toHaveProperty('branch')
+    expect(newSession).not.toHaveProperty('baseRef')
+
+    await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'execute-here',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      branch: 'pm-61-export',
+      baseRef: 'origin/pm-61-export',
+    })
+    const executeHere = dispatched.at(-1) as Record<string, unknown>
+    expect(executeHere.type).toBe('plan.execute.here')
+    expect(executeHere).not.toHaveProperty('branch')
+    expect(executeHere).not.toHaveProperty('baseRef')
   })
 })

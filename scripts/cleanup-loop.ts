@@ -5,7 +5,7 @@
  *   - opencode.db `workspace` rows (and their `session` rows)
  *   - on-disk worktree directory
  *   - git worktree registration
- *   - git branch (forge/<loopName>)
+ *   - git branch (the persisted worktree branch; branches outside forge/ belong to the caller and are kept)
  *   - running msb sandbox
  *
  * Usage:
@@ -70,24 +70,39 @@ async function logAction(dryRun: boolean, label: string, action: () => Promise<v
   }
 }
 
-export async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string): Promise<void> {
+export async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir: string): Promise<string[]> {
   const path = resolveForgeDbPath(dataDir)
   if (!existsSync(path)) {
     console.log(`forge.db not found at ${path} — skipping`)
-    return
+    return []
   }
   console.log(`\nforge.db (${path}):`)
   const db = new Database(path)
   try {
-    const rows = db.prepare('SELECT project_id, loop_name, status FROM loops WHERE loop_name = ?').all(loopName) as Array<{
+    const hasBranchColumn = (db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>).some(
+      column => column.name === 'worktree_branch',
+    )
+    const rows = db
+      .prepare(
+        `SELECT project_id, loop_name, status${hasBranchColumn ? ', worktree_branch' : ''} FROM loops WHERE loop_name = ?`,
+      )
+      .all(loopName) as Array<{
       project_id: string
       loop_name: string
       status: string
+      worktree_branch?: string | null
     }>
     if (rows.length === 0) {
       console.log(`  no loops rows for ${loopName}`)
-      return
+      return []
     }
+    const branches = [
+      ...new Set(
+        rows
+          .map(row => row.worktree_branch)
+          .filter((branch): branch is string => typeof branch === 'string' && branch.length > 0),
+      ),
+    ]
     const dependentTables = DEPENDENT_TABLES.filter(table => hasTable(db, table))
     const labels: string[] = []
     for (const row of rows) {
@@ -100,7 +115,7 @@ export async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir:
       for (const label of labels) {
         await logAction(dryRun, label, () => {})
       }
-      return
+      return branches
     }
     db.transaction(() => {
       for (const row of rows) {
@@ -113,6 +128,7 @@ export async function cleanupForgeDb(loopName: string, dryRun: boolean, dataDir:
     for (const label of labels) {
       console.log(`  ✓ ${label}`)
     }
+    return branches
   } finally {
     db.close()
   }
@@ -181,6 +197,7 @@ async function cleanupWorktreeDirectory(loopName: string, dryRun: boolean, workt
 
 async function cleanupGitWorktree(
   loopName: string,
+  branches: string[],
   projectDir: string | undefined,
   dryRun: boolean,
   worktreesRoot: string,
@@ -194,7 +211,6 @@ async function cleanupGitWorktree(
     return
   }
   console.log(`\ngit (${projectDir}):`)
-  const branch = `forge/${loopName}`
   const worktreePath = join(worktreesRoot, loopName)
 
   await logAction(dryRun, `git worktree prune`, () => {
@@ -214,13 +230,19 @@ async function cleanupGitWorktree(
     console.log(`  git worktree registration for ${worktreePath} not found`)
   }
 
-  if (defaultGitService.branchExists(projectDir, branch)) {
+  for (const branch of branches.length > 0 ? branches : [`forge/${loopName}`]) {
+    if (!branch.startsWith('forge/')) {
+      console.log(`  kept caller branch ${branch}`)
+      continue
+    }
+    if (!defaultGitService.branchExists(projectDir, branch)) {
+      console.log(`  branch ${branch} not present`)
+      continue
+    }
     await logAction(dryRun, `git branch -D ${branch}`, () => {
       const r = defaultGitService.branchDelete(projectDir, branch)
       if (!r.ok) throw new Error(r.stderr || 'unknown error')
     })
-  } else {
-    console.log(`  branch ${branch} not present`)
   }
 }
 
@@ -265,10 +287,10 @@ async function main(): Promise<void> {
 
   const runtime = createMsbRuntime({ log: console.log, error: console.error, debug: () => {} })
 
-  await cleanupForgeDb(args.loopName, args.dryRun, dataDir)
+  const branches = await cleanupForgeDb(args.loopName, args.dryRun, dataDir)
   await cleanupOpencodeDb(args.loopName, args.dryRun)
   await cleanupWorktreeDirectory(args.loopName, args.dryRun, worktreesRoot)
-  await cleanupGitWorktree(args.loopName, args.projectDir, args.dryRun, worktreesRoot)
+  await cleanupGitWorktree(args.loopName, branches, args.projectDir, args.dryRun, worktreesRoot)
   const sandboxClean = await cleanupSandbox(args.loopName, args.dryRun, runtime)
 
   if (!sandboxClean) {

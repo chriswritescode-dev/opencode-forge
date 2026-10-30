@@ -80,6 +80,7 @@ export function createWorkspaceLifecycle(deps: WorkspaceLifecycleDeps): Workspac
       {
         loopName,
         directory: projectDirectory,
+        branch: state.worktreeBranch,
       },
       logger,
     )
@@ -128,6 +129,7 @@ export function createWorkspaceLifecycle(deps: WorkspaceLifecycleDeps): Workspac
       {
         loopName,
         directory: projectDirectory,
+        branch: state.worktreeBranch,
       },
       logger,
     )

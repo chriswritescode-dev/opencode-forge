@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   bindSessionToWorkspace,
   createBuiltinWorktreeWorkspace,
+  getForgeWorkspaceBranch,
   getForgeWorkspacePermissionRules,
 } from '../../src/workspace/forge-worktree'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -140,6 +141,92 @@ describe('createBuiltinWorktreeWorkspace', () => {
       expect(result.ok).toBe(false)
       if (!result.ok) expect(result.error.reason).toBe('empty-directory')
     })
+
+    it('forwards the explicit branch as extra.branch on the created workspace', async () => {
+      const { client, calls } = createFakeForgeClient({
+        workspace: {
+          create: async () => ({ id: 'ws-branch', directory: '/tmp/wt-branch', branch: 'pm-61-export' }),
+          list: async () => [{ id: 'ws-branch' }],
+        },
+      })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client as unknown as ForgeClient,
+        { loopName: 'branch-loop', directory: '/tmp/project', branch: 'pm-61-export' },
+        logger,
+      )
+
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-branch', directory: '/tmp/wt-branch', branch: 'pm-61-export' } })
+      const createCalls = calls.filter(c => c.method === 'workspace.create')
+      expect(createCalls[0].params).toEqual({
+        type: 'forge',
+        branch: null,
+        extra: {
+          loopName: 'branch-loop',
+          projectDirectory: '/tmp/project',
+          workspaceCreatedAt: expect.any(Number),
+          branch: 'pm-61-export',
+        },
+      })
+    })
+
+    it('drops a stale extra.branch when no explicit branch is requested', async () => {
+      const safeRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+      const { client, calls } = createFakeForgeClient({
+        workspace: {
+          create: async () => ({ id: 'ws-stale', directory: '/tmp/wt-stale', branch: 'forge/stale-loop' }),
+          list: async () => [{ id: 'ws-stale' }],
+        },
+      })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client as unknown as ForgeClient,
+        {
+          loopName: 'stale-loop',
+          directory: '/tmp/project',
+          extra: { branch: 'stale-branch', permissionRules: [safeRule] },
+        },
+        logger,
+      )
+
+      expect(result.ok).toBe(true)
+      const createCalls = calls.filter(c => c.method === 'workspace.create')
+      expect(createCalls[0].params).toEqual({
+        type: 'forge',
+        branch: null,
+        extra: {
+          permissionRules: [safeRule],
+          loopName: 'stale-loop',
+          projectDirectory: '/tmp/project',
+          workspaceCreatedAt: expect.any(Number),
+        },
+      })
+    })
+  })
+})
+
+describe('getForgeWorkspaceBranch', () => {
+  it('returns the explicit branch from extra', () => {
+    expect(getForgeWorkspaceBranch({ extra: { branch: 'pm-61-export' } })).toBe('pm-61-export')
+  })
+
+  it('returns undefined when the branch key is missing', () => {
+    expect(getForgeWorkspaceBranch({ extra: { loopName: 'foo' } })).toBeUndefined()
+  })
+
+  it('returns undefined when the branch is an empty string', () => {
+    expect(getForgeWorkspaceBranch({ extra: { branch: '' } })).toBeUndefined()
+  })
+
+  it('returns undefined when the branch is not a string', () => {
+    expect(getForgeWorkspaceBranch({ extra: { branch: 42 } })).toBeUndefined()
+    expect(getForgeWorkspaceBranch({ extra: { branch: null } })).toBeUndefined()
+  })
+
+  it('returns undefined for a non-object extra', () => {
+    expect(getForgeWorkspaceBranch({ extra: 'branch' })).toBeUndefined()
+    expect(getForgeWorkspaceBranch({ extra: null })).toBeUndefined()
+    expect(getForgeWorkspaceBranch({})).toBeUndefined()
   })
 })
 

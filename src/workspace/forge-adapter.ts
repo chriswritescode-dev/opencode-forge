@@ -3,7 +3,8 @@ import { existsSync, readFileSync, appendFileSync } from 'fs'
 import type { Logger, LoopSandboxSettings } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { LOOP_SANDBOX_EXTRA_KEY, readLoopSandboxSettings } from '../sandbox/loop-settings'
-import { getForgeWorkspaceBaseRef } from './forge-worktree'
+import { getForgeWorkspaceBaseRef, getForgeWorkspaceBranch } from './forge-worktree'
+import { describeBranchReuseConflict } from './loop-branch'
 import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
@@ -202,7 +203,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
       return {
         ...info,
         name: loopName,
-        branch: forgeBranchName(loopName),
+        branch: getForgeWorkspaceBranch(info) ?? forgeBranchName(loopName),
         directory: forgeWorktreeDir(dataDir, loopName),
         extra: restampAttachTimestamps(info.extra),
       }
@@ -227,9 +228,20 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
 
       if (baseRef) {
         if (branchExists) {
-          throw new Error(`forge workspace adapter: branch ${info.branch} already exists; refusing to reuse it for a loop based on ${baseRef}`)
+          const conflict = describeBranchReuseConflict(git, projectDir, info.branch, baseRef)
+          if (conflict !== null) {
+            throw new Error(`forge workspace adapter: ${conflict}`)
+          }
+          const forceRes = git.branchForceUpdate(projectDir, info.branch, baseRef)
+          if (!forceRes.ok) {
+            const stderr = forceRes.stderr.trim() || 'unknown error'
+            logger.error(`forge-adapter: git branch -f failed: ${stderr}`)
+            throw new Error(`git branch -f failed: ${stderr}`)
+          }
         }
-        const res = git.worktreeAdd(projectDir, info.directory, info.branch, true, baseRef)
+        const res = branchExists
+          ? git.worktreeAdd(projectDir, info.directory, info.branch, false)
+          : git.worktreeAdd(projectDir, info.directory, info.branch, true, baseRef)
         if (!res.ok) {
           const stderr = res.stderr.trim() || 'unknown error'
           logger.error(`forge-adapter: git worktree add failed: ${stderr}`)
@@ -247,7 +259,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
           git.worktreePrune(projectDir)
           throw new Error(`git worktree add failed: ${stderr}`)
         }
-        logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch} (based on ${baseRef})`)
+        logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch} (based on ${baseRef})${branchExists ? ` (fast-forwarded existing branch to ${baseRef})` : ''}`)
       } else {
         let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
         let reusedOrphan = false

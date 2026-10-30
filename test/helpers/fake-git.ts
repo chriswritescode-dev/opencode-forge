@@ -23,6 +23,9 @@ export function createFakeGitService(overrides?: Partial<GitService>): GitServic
     worktreeRemove: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
     worktreePrune: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),
     branchDelete: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
+    checkRefFormatBranch: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
+    isAncestor: vi.fn<[string, string, string], boolean>(() => false),
+    branchForceUpdate: vi.fn<[string, string, string], GitResult>(() => ({ ...defaultOk })),
     ...overrides,
   }
 }

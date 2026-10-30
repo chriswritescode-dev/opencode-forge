@@ -121,6 +121,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     active: boolean
     worktree: boolean
     workspaceId: string | null
+    worktreeBranch: string | null
     auditorModel: string | null
     auditorVariant: string | null
     executionModel: string | null
@@ -139,6 +140,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       active: false,
       worktree: false,
       workspaceId: null as string | null,
+      worktreeBranch: null as string | null,
       auditorModel: null as string | null,
       auditorVariant: null as string | null,
       executionModel: null as string | null,
@@ -154,7 +156,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSessionId: 'session-old',
       worktree: opts.worktree,
       worktreeDir: '/tmp',
-      worktreeBranch: null,
+      worktreeBranch: opts.worktreeBranch,
       projectDir: '/tmp',
       maxIterations: 10,
       iteration: opts.iteration,
@@ -708,6 +710,96 @@ describe('handleLoopRestart from stall_timeout', () => {
     const newState = loopService.getActiveState('worktree-loop')!
     expect(newState.workspaceId).toBe('ws_new')
     expect(newState.iteration).toBe(1)
+  })
+
+  test('restart re-creates the workspace on the persisted custom branch without a baseRef', async () => {
+    insertLoop({
+      loopName: 'custom-branch-loop',
+      status: 'errored',
+      terminationReason: 'max_iterations',
+      iteration: 2,
+      worktree: true,
+      workspaceId: 'ws_old',
+      worktreeBranch: 'feature/custom',
+    })
+
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-custom-branch' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: {
+        create: async () => ({ id: 'ws_new', directory: '/tmp', branch: 'feature/custom' }),
+        list: async () => [],
+        remove: async () => {},
+        warp: async () => {},
+      },
+      toast: async () => {},
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: 'custom-branch-loop' } },
+    )
+
+    expect(result.ok).toBe(true)
+    const createArgs = (client.workspace.create as any).mock.calls[0][0]
+    expect(createArgs.extra.branch).toBe('feature/custom')
+    expect(createArgs.extra).not.toHaveProperty('baseRef')
+    expect(loopService.getActiveState('custom-branch-loop')!.worktreeBranch).toBe('feature/custom')
   })
 
   test('restart preserves the stored baseCommit unchanged', async () => {
