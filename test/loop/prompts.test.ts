@@ -10,8 +10,8 @@ import {
   buildPostActionPrompt,
   buildAttemptHistoryBlock,
   ATTEMPT_HISTORY_LIMIT,
+  AUDITOR_HANDOFF_INSTRUCTION,
 } from '../../src/loop/prompts'
-import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
 import type { LoopAttemptRow } from '../../src/storage/repos/loop-attempts-repo'
@@ -163,6 +163,10 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('For each existing finding, verify whether it has been resolved')
       expect(result).not.toContain('Existing review findings:')
       expect(result).toContain('Plan completeness check:')
+      expect(result).toContain('## Required: auditor handoff')
+      expect(result).toContain('call `loop-handoff`')
+      expect(result).not.toContain('pass `summary`')
+      expect(result).not.toContain(AUDITOR_HANDOFF_INSTRUCTION)
     })
 
     test('non-sectioned audit with branch info', () => {
@@ -176,8 +180,10 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildAuditPrompt(ctx, { ...sectionState, phase: 'auditing' })
       expect(result).toContain('[Loop section audit 1/2]')
       expect(result).toContain('Section under audit')
-      expect(result).toContain(SECTION_SUMMARY_START_MARKER)
-      expect(result).toContain(SECTION_SUMMARY_END_MARKER)
+      expect(result).toContain('## Required: auditor handoff')
+      expect(result).toContain('call `loop-handoff`')
+      expect(result).toContain('pass `summary`')
+      expect(result).toContain(AUDITOR_HANDOFF_INSTRUCTION)
     })
 
     test('includes coder decisions block when present (non-section)', () => {
@@ -260,8 +266,10 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('## Section under audit')
       expect(result).toContain('Section plan for 1')
       expect(result).toContain('Audit instructions:')
-      expect(result).toContain(SECTION_SUMMARY_START_MARKER)
-      expect(result).toContain(SECTION_SUMMARY_END_MARKER)
+      expect(result).toContain('## Required: auditor handoff')
+      expect(result).toContain('call `loop-handoff`')
+      expect(result).toContain('pass `summary`')
+      expect(result).toContain(AUDITOR_HANDOFF_INSTRUCTION)
     })
 
     test('section audit with prior sections digest', () => {

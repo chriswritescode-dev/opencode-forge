@@ -15,6 +15,7 @@ import type { LoopState } from '../../src/loop/state'
 import type { Logger, PluginConfig } from '../../src/types'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { recordAuditorHandoff } from '../helpers/loop-handoff'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -28,16 +29,6 @@ const assistantMessage = (text: string) => [
     parts: [{ type: 'text', text }],
   },
 ]
-
-const sectionSummaryText = (done: string) =>
-  `<!-- section-summary:start -->
-### Done
-- ${done}
-### Deviations
-- None
-### Follow-ups
-- None
-<!-- section-summary:end -->`
 
 describe('Runtime transition logging', () => {
   let db: Database
@@ -168,6 +159,8 @@ describe('Runtime transition logging', () => {
         [projectId, loopName, 1, 'Section 2', 'Content 2', 'in_progress', 0, Date.now(), null, Date.now()],
       )
 
+      await recordAuditorHandoff(loopInstance, 'audit-sess')
+
       await tickIdle(loopInstance, 'audit-sess')
 
       const rows = getRows()
@@ -193,7 +186,7 @@ describe('Runtime transition logging', () => {
       // Insert AFTER loopInstance.start writes the parent loops row
       // (section_plans has an FK to loops(project_id, loop_name)).
       const loopInstance = buildLoop({
-        clientTweaks: { session: { messages: async () => assistantMessage(sectionSummaryText('completed section 1 cleanly')) } },
+        clientTweaks: { session: { messages: async () => assistantMessage('section 1 audited cleanly') } },
       })
       loopInstance.start({ state })
 
@@ -204,6 +197,10 @@ describe('Runtime transition logging', () => {
           [projectId, loopName, i, `Section ${i + 1}`, `Content ${i + 1}`, statuses[i], 0, Date.now(), statuses[i] === 'completed' ? Date.now() : null, statuses[i] === 'completed' ? `Done ${i}` : null, null, null, Date.now()],
         )
       }
+
+      await recordAuditorHandoff(loopInstance, 'audit-sess', {
+        summary: { done: ['completed section 1 cleanly'] },
+      })
 
       await tickIdle(loopInstance, 'audit-sess')
 
@@ -310,12 +307,14 @@ describe('Runtime transition logging', () => {
       })
       loopInstance.start({ state })
 
+      await recordAuditorHandoff(loopInstance, 'audit-sess')
+
       await tickIdle(loopInstance, 'audit-sess')
 
       const rows = getRows()
       expect(rows).toHaveLength(2)
       // ID order: phase row first, terminate row second (chronological).
-      expect(rows[0].eventType).toBe('audit-clear')
+      expect(rows[0].eventType).toBe('auditor-handoff')
       expect(rows[0].transitionKind).toBe('phase')
       expect(rows[0].fromPhase).toBe('auditing')
       expect(rows[0].toPhase).toBe('post_action')

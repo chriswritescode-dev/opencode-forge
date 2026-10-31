@@ -142,15 +142,15 @@ describe('Agent definitions', () => {
     test('auditor-loop prompt includes the loop addendum content', () => {
       const prompt = auditorLoopAgent.systemPrompt
       expect(prompt).toContain('<!-- forge-section -->')
-      expect(prompt).toContain('section-summary block')
-      expect(prompt).toContain('### Done')
-      expect(prompt).toContain('### Deviations')
-      expect(prompt).toContain('### Follow-ups')
+      expect(prompt).toContain('loop-handoff')
+      expect(prompt).toContain('summary` { done, deviations, followUps }')
+      expect(prompt).toContain('never parses your response text')
       expect(prompt.toLowerCase()).toContain('deviation acceptance')
     })
 
-    test('auditor-loop system prompt does not duplicate the summary marker template (owned by buildSectionAuditPrompt)', () => {
+    test('auditor-loop system prompt does not duplicate the section-summary marker protocol', () => {
       expect(auditorLoopAgent.systemPrompt).not.toContain('section-summary:start')
+      expect(auditorLoopAgent.systemPrompt).not.toContain('section-summary block')
     })
 
     test('auditor-loop prompt blocks a section on bugs at or before it, uniformly for every section', () => {

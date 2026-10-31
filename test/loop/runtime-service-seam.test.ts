@@ -62,7 +62,11 @@ function makeFakeLoopService(): LoopService {
     getNextIncompleteSectionPlan: vi.fn(() => null),
     isLastOpenSection: vi.fn(() => false),
     getCompletedSectionDigest: vi.fn(() => []),
-    parseSectionSummary: vi.fn(() => null),
+    getPendingHandoff: vi.fn(() => null),
+    applyPendingHandoff: vi.fn(() => null),
+    recordPendingHandoff: vi.fn(),
+    discardPendingHandoff: vi.fn(),
+    listHandoffs: vi.fn(() => []),
     buildSectionInitialPrompt: vi.fn(() => ''),
     buildSectionAuditPrompt: vi.fn(() => ''),
     buildSectionContinuationPrompt: vi.fn(() => ''),
@@ -170,7 +174,6 @@ function makeStatefulFakeLoopService(initialState: LoopState): LoopService {
     sessionIdToLoop.set(sid, ln)
   })
   base.resolveLoopName = vi.fn((sid: string) => sessionIdToLoop.get(sid) ?? null)
-  base.parseSectionSummary = vi.fn(() => null)
   base.getOutstandingFindings = vi.fn(() => [])
   base.getBlockingBugFindings = vi.fn((s: LoopState) => blockingBugFindings(base.getOutstandingFindings() as any, s))
   base.hasOutstandingFindings = vi.fn(() => false)
@@ -208,8 +211,21 @@ describe('LoopService seam — sectioned dirty audit max-iterations safety net',
       totalSections: 2,
     }
     const fakeService = makeStatefulFakeLoopService(initialState)
-    // An outstanding bug finding makes the audit genuinely dirty; a summary-less
-    // audit with zero findings would take the summary re-prompt path instead.
+    fakeService.applyPendingHandoff = vi.fn(() => ({
+      id: 1,
+      projectId: 'test-project',
+      loopName: initialState.loopName,
+      sessionId: initialState.sessionId,
+      role: 'auditor',
+      phase: 'auditing',
+      sectionIndex: 0,
+      iteration: initialState.iteration,
+      status: 'applied',
+      payload: {},
+      createdAt: 0,
+      resolvedAt: 0,
+    }) as any)
+    // An outstanding bug finding makes the audit genuinely dirty.
     fakeService.getOutstandingFindings = vi.fn(() => [
       {
         projectId: 'test-project',

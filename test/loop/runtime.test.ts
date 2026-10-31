@@ -24,7 +24,8 @@ import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
-import { recordCoderHandoff } from '../helpers/loop-handoff'
+import { recordAuditorHandoff, recordCoderHandoff } from '../helpers/loop-handoff'
+import { formatAuditHandoffResult } from '../../src/loop/handoff'
 
 const PROJECT_ID = 'test-project'
 
@@ -258,6 +259,8 @@ describe('Loop Runtime', () => {
       })
       loopService.setState(state.loopName, state)
 
+      await recordAuditorHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: {
@@ -271,6 +274,115 @@ describe('Loop Runtime', () => {
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(false)
       expect(afterState!.terminationReason).toBe('completed')
+    })
+  })
+
+  describe('auditor handoff', () => {
+    function seedBugFinding(loopName: string): void {
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/handoff.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Outstanding handoff bug',
+      })
+    }
+
+    test('a clean auditor handoff sets lastAuditResult from the payload and stays applied', async () => {
+      const { client } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+      })
+      loopService.setState(state.loopName, state)
+
+      const payload = { notes: 'No outstanding findings.' }
+      await recordAuditorHandoff(loop, state.sessionId, payload)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)!
+      expect(afterState.terminationReason).toBe('completed')
+      expect(afterState.lastAuditResult).toBe(formatAuditHandoffResult(payload, {
+        clean: true,
+        blockingBugs: 0,
+        sectionIndex: null,
+      }))
+
+      const handoffs = loopService.listHandoffs(state.loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0]).toMatchObject({ role: 'auditor', sessionId: state.sessionId, status: 'applied' })
+    })
+
+    test('an aborted audit session with a pending handoff is processed and applies the handoff', async () => {
+      const { client } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+      })
+      loopService.setState(state.loopName, state)
+      seedBugFinding(state.loopName)
+
+      await recordAuditorHandoff(loop, state.sessionId)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'AbortError' } },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+
+      const handoffs = loopService.listHandoffs(state.loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0]).toMatchObject({ role: 'auditor', sessionId: state.sessionId, status: 'applied' })
+
+      const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName)
+      expect(rows.some(r => r.eventType === 'audit-session-aborted')).toBe(false)
+    })
+
+    test('an aborted audit session without a pending handoff rotates to coding and records audit-session-aborted', async () => {
+      const { client } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'AbortError' } },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+
+      const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName)
+      expect(rows.some(r => r.eventType === 'audit-session-aborted' && r.toPhase === 'coding')).toBe(true)
+      expect(loopService.listHandoffs(state.loopName)).toHaveLength(0)
     })
   })
 
@@ -302,6 +414,8 @@ describe('post-action phase', () => {
       maxIterations: 3,
     })
     loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
 
     // First tick: clean audit → checkAuditClearAndTerminate → enterPostActionPhase
     await loop.tick({
@@ -380,6 +494,8 @@ describe('post-action phase', () => {
     })
     loopService.setState(state.loopName, state)
 
+    await recordAuditorHandoff(loop, state.sessionId)
+
     await loop.tick({
       type: 'session.status',
       properties: {
@@ -395,14 +511,8 @@ describe('post-action phase', () => {
   })
 
   describe('sectioned loop completion (last open section)', () => {
-    const summaryText = `<!-- section-summary:start -->
-### Done
-- Implemented the section
-### Deviations
-- None
-### Follow-ups
-- None
-<!-- section-summary:end -->`
+    const auditReplyText = 'Section audit complete.'
+    const cleanSectionHandoff = { summary: { done: ['Implemented the section'], deviations: [], followUps: [] } }
 
     function seedSections(loopName: string, statuses: Array<'pending' | 'in_progress' | 'completed'>) {
       sectionPlansRepo.bulkInsert({
@@ -459,7 +569,7 @@ describe('post-action phase', () => {
 
     test('clean last open section enters post_action when configured', async () => {
       const { client, calls } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({
         client,
@@ -470,6 +580,8 @@ describe('post-action phase', () => {
       seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
       seedSections(loopName, ['completed', 'in_progress'])
 
+      await recordAuditorHandoff(loop, 'last-open-audit', cleanSectionHandoff)
+
       await auditTick(loop, 'last-open-audit')
 
       const afterState = loopService.getActiveState(loopName)
@@ -479,9 +591,9 @@ describe('post-action phase', () => {
       expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.status).toBe('completed')
       expect(codePrompts(calls).some(text => text.includes('pr-review'))).toBe(true)
 
-      // Record the post_action entry row from the section-clean verdict.
+      // Record the post_action entry row from the auditor handoff verdict.
       const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
-      expect(rows.some(r => r.eventType === 'section-clean' && r.toPhase === 'post_action')).toBe(true)
+      expect(rows.some(r => r.eventType === 'auditor-handoff' && r.toPhase === 'post_action')).toBe(true)
 
       const postActionSessionId = afterState!.sessionId
       ;(client.session.messages as any).mockImplementation(async () => [
@@ -494,13 +606,15 @@ describe('post-action phase', () => {
 
     test('clean last open section terminates completed without post_action', async () => {
       const { client } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({ client })
 
       const loopName = 'last-open-terminate'
       seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
       seedSections(loopName, ['completed', 'in_progress'])
+
+      await recordAuditorHandoff(loop, 'last-open-audit', cleanSectionHandoff)
 
       await auditTick(loop, 'last-open-audit')
 
@@ -513,7 +627,7 @@ describe('post-action phase', () => {
 
     test('clean last open section with an earlier-section bug retries the same section and inlines that finding', async () => {
       const { client, calls } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({ client })
 
@@ -521,6 +635,8 @@ describe('post-action phase', () => {
       seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
       seedSections(loopName, ['completed', 'in_progress'])
       seedFinding(loopName, 'src/earlier.ts', 7, 0)
+
+      await recordAuditorHandoff(loop, 'last-open-audit')
 
       await auditTick(loop, 'last-open-audit')
 
@@ -536,7 +652,7 @@ describe('post-action phase', () => {
 
     test('clean last open section with a cross-section bug retries the same section and inlines that finding', async () => {
       const { client, calls } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({ client })
 
@@ -544,6 +660,8 @@ describe('post-action phase', () => {
       seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
       seedSections(loopName, ['completed', 'in_progress'])
       seedFinding(loopName, 'src/cross.ts', 11, null)
+
+      await recordAuditorHandoff(loop, 'last-open-audit')
 
       await auditTick(loop, 'last-open-audit')
 
@@ -555,7 +673,7 @@ describe('post-action phase', () => {
 
     test('a bug attributed to a later section does not block an earlier section', async () => {
       const { client, calls } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({ client })
 
@@ -563,6 +681,8 @@ describe('post-action phase', () => {
       seedAuditingLoop(loopName, 'first-section-audit', 2, 0)
       seedSections(loopName, ['in_progress', 'pending'])
       seedFinding(loopName, 'src/later.ts', 9, 1)
+
+      await recordAuditorHandoff(loop, 'first-section-audit', cleanSectionHandoff)
 
       await auditTick(loop, 'first-section-audit')
 
@@ -576,7 +696,7 @@ describe('post-action phase', () => {
 
     test('a non-last section retries when an earlier section still has a blocking bug', async () => {
       const { client, calls } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({ client })
 
@@ -584,6 +704,8 @@ describe('post-action phase', () => {
       seedAuditingLoop(loopName, 'second-section-audit', 3, 1)
       seedSections(loopName, ['completed', 'in_progress', 'pending'])
       seedFinding(loopName, 'src/earlier.ts', 5, 0)
+
+      await recordAuditorHandoff(loop, 'second-section-audit')
 
       await auditTick(loop, 'second-section-audit')
 
@@ -597,13 +719,15 @@ describe('post-action phase', () => {
 
     test('a clean last-index section advances to an earlier section left open by a rewind', async () => {
       const { client } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({ client })
 
       const loopName = 'rewind-earlier-open'
       seedAuditingLoop(loopName, 'rewind-audit', 3, 2)
       seedSections(loopName, ['in_progress', 'completed', 'in_progress'])
+
+      await recordAuditorHandoff(loop, 'rewind-audit', cleanSectionHandoff)
 
       await auditTick(loop, 'rewind-audit')
 
@@ -619,13 +743,15 @@ describe('post-action phase', () => {
 
     test('rewind: all other sections completed makes an earlier index the last open section', async () => {
       const { client } = createFakeForgeClient({
-        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
       const { loop } = createRuntime({ client })
 
       const loopName = 'rewind-last-open'
       seedAuditingLoop(loopName, 'rewind-audit', 3, 0)
       seedSections(loopName, ['in_progress', 'completed', 'completed'])
+
+      await recordAuditorHandoff(loop, 'rewind-audit', cleanSectionHandoff)
 
       await auditTick(loop, 'rewind-audit')
 
@@ -666,6 +792,8 @@ describe('post-action phase', () => {
       maxIterations: 3,
     })
     loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
 
     // First tick: clean audit → checkAuditClearAndTerminate → enterPostActionPhase
     await loop.tick({
@@ -752,6 +880,8 @@ describe('post-action phase', () => {
       maxIterations: 3,
     })
     loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
 
     // Tick: clean audit → enterPostActionPhase → promptAsync throws
     await loop.tick({
@@ -973,6 +1103,8 @@ describe('post-action phase', () => {
     })
     loopService.setState(state.loopName, state)
 
+    await recordAuditorHandoff(loop, state.sessionId)
+
     await loop.tick({
       type: 'session.status',
       properties: { status: { type: 'idle' }, sessionID: state.sessionId },
@@ -1015,6 +1147,8 @@ describe('post-action phase', () => {
       auditorModel: 'state/auditor-model',
     })
     loopService.setState(state.loopName, state)
+
+    await recordAuditorHandoff(loop, state.sessionId)
 
     await loop.tick({
       type: 'session.status',
@@ -1685,6 +1819,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
       loopService.setState(state.loopName, state)
 
+      await recordAuditorHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
@@ -1911,6 +2047,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         description: 'Test bug',
       })
 
+      await recordAuditorHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: {
@@ -2089,6 +2227,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         description: 'Test bug',
       })
 
+      await recordAuditorHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: {
@@ -2134,6 +2274,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         auditorVariant: 'audit-high',
       })
       loopService.setState(state.loopName, state)
+
+      await recordAuditorHandoff(loop, state.sessionId)
 
       await loop.tick({
         type: 'session.status',
@@ -2192,6 +2334,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         auditorVariant: 'audit-high',
       })
       loopService.setState(state.loopName, state)
+
+      await recordAuditorHandoff(loop, state.sessionId)
 
       await loop.tick({
         type: 'session.status',
@@ -3352,6 +3496,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
+      await recordAuditorHandoff(loop, state.sessionId)
+
       // Begin the fallback re-dispatch (held in-flight at sendGate, holding the
       // state lock). While it is held, the fast fallback emits busy then idle.
       const retryP = loop.tick({
@@ -3762,6 +3908,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       // The fallback prompt completes with a dirty audit result, which rotates
       // back to coding and must reset the persisted index to 0.
+      await recordAuditorHandoff(loop, state.sessionId)
       await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
       await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
 

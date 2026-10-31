@@ -12,18 +12,17 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler, type LoopEventHandler } from '../../src/hooks/loop'
+import { AUDITOR_HANDOFF_INSTRUCTION } from '../../src/loop/prompts'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { recordCoderHandoff } from '../helpers/loop-handoff'
+import { recordAuditorHandoff, recordCoderHandoff } from '../helpers/loop-handoff'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
-import { SECTION_SUMMARY_START_MARKER } from '../../src/utils/section-summary'
 import type { ModelContextLimitParams } from '../../src/client/port'
 import { __resetIdleGate, hasSuppressedIdle, recordInboxEnqueued } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import { __resetLoopRuntimeSharedState } from '../../src/loop/runtime'
 
 const PROJECT_ID = 'test-project'
-const CLEAN_SUMMARY = `All clear.\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- Implemented the section\n### Deviations\n- None\n### Follow-ups\n- None\n<!-- section-summary:end -->`
 const FULL_PROMPT_MARKER = '## Section plan'
 const FOLLOW_UP_MARKER = 'The audit of your previous changes left the findings below open.'
 const AUDIT_FOLLOW_UP_MARKER = 'The coder has finished the next attempt for this scope.'
@@ -256,6 +255,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -272,7 +272,7 @@ describe('Loop session reuse', () => {
       expect(after.standbySessionId).toBe('audit-1')
 
       const transitions = loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName)
-      expect(transitions.some((row) => row.eventType === 'section-dirty' && row.toPhase === 'coding')).toBe(true)
+      expect(transitions.some((row) => row.eventType === 'auditor-handoff' && row.toPhase === 'coding')).toBe(true)
     })
 
     test('the next coding idle reuses the audit standby with the audit follow-up prompt', async () => {
@@ -294,7 +294,8 @@ describe('Loop session reuse', () => {
       expect(auditPrompts).toHaveLength(1)
       expect(auditPrompts[0]).toContain('[Loop section audit 1/2 (follow-up)]')
       expect(auditPrompts[0]).toContain(AUDIT_FOLLOW_UP_MARKER)
-      expect(auditPrompts[0]).toContain(SECTION_SUMMARY_START_MARKER)
+      expect(auditPrompts[0]).toContain('## Required: auditor handoff')
+      expect(auditPrompts[0]).toContain(AUDITOR_HANDOFF_INSTRUCTION)
 
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('auditing')
@@ -344,6 +345,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(1)
@@ -382,6 +384,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -423,6 +426,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(compactCalls(calls)).toHaveLength(0)
@@ -456,6 +460,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(compactCalls(calls)).toEqual([{ sessionID: 'fat-coder', directory: state.worktreeDir }])
@@ -492,6 +497,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(1)
@@ -536,6 +542,7 @@ describe('Loop session reuse', () => {
 
       for (let i = 0; i < 3; i++) handler!.loop.service.bumpFindingRecurrence(state.loopName, [finding])
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(1)
@@ -589,6 +596,7 @@ describe('Loop session reuse', () => {
       messagesBySession.set('audit-1', [
         assistantMessage({ id: 'm-audit-2', text: 'Still dirty.', providerID: 'test', modelID: 'model' }),
       ])
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await handler!.onEvent({
         event: { type: 'session.status', properties: { sessionID: 'audit-1', status: { type: 'busy' } } },
       })
@@ -627,6 +635,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(1)
@@ -690,6 +699,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -724,6 +734,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -825,6 +836,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
       expect(compactCalls(calls)).toHaveLength(1)
       const createsAfterReuse = createCalls(calls).length
@@ -865,6 +877,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
       const createsAfterReuse = createCalls(calls).length
@@ -937,11 +950,14 @@ describe('Loop session reuse', () => {
         state,
         sections: 2,
         messages: {
-          'audit-1': [assistantMessage({ id: 'm-audit-1', text: CLEAN_SUMMARY })],
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'All clear.' })],
           'coder-1': [assistantMessage({ id: 'm-coder-1', tokens: 100 })],
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1', {
+        summary: { done: ['Implemented the section'], deviations: [], followUps: [] },
+      })
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(1)
@@ -963,6 +979,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(deletedSessionIds(calls)).toContain('coder-1')
@@ -1030,6 +1047,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -1065,6 +1083,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordAuditorHandoff(handler!.loop, 'audit-1')
       await idle('audit-1')
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
       const createsAfterReuse = createCalls(calls).length
@@ -1081,7 +1100,7 @@ describe('Loop session reuse', () => {
       const coderPrompts = promptsTo(calls, 'coder-1')
       expect(coderPrompts).toHaveLength(2)
       expect(coderPrompts[0]).toContain(FOLLOW_UP_MARKER)
-      expect(coderPrompts[1]).toContain(FULL_PROMPT_MARKER)
+      expect(coderPrompts[1]).toContain('You ended your turn without calling `loop-handoff`.')
       expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('coding')

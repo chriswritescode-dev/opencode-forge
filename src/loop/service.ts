@@ -22,7 +22,6 @@ import {
   type PostActionPromptOptions,
   type PromptContext,
 } from './prompts'
-import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
@@ -131,7 +130,6 @@ export interface LoopService {
   getSectionPlans(state: LoopState): SectionPlanRow[]
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
-  parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
 
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
@@ -727,10 +725,6 @@ export function createLoopService(
     }))
   }
 
-  function parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null {
-    return _parseSectionSummary(text)
-  }
-
   function buildSectionInitialPrompt(state: LoopState): string {
     return _buildSectionInitialPrompt(_promptCtx, state)
   }
@@ -1125,7 +1119,6 @@ export function createLoopService(
     getSectionPlans,
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
-    parseSectionSummary,
 
     buildSectionInitialPrompt,
     buildSectionAuditPrompt,

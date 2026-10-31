@@ -18,7 +18,7 @@ import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
-import { recordCoderHandoff } from '../helpers/loop-handoff'
+import { recordAuditorHandoff, recordCoderHandoff } from '../helpers/loop-handoff'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 
 vi.mock('../../src/utils/audit-snapshot', () => ({
@@ -212,6 +212,7 @@ describe('durable attempt handoff', () => {
       severity: 'bug',
       description: 'Retry handler drops the second event',
     })
+    await recordAuditorHandoff(harness.loop, auditSessionId)
     await busyTick(harness.loop, auditSessionId)
     await idleTick(harness.loop, auditSessionId)
 
@@ -310,6 +311,7 @@ describe('durable attempt handoff', () => {
         severity: 'bug',
         description: 'Retry handler drops the second event',
       })
+      await recordAuditorHandoff(harness.loop, auditSessionId)
       await busyTick(harness.loop, auditSessionId)
       await idleTick(harness.loop, auditSessionId)
 
@@ -669,6 +671,138 @@ describe('durable attempt handoff', () => {
 
       expect(auditorPrompts(harness.calls).length).toBe(auditPromptCount)
       expect(harness.service.getAttemptHistory(loopName, 'plan').length).toBe(attemptCount)
+    })
+  })
+
+  describe('auditor handoff turn end', () => {
+    test('an audit idle without a handoff nudges the same audit session and stays auditing, then three nudges and a fourth idle terminate with handoff_missing', async () => {
+      const loopName = 'handoff-audit-nudge-exhausted'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState(loopName, 'audit-nudge', { phase: 'auditing', auditCount: 1 }))
+      harness.messagesBySession.set('audit-nudge', [
+        assistantMessage('msg-an1', 'The audit is complete.'),
+      ])
+
+      await idleTick(harness.loop, 'audit-nudge')
+
+      const nudged = harness.service.getActiveState(loopName)!
+      expect(nudged.active).toBe(true)
+      expect(nudged.phase).toBe('auditing')
+      expect(nudged.sessionId).toBe('audit-nudge')
+      const firstNudge = promptsTo(harness.calls, 'audit-nudge', 'auditor-loop')
+      expect(firstNudge).toHaveLength(1)
+      expect(firstNudge[0]).toContain('You ended your turn without calling `loop-handoff`.')
+
+      for (let attempt = 2; attempt <= 3; attempt++) {
+        await busyTick(harness.loop, 'audit-nudge')
+        await idleTick(harness.loop, 'audit-nudge')
+        expect(promptsTo(harness.calls, 'audit-nudge', 'auditor-loop')).toHaveLength(attempt)
+      }
+
+      await busyTick(harness.loop, 'audit-nudge')
+      await idleTick(harness.loop, 'audit-nudge')
+
+      const finished = harness.service.getAnyState(loopName)!
+      expect(finished.active).toBe(false)
+      expect(finished.status).toBe('errored')
+      expect(finished.terminationReason).toBe('handoff_missing')
+      expect(promptsTo(harness.calls, 'audit-nudge', 'auditor-loop')).toHaveLength(3)
+    })
+
+    test('an audit turn with a detected assistant error rotates to coding without a handoff nudge', async () => {
+      const loopName = 'handoff-audit-assistant-error'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState(loopName, 'audit-error', { phase: 'auditing', auditCount: 1 }))
+      harness.messagesBySession.set('audit-error', [
+        {
+          info: { id: 'msg-ae1', role: 'assistant', finish: 'stop', error: { name: 'UnknownError', data: { message: 'auditor crashed' } } },
+          parts: [],
+        },
+      ])
+
+      await idleTick(harness.loop, 'audit-error')
+
+      const state = harness.service.getActiveState(loopName)!
+      expect(state.active).toBe(true)
+      expect(state.phase).toBe('coding')
+      expect(promptsTo(harness.calls, 'audit-error', 'auditor-loop').some(prompt => prompt.includes('You ended your turn without calling `loop-handoff`.'))).toBe(false)
+
+      const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+      expect(rows.some(row => row.eventType === 'audit-error' && row.fromPhase === 'auditing' && row.toPhase === 'coding')).toBe(true)
+    })
+
+    test('a duplicate audit idle after the applied handoff changes nothing and does not terminate the loop', async () => {
+      const loopName = 'handoff-audit-duplicate-idle'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState(loopName, 'audit-dup', { phase: 'auditing', auditCount: 1 }))
+      harness.messagesBySession.set('audit-dup', [
+        assistantMessage('msg-ad1', 'Still missing phase two.'),
+      ])
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/plan.ts',
+        line: 9,
+        severity: 'bug',
+        description: 'Plan phase two is missing',
+      })
+
+      await recordAuditorHandoff(harness.loop, 'audit-dup')
+      await busyTick(harness.loop, 'audit-dup')
+      await idleTick(harness.loop, 'audit-dup')
+
+      const afterFirst = harness.service.getActiveState(loopName)!
+      expect(afterFirst.phase).toBe('coding')
+      const promptCount = harness.calls.filter(call => call.method === 'session.promptAsync').length
+      const createCount = harness.calls.filter(call => call.method === 'session.create').length
+      const transitionCount = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName).length
+
+      await idleTick(harness.loop, 'audit-dup')
+
+      const stillActive = harness.service.getActiveState(loopName)!
+      expect(stillActive.phase).toBe('coding')
+      expect(stillActive.sessionId).toBe(afterFirst.sessionId)
+      expect(harness.calls.filter(call => call.method === 'session.promptAsync')).toHaveLength(promptCount)
+      expect(harness.calls.filter(call => call.method === 'session.create')).toHaveLength(createCount)
+      expect(loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)).toHaveLength(transitionCount)
+    })
+
+    test('a clean auditor handoff with a summary stays listed as applied after the section completes', async () => {
+      const loopName = 'handoff-audit-clean-record'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState(loopName, 'audit-clean', {
+        phase: 'auditing',
+        auditCount: 1,
+        totalSections: 1,
+        currentSectionIndex: 0,
+      }))
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [{ index: 0, title: 'Only section', content: 'Only section content' }],
+      })
+      harness.service.startSection(loopName, 0)
+      harness.messagesBySession.set('audit-clean', [
+        assistantMessage('msg-ac1', 'Section is clean.'),
+      ])
+
+      await recordAuditorHandoff(harness.loop, 'audit-clean', {
+        summary: { done: ['Implemented the section'], deviations: [], followUps: [] },
+      })
+      await idleTick(harness.loop, 'audit-clean')
+
+      const handoffs = harness.service.listHandoffs(loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0].role).toBe('auditor')
+      expect(handoffs[0].status).toBe('applied')
+      expect(handoffs[0].payload.summary?.done).toEqual(['Implemented the section'])
+
+      const section = harness.service.getSectionPlan(harness.service.getAnyState(loopName)!, 0)!
+      expect(section.status).toBe('completed')
     })
   })
 
