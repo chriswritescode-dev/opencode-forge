@@ -3,7 +3,7 @@ import { execSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 import type { Logger } from '../../src/types'
 
@@ -129,6 +129,22 @@ describe('captureAuditSnapshot', () => {
     execSync('git add opencode.jsonc && git commit -m add-config', { cwd: repo, encoding: 'utf-8' })
     const trackedSnapshot = await captureAuditSnapshot(repo, auditRef(), logger)
     expect(treePaths(repo, trackedSnapshot.commit)).toContain('opencode.jsonc')
+  })
+
+  it('captures a worktree whose info/exclude lists .forge and opencode.jsonc', async () => {
+    const repo = initRepo('audit-snapshot-info-exclude-')
+    const excludePath = gitOut(repo, 'rev-parse --git-path info/exclude').trim()
+    appendFileSync(isAbsolute(excludePath) ? excludePath : join(repo, excludePath), '.forge/\nopencode.jsonc\n', 'utf-8')
+    mkdirSync(join(repo, '.forge'))
+    writeFileSync(join(repo, '.forge', 'state.json'), '{}\n', 'utf-8')
+    writeFileSync(join(repo, 'opencode.jsonc'), '{}\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const paths = treePaths(repo, snapshot.commit)
+    expect(paths).toContain('base.txt')
+    expect(paths.some((path) => path.startsWith('.forge/'))).toBe(false)
+    expect(paths).not.toContain('opencode.jsonc')
   })
 
   it('excludes an opencode.jsonc that escapes the initial untracked listing', async () => {

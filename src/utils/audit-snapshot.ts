@@ -204,11 +204,7 @@ async function buildSnapshotTree(
   }
   const indexEnv = gitEnv({ GIT_INDEX_FILE: altIndex })
   await assertNoUntrackedSecrets(toplevel, logger)
-  const pathspecs = ['.', ':(exclude).forge']
-  if (!originalTracked.has(WORKTREE_OPENCODE_CONFIG_FILENAME)) {
-    pathspecs.push(`:(exclude)${WORKTREE_OPENCODE_CONFIG_FILENAME}`)
-  }
-  await runGitCommand(toplevel, ['add', '-A', '--', ...pathspecs], indexEnv, logger, 'add')
+  await runGitCommand(toplevel, ['add', '-A', '--', '.'], indexEnv, logger, 'add')
   const entries = (await runGitCommand(toplevel, ['ls-files', '-z'], indexEnv, logger, 'ls-files'))
     .split('\0')
     .filter((entry) => entry.length > 0)
@@ -226,7 +222,9 @@ async function buildSnapshotTree(
     throw new Error(`audit snapshot aborted: untracked nested git repositories discovered (${preview}); commit them as submodules or exclude them through repository ignore rules`)
   }
   await assertSubmodulesClean(toplevel, stagedGitlinks, logger)
-  const removals = entries.filter(isForgeTransientPath)
+  const removals = entries.filter(
+    (entry) => isForgeTransientPath(entry) || (entry === WORKTREE_OPENCODE_CONFIG_FILENAME && !originalTracked.has(entry)),
+  )
   await removeIndexEntries(toplevel, removals, indexEnv, logger)
   const tree = (await runGitCommand(toplevel, ['write-tree'], indexEnv, logger, 'write-tree')).trim()
   return validateCommitSha(tree, 'tree SHA')
