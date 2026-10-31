@@ -33,6 +33,7 @@ export type V2PermissionRule = { action: string; resource: string; effect: 'allo
 export interface V2ClientLike {
   readonly session: V2Session
   readonly location: Plugin.Context['location']
+  readonly model: Plugin.Context['model']
 }
 
 export interface V2ForgeClientOptions {
@@ -114,6 +115,9 @@ function isSessionStatus(value: unknown): value is SessionStatus[string] {
 }
 
 const SESSION_STATUS_CACHE_CAPACITY = 1000
+
+/** How long a client instance reuses its resolved model context-window limits before listing models again. */
+const MODEL_CONTEXT_CACHE_TTL_MS = 60_000
 
 /**
  * Process-wide session status, fed from every location's events before the ownership filter, so a
@@ -421,6 +425,26 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     },
   }
 
+  let modelContextCache: { at: number; limits: Map<string, number> } | null = null
+
+  const model: ForgeClient['model'] = {
+    contextLimit: (params) => call('model.contextLimit', async () => {
+      const now = Date.now()
+      if (!modelContextCache || now - modelContextCache.at >= MODEL_CONTEXT_CACHE_TTL_MS) {
+        const listed = await ctx.model.list({ location: { directory: options.directory } })
+        const limits = new Map<string, number>()
+        for (const info of listed.data) {
+          const context = isRecord(info.limit) ? info.limit.context : undefined
+          if (typeof context === 'number' && context > 0) {
+            limits.set(`${info.providerID}/${info.id}`, context)
+          }
+        }
+        modelContextCache = { at: now, limits }
+      }
+      return modelContextCache.limits.get(`${params.providerID}/${params.modelID}`)
+    }),
+  }
+
   const toast: ForgeClient['toast'] = async (input) => {
     if (!options.publishToast) return
     try {
@@ -435,5 +459,5 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     }
   }
 
-  return { session, workspace: options.workspace, toast, recordStatusEvent }
+  return { session, workspace: options.workspace, model, toast, recordStatusEvent }
 }

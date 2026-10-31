@@ -49,6 +49,12 @@
     "stallTimeoutMs": 60000,
     "maxConsecutiveStalls": 5,  // 0 = disabled; default 5
     "busyStallTimeoutMs": 900000,  // busy with no tool activity or streamed content → abort + continue; 0 = disabled
+    // Retain and resume the coder/audit session on a same-section retry only while its last turn
+    // used less than this percent of the model's context window. 0 disables reuse for that role.
+    "sessionReuse": {
+      "coderContextPercent": 50,
+      "auditorContextPercent": 50
+    },
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
       "enabled": false,

@@ -18,7 +18,7 @@ import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-pa
 import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
-import { emitLoopPermissionConfigWarnings } from '../utils/loop-permission-warnings'
+import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
@@ -456,6 +456,21 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         directory,
         logger,
         title: 'Forge loop permissions',
+        message: warnings.join(' '),
+        variant: 'warning',
+        duration: 10_000,
+      })
+    },
+  })
+
+  emitLoopSessionReuseConfigWarnings(config, dataDir, directory, {
+    logger,
+    onWarnings: (warnings) => {
+      publishToast({
+        client: forgeClient,
+        directory,
+        logger,
+        title: 'Forge loop session reuse',
         message: warnings.join(' '),
         variant: 'warning',
         duration: 10_000,

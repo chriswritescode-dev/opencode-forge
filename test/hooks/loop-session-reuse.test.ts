@@ -16,7 +16,7 @@ import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { SECTION_SUMMARY_START_MARKER } from '../../src/utils/section-summary'
-import { LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS } from '../../src/constants/loop'
+import type { ModelContextLimitParams } from '../../src/client/port'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import { __resetLoopRuntimeSharedState } from '../../src/loop/runtime'
@@ -31,6 +31,8 @@ interface AssistantOptions {
   id?: string
   tokens?: number
   text?: string
+  providerID?: string
+  modelID?: string
 }
 
 function assistantMessage(options: AssistantOptions = {}) {
@@ -45,6 +47,8 @@ function assistantMessage(options: AssistantOptions = {}) {
       id: options.id,
       role: 'assistant' as const,
       finish: 'stop' as const,
+      ...(options.providerID ? { providerID: options.providerID } : {}),
+      ...(options.modelID ? { modelID: options.modelID } : {}),
       ...(tokens ? { tokens } : {}),
     },
     parts: [{ type: 'text' as const, text: options.text ?? 'work done' }],
@@ -91,6 +95,10 @@ describe('Loop session reuse', () => {
     rmSync(tempDir, { recursive: true, force: true })
   })
 
+  function configWithSessionReuse(sessionReuse: { coderContextPercent?: number; auditorContextPercent?: number }): PluginConfig {
+    return { ...mockConfig, loop: { ...mockConfig.loop, sessionReuse } }
+  }
+
   function makeState(overrides: Partial<LoopState> = {}): LoopState {
     return {
       active: true,
@@ -122,6 +130,8 @@ describe('Loop session reuse', () => {
     state: LoopState
     messages: Record<string, ReturnType<typeof assistantMessage>[]>
     sections?: number
+    config?: PluginConfig
+    contextLimit?: (params: ModelContextLimitParams) => Promise<number | undefined>
   }) {
     const logs: string[] = []
     const logger: Logger = {
@@ -141,6 +151,7 @@ describe('Loop session reuse', () => {
         },
         messages: async (params: any) => messagesBySession.get(params.sessionID) ?? [],
       },
+      model: options.contextLimit ? { contextLimit: options.contextLimit } : undefined,
     })
 
     const service = createLoopService(
@@ -164,7 +175,7 @@ describe('Loop session reuse', () => {
       PROJECT_ID,
       client,
       logger,
-      () => mockConfig,
+      () => options.config ?? mockConfig,
       undefined,
       undefined,
       undefined,
@@ -333,7 +344,7 @@ describe('Loop session reuse', () => {
       expect(after.standbySessionId).toBe('audit-1')
     })
 
-    test('a standby over the context budget falls back to a fresh session', async () => {
+    test('a coder standby over its context percent falls back to a fresh session', async () => {
       const state = makeState({ sessionId: 'audit-1', standbySessionId: 'fat-coder' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
@@ -348,9 +359,11 @@ describe('Loop session reuse', () => {
       const { calls, service } = createHarness({
         state,
         sections: 2,
+        config: { ...mockConfig, loop: { ...mockConfig.loop, sessionReuse: { coderContextPercent: 50 } } },
+        contextLimit: async () => 100_000,
         messages: {
           'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.' })],
-          'fat-coder': [assistantMessage({ id: 'm-coder-1', tokens: LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS })],
+          'fat-coder': [assistantMessage({ id: 'm-coder-1', tokens: 60_000, providerID: 'test', modelID: 'model' })],
         },
       })
 
@@ -360,7 +373,9 @@ describe('Loop session reuse', () => {
       expect(promptsTo(calls, 'fat-coder')).toHaveLength(0)
       expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
       expect(deletedSessionIds(calls)).toContain('fat-coder')
-      expect(service.getActiveState(state.loopName)!.sessionId).toBe('created-session-1')
+      const after = service.getActiveState(state.loopName)!
+      expect(after.sessionId).toBe('created-session-1')
+      expect(after.standbySessionId).toBe('audit-1')
     })
 
     test('a recurring blocking finding forces fresh sessions for both roles', async () => {
@@ -408,6 +423,182 @@ describe('Loop session reuse', () => {
       const after = service.getActiveState(state.loopName)!
       expect(after.sessionId).toBe('created-session-1')
       expect(after.standbySessionId).toBeUndefined()
+    })
+  })
+
+  describe('context-window thresholds', () => {
+    test('separate coder and auditor percents gate their own role', async () => {
+      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, messagesBySession, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 20 }),
+        contextLimit: async () => 100_000,
+        messages: {
+          'coder-1': [assistantMessage({ id: 'm-coder-2', tokens: 30_000, providerID: 'test', modelID: 'model' })],
+          'audit-1': [assistantMessage({ id: 'm-audit-1', tokens: 30_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('coder-1')
+
+      expect(createCalls(calls)).toHaveLength(1)
+      expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
+      expect(deletedSessionIds(calls)).toContain('audit-1')
+      const afterAudit = service.getActiveState(state.loopName)!
+      expect(afterAudit.phase).toBe('auditing')
+      expect(afterAudit.sessionId).toBe('created-session-1')
+      expect(afterAudit.standbySessionId).toBe('coder-1')
+
+      messagesBySession.set('created-session-1', [
+        assistantMessage({ id: 'm-audit-2', text: 'Still dirty.', providerID: 'test', modelID: 'model' }),
+      ])
+      await handler!.onEvent({
+        event: { type: 'session.status', properties: { sessionID: 'created-session-1', status: { type: 'busy' } } },
+      })
+      await idle('created-session-1')
+
+      expect(createCalls(calls)).toHaveLength(1)
+      const coderPrompts = promptsTo(calls, 'coder-1')
+      expect(coderPrompts).toHaveLength(1)
+      expect(coderPrompts[0]).toContain(FOLLOW_UP_MARKER)
+      const afterCoding = service.getActiveState(state.loopName)!
+      expect(afterCoding.phase).toBe('coding')
+      expect(afterCoding.sessionId).toBe('coder-1')
+    })
+
+    test('a coder percent of 0 disables coder reuse only', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, logs, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 0, auditorContextPercent: 50 }),
+        contextLimit: async () => 100_000,
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', tokens: 1_000, providerID: 'test', modelID: 'model' })],
+          'coder-1': [assistantMessage({ id: 'm-coder-1', tokens: 1_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('audit-1')
+
+      expect(createCalls(calls)).toHaveLength(1)
+      expect(promptsTo(calls, 'coder-1')).toHaveLength(0)
+      expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
+      expect(logs.some((line) => line.includes('disabled for the code role'))).toBe(true)
+      const after = service.getActiveState(state.loopName)!
+      expect(after.sessionId).toBe('created-session-1')
+      expect(after.standbySessionId).toBe('audit-1')
+    })
+
+    test('an auditor percent of 0 disables audit reuse only', async () => {
+      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
+
+      const { calls, logs, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 0 }),
+        contextLimit: async () => 100_000,
+        messages: {
+          'coder-1': [assistantMessage({ id: 'm-coder-2', tokens: 1_000, providerID: 'test', modelID: 'model' })],
+          'audit-1': [assistantMessage({ id: 'm-audit-1', tokens: 1_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('coder-1')
+
+      expect(createCalls(calls)).toHaveLength(1)
+      expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
+      expect(deletedSessionIds(calls)).toContain('audit-1')
+      expect(logs.some((line) => line.includes('disabled for the auditor role'))).toBe(true)
+      const after = service.getActiveState(state.loopName)!
+      expect(after.phase).toBe('auditing')
+      expect(after.sessionId).toBe('created-session-1')
+      expect(after.standbySessionId).toBe('coder-1')
+    })
+
+    test('an unknown context window allows reuse', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, logs, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => undefined,
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.', providerID: 'test', modelID: 'model' })],
+          'coder-1': [assistantMessage({ id: 'm-coder-1', tokens: 900_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('audit-1')
+
+      expect(createCalls(calls)).toHaveLength(0)
+      expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
+      expect(logs.some((line) => line.includes('unknown context window'))).toBe(true)
+      expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
+    })
+
+    test('a failed context-window lookup allows reuse', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, logs, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => {
+          throw new Error('model list unavailable')
+        },
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.', providerID: 'test', modelID: 'model' })],
+          'coder-1': [assistantMessage({ id: 'm-coder-1', tokens: 900_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('audit-1')
+
+      expect(createCalls(calls)).toHaveLength(0)
+      expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
+      expect(logs.some((line) => line.includes('context-window lookup failed'))).toBe(true)
+      expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
     })
   })
 

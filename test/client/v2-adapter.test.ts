@@ -464,6 +464,55 @@ describe('createForgeClientFromV2', () => {
     })
   })
 
+  describe('model.contextLimit', () => {
+    function modelListDefaults() {
+      return vi.fn().mockResolvedValue({
+        location: { directory: '/tmp/forge-project' },
+        data: [
+          { providerID: 'anthropic', id: 'claude-sonnet-4', limit: { context: 200_000, output: 8_000 } },
+          { providerID: 'anthropic', id: 'no-window', limit: { context: 0, output: 8_000 } },
+        ],
+      })
+    }
+
+    it('returns the context window of a known model', async () => {
+      const list = modelListDefaults()
+      const { client, calls } = clientFor({ model: { list } })
+
+      await expect(client.model.contextLimit({ providerID: 'anthropic', modelID: 'claude-sonnet-4' })).resolves.toBe(200_000)
+      expect(calls).toEqual([
+        { method: 'model.list', args: [{ location: { directory: '/tmp/forge-project' } }] },
+      ])
+    })
+
+    it('returns undefined for an unknown model or a non-positive limit', async () => {
+      const { client } = clientFor({ model: { list: modelListDefaults() } })
+
+      await expect(client.model.contextLimit({ providerID: 'anthropic', modelID: 'missing' })).resolves.toBeUndefined()
+      await expect(client.model.contextLimit({ providerID: 'anthropic', modelID: 'no-window' })).resolves.toBeUndefined()
+    })
+
+    it('lists models once for repeated lookups', async () => {
+      const list = modelListDefaults()
+      const { client, calls } = clientFor({ model: { list } })
+
+      await client.model.contextLimit({ providerID: 'anthropic', modelID: 'claude-sonnet-4' })
+      await client.model.contextLimit({ providerID: 'anthropic', modelID: 'no-window' })
+
+      expect(list).toHaveBeenCalledTimes(1)
+      expect(calls.filter((call) => call.method === 'model.list')).toHaveLength(1)
+    })
+
+    it('classifies a host failure', async () => {
+      const { client } = clientFor({ model: { list: vi.fn().mockRejectedValue(new Error('model list unavailable')) } })
+
+      const err = failure(await client.model.contextLimit({ providerID: 'anthropic', modelID: 'claude-sonnet-4' }).catch((e: unknown) => e))
+
+      expect(err.kind).toBe('request')
+      expect(err.method).toBe('model.contextLimit')
+    })
+  })
+
   describe('toast', () => {
     it('emits the mapped toast payload when an emitter is configured', async () => {
       const publishToast = vi.fn()
@@ -679,6 +728,7 @@ describe('ForgeClient surface', () => {
     const surface: ForgeClient = client
 
     expect(Object.keys(surface).sort()).toEqual([
+      'model',
       'recordStatusEvent',
       'session',
       'toast',

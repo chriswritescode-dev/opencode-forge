@@ -546,6 +546,8 @@ Security rules for loop and audit sessions.
 buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, then configured rules, then review/plan/loop structural denies
 buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, configured rules, then structural denies for the direct mutation tools edit/write plus the shared plan/loop denies
 resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Local resolver: configured loop.permissions deny rules
+resolveSessionReuseContextPercent(config?, role): number        // loop.sessionReuse percent for 'code' | 'auditor', defaulting invalid values to 50
+parseSessionReuseConfig(raw): ParsedSessionReuseConfig          // Validates loop.sessionReuse; returns warnings for ignored values
 ```
 
 Only `deny` entries are honoured; Forge-managed permissions and blanket denies of Forge-required
@@ -612,7 +614,7 @@ The loop follows a strict phase-based state machine:
 
 `loops.standby_session_id` (migration 155) holds the one session a loop may resume: always the role opposite the current phase. It is set when a fresh audit session replaces the coder and when a resumed coder replaces the audit session, and is released (usage captured, session deleted) on a section advance, loop completion, termination, shutdown, restart, or any switch to a fresh session.
 
-`inspectReusableStandby` is the single reuse predicate: the standby exists with messages, is not the current session, has no bug finding at the recurrence escalation threshold, and its last assistant turn's context stays under `LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS` (150,000). Reused sessions get `buildCoderFollowUpPrompt` / `buildAuditFollowUpPrompt` instead of the full plan prompt, and `standbyTurnBaselines` keeps the phase handler from mistaking the session's previous reply for the new turn.
+`inspectReusableStandby` is the single reuse predicate: the standby exists with messages, is not the current session, has no bug finding at the recurrence escalation threshold, and its last assistant turn's context stays below the role's percentage of the model's context window (`loop.sessionReuse.coderContextPercent` / `auditorContextPercent`, resolved by `resolveSessionReuseContextPercent`; `0` disables reuse for that role). The percentage applies to the role the standby holds: coder while auditing, auditor while coding. An unknown context window allows reuse. `inspectStandbyCandidate` reads the model from the last assistant message and resolves `limit.context` through the `ForgeClient.model.contextLimit` port method. Reused sessions get `buildCoderFollowUpPrompt` / `buildAuditFollowUpPrompt` instead of the full plan prompt, and `standbyTurnBaselines` keeps the phase handler from mistaking the session's previous reply for the new turn.
 
 ### Notification Pattern
 

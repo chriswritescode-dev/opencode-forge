@@ -20,7 +20,7 @@ import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS, type LoopPermissionRulesetOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopSessionReuseRole } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
@@ -563,39 +563,71 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Whether a session can carry over as the next standby: it must still exist and
-   * its last assistant turn's context must stay under the reuse ceiling.
+   * Whether a session of `role` can carry over as the next standby: it must
+   * still exist and its last assistant turn must stay under that role's
+   * percentage of the model's context window. An unknown context window (no
+   * model on the message, a failed lookup, or no limit) allows reuse.
    */
-  async function inspectStandbyCandidate(sessionId: string, state: LoopState): Promise<{ sessionId: string; latestAssistantMessageId?: string } | null> {
+  async function inspectStandbyCandidate(
+    sessionId: string,
+    state: LoopState,
+    role: LoopSessionReuseRole,
+  ): Promise<{ sessionId: string; latestAssistantMessageId?: string } | null> {
     try {
       const messages = await client.session.messages({ sessionID: sessionId, directory: state.worktreeDir, limit: 4 })
       if (messages.length === 0) {
-        logger.log(`Loop: session ${sessionId} is not reusable for ${state.loopName}; the session has no messages`)
+        logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; the session has no messages`)
         return null
       }
       const lastAssistant = [...messages].reverse().find((message) => message.info.role === 'assistant')
       if (!lastAssistant) return { sessionId }
 
-      const tokens = lastAssistant.info.tokens
-      const contextTokens = tokens ? tokens.input + tokens.cache.read + tokens.cache.write : 0
-      if (contextTokens >= LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS) {
-        logger.log(`Loop: session ${sessionId} is not reusable for ${state.loopName}; context ${contextTokens} tokens reached the reuse ceiling ${LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS}`)
+      const maxPercent = resolveSessionReuseContextPercent(getConfig(), role)
+      if (maxPercent === 0) {
+        logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; session reuse is disabled for the ${role} role`)
         return null
       }
+
+      const tokens = lastAssistant.info.tokens
+      const contextTokens = tokens ? tokens.input + tokens.cache.read + tokens.cache.write : 0
+      const { providerID, modelID } = lastAssistant.info
+
+      let contextLimit: number | undefined
+      if (providerID && modelID) {
+        try {
+          contextLimit = await client.model.contextLimit({ providerID, modelID })
+        } catch (err) {
+          logger.log(`Loop: context-window lookup failed for ${providerID}/${modelID} (${role} session ${sessionId})`, err)
+          contextLimit = undefined
+        }
+      }
+
+      if (contextLimit === undefined) {
+        logger.log(`Loop: reusing session ${sessionId} (${role}) for ${state.loopName}; used ${contextTokens} tokens with an unknown context window for ${providerID ?? 'unknown'}/${modelID ?? 'unknown'}`)
+        return { sessionId, latestAssistantMessageId: lastAssistant.info.id }
+      }
+
+      const contextPercent = (contextTokens / contextLimit) * 100
+      if (contextPercent >= maxPercent) {
+        logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), at or above the ${maxPercent}% reuse threshold`)
+        return null
+      }
+
+      logger.log(`Loop: session ${sessionId} (${role}) is reusable for ${state.loopName}; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), below the ${maxPercent}% reuse threshold`)
       return { sessionId, latestAssistantMessageId: lastAssistant.info.id }
     } catch (err) {
-      logger.log(`Loop: session ${sessionId} is not reusable for ${state.loopName}; session lookup failed`, err)
+      logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; session lookup failed`, err)
       return null
     }
   }
 
   /**
    * The single reusability predicate for the recorded standby: it must still
-   * exist, stay under the context-token ceiling, and have no blocking bug finding
-   * at the recurrence escalation threshold. Standbys only ever hold the other
-   * role of the current section (every section change and loop end releases
-   * them), so same-section membership holds by construction rather than by a
-   * stored field.
+   * exist, stay under its role's context-window percentage, and have no blocking
+   * bug finding at the recurrence escalation threshold. Standbys only ever hold
+   * the other role of the current section (every section change and loop end
+   * releases them), so same-section membership holds by construction rather
+   * than by a stored field.
    */
   async function inspectReusableStandby(state: LoopState): Promise<{ sessionId: string; latestAssistantMessageId?: string } | null> {
     const standbySessionId = state.standbySessionId
@@ -606,7 +638,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return null
     }
 
-    return inspectStandbyCandidate(standbySessionId, state)
+    return inspectStandbyCandidate(standbySessionId, state, usageRoleForPhase(standbyPhaseFor(state.phase)))
   }
 
   /**
@@ -1064,7 +1096,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await discardStandbySession(loopName, currentState, 'before coder rotation')
       const auditCandidate = input.discardAuditSession || loopService.hasEscalatedBugFindings(currentState)
         ? null
-        : await inspectStandbyCandidate(auditSessionId, currentState)
+        : await inspectStandbyCandidate(auditSessionId, currentState, 'auditor')
       await rotateAndSendContinuation(
         loopName,
         currentState,

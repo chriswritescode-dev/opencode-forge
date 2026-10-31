@@ -1,20 +1,21 @@
 import { isRecord } from '../utils/is-record'
 import type { PluginConfig, LoopPermissionsConfig } from '../types'
 
+/** Context-window percentage a retained coder session may use and still be reused on a same-section retry. */
+export const DEFAULT_CODER_SESSION_REUSE_CONTEXT_PERCENT = 50
+
+/** Context-window percentage a retained audit session may use and still be reused on a same-section retry. */
+export const DEFAULT_AUDITOR_SESSION_REUSE_CONTEXT_PERCENT = 50
+
+/** Loop session role that owns a retained standby session. */
+export type LoopSessionReuseRole = 'code' | 'auditor'
+
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 /** Maximum number of plan sections a loop may execute. Shared by the
  *  deterministic decomposer, section bootstrap, the plan-structure report,
  *  the Forge-hosted planner prompt, and the plan-adjust cap so all agree. */
 export const MAX_TOTAL_SECTIONS = 24
-
-/**
- * Context-size ceiling for reusing a standby loop session across a
- * same-section phase switch. A session whose last assistant turn already holds
- * this many context tokens (input plus cache read/write) is retired instead of
- * resumed, so a long audit retry cannot overflow the model window.
- */
-export const LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS = 150_000
 
 /** Tools that author the loop's plan of record. Kept by the architect agents, denied to every
  *  implementation and audit session, and excluded by the code agent. */
@@ -194,6 +195,70 @@ export function collectLoopPermissionConfigWarnings(config: PluginConfig | undef
  */
 export function resolveLoopAllowedDirectories(config: PluginConfig | undefined): string[] {
   return config?.loop?.allowExternalDirectories ?? []
+}
+
+export interface ParsedSessionReuseConfig {
+  coderContextPercent: number
+  auditorContextPercent: number
+  warnings: string[]
+}
+
+function parseSessionReusePercent(raw: unknown, key: string, fallback: number, warnings: string[]): number {
+  if (raw === undefined) return fallback
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 100) return raw
+  warnings.push(`${key} is ignored: expected a finite number between 0 and 100, using the default ${fallback}`)
+  return fallback
+}
+
+/**
+ * Parses and validates `loop.sessionReuse`, falling back to the per-role
+ * defaults for any value that is not a finite number in [0, 100]. A percent of
+ * 0 disables reuse for that role.
+ */
+export function parseSessionReuseConfig(raw: unknown): ParsedSessionReuseConfig {
+  const warnings: string[] = []
+  const defaults = {
+    coderContextPercent: DEFAULT_CODER_SESSION_REUSE_CONTEXT_PERCENT,
+    auditorContextPercent: DEFAULT_AUDITOR_SESSION_REUSE_CONTEXT_PERCENT,
+  }
+  if (raw === undefined || raw === null) return { ...defaults, warnings }
+  if (!isRecord(raw)) {
+    warnings.push('loop.sessionReuse is ignored: expected an object with "coderContextPercent" and "auditorContextPercent"')
+    return { ...defaults, warnings }
+  }
+  return {
+    coderContextPercent: parseSessionReusePercent(
+      raw.coderContextPercent,
+      'loop.sessionReuse.coderContextPercent',
+      defaults.coderContextPercent,
+      warnings,
+    ),
+    auditorContextPercent: parseSessionReusePercent(
+      raw.auditorContextPercent,
+      'loop.sessionReuse.auditorContextPercent',
+      defaults.auditorContextPercent,
+      warnings,
+    ),
+    warnings,
+  }
+}
+
+/**
+ * Resolves the context-window percentage a loop session of `role` may use and
+ * still be reused across a same-section phase switch. 0 means reuse is disabled
+ * for that role.
+ */
+export function resolveSessionReuseContextPercent(
+  config: PluginConfig | undefined,
+  role: LoopSessionReuseRole,
+): number {
+  const parsed = parseSessionReuseConfig(config?.loop?.sessionReuse)
+  return role === 'auditor' ? parsed.auditorContextPercent : parsed.coderContextPercent
+}
+
+/** Collects warnings produced while parsing `loop.sessionReuse`. */
+export function collectSessionReuseConfigWarnings(config: PluginConfig | undefined): string[] {
+  return parseSessionReuseConfig(config?.loop?.sessionReuse).warnings
 }
 
 export interface LoopPermissionRulesetOptions {

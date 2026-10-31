@@ -41,6 +41,17 @@ export interface PostActionConfig {
   model?: string
 }
 
+/**
+ * Session reuse on same-section retries: a retained standby session is resumed
+ * only while its last assistant turn still fits in the model's context window.
+ */
+export interface LoopSessionReuseConfig {
+  /** Reuse the coder session only while its last turn used less than this percent of the model's context window. 0 disables coder reuse. Default 50. */
+  coderContextPercent?: number
+  /** Same for the audit session. 0 disables auditor reuse. Default 50. */
+  auditorContextPercent?: number
+}
+
 /** A single user-supplied loop permission rule: a bare tool name (shorthand for pattern `*`),
  *  or an explicit `{ permission, pattern }` object. */
 export type LoopPermissionRuleConfig = string | { permission: string; pattern?: string }
@@ -73,6 +84,8 @@ export interface LoopConfig {
   maxConsecutiveStalls?: number
   /** Time in ms a loop session may stay busy with no tool activity before the watchdog aborts the wedged message and sends a continue prompt. 0 = disabled (default: 900000). */
   busyStallTimeoutMs?: number
+  /** Session reuse on same-section retries. */
+  sessionReuse?: LoopSessionReuseConfig
   /**
    * Absolute directory paths bind-mounted read-only into loop sandboxes (e.g. an Obsidian vault),
    * so in-container `bash`/`glob`/`grep` resolve the same tree host `read` does. The sandbox mounts

@@ -56,6 +56,11 @@ export type SessionDeleteParams = {
   directory?: string
 }
 
+export type ModelContextLimitParams = {
+  providerID: string
+  modelID: string
+}
+
 // ── Session result types ─────────────────────────────────────────────────────
 export type Session = {
   id: string
@@ -232,6 +237,13 @@ export interface ForgeClient {
     list(params?: WorkspaceListParams): Promise<WorkspaceList>
     remove(params: WorkspaceRemoveParams): Promise<void>
     warp(params: WorkspaceWarpParams): Promise<void>
+  }
+  model: {
+    /**
+     * Context window of a model in tokens, or `undefined` when the host does not
+     * know the model or reports no positive `limit.context`.
+     */
+    contextLimit(params: ModelContextLimitParams): Promise<number | undefined>
   }
   /** Emits a toast notification to the host TUI. */
   toast(input: ToastInput): Promise<void>

@@ -53,9 +53,24 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
 | `loop.busyStallTimeoutMs` | `900000` | How long a session may stay busy with no sign of progress before the watchdog aborts the wedged message and sends a continue prompt. Both tool activity and streamed content (including reasoning/thinking deltas) count as progress, in the loop session or any of its subagent sessions, so a long thinking stretch is not mistaken for a wedged stream. `0` disables nudging. |
+| `loop.sessionReuse.coderContextPercent` | `50` | Reuse the retained coder session on a same-section retry only while its last assistant turn used less than this percentage of the model's context window. `0` disables coder reuse. |
+| `loop.sessionReuse.auditorContextPercent` | `50` | Same for the retained audit session. `0` disables auditor reuse. |
 | `loop.allowExternalDirectories` | unset | Absolute host directories bind-mounted read-only into sandboxed loops, so in-container `bash`/`glob`/`grep` and host `read` see the same tree. In a sandbox the mounts are the file-tool boundary, so these are the external directories a loop can read; loops without a sandbox already have host access. |
 | `loop.permissions` | unset | Per-tool `deny` overrides for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
+
+### Loop Session Reuse
+
+On a same-section retry, the loop resumes the retained coder or audit session instead of rotating to a fresh one. `loop.sessionReuse` bounds that reuse by the model's context window: the session's last assistant turn (input plus cache read/write) must use less than the role's percentage of `limit.context` for the model that produced it. Coder and auditor thresholds are independent, and `0` disables reuse for that role. When the model's context window is unknown — no model recorded on the message, the host cannot resolve it, or the model reports no positive `limit.context` — the session is reused.
+
+```jsonc
+"loop": {
+  "sessionReuse": {
+    "coderContextPercent": 50,
+    "auditorContextPercent": 50
+  }
+}
+```
 
 ### Loop Permissions
 
