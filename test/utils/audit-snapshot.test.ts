@@ -3,7 +3,7 @@ import { execSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 import type { Logger } from '../../src/types'
 
@@ -131,6 +131,22 @@ describe('captureAuditSnapshot', () => {
     expect(treePaths(repo, trackedSnapshot.commit)).toContain('opencode.jsonc')
   })
 
+  it('captures a worktree whose info/exclude lists .forge and opencode.jsonc', async () => {
+    const repo = initRepo('audit-snapshot-info-exclude-')
+    const excludePath = gitOut(repo, 'rev-parse --git-path info/exclude').trim()
+    appendFileSync(isAbsolute(excludePath) ? excludePath : join(repo, excludePath), '.forge/\nopencode.jsonc\n', 'utf-8')
+    mkdirSync(join(repo, '.forge'))
+    writeFileSync(join(repo, '.forge', 'state.json'), '{}\n', 'utf-8')
+    writeFileSync(join(repo, 'opencode.jsonc'), '{}\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const paths = treePaths(repo, snapshot.commit)
+    expect(paths).toContain('base.txt')
+    expect(paths.some((path) => path.startsWith('.forge/'))).toBe(false)
+    expect(paths).not.toContain('opencode.jsonc')
+  })
+
   it('excludes an opencode.jsonc that escapes the initial untracked listing', async () => {
     const repo = initRepo('audit-snapshot-late-config-')
     writeFileSync(join(repo, 'opencode.jsonc'), '{}\n', 'utf-8')
@@ -165,7 +181,20 @@ describe('captureAuditSnapshot', () => {
   it('does not fail on secret-like files inside .forge and still excludes them', async () => {
     const repo = initRepo('audit-snapshot-forge-secret-')
     mkdirSync(join(repo, '.forge'))
-    writeFileSync(join(repo, '.forge', 'cache.pem'), '-----BEGIN\n', 'utf-8')
+    writeFileSync(join(repo, '.forge', 'cache.pem'), `-----BEGIN ${hexSha()}\n`, 'utf-8')
+    const pemBlob = gitOut(repo, 'hash-object .forge/cache.pem').trim()
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    expect(treePaths(repo, snapshot.commit).some((path) => path.startsWith('.forge/'))).toBe(false)
+    expect(() => gitOut(repo, `cat-file -e ${pemBlob}`)).toThrow()
+  })
+
+  it('captures a worktree with a nested git repository inside an unignored .forge', async () => {
+    const repo = initRepo('audit-snapshot-forge-nested-')
+    const nested = join(repo, '.forge', 'nested')
+    mkdirSync(nested, { recursive: true })
+    execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m inner-init', { cwd: nested, encoding: 'utf-8' })
 
     const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
 
