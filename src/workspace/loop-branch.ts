@@ -2,23 +2,48 @@ import type { GitService } from '../utils/git-service'
 
 const WORKTREE_PREFIX = 'worktree '
 const BRANCH_PREFIX = 'branch refs/heads/'
+const PRUNABLE_PREFIX = 'prunable'
+
+function splitPorcelainBlocks(stdout: string): string[][] {
+  const blocks: string[][] = []
+  let current: string[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.trim() === '') {
+      if (current.length > 0) blocks.push(current)
+      current = []
+      continue
+    }
+    current.push(line)
+  }
+  if (current.length > 0) blocks.push(current)
+  return blocks
+}
 
 /**
  * Finds the worktree that has `branch` checked out by walking `git worktree list --porcelain`
- * blocks, each a `worktree <path>` line followed by its own `branch <ref>` line.
+ * blocks, each a `worktree <path>` line followed by its own `branch <ref>` line. A block carrying
+ * a `prunable` line describes a worktree whose directory is gone (deleted without `git worktree
+ * prune`), so it never counts as a live holder of the branch, wherever the line appears in it.
  */
-export function findWorktreeForBranch(git: GitService, repoDir: string, branch: string): string | null {
+function findWorktreeForBranch(git: GitService, repoDir: string, branch: string): string | null {
   const listed = git.worktreeList(repoDir)
   if (!listed.ok) return null
-  let worktreePath: string | null = null
-  for (const line of listed.stdout.split(/\r?\n/)) {
-    if (line.startsWith(WORKTREE_PREFIX)) {
-      worktreePath = line.slice(WORKTREE_PREFIX.length)
-      continue
-    }
-    if (worktreePath !== null && line === `${BRANCH_PREFIX}${branch}`) return worktreePath
+  for (const block of splitPorcelainBlocks(listed.stdout)) {
+    if (block.some((line) => line.startsWith(PRUNABLE_PREFIX))) continue
+    const worktreeLine = block.find((line) => line.startsWith(WORKTREE_PREFIX))
+    if (!worktreeLine) continue
+    if (!block.includes(`${BRANCH_PREFIX}${branch}`)) continue
+    return worktreeLine.slice(WORKTREE_PREFIX.length)
   }
   return null
+}
+
+/**
+ * The single wording for a branch that is already checked out in a worktree, shared by request
+ * validation and the workspace adapter's create failure path.
+ */
+export function describeBranchInUse(branch: string, worktreePath: string): string {
+  return `Branch ${branch} is checked out in worktree ${worktreePath}; choose another branch or free it`
 }
 
 /**
@@ -36,7 +61,7 @@ export function describeBranchReuseConflict(
   return `Branch ${branch} has commits that ${baseRef} does not contain; refusing to reuse it for a loop based on ${baseRef}`
 }
 
-export type LoopBranchRequest = { branch?: string; baseRef?: string }
+type LoopBranchRequest = { branch?: string; baseRef?: string }
 
 export function validateLoopBranchRequest(
   git: GitService,
@@ -58,10 +83,7 @@ export function validateLoopBranchRequest(
 
     const worktreePath = findWorktreeForBranch(git, repoDir, branch)
     if (worktreePath !== null) {
-      return {
-        ok: false,
-        message: `Branch ${branch} is checked out in worktree ${worktreePath}; choose another branch or free it`,
-      }
+      return { ok: false, message: describeBranchInUse(branch, worktreePath) }
     }
   }
 

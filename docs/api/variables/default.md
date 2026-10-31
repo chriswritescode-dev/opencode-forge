@@ -8,4 +8,4 @@
 
 > **default**: `Plugin`
 
-Defined in: [index.ts:9](https://github.com/chriswritescode-dev/opencode-forge/blob/6948a9431015c31b20e3e304995ffc9bc9082045/src/index.ts#L9)
+Defined in: [index.ts:9](https://github.com/chriswritescode-dev/opencode-forge/blob/20e6200390bf702a05cc054cc6296833adeef591/src/index.ts#L9)

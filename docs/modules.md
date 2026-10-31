@@ -503,9 +503,9 @@ Creates and manages git worktrees for isolated loop execution, registered throug
 |------|---------|
 | `forge-adapter.ts` | `createForgeWorkspaceAdapter()` — the host-neutral worktree adapter |
 | `forge-worktree.ts` | `bindSessionToWorkspace()`, `createBuiltinWorktreeWorkspace()`, workspace permission rules |
-| `forge-naming.ts` | Worktree/branch naming and forge-worktree directory detection |
+| `forge-naming.ts` | Worktree/branch naming (`resolveLoopBranchName()`) and forge-worktree directory detection |
 | `forge-workspace-metadata.ts` | `<worktree>/.forge/workspace.json` read/write/list |
-| `loop-branch.ts` | `findWorktreeForBranch()`, `describeBranchReuseConflict()`, `validateLoopBranchRequest()` — branch reuse and `execute-plan` branch/base-ref validation |
+| `loop-branch.ts` | `describeBranchInUse()`, `describeBranchReuseConflict()`, `validateLoopBranchRequest()` — branch reuse and `execute-plan` branch/base-ref validation |
 | `pending-teardown.ts` | Registry of pending teardown contexts for commit message building |
 | `worktree-commit.ts` | Teardown commit building |
 | `worktree-opencode-config.ts` | Writes `opencode.jsonc` into a fresh worktree |

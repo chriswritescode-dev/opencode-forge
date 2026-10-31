@@ -1003,6 +1003,27 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let sandboxContainer: string | null = null
     let sandboxEnabledForLoop: boolean
     let loopStatePersisted = false
+    let previousBranchTip: string | null = null
+
+    /**
+     * The workspace adapter moves an existing local branch onto `baseRef` (`git branch -f`)
+     * before adding the worktree, so a failed start must put the caller's branch back where
+     * it was. Runs last in rollback because git refuses `branch -f` on a branch that a live
+     * worktree still has checked out.
+     */
+    const restoreBranchTip = (): void => {
+      const branch = command.branch
+      if (!previousBranchTip || !branch) return
+      const current = git.revParse(ctx.directory, `refs/heads/${branch}`)
+      if (current.ok && current.stdout.trim() === previousBranchTip) return
+      const restored = git.branchForceUpdate(ctx.directory, branch, previousBranchTip)
+      if (!restored.ok) {
+        deps.logger.error(
+          `handleStartLoop: failed to restore branch ${branch} to ${previousBranchTip}`,
+          restored.stderr.trim(),
+        )
+      }
+    }
 
     const rollbackLoopStart = async (): Promise<void> => {
       if (createdSessionId) {
@@ -1028,6 +1049,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           logger: deps.logger,
         })
       }
+      restoreBranchTip()
     }
     
     try {
@@ -1041,6 +1063,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       // Create builtin worktree workspace (single call — no separate worktree.create)
+      if (command.branch && command.baseRef && git.branchExists(ctx.directory, command.branch)) {
+        const tip = git.revParse(ctx.directory, `refs/heads/${command.branch}`)
+        if (tip.ok) {
+          previousBranchTip = tip.stdout.trim()
+        } else {
+          deps.logger.error(
+            `handleStartLoop: could not capture the pre-start tip of branch ${command.branch}; a failed start will not restore it`,
+            tip.stderr.trim(),
+          )
+        }
+      }
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
       const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
@@ -1051,6 +1084,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }, deps.logger)
       if (!wsResult.ok) {
         deps.logger.error(`handleStartLoop: failed to create builtin worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
+        await rollbackLoopStart()
         return fail('internal_error', 500, wsResult.error.message, { reason: wsResult.error.reason })
       }
       const ws = wsResult.workspace

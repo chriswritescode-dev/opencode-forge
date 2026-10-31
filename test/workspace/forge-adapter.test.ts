@@ -3,7 +3,7 @@ import { createForgeWorkspaceAdapter, type ForgeAdapterDeps } from '../../src/wo
 import { createSandboxManager } from '../../src/sandbox/manager'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
 import { join, isAbsolute } from 'path'
-import { mkdtempSync, existsSync, rmSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, existsSync, rmSync, readFileSync, writeFileSync, realpathSync } from 'fs'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
 
@@ -332,6 +332,34 @@ describe('createForgeWorkspaceAdapter', () => {
       expect(wtHead).toBe(branchTip)
       const wtBranch = execSync(`git -C "${configured.directory}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtBranch).toBe(branchName)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create reports a branch checked out in another worktree instead of raw git stderr', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-branch-in-use-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const branchName = 'pm-61-held'
+      execSync(`git checkout -q -b ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' })
+
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const info = makeInfo('branch-in-use-loop', tmpRepo)
+      info.extra = { ...info.extra, branch: branchName }
+      const configured = adapter.configure(info)
+
+      const error = await adapter.create(configured, {}).then(
+        () => null,
+        (err: unknown) => err as Error,
+      )
+
+      expect(error?.message).toContain('is checked out in worktree')
+      expect(error?.message).toContain(realpathSync(tmpRepo))
+      expect(error?.message).toBe(
+        `forge workspace adapter: Branch ${branchName} is checked out in worktree ${realpathSync(tmpRepo)}; choose another branch or free it`,
+      )
+      expect(existsSync(configured.directory)).toBe(false)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

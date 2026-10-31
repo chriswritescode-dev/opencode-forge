@@ -1,15 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execSync } from 'child_process'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, realpathSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createGitService } from '../../src/utils/git-service'
 import { createFakeGitService } from '../helpers/fake-git'
-import {
-  describeBranchReuseConflict,
-  findWorktreeForBranch,
-  validateLoopBranchRequest,
-} from '../../src/workspace/loop-branch'
+import { describeBranchReuseConflict, validateLoopBranchRequest } from '../../src/workspace/loop-branch'
 
 const git = createGitService()
 
@@ -26,7 +22,7 @@ describe('loop branch validation', () => {
   let repoDir: string
 
   function trackDir(prefix: string): string {
-    const dir = mkdtempSync(join(tmpdir(), prefix))
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
     createdDirs.push(dir)
     return dir
   }
@@ -48,33 +44,6 @@ describe('loop branch validation', () => {
       const dir = createdDirs.pop()!
       rmSync(dir, { recursive: true, force: true })
     }
-  })
-
-  describe('findWorktreeForBranch', () => {
-    it('returns the main checkout for the branch it has checked out', () => {
-      expect(findWorktreeForBranch(git, repoDir, 'main')).toBe(repoDir)
-    })
-
-    it('returns the linked worktree that has the branch checked out', () => {
-      const worktreeDir = join(trackDir('forge-loop-branch-wt-'), 'linked')
-      run(repoDir, `git worktree add -q -b linked-branch ${worktreeDir} main`)
-
-      expect(findWorktreeForBranch(git, repoDir, 'linked-branch')).toBe(worktreeDir)
-    })
-
-    it('returns null when no worktree has the branch checked out', () => {
-      run(repoDir, 'git branch idle-branch')
-
-      expect(findWorktreeForBranch(git, repoDir, 'idle-branch')).toBeNull()
-    })
-
-    it('returns null when the worktree list call fails', () => {
-      const failing = createFakeGitService({
-        worktreeList: vi.fn(() => ({ ok: false, status: 128, stdout: '', stderr: 'fatal: not a git repo' })),
-      })
-
-      expect(findWorktreeForBranch(failing, repoDir, 'main')).toBeNull()
-    })
   })
 
   describe('describeBranchReuseConflict', () => {
@@ -121,7 +90,7 @@ describe('loop branch validation', () => {
       expect(validateLoopBranchRequest(git, repoDir, { branch: 'feature/new-work' })).toEqual({ ok: true })
     })
 
-    it('accepts an existing branch without a base ref', () => {
+    it('accepts an existing branch no worktree has checked out', () => {
       run(repoDir, 'git branch existing-branch')
 
       expect(validateLoopBranchRequest(git, repoDir, { branch: 'existing-branch' })).toEqual({ ok: true })
@@ -183,6 +152,24 @@ describe('loop branch validation', () => {
         ok: false,
         message: `Branch linked-branch is checked out in worktree ${worktreeDir}; choose another branch or free it`,
       })
+    })
+
+    it('accepts a branch whose worktree directory was deleted without prune', () => {
+      const worktreeDir = join(trackDir('forge-loop-branch-wt-'), 'gone')
+      run(repoDir, `git worktree add -q -b gone-branch ${worktreeDir} main`)
+      rmSync(worktreeDir, { recursive: true, force: true })
+
+      expect(git.worktreeList(repoDir).stdout).toContain('prunable')
+      expect(validateLoopBranchRequest(git, repoDir, { branch: 'gone-branch' })).toEqual({ ok: true })
+    })
+
+    it('accepts a branch when the worktree list call fails', () => {
+      const failing = createFakeGitService({
+        checkRefFormatBranch: vi.fn(() => ({ ok: true, status: 0, stdout: 'unlisted-branch', stderr: '' })),
+        worktreeList: vi.fn(() => ({ ok: false, status: 128, stdout: '', stderr: 'fatal: not a git repo' })),
+      })
+
+      expect(validateLoopBranchRequest(failing, repoDir, { branch: 'unlisted-branch' })).toEqual({ ok: true })
     })
 
     it('refuses a diverged existing branch', () => {

@@ -54,9 +54,19 @@ export function getWorktreeProjectPreconditionError(projectId: string | null): s
   return null
 }
 
+/**
+ * Reads a non-empty string value for `key` from a workspace opaque `extra` bag, or
+ * `undefined` when `extra` is not an object or the value is absent, non-string, or empty.
+ */
+function readForgeExtraString(entry: { extra?: unknown }, key: string): string | undefined {
+  const extra = entry.extra
+  if (typeof extra !== 'object' || extra === null) return undefined
+  const raw = (extra as Record<string, unknown>)[key]
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+}
+
 export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
-  const loopName = entry.extra?.loopName
-  return typeof loopName === 'string' && loopName.length > 0 ? loopName : undefined
+  return readForgeExtraString(entry, 'loopName')
 }
 
 /** Workspace `extra` key carrying the explicit base ref a loop worktree is branched from. */
@@ -64,10 +74,7 @@ const FORGE_BASE_REF_EXTRA_KEY = 'baseRef'
 
 /** Reads the optional explicit base ref a loop worktree is branched from, or undefined when absent. */
 export function getForgeWorkspaceBaseRef(entry: { extra?: unknown }): string | undefined {
-  const extra = entry.extra
-  if (typeof extra !== 'object' || extra === null) return undefined
-  const raw = (extra as Record<string, unknown>)[FORGE_BASE_REF_EXTRA_KEY]
-  return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+  return readForgeExtraString(entry, FORGE_BASE_REF_EXTRA_KEY)
 }
 
 /** Workspace `extra` key carrying the explicit local branch a loop worktree checks out. */
@@ -75,10 +82,7 @@ const FORGE_BRANCH_EXTRA_KEY = 'branch'
 
 /** Reads the optional explicit local branch a loop worktree checks out, or undefined when absent. */
 export function getForgeWorkspaceBranch(entry: { extra?: unknown }): string | undefined {
-  const extra = entry.extra
-  if (typeof extra !== 'object' || extra === null) return undefined
-  const raw = (extra as Record<string, unknown>)[FORGE_BRANCH_EXTRA_KEY]
-  return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+  return readForgeExtraString(entry, FORGE_BRANCH_EXTRA_KEY)
 }
 
 export function getForgeWorkspacePermissionRules(entry: Pick<ForgeWorkspaceEntry, 'extra'>): PermissionRule[] {

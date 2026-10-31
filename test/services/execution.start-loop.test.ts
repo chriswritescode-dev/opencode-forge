@@ -1242,6 +1242,173 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     h.db.close()
   })
 
+  const PREVIOUS_BRANCH_TIP = 'b'.repeat(40)
+  const MOVED_BRANCH_TIP = 'c'.repeat(40)
+
+  function buildBranchMovingGit(options: {
+    branch: string
+    branchExists: boolean
+    headResolves: boolean
+  }) {
+    let workspaceCreated = false
+    const git = {
+      ...mockGitService,
+      branchExists: (_cwd: string, branch: string) => options.branchExists && branch === options.branch,
+      isAncestor: () => true,
+      revParse: vi.fn((_cwd: string, ref: string) =>
+        ref === `refs/heads/${options.branch}`
+          ? {
+              ok: true,
+              status: 0,
+              stdout: `${workspaceCreated ? MOVED_BRANCH_TIP : PREVIOUS_BRANCH_TIP}\n`,
+              stderr: '',
+            }
+          : { ok: true, status: 0, stdout: `${MOVED_BRANCH_TIP}\n`, stderr: '' },
+      ),
+      revParseHead: () =>
+        options.headResolves
+          ? { ok: true, status: 0, stdout: `${MOCK_BASE_COMMIT}\n`, stderr: '' }
+          : { ok: false, status: 128, stdout: '', stderr: 'not a repo' },
+      branchForceUpdate: vi.fn(() => ({ ok: true, status: 0, stdout: '', stderr: '' })),
+    }
+    return { git, markWorkspaceCreated: () => { workspaceCreated = true } }
+  }
+
+  test('restores an existing branch to its pre-start tip when the start fails after workspace creation', async () => {
+    const branch = 'feature/loop'
+    const { git, markWorkspaceCreated } = buildBranchMovingGit({ branch, branchExists: true, headResolves: false })
+    const h = buildHarness(async () => {
+      markWorkspaceCreated()
+      return { id: 'ws_restore', directory: '/tmp/wt/restore', branch }
+    })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(buildService({
+      gitService: git,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Restore Plan\n\nBody.' },
+        branch,
+        baseRef: 'refs/heads/main',
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(git.branchForceUpdate).toHaveBeenCalledTimes(1)
+    expect(git.branchForceUpdate).toHaveBeenCalledWith('/tmp/test', branch, PREVIOUS_BRANCH_TIP)
+
+    h.db.close()
+  })
+
+  test('restores an existing branch to its pre-start tip when workspace.create rejects', async () => {
+    const branch = 'feature/loop'
+    const { git, markWorkspaceCreated } = buildBranchMovingGit({ branch, branchExists: true, headResolves: true })
+    const h = buildHarness(async () => {
+      markWorkspaceCreated()
+      throw new Error('git worktree add failed')
+    })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(buildService({
+      gitService: git,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Throwing Create Plan\n\nBody.' },
+        branch,
+        baseRef: 'refs/heads/main',
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(git.branchForceUpdate).toHaveBeenCalledTimes(1)
+    expect(git.branchForceUpdate).toHaveBeenCalledWith('/tmp/test', branch, PREVIOUS_BRANCH_TIP)
+
+    h.db.close()
+  })
+
+  test('never restores the branch when the start succeeds', async () => {
+    const branch = 'feature/loop'
+    const { git, markWorkspaceCreated } = buildBranchMovingGit({ branch, branchExists: true, headResolves: true })
+    const h = buildHarness(async () => {
+      markWorkspaceCreated()
+      return { id: 'ws_ok', directory: '/tmp/wt/ok', branch }
+    })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(buildService({
+      gitService: git,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Success Plan\n\nBody.' },
+        branch,
+        baseRef: 'refs/heads/main',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(git.branchForceUpdate).not.toHaveBeenCalled()
+
+    h.db.close()
+  })
+
+  test('neither captures nor restores a branch that does not exist yet', async () => {
+    const branch = 'feature/new'
+    const { git, markWorkspaceCreated } = buildBranchMovingGit({ branch, branchExists: false, headResolves: false })
+    const h = buildHarness(async () => {
+      markWorkspaceCreated()
+      return { id: 'ws_new', directory: '/tmp/wt/new', branch }
+    })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(buildService({
+      gitService: git,
+      loopsRepo: h.loopsRepo,
+      plansRepo: h.plansRepo,
+      sectionPlansRepo: h.sectionPlansRepo,
+      loopService: h.loopService,
+      client: h.client,
+    }))
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# New Branch Plan\n\nBody.' },
+        branch,
+        baseRef: 'refs/heads/main',
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(git.revParse.mock.calls.map((call) => call[1])).not.toContain(`refs/heads/${branch}`)
+    expect(git.branchForceUpdate).not.toHaveBeenCalled()
+
+    h.db.close()
+  })
+
   test('a concurrent duplicate start with an explicit branch returns the deduped result, not the checked-out refusal', async () => {
     let workspaceCreateStarted = false
     let releaseWorkspaceCreate: () => void = () => {}

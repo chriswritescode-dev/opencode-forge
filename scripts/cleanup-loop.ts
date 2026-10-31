@@ -22,6 +22,7 @@ import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { readFlagValue } from '../src/utils/cli-flags'
 import { defaultGitService } from '../src/utils/git-service'
+import { resolveLoopBranchName } from '../src/workspace/forge-naming'
 import { loadPluginConfig } from '../src/setup'
 import { resolveForgeDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
@@ -230,7 +231,7 @@ async function cleanupGitWorktree(
     console.log(`  git worktree registration for ${worktreePath} not found`)
   }
 
-  for (const branch of branches.length > 0 ? branches : [`forge/${loopName}`]) {
+  for (const branch of branches.length > 0 ? branches : [resolveLoopBranchName(loopName)]) {
     if (!branch.startsWith('forge/')) {
       console.log(`  kept caller branch ${branch}`)
       continue
