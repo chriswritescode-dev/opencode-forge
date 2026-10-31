@@ -6,7 +6,7 @@ stateDiagram-v2
     Coding --> Auditing: session idle
     Auditing --> Coding: findings remain, retry section
     Auditing --> Coding: clean, next section
-    Auditing --> PostAction: clean, no section left, post-action enabled
+    Auditing --> PostAction: clean, no section left, post-action configured
     Auditing --> [*]: clean, no section left
     PostAction --> [*]: post-action complete
     Coding --> [*]: max iterations / 3 consecutive errors / stall timeout / cancellation
@@ -28,4 +28,5 @@ stateDiagram-v2
     end note
     note left of PostAction
         Only when loop.postAction.enabled
+        and a non-empty skill or prompt is set
     end note

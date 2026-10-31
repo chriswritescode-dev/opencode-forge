@@ -40,8 +40,8 @@ stateDiagram-v2
     Coding --> Auditing: coding idle complete
     Auditing --> Coding: section dirty or audit dirty
     Auditing --> Coding: next section
-    Auditing --> PostAction: clean, no section left, post-action enabled
-    note right of PostAction: Only when loop.postAction.enabled
+    Auditing --> PostAction: clean, no section left, post-action configured
+    note right of PostAction: Only when loop.postAction.enabled and a non-empty skill or prompt is set
     PostAction --> [*]: post-action complete
     Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
     Auditing --> [*]: audit clear / clean, no section left
