@@ -6,6 +6,7 @@ import type { LoopHandoffRole } from './handoff'
 import { findingRecurrenceKey, isRecurrenceEscalated } from './finding-recurrence'
 import { formatFindingDetails } from '../utils/review-format'
 import { blockingBugFindings } from './section-scope'
+import { LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME } from '../constants/loop'
 
 export interface SectionDigestEntry {
   index: number
@@ -34,7 +35,7 @@ export interface PromptContext {
  */
 export const CODER_HANDOFF_INSTRUCTION: string = `\n\n---
 ## Required: coder handoff
-When this attempt is done, call \`loop-handoff\` with \`changes\` (each change and why), \`deviations\` (plan item, what you did instead, why), \`verification\` (each check: exact command, worktree-relative \`cwd\`, pass/fail/not-run, whether code changed afterwards), and optional \`notes\`, then end your turn.`
+When this attempt is done, call \`${LOOP_HANDOFF_TOOL_NAME}\` with \`changes\` (each change and why), \`deviations\` (plan item, what you did instead, why), \`verification\` (each check: exact command, worktree-relative \`cwd\`, pass/fail/not-run, whether code changed afterwards), and optional \`notes\`, then end your turn.`
 
 /**
  * The only auditor handoff instruction. Section audits require the summary
@@ -47,14 +48,14 @@ function auditorHandoffInstruction(includeSummary: boolean): string {
     : ''
   return `\n\n---
 ## Required: auditor handoff
-When the audit is done, call \`loop-handoff\`.${summaryRule} Use \`notes\` only for context the findings do not carry. Then end your turn.`
+When the audit is done, call \`${LOOP_HANDOFF_TOOL_NAME}\`.${summaryRule} Use \`notes\` only for context the findings do not carry. Then end your turn.`
 }
 
 export const AUDITOR_HANDOFF_INSTRUCTION: string = auditorHandoffInstruction(true)
 
 /** Short follow-up sent when a phase session ended its turn without its handoff tool. */
 export function buildHandoffNudgePrompt(role: LoopHandoffRole): string {
-  const tool = role === 'post_action' ? 'loop-complete' : 'loop-handoff'
+  const tool = role === 'post_action' ? LOOP_COMPLETE_TOOL_NAME : LOOP_HANDOFF_TOOL_NAME
   return `You ended your turn without calling \`${tool}\`. Finish the work, then call it.`
 }
 
@@ -87,7 +88,7 @@ function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState, 
   const escalated = getEscalatedFindings(ctx, state, outstandingBugs)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (recurred ${e.count}×)`)
-  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution, so the previous patches did not hold. For EACH: revisit the causal hypothesis behind the earlier fix, produce a specific reproducer or counterexample that demonstrates the failure, and then either fix it definitively or, if it is intentional/correct, document the reasoning and the exact passing verification method in your loop-handoff report so the auditor can verify and clear it. Do not repeat the previous patch without a changed hypothesis.\n\n${lines.join('\n')}`
+  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution, so the previous patches did not hold. For EACH: revisit the causal hypothesis behind the earlier fix, produce a specific reproducer or counterexample that demonstrates the failure, and then either fix it definitively or, if it is intentional/correct, document the reasoning and the exact passing verification method in your ${LOOP_HANDOFF_TOOL_NAME} report so the auditor can verify and clear it. Do not repeat the previous patch without a changed hypothesis.\n\n${lines.join('\n')}`
 }
 
 function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState): string {
@@ -105,7 +106,7 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
  */
 function buildOutstandingFindingsCoderBlock(findings: ReviewFindingRow[]): string {
   if (findings.length === 0) return ''
-  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the loop-handoff report at the end of this attempt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
+  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the ${LOOP_HANDOFF_TOOL_NAME} report at the end of this attempt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
 }
 
 /**
@@ -488,4 +489,4 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
   return parts.join('\n')
 }
 
-const POST_ACTION_HANDOFF_RULE = `Do not end your turn while any step is still pending (subagents still running, results not yet merged, records not yet saved). When every step is finished and persisted, call \`loop-complete\` with \`outcome\`, one \`steps\` entry per workflow step (name, status done/skipped/failed, and optional detail), \`followUps\`, and optional \`notes\`, then end your turn. The worktree is removed afterwards.`
+const POST_ACTION_HANDOFF_RULE = `Do not end your turn while any step is still pending (subagents still running, results not yet merged, records not yet saved). When every step is finished and persisted, call \`${LOOP_COMPLETE_TOOL_NAME}\` with \`outcome\`, one \`steps\` entry per workflow step (name, status done/skipped/failed, and optional detail), \`followUps\`, and optional \`notes\`, then end your turn. The worktree is removed afterwards.`

@@ -356,6 +356,52 @@ describe('Loop Runtime', () => {
       expect(rows.some(r => r.eventType === 'audit-session-aborted')).toBe(false)
     })
 
+    test('an audit session whose assistant message is aborted but carries a pending handoff applies the handoff', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop', error: { name: 'MessageAbortedError' } }, parts: [] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+      })
+      loopService.setState(state.loopName, state)
+      seedBugFinding(state.loopName)
+
+      await recordAuditorHandoff(loop, state.sessionId)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'AbortError' } },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.lastAuditResult).toBe(formatAuditHandoffResult({}, {
+        clean: false,
+        blockingBugs: 1,
+        sectionIndex: null,
+      }))
+
+      const handoffs = loopService.listHandoffs(state.loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0]).toMatchObject({ role: 'auditor', sessionId: state.sessionId, status: 'applied' })
+
+      const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName)
+      expect(rows.some(r => r.eventType === 'audit-error')).toBe(false)
+      expect(rows.some(r => r.eventType === 'auditor-handoff')).toBe(true)
+    })
+
     test('an aborted audit session without a pending handoff rotates to coding and records audit-session-aborted', async () => {
       const { client } = createFakeForgeClient()
       const { loop } = createRuntime({ client })
@@ -993,6 +1039,57 @@ describe('post-action phase', () => {
     expect(finalState.terminationReason).toBe('completed')
   })
 
+  test('handoff nudges spent by the auditor do not reduce the coder budget after an audit error rotation', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'nothing to report' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({ client })
+
+    const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 1, iteration: 1, maxIterations: 5 })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    const runTurn = async (sessionID: string): Promise<void> => {
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID } })
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID } })
+    }
+
+    await runTurn(state.sessionId)
+    await runTurn(state.sessionId)
+
+    const auditorNudges = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+    expect(auditorNudges).toHaveLength(2)
+
+    await loop.tick({
+      type: 'session.error',
+      properties: { sessionID: state.sessionId, error: { name: 'ProviderError', data: { message: 'auditor failed' } } },
+    })
+
+    const coderState = loopService.getActiveState(state.loopName)!
+    expect(coderState.phase).toBe('coding')
+    expect(coderState.sessionId).not.toBe(state.sessionId)
+    const coderSessionId = coderState.sessionId
+
+    for (let i = 0; i < 3; i++) await runTurn(coderSessionId)
+
+    expect(loopService.getActiveState(state.loopName)?.phase).toBe('coding')
+    const codingNudges = calls.filter(c => c.method === 'session.promptAsync'
+      && (c.params as any)?.agent === 'code'
+      && (c.params as any)?.sessionID === coderSessionId
+      && String((c.params as any)?.parts?.[0]?.text ?? '').includes('You ended your turn without calling `loop-handoff`'))
+    expect(codingNudges).toHaveLength(3)
+
+    await runTurn(coderSessionId)
+
+    const finalState = loopService.getAnyState(state.loopName)!
+    expect(finalState.active).toBe(false)
+    expect(finalState.terminationReason).toBe('handoff_missing')
+  })
+
   test('post_action idle with an assistant error completes best-effort and keeps a pending loop-complete record', async () => {
     const { client } = createFakeForgeClient({
       session: {
@@ -1050,6 +1147,51 @@ describe('post-action phase', () => {
     expect(finalState).not.toBeNull()
     expect(finalState!.active).toBe(false)
     expect(finalState!.terminationReason).toBe('completed')
+  })
+
+  test('post_action session error with a pending loop-complete completes with the report', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          {
+            info: { role: 'assistant', finish: 'stop', error: { name: 'ProviderError', data: { message: 'provider failed' } } },
+            parts: [],
+          },
+        ],
+      },
+    })
+    const { loop } = createRuntime({ client })
+
+    const state = makeState({
+      phase: 'post_action',
+    })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    const payload = {
+      outcome: 'completed' as const,
+      steps: [{ name: 'merge reviewer findings', status: 'done' as const }],
+      followUps: [],
+    }
+    await recordPostActionComplete(loop, state.sessionId, payload)
+
+    await loop.tick({
+      type: 'session.error',
+      properties: {
+        sessionID: state.sessionId,
+        error: {
+          name: 'ProviderError',
+          data: { message: 'provider failed' },
+        },
+      },
+    })
+
+    const finalState = loopService.getAnyState(state.loopName)!
+    expect(finalState.active).toBe(false)
+    expect(finalState.terminationReason).toBe('completed')
+    expect(finalState.completionSummary).toBe(formatPostActionSummary(payload))
+    expect(finalState.postActionReport).toBe(formatPostActionReport(payload))
+    expect(loopService.listHandoffs(state.loopName)[0]).toMatchObject({ role: 'post_action', status: 'applied' })
   })
 
   test('post_action abort with a pending loop-complete → processes the handoff and completes', async () => {

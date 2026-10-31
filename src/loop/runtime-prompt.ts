@@ -32,7 +32,7 @@ export interface SendPromptInput {
 export interface PromptDispatch {
   sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }>
 
-  getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string; messageId?: string }>
+  getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string }>
 }
 
 export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
@@ -92,7 +92,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
     return { error: result.error, usedModel }
   }
 
-  async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string; messageId?: string }> {
+  async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string }> {
     try {
       const messages = await client.session.messages({
         sessionID: sessionId,
@@ -129,7 +129,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         return { error, errorSignal, lastMessageRole: `assistant:${lastAssistant.info.finish}` }
       }
 
-      return { error, errorSignal, lastMessageRole: 'assistant', ...(lastAssistant.info.id ? { messageId: lastAssistant.info.id } : {}) }
+      return { error, errorSignal, lastMessageRole: 'assistant' }
     } catch (err) {
       logger.error(`Loop: could not read session messages`, err)
       return { error: null, errorSignal: null, lastMessageRole: 'error' }

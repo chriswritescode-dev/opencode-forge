@@ -8,4 +8,4 @@
 
 > `const` **VERSION**: `"1.2.8"` = `'1.2.8'`
 
-Defined in: [version.ts:1](https://github.com/chriswritescode-dev/opencode-forge/blob/08c36050c2048fca972f428740ce1914ed6a7c10/src/version.ts#L1)
+Defined in: [version.ts:1](https://github.com/chriswritescode-dev/opencode-forge/blob/cef628ccd725937d70add57582faba532e9ba1d8/src/version.ts#L1)

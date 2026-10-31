@@ -306,7 +306,7 @@ export function createGoalOrchestrator(deps: GoalOrchestratorDeps): GoalOrchestr
       return
     }
 
-    const summary = truncateChunkSummary(state.completionSummary ?? state.postActionReport ?? null)
+    const summary = truncateChunkSummary(state.postActionReport ?? state.completionSummary ?? null)
     if (!goalsRepo.completeChunk(projectId, chunk.goalId, chunk.chunkIndex, summary)) return
 
     if (goal.status === 'paused') {

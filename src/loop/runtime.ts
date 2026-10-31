@@ -208,8 +208,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
-  /** Handoff nudges sent since the last applied handoff (loopName → count). */
-  const handoffNudges = new Map<string, number>()
+  /** Handoff nudges sent in the current phase turn (loopName → owner and count). */
+  const handoffNudges = new Map<string, HandoffNudgeState>()
 
   /**
    * Process-wide per-loop state locks. OpenCode loads a separate copy of the plugin module
@@ -321,6 +321,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const AUDITOR_FALLBACK_SETTLE_MS = 250
   const MAX_HANDOFF_NUDGES = 3
+
+  interface HandoffNudgeState {
+    sessionId: string
+    phase: LoopState['phase']
+    iteration: number
+    count: number
+  }
 
   interface RetainedSessionMeta {
     sessionId: string
@@ -540,10 +547,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const role = handoffRoleForPhase(state.phase)
       if (!role) return { ok: false, error: `No handoff is accepted while the loop is in phase "${state.phase}".` }
       if (input.tool === LOOP_HANDOFF_TOOL_NAME && role === 'post_action') {
-        return { ok: false, error: 'In post-action, call loop-complete instead.' }
+        return { ok: false, error: `In post-action, call ${LOOP_COMPLETE_TOOL_NAME} instead.` }
       }
       if (input.tool === LOOP_COMPLETE_TOOL_NAME && role !== 'post_action') {
-        return { ok: false, error: 'loop-complete is only for the post-action session; call loop-handoff.' }
+        return { ok: false, error: `${LOOP_COMPLETE_TOOL_NAME} is only for the post-action session; call ${LOOP_HANDOFF_TOOL_NAME}.` }
       }
 
       let busyChildren: string[]
@@ -625,7 +632,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const role = handoffRoleForPhase(state.phase)
     if (!role) return
 
-    const nudges = handoffNudges.get(loopName) ?? 0
+    const owner = { sessionId: state.sessionId, phase: state.phase, iteration: state.iteration }
+    const stored = handoffNudges.get(loopName)
+    const nudges = stored
+      && stored.sessionId === owner.sessionId
+      && stored.phase === owner.phase
+      && stored.iteration === owner.iteration
+      ? stored.count
+      : 0
     if (nudges >= MAX_HANDOFF_NUDGES) {
       logger.error(`Loop: ${state.phase} turn ended without a handoff after ${nudges} nudges for ${loopName}, terminating`)
       const trans = nextTransition(state, { type: 'handoff-missing' })
@@ -634,7 +648,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    handoffNudges.set(loopName, nudges + 1)
+    handoffNudges.set(loopName, { ...owner, count: nudges + 1 })
     const info = await getLastAssistantInfo(state.sessionId, state.worktreeDir)
     const unanswered = info.lastMessageRole !== 'assistant'
     const promptText = unanswered ? phasePrompt() : buildHandoffNudgePrompt(role)
@@ -2265,12 +2279,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing', auditErrorSignal)
-    if (!errorResult) {
-      return
+    const pendingHandoff = loopService.getPendingHandoff(loopName)
+    const auditAbortedWithHandoff = (auditErrorSignal?.name === 'MessageAbortedError' || auditErrorSignal?.name === 'AbortError')
+      && pendingHandoff?.sessionId === currentState.sessionId
+      && pendingHandoff.role === 'auditor'
+
+    let assistantErrorDetected = false
+    if (auditAbortedWithHandoff) {
+      logger.log(`Loop: audit session ${auditSessionId} aborted with a pending handoff for ${loopName}, processing the handoff`)
+    } else {
+      const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing', auditErrorSignal)
+      if (!errorResult) {
+        return
+      }
+      assistantErrorDetected = errorResult.assistantErrorDetected
+      currentState = errorResult.currentState
     }
-    const assistantErrorDetected = errorResult.assistantErrorDetected
-    currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
 
@@ -2675,6 +2699,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
         const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
         if (state.phase === 'post_action') {
+          if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+            logger.log(`Loop: post-action session ${eventSessionId} errored with a pending loop-complete for ${loopName}, completing with its report`)
+            await runPostActionPhase(loopName, state)
+            return
+          }
           logger.error(`Loop: post-action session error for ${eventSessionId}: ${errorMessage}, completing as best-effort`)
           await terminateLoop(loopName, state, { kind: 'completed' })
           return

@@ -373,7 +373,7 @@ Goal advancement is driven **only** by the loop-change `settled` notification, w
 
 On `settled` for a **completed** chunk loop:
 
-1. The chunk is marked `completed` with a capped summary — the loop's `completionSummary`, else its `postActionReport`, truncated to `GOAL_CHUNK_SUMMARY_MAX_CHARS`.
+1. The chunk is marked `completed` with a capped summary — the loop's rendered `postActionReport` (the `loop-complete` outcome, steps, follow-ups, and notes), else its one-line `completionSummary`, truncated to `GOAL_CHUNK_SUMMARY_MAX_CHARS`.
 2. A detached, read-only planning checkout of the previous chunk branch tip is created at `<dataDir>/worktrees/.goal-plan-<goalId>-<chunkIndex>`.
 3. `architect-auto` plans the next task there with the goal's **auditor** model and variant; the planner prompt carries the objective, the ordered task list, and the completed-chunk summaries. While the goal is running the planner runs unattended, so any request OpenCode would `ask` about is denied before per-session or sandbox auto-approve applies, with `Blocked in goal planning: the chunk planner runs unattended, so requests that need approval are denied. Continue without it and report what was skipped.` OpenCode `allow` and `deny` decisions are untouched. A planner session kept for inspection after the goal pauses is no longer unattended and prompts normally. The planner either:
    - **writes a plan** — the chunk loop launches with `baseRef` set to that exact commit and the snapshotted settings, so each chunk gets its own branch stacked on the previous chunk's commit;
