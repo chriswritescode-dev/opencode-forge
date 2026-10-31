@@ -66,7 +66,6 @@ describe('Audit session permissions', () => {
       auditorModel: 'test/auditor',
       currentSectionIndex: 0,
       totalSections: 1,
-      finalAuditDone: false,
       ...overrides,
     }
   }

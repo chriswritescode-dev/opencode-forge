@@ -39,7 +39,6 @@ function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
     hostSessionId: null,
     currentSectionIndex: 0,
     totalSections: 1,
-    finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
     ...overrides,

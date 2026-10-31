@@ -5,9 +5,7 @@ import {
   type LoopState,
   type CodingState,
   type AuditingState,
-  type FinalAuditingState,
   type PostActionState,
-  type FinalAuditFixState,
 } from '../../src/loop/state'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 
@@ -39,7 +37,6 @@ function makeRow(overrides: Partial<LoopRow> = {}): LoopRow {
     hostSessionId: null,
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
     baseCommit: null,
@@ -65,14 +62,6 @@ describe('loopRowToState', () => {
     expect(auditing.phase).toBe('auditing')
   })
 
-  it('narrows final_auditing phase to FinalAuditingState', () => {
-    const row = makeRow({ phase: 'final_auditing' })
-    const state = loopRowToState(row)
-    expect(state.phase).toBe('final_auditing')
-    const finalAudit = state as FinalAuditingState
-    expect(finalAudit.phase).toBe('final_auditing')
-  })
-
   it('narrows post_action phase to PostActionState', () => {
     const row = makeRow({ phase: 'post_action' })
     const state = loopRowToState(row)
@@ -81,21 +70,12 @@ describe('loopRowToState', () => {
     expect(postAction.phase).toBe('post_action')
   })
 
-  it('narrows final_audit_fix phase to FinalAuditFixState', () => {
-    const row = makeRow({ phase: 'final_audit_fix' })
-    const state = loopRowToState(row)
-    expect(state.phase).toBe('final_audit_fix')
-    const finalAuditFix = state as FinalAuditFixState
-    expect(finalAuditFix.phase).toBe('final_audit_fix')
-  })
-
   it('converts boolean fields correctly', () => {
-    const row = makeRow({ worktree: true, modelFailed: true, sandbox: true, finalAuditDone: 1 })
+    const row = makeRow({ worktree: true, modelFailed: true, sandbox: true })
     const state = loopRowToState(row)
     expect(state.worktree).toBe(true)
     expect(state.modelFailed).toBe(true)
     expect(state.sandbox).toBe(true)
-    expect(state.finalAuditDone).toBe(true)
   })
 
   it('converts null optional strings to undefined', () => {
@@ -162,8 +142,8 @@ describe('loopRowToState', () => {
     expect(state.lastAuditResult).toBeUndefined()
   })
 
-  it('returns all five phases without runtime errors', () => {
-    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action', 'final_audit_fix'] as const) {
+  it('returns all three phases without runtime errors', () => {
+    for (const phase of ['coding', 'auditing', 'post_action'] as const) {
       const row = makeRow({ phase })
       const state = loopRowToState(row)
       expect(state.phase).toBe(phase)
@@ -197,14 +177,6 @@ describe('loopStateToRow', () => {
     const state = loopRowToState(makeRow({ startedAt: ts }))
     const row = loopStateToRow(state, 'proj-1')
     expect(row.startedAt).toBe(ts)
-  })
-
-  it('converts boolean back to 1 or 0 for finalAuditDone', () => {
-    const done = loopRowToState(makeRow({ finalAuditDone: 1 }))
-    expect(loopStateToRow(done, 'proj-1').finalAuditDone).toBe(1)
-
-    const notDone = loopRowToState(makeRow({ finalAuditDone: 0 }))
-    expect(loopStateToRow(notDone, 'proj-1').finalAuditDone).toBe(0)
   })
 
   it('converts optional values back to null', () => {
@@ -269,19 +241,12 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
   })
 
   it('preserves projectId through round-trip for each phase', () => {
-    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action', 'final_audit_fix'] as const) {
+    for (const phase of ['coding', 'auditing', 'post_action'] as const) {
       const row = makeRow({ phase, projectId: 'proj-round' })
       const state = loopRowToState(row)
       const result = loopStateToRow(state, 'proj-round')
       expect(result.projectId).toBe('proj-round')
     }
-  })
-
-  it('round-trips phase: final_audit_fix through loopRowToState and loopStateToRow', () => {
-    const row = makeRow({ phase: 'final_audit_fix' })
-    const state = loopRowToState(row)
-    const result = loopStateToRow(state, 'proj-1')
-    expect(result.phase).toBe('final_audit_fix')
   })
 
   it('round-trips auditorFallbackIndex through loopRowToState and loopStateToRow', () => {

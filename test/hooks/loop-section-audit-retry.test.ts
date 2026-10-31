@@ -82,7 +82,6 @@ describe('Loop Section Audit Retry', () => {
       auditorModel: 'test/auditor',
       currentSectionIndex: 0,
       totalSections: 2,
-      finalAuditDone: false,
       ...overrides,
     }
   }
@@ -395,6 +394,9 @@ describe('Loop Section Audit Retry', () => {
           content: `Content for section ${i + 1}`,
         })),
       })
+      for (const index of [0, 1, 2]) {
+        sectionPlansRepo.setStatus(PROJECT_ID, state.loopName, index, 'completed')
+      }
       loopService.startSection(state.loopName, 3)
 
       const { logger } = createCapturingLogger()

@@ -43,10 +43,6 @@ describe('terminationStatusFor', () => {
     expect(terminationStatusFor({ kind: 'audit_retry_exhausted' })).toBe('errored')
   })
 
-  it('maps final_audit_retry_exhausted to errored', () => {
-    expect(terminationStatusFor({ kind: 'final_audit_retry_exhausted' })).toBe('errored')
-  })
-
   it('maps coding_no_assistant to errored', () => {
     expect(terminationStatusFor({ kind: 'coding_no_assistant' })).toBe('errored')
   })
@@ -109,10 +105,6 @@ describe('terminationReasonToString', () => {
 
   it('preserves audit_retry_exhausted string exactly', () => {
     expect(terminationReasonToString({ kind: 'audit_retry_exhausted' })).toBe('audit_retry_exhausted')
-  })
-
-  it('preserves final_audit_retry_exhausted string exactly', () => {
-    expect(terminationReasonToString({ kind: 'final_audit_retry_exhausted' })).toBe('final_audit_retry_exhausted')
   })
 
   it('preserves coding_no_assistant string exactly', () => {

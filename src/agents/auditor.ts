@@ -14,8 +14,7 @@ function buildBasePrompt(promptsDir?: string): string {
 function buildLoopPrompt(promptsDir?: string): string {
   const base = buildBasePrompt(promptsDir)
   const loop = loadPrompt(['agents', 'auditor-loop-addendum.md'], promptsDir)
-  const final = loadPrompt(['agents', 'auditor-final-audit-addendum.md'], promptsDir)
-  return `${base}\n\n${loop}\n\n${final}`
+  return `${base}\n\n${loop}`
 }
 
 export function buildAuditorAgent(promptsDir?: string): AgentDefinition {

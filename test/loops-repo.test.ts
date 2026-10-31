@@ -32,7 +32,7 @@ describe('LoopsRepo', () => {
         iteration            INTEGER NOT NULL DEFAULT 0,
         audit_count          INTEGER NOT NULL DEFAULT 0,
         error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing','post_action','final_audit_fix')),
+        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','post_action')),
         execution_model      TEXT,
         auditor_model        TEXT,
         model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -47,13 +47,12 @@ describe('LoopsRepo', () => {
         audit_session_id     TEXT,
         current_section_index INTEGER NOT NULL DEFAULT 0,
         total_sections INTEGER NOT NULL DEFAULT 0,
-        final_audit_done INTEGER NOT NULL DEFAULT 0,
-        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
       execution_variant    TEXT,
       auditor_variant      TEXT,
       auditor_fallback_index INTEGER NOT NULL DEFAULT 0,
       sandbox_settings     TEXT,
       base_commit          TEXT,
+      standby_session_id   TEXT,
       PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -110,10 +109,10 @@ describe('LoopsRepo', () => {
     hostSessionId: null,
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
     baseCommit: null,
+    standbySessionId: null,
   }
 
   const testLarge: LoopLargeFields = {
@@ -637,7 +636,6 @@ describe('LoopsRepo', () => {
         auditorModel: null,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
         startedAt: Date.now(),
       })
 
@@ -688,7 +686,6 @@ describe('LoopsRepo', () => {
       auditorModel: null,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
       startedAt: Date.now(),
       ...overrides,
     })
@@ -764,7 +761,6 @@ describe('LoopsRepo', () => {
         auditorModel: null,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
         startedAt: Date.now(),
       })
 
@@ -866,7 +862,6 @@ describe('LoopsRepo', () => {
         auditorModel: null,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
         startedAt: Date.now(),
       })
       expect(repo.getLarge(testRow.projectId, 'post-action-loop')!.postActionReport).toBeNull()
@@ -905,7 +900,6 @@ describe('LoopsRepo', () => {
       auditorModel: null,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
       startedAt: Date.now(),
     })
 
@@ -983,7 +977,6 @@ describe('LoopsRepo', () => {
         auditorModel: null,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
         startedAt: Date.now(),
       })
 

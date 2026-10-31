@@ -14,7 +14,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
-| `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`/`final_auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
+| `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
 | `autoApprove` | unset | Deny rules applied while per-session auto-approve is on. See [Auto-Approve](#auto-approve). |
@@ -53,9 +53,24 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
 | `loop.busyStallTimeoutMs` | `900000` | How long a session may stay busy with no sign of progress before the watchdog aborts the wedged message and sends a continue prompt. Both tool activity and streamed content (including reasoning/thinking deltas) count as progress, in the loop session or any of its subagent sessions, so a long thinking stretch is not mistaken for a wedged stream. `0` disables nudging. |
+| `loop.sessionReuse.coderContextPercent` | `50` | Compact the retained coder session before its next turn on a same-section retry once its last assistant turn reached this percentage of the model's context window. `0` disables coder reuse. |
+| `loop.sessionReuse.auditorContextPercent` | `50` | Same for the retained audit session. `0` disables auditor reuse. |
 | `loop.allowExternalDirectories` | unset | Absolute host directories bind-mounted read-only into sandboxed loops, so in-container `bash`/`glob`/`grep` and host `read` see the same tree. In a sandbox the mounts are the file-tool boundary, so these are the external directories a loop can read; loops without a sandbox already have host access. |
 | `loop.permissions` | unset | Per-tool `deny` overrides for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
+
+### Loop Session Reuse
+
+On a same-section retry, the loop resumes the retained coder or audit session instead of rotating to a fresh one. `loop.sessionReuse` bounds that reuse by the model's context window: when the session's last assistant turn (input plus cache read/write) used at least the role's percentage of `limit.context` for the model that produced it, the loop compacts the session through the host before its next turn — the compaction is queued first, so the follow-up prompt lands in the same session with its history collapsed into the summary. Coder and auditor thresholds are independent, and `0` disables reuse for that role. When the model's context window is unknown — no model recorded on the message, the host cannot resolve it, or the model reports no positive `limit.context` — the session is reused without compaction. When the compaction cannot be enqueued, the loop falls back to a fresh session with the full prompt.
+
+```jsonc
+"loop": {
+  "sessionReuse": {
+    "coderContextPercent": 50,
+    "auditorContextPercent": 50
+  }
+}
+```
 
 ### Loop Permissions
 
@@ -96,7 +111,7 @@ The block applies to loop, audit, and post-action sessions.
 
 ### Post-Action
 
-`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops) and before teardown. See [Post-Completion Action Phase](loop-system.md#post-completion-action-phase) for completion confirmation.
+`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean audit (the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops) and before teardown. See [Post-Completion Action Phase](loop-system.md#post-completion-action-phase) for completion confirmation.
 
 The phase is enabled only when `enabled === true` and at least one of `skill` or `prompt` is configured.
 

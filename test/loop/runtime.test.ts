@@ -127,7 +127,6 @@ describe('Loop Runtime', () => {
       auditorVariant: undefined,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
       ...overrides,
     }
   }
@@ -388,83 +387,246 @@ describe('post-action phase', () => {
     expect(afterState!.terminationReason).toBe('completed')
   })
 
-  test('sectioned final audit clean with postAction enabled → enters post_action phase', async () => {
-    const { client, calls } = createFakeForgeClient({
-      session: {
-        messages: async () => [
-          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Final audit clean.' }] },
-        ],
-      },
-    })
-    const { loop } = createRuntime({
-      client,
-      loopConfig: {
-        loop: {
-          enabled: true,
-          defaultMaxIterations: 5,
-          postAction: { enabled: true, skill: 'pr-review' },
-        },
-      },
+  describe('sectioned loop completion (last open section)', () => {
+    const summaryText = `<!-- section-summary:start -->
+### Done
+- Implemented the section
+### Deviations
+- None
+### Follow-ups
+- None
+<!-- section-summary:end -->`
+
+    function seedSections(loopName: string, statuses: Array<'pending' | 'in_progress' | 'completed'>) {
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: statuses.map((_, index) => ({ index, title: `Section ${index + 1}`, content: `Content ${index + 1}` })),
+      })
+      statuses.forEach((status, index) => {
+        sectionPlansRepo.setStatus(PROJECT_ID, loopName, index, status)
+        if (status === 'completed') {
+          sectionPlansRepo.setSummary(PROJECT_ID, loopName, index, { done: 'done', deviations: 'none', followUps: 'none' })
+          sectionPlansRepo.setCompletedAt(PROJECT_ID, loopName, index, Date.now())
+        }
+      })
+    }
+
+    function seedFinding(loopName: string, file: string, line: number, sectionIndex: number | null) {
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file,
+        line,
+        severity: 'bug',
+        description: `Outstanding bug at ${file}:${line}`,
+        sectionIndex,
+      })
+    }
+
+    function seedAuditingLoop(loopName: string, sessionId: string, totalSections: number, currentSectionIndex: number) {
+      const state = makeState({
+        loopName,
+        sessionId,
+        phase: 'auditing',
+        totalSections,
+        currentSectionIndex,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(loopName, state)
+      loopService.registerLoopSession(sessionId, loopName)
+      return state
+    }
+
+    function auditTick(loop: Loop, sessionId: string) {
+      return loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+    }
+
+    function codePrompts(calls: RecordedCall[]): string[] {
+      return calls
+        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+        .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
+    }
+
+    test('clean last open section enters post_action when configured', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({
+        client,
+        loopConfig: { loop: { enabled: true, defaultMaxIterations: 5, postAction: { enabled: true, skill: 'pr-review' } } },
+      })
+
+      const loopName = 'last-open-post-action'
+      seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
+      seedSections(loopName, ['completed', 'in_progress'])
+
+      await auditTick(loop, 'last-open-audit')
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('post_action')
+      expect(afterState!.active).toBe(true)
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.status).toBe('completed')
+      expect(codePrompts(calls).some(text => text.includes('pr-review'))).toBe(true)
+
+      // Record the post_action entry row from the section-clean verdict.
+      const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+      expect(rows.some(r => r.eventType === 'section-clean' && r.toPhase === 'post_action')).toBe(true)
+
+      const postActionSessionId = afterState!.sessionId
+      ;(client.session.messages as any).mockImplementation(async () => [
+        { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action done.\n${POST_ACTION_COMPLETE_MARKER}` }] },
+      ])
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: postActionSessionId } })
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: postActionSessionId } })
+      expect(loopService.getAnyState(loopName)!.terminationReason).toBe('completed')
     })
 
-    const loopName = 'test-loop-sectioned-pa'
-    const state = makeState({
-      loopName,
-      sessionId: 'final-audit-session',
-      phase: 'final_auditing',
-      totalSections: 2,
-      auditCount: 1,
-      finalAuditDone: false,
-      iteration: 1,
-      maxIterations: 5,
-    })
-    loopService.setState(state.loopName, state)
+    test('clean last open section terminates completed without post_action', async () => {
+      const { client } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({ client })
 
-    await loop.tick({
-      type: 'session.status',
-      properties: {
-        status: { type: 'idle' },
-        sessionID: 'final-audit-session',
-      },
+      const loopName = 'last-open-terminate'
+      seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
+      seedSections(loopName, ['completed', 'in_progress'])
+
+      await auditTick(loop, 'last-open-audit')
+
+      const afterState = loopService.getAnyState(loopName)!
+      expect(afterState.active).toBe(false)
+      expect(afterState.terminationReason).toBe('completed')
+      expect(afterState.phase).toBe('auditing')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.status).toBe('completed')
     })
 
-    // Assert loop entered post_action phase
-    const afterState = loopService.getAnyState(loopName)
-    expect(afterState).not.toBeNull()
-    expect(afterState!.active).toBe(true)
-    expect(afterState!.phase).toBe('post_action')
-    // finalAuditDone should be set
-    expect(afterState!.finalAuditDone).toBe(true)
-    // A code prompt with the skill name should have been sent
-    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
-    expect(codeCalls.length).toBeGreaterThan(0)
-    const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
-    const promptText = lastCodePrompt?.parts?.[0]?.text ?? ''
-    expect(promptText).toContain('pr-review')
+    test('clean last open section with an earlier-section bug retries the same section and inlines that finding', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({ client })
 
-    // Clean up: simulate post_action completion to avoid stale state
-    const postActionSessionId = afterState!.sessionId
-    ;(client.session.messages as any).mockImplementation(async () => [
-      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action done.\n${POST_ACTION_COMPLETE_MARKER}` }] },
-    ])
-    await loop.tick({
-      type: 'session.status',
-      properties: {
-        status: { type: 'busy' },
-        sessionID: postActionSessionId,
-      },
+      const loopName = 'last-open-earlier-bug'
+      seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
+      seedSections(loopName, ['completed', 'in_progress'])
+      seedFinding(loopName, 'src/earlier.ts', 7, 0)
+
+      await auditTick(loop, 'last-open-audit')
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.currentSectionIndex).toBe(1)
+      const prompt = codePrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('src/earlier.ts:7')
+      expect(prompt).toContain('Outstanding bug at src/earlier.ts:7')
     })
-    await loop.tick({
-      type: 'session.status',
-      properties: {
-        status: { type: 'idle' },
-        sessionID: postActionSessionId,
-      },
+
+    test('clean last open section with a cross-section bug retries the same section and inlines that finding', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'last-open-cross-bug'
+      seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
+      seedSections(loopName, ['completed', 'in_progress'])
+      seedFinding(loopName, 'src/cross.ts', 11, null)
+
+      await auditTick(loop, 'last-open-audit')
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.currentSectionIndex).toBe(1)
+      expect(codePrompts(calls).at(-1)).toContain('src/cross.ts:11')
     })
-    const finalState = loopService.getAnyState(loopName)
-    expect(finalState).not.toBeNull()
-    expect(finalState!.active).toBe(false)
-    expect(finalState!.terminationReason).toBe('completed')
+
+    test('a bug attributed to a later section does not block an earlier section', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'non-last-section'
+      seedAuditingLoop(loopName, 'first-section-audit', 2, 0)
+      seedSections(loopName, ['in_progress', 'pending'])
+      seedFinding(loopName, 'src/later.ts', 9, 1)
+
+      await auditTick(loop, 'first-section-audit')
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.currentSectionIndex).toBe(1)
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.status).toBe('completed')
+      expect(codePrompts(calls).at(-1)).not.toContain('src/later.ts:9')
+    })
+
+    test('a non-last section retries when an earlier section still has a blocking bug', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'non-last-earlier-bug'
+      seedAuditingLoop(loopName, 'second-section-audit', 3, 1)
+      seedSections(loopName, ['completed', 'in_progress', 'pending'])
+      seedFinding(loopName, 'src/earlier.ts', 5, 0)
+
+      await auditTick(loop, 'second-section-audit')
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.currentSectionIndex).toBe(1)
+      expect(codePrompts(calls).at(-1)).toContain('src/earlier.ts:5')
+    })
+
+    test('a clean last-index section advances to an earlier section left open by a rewind', async () => {
+      const { client } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'rewind-earlier-open'
+      seedAuditingLoop(loopName, 'rewind-audit', 3, 2)
+      seedSections(loopName, ['in_progress', 'completed', 'in_progress'])
+
+      await auditTick(loop, 'rewind-audit')
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      // Advances to the lowest section that is still open, not idx + 1 and not completion.
+      expect(afterState!.currentSectionIndex).toBe(0)
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 2)!.status).toBe('completed')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.status).toBe('in_progress')
+    })
+
+    test('rewind: all other sections completed makes an earlier index the last open section', async () => {
+      const { client } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: summaryText }] }] },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'rewind-last-open'
+      seedAuditingLoop(loopName, 'rewind-audit', 3, 0)
+      seedSections(loopName, ['in_progress', 'completed', 'completed'])
+
+      await auditTick(loop, 'rewind-audit')
+
+      const afterState = loopService.getAnyState(loopName)!
+      expect(afterState.active).toBe(false)
+      expect(afterState.terminationReason).toBe('completed')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.status).toBe('completed')
+    })
   })
 
   test('postAction enabled with prompt only → enters post_action phase and sends prompt text', async () => {
@@ -1352,7 +1514,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
   })
 
   describe('session retention', () => {
-    test('queues session for retention on coding phase transition', async () => {
+    test('retains the coder session as standby on coding phase transition', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
           messages: async () => [
@@ -1375,7 +1537,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       const deleteCalls = calls.filter(c => c.method === 'session.delete')
-      expect(deleteCalls.map((c: any) => c.params.sessionID)).toContain(state.sessionId)
+      expect(deleteCalls.map((c: any) => c.params.sessionID)).not.toContain(state.sessionId)
+
+      const after = loop.service.getActiveState(state.loopName)!
+      expect(after.phase).toBe('auditing')
+      expect(after.standbySessionId).toBe(state.sessionId)
     })
 
     test('tolerates delete failure without crashing', async () => {
@@ -1458,7 +1624,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       }
     }
 
-    test('code session rotation captures usage with state.executionModel', async () => {
+    test('code session retention captures usage with state.executionModel', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 })],
@@ -1477,6 +1643,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
+
+      await loop.cancel(state.loopName)
 
       // Wait a tick for async capture to complete
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -1538,6 +1706,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
+      await loop.cancel(state.loopName)
+
       await new Promise(resolve => setTimeout(resolve, 10))
 
       const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
@@ -1567,7 +1737,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(hasCaptureError).toBe(true)
     })
 
-    test('retained sessions preserve role and model: code session retained, audit session enqueued', async () => {
+    test('retained sessions preserve role and model: coder standby captured on termination', async () => {
       const messagesBySession = new Map<string, Array<Record<string, unknown>>>()
       messagesBySession.set('coding-session-1', [
         mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 }),
@@ -1589,38 +1759,35 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
       loopService.setState(state.loopName, state)
 
-      // First rotation: coding→audit, queues coding session as 'code' role
+      // First transition: coding→audit, the coding session becomes the standby
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
-      // After first tick, state is now in auditing phase with a new session
       const afterFirstTick = loopService.getActiveState(state.loopName)!
       expect(afterFirstTick.phase).toBe('auditing')
+      expect(afterFirstTick.standbySessionId).toBe('coding-session-1')
 
       // Set up messages for the audit session
       messagesBySession.set(afterFirstTick.sessionId, [
         mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 }),
       ])
 
-      // The coding session should already be captured
+      // The standby is retained, not captured, while the loop runs
       await new Promise(resolve => setTimeout(resolve, 10))
-      let usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)).toBeNull()
+
+      // Terminating the loop captures the standby under the code role and the
+      // current audit session under the auditor role.
+      await loop.cancel(state.loopName)
+
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
       expect(usage).not.toBeNull()
       expect(usage!.byModel).toHaveProperty('state/exec-model')
       expect(usage!.byModel['state/exec-model'].inputTokens).toBe(100)
-
-      // Now terminate the loop while in auditing phase
-      await loop.cancel(state.loopName)
-
-      // Wait for async capture
-      await new Promise(resolve => setTimeout(resolve, 10))
-
-      usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
-      expect(usage).not.toBeNull()
-
-      // Audit session should be captured as 'auditor' with state.auditorModel
       expect(usage!.byModel).toHaveProperty('state/audit-model')
       expect(usage!.byModel['state/audit-model'].inputTokens).toBe(200)
     })
@@ -2028,119 +2195,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const fallbackAttempts = postActionPrompts.filter(c => (c.params as any)?.model?.modelID === 'auditor')
       expect(fallbackAttempts.length).toBe(1)
       expect((fallbackAttempts[0].params as any)?.variant).toBe('audit-high')
-    })
-  })
-
-  describe('coder decisions in final-audit fix', () => {
-    test('final-audit fix coding parses coder-decisions and renders into subsequent final audit prompt', async () => {
-      const { client, calls } = createFakeForgeClient({
-        session: {
-          messages: async () => [
-            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Final audit found issues.' }] },
-          ],
-        },
-      })
-      const { loop, logs } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
-      const loopName = 'test-loop-cd-fix'
-
-      // Create a loop in final_auditing phase with outstanding bugs
-      const state = makeState({
-        loopName,
-        sessionId: 'final-audit-session',
-        phase: 'final_auditing',
-        totalSections: 0,
-        auditCount: 1,
-        iteration: 1,
-        maxIterations: 5,
-        auditorFallbackIndex: 1,
-        auditorVariant: 'audit-high',
-      })
-      loopService.setState(state.loopName, state)
-
-      // Add a bug finding so the final audit is dirty and triggers a fix
-      reviewFindingsRepo.write({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        file: 'src/test.ts',
-        line: 1,
-        severity: 'bug',
-        description: 'Test bug found during final audit',
-      })
-
-      // Step 1: Set auditor response and trigger final audit phase
-      await loop.tick({
-        type: 'session.status',
-        properties: {
-          status: { type: 'idle' },
-          sessionID: 'final-audit-session',
-        },
-      })
-
-      // After the first tick, the loop should have transitioned to final_audit_fix with a fix prompt.
-      const fixCodePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
-      expect(fixCodePrompts.length).toBeGreaterThan(0)
-      const fixPromptText = (fixCodePrompts[fixCodePrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
-      expect(fixPromptText).toContain('[Final-audit fix')
-
-      // Verify the loop state after first tick
-      const stateAfterFirstTick = loopService.getActiveState(loopName)
-      expect(stateAfterFirstTick).not.toBeNull()
-      expect(stateAfterFirstTick!.phase).toBe('final_audit_fix')
-      const codeSessionId = stateAfterFirstTick!.sessionId
-
-      // Step 2: Change messages for the coding assistant response WITH coder-decisions markers,
-      // including the compact evidence the template asks for
-      ;(client.session.messages as any).mockImplementation(async () => [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{
-            type: 'text',
-            text: `Fixed the bug.\n<!-- coder-decisions:start -->\n### Decisions\n- Chose approach X\n### Verification\n- FOO=bar pnpm test from repo root — pass (required env: FOO=bar)\n- relevant non-secret setup: DATABASE_URL points at the test db; no credentials pasted\n- no source/test/config changes occurred after those commands ran\n- src/test.ts:1 → pnpm test --project node test/foo.test.ts\n### Notes for auditor\n- none\n<!-- coder-decisions:end -->`,
-          }],
-        },
-      ])
-
-      const auditorPromptsBefore = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop').length
-
-      // Send a busy event to clear the idle-gate (prompt was sent during the first tick)
-      await loop.tick({
-        type: 'session.status',
-        properties: {
-          status: { type: 'busy' },
-          sessionID: codeSessionId,
-        },
-      })
-
-      // Now send the idle event to trigger runCodingPhase
-      await loop.tick({
-        type: 'session.status',
-        properties: {
-          status: { type: 'idle' },
-          sessionID: codeSessionId,
-        },
-      })
-
-      // Verify the loop transitioned to final_auditing
-      const stateAfterSecondTick = loopService.getActiveState(loopName)
-      expect(stateAfterSecondTick).not.toBeNull()
-      expect(stateAfterSecondTick!.phase).toBe('final_auditing')
-
-      // The final audit prompt should have been sent with coder decisions
-      const auditorPromptsAfter = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
-      expect(auditorPromptsAfter.length).toBeGreaterThan(auditorPromptsBefore)
-      const finalAuditPrompt = auditorPromptsAfter[auditorPromptsAfter.length - 1]?.params as any
-      const finalAuditPromptText = finalAuditPrompt?.parts?.[0]?.text ?? ''
-      expect(finalAuditPromptText).toContain('Coder decisions & verification notes')
-      expect(finalAuditPromptText).toContain('Chose approach X')
-      expect(finalAuditPromptText).toContain('FOO=bar pnpm test')
-      // The richer evidence survives the parseCoderDecisions → setCoderDecisions →
-      // buildCoderDecisionsAuditorBlock path verbatim, with no new parser or persistence.
-      expect(finalAuditPromptText).toContain('no source/test/config changes occurred after those commands ran')
-      expect(finalAuditPromptText).toContain('src/test.ts:1 → pnpm test --project node test/foo.test.ts')
-      // The first dirty final-audit succeeded, so the persisted fallback index was
-      // reset to 0: the subsequent final audit uses the primary model with its variant.
-      expect(finalAuditPrompt?.model).toEqual({ providerID: 'test', modelID: 'auditor' })
-      expect(finalAuditPrompt?.variant).toBe('audit-high')
     })
   })
 
@@ -3347,29 +3401,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState!.status).toBe('errored')
       expect(afterState!.terminationReason).toContain('provider_limit:')
       expect(afterState!.auditorFallbackIndex).toBe(0)
-    })
-
-    test('persisted provider-limit in final auditing assistant error attempts the configured fallback', async () => {
-      const { client, calls } = createFakeForgeClient({
-        session: { messages: async () => persistedAuditLimitMessage() },
-      })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
-
-      const state = makeState({ phase: 'final_auditing', totalSections: 0, auditCount: 0 })
-      loopService.setState(state.loopName, state)
-      loopService.registerLoopSession(state.sessionId, state.loopName)
-
-      await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
-
-      const afterState = loopService.getActiveState(state.loopName)
-      expect(afterState).not.toBeNull()
-      expect(afterState!.active).toBe(true)
-      expect(afterState!.phase).toBe('final_auditing')
-      expect(afterState!.auditorFallbackIndex).toBe(1)
-
-      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
-      expect(auditorCalls).toHaveLength(1)
-      expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
     })
 
     test('session.error ProviderAuthError on the current audit session re-dispatches on the fallback auditor model', async () => {

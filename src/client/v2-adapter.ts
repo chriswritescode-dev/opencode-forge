@@ -22,6 +22,7 @@ type V2SessionInfo = Awaited<ReturnType<V2Session['get']>>
 type V2Message = Awaited<ReturnType<V2Session['context']>>[number]
 type V2UserMessage = Extract<V2Message, { type: 'user' }>
 type V2AssistantMessage = Extract<V2Message, { type: 'assistant' }>
+type V2VisibleMessage = V2UserMessage | V2AssistantMessage
 type V2AssistantContent = V2AssistantMessage['content'][number]
 type V2ToolState = Extract<V2AssistantContent, { type: 'tool' }>['state']
 type V2TokenUsage = NonNullable<V2AssistantMessage['tokens']>
@@ -33,6 +34,7 @@ export type V2PermissionRule = { action: string; resource: string; effect: 'allo
 export interface V2ClientLike {
   readonly session: V2Session
   readonly location: Plugin.Context['location']
+  readonly model: Plugin.Context['model']
 }
 
 export interface V2ForgeClientOptions {
@@ -114,6 +116,9 @@ function isSessionStatus(value: unknown): value is SessionStatus[string] {
 }
 
 const SESSION_STATUS_CACHE_CAPACITY = 1000
+
+/** How long a client instance reuses its resolved model context-window limits before listing models again. */
+const MODEL_CONTEXT_CACHE_TTL_MS = 60_000
 
 /**
  * Process-wide session status, fed from every location's events before the ownership filter, so a
@@ -198,11 +203,23 @@ function toAssistantMessageParts(message: V2AssistantMessage, sessionID: string)
   })
 }
 
+/**
+ * Whether a V2 session message is a conversation turn the port may expose.
+ * Control-only records — compaction (running/completed/failed), shell, skill,
+ * and the agent/model switch notices — carry no turn result, so exposing a
+ * compaction summary as an assistant reply would let a phase handler consume it
+ * as the coder's or auditor's answer. They stay out of `session.messages` here,
+ * which is the single point every reader goes through.
+ */
+function isVisibleV2Message(message: V2Message): message is V2VisibleMessage {
+  return message.type === 'user' || message.type === 'assistant'
+}
+
 function lastVisibleMessages(messages: V2Message[], limit: number): V2Message[] {
   const selected: V2Message[] = []
   for (let index = messages.length - 1; index >= 0 && selected.length < limit; index--) {
     const message = messages[index]
-    if (message.type === 'user' || message.type === 'assistant') selected.push(message)
+    if (isVisibleV2Message(message)) selected.push(message)
   }
   return selected.reverse()
 }
@@ -211,9 +228,10 @@ function toSessionMessages(messages: V2Message[], sessionID: string, limit?: num
   const visible = limit === undefined ? messages : lastVisibleMessages(messages, limit)
   const mapped: SessionMessages = []
   for (const message of visible) {
+    if (!isVisibleV2Message(message)) continue
     if (message.type === 'user') {
       mapped.push({ info: toSessionMessageInfo(message, sessionID), parts: toUserMessageParts(message, sessionID) })
-    } else if (message.type === 'assistant') {
+    } else {
       mapped.push({ info: toSessionMessageInfo(message, sessionID), parts: toAssistantMessageParts(message, sessionID) })
     }
   }
@@ -412,6 +430,9 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     abort: (params) => call('session.abort', async () => {
       await ctx.session.interrupt({ sessionID: params.sessionID, resume: false })
     }),
+    compact: (params) => call('session.compact', async () => {
+      await ctx.session.compact({ sessionID: params.sessionID, delivery: 'queue' })
+    }),
     delete: (params) => {
       const requestSessionDelete = options.requestSessionDelete
       if (!requestSessionDelete) {
@@ -419,6 +440,26 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
       }
       return call('session.delete', () => requestSessionDelete(params.sessionID))
     },
+  }
+
+  let modelContextCache: { at: number; limits: Map<string, number> } | null = null
+
+  const model: ForgeClient['model'] = {
+    contextLimit: (params) => call('model.contextLimit', async () => {
+      const now = Date.now()
+      if (!modelContextCache || now - modelContextCache.at >= MODEL_CONTEXT_CACHE_TTL_MS) {
+        const listed = await ctx.model.list({ location: { directory: options.directory } })
+        const limits = new Map<string, number>()
+        for (const info of listed.data) {
+          const context = isRecord(info.limit) ? info.limit.context : undefined
+          if (typeof context === 'number' && context > 0) {
+            limits.set(`${info.providerID}/${info.id}`, context)
+          }
+        }
+        modelContextCache = { at: now, limits }
+      }
+      return modelContextCache.limits.get(`${params.providerID}/${params.modelID}`)
+    }),
   }
 
   const toast: ForgeClient['toast'] = async (input) => {
@@ -435,5 +476,5 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     }
   }
 
-  return { session, workspace: options.workspace, toast, recordStatusEvent }
+  return { session, workspace: options.workspace, model, toast, recordStatusEvent }
 }

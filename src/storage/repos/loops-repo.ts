@@ -16,7 +16,7 @@ export interface LoopRow {
   iteration: number
   auditCount: number
   errorCount: number
-  phase: 'coding' | 'auditing' | 'final_auditing' | 'post_action' | 'final_audit_fix'
+  phase: 'coding' | 'auditing' | 'post_action'
   executionModel: string | null
   auditorModel: string | null
   modelFailed: boolean
@@ -32,13 +32,14 @@ export interface LoopRow {
   auditorFallbackIndex?: number
   currentSectionIndex: number
   totalSections: number
-  finalAuditDone: number
   executionVariant: string | null
   auditorVariant: string | null
   /** Per-loop sandbox overrides; null when the loop uses config defaults. */
   sandboxSettings?: LoopSandboxSettings | null
   /** Exact commit sha the loop's worktree branched from; null for legacy rows. */
   baseCommit: string | null
+  /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
+  standbySessionId: string | null
 }
 
 export interface LoopLargeFields {
@@ -78,6 +79,8 @@ export interface LoopsRepo {
   /** Reset the auditor fallback index to 0; returns true when a running row was actually changed, false when it was already 0 / non-running / absent. */
   resetAuditorFallbackIndex(projectId: string, loopName: string): boolean
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
+  /** Record (or clear, with null) the other role's session kept for same-section reuse. */
+  setStandbySessionId(projectId: string, loopName: string, sessionId: string | null): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
@@ -132,7 +135,6 @@ export interface LoopsRepo {
       workspaceId: string | null
       currentSectionIndex: number
       totalSections: number
-      finalAuditDone: boolean
       startedAt: number
       /** Primary auditor model used for the restarted prompt; persisted so later chain resolution agrees. */
       auditorModel: string | null
@@ -155,7 +157,6 @@ export interface LoopsRepo {
   findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] }
   setCurrentSectionIndex(projectId: string, loopName: string, index: number): void
   setTotalSections(projectId: string, loopName: string, total: number): void
-  setFinalAuditDone(projectId: string, loopName: string, done: boolean): void
 }
 
 function mapRow(row: LoopRowRaw): LoopRow {
@@ -186,12 +187,12 @@ function mapRow(row: LoopRowRaw): LoopRow {
     hostSessionId: row.host_session_id,
     currentSectionIndex: row.current_section_index,
     totalSections: row.total_sections,
-    finalAuditDone: row.final_audit_done,
     executionVariant: row.execution_variant,
     auditorVariant: row.auditor_variant,
     auditorFallbackIndex: row.auditor_fallback_index ?? 0,
     sandboxSettings: parseSandboxSettings(row.sandbox_settings),
     baseCommit: row.base_commit,
+    standbySessionId: row.standby_session_id,
   }
 }
 
@@ -237,12 +238,12 @@ interface LoopRowRaw {
   host_session_id: string | null
   current_section_index: number
   total_sections: number
-  final_audit_done: number
   execution_variant: string | null
   auditor_variant: string | null
   auditor_fallback_index: number
   sandbox_settings: string | null
   base_commit: string | null
+  standby_session_id: string | null
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
@@ -250,8 +251,9 @@ const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktre
   error_count, phase, execution_model, auditor_model,
   model_failed, sandbox, sandbox_container, started_at, completed_at,
   termination_reason, completion_summary, workspace_id, host_session_id,
-  current_section_index, total_sections, final_audit_done,
-  execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit`
+  current_section_index, total_sections,
+  execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit,
+  standby_session_id`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
 
@@ -345,6 +347,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
+  const setStandbySessionIdStmt = db.prepare(`
+    UPDATE loops SET standby_session_id = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
 
 
   const setWorkspaceIdStmt = db.prepare(`
@@ -429,6 +436,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       error_count = 0,
       model_failed = 0,
       auditor_fallback_index = 0,
+      standby_session_id = NULL,
       sandbox = ?,
       sandbox_container = ?,
       workspace_id = ?,
@@ -441,8 +449,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       termination_reason = NULL,
       completion_summary = NULL,
       current_section_index = ?,
-      total_sections = ?,
-      final_audit_done = ?
+      total_sections = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -451,7 +458,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       status = ?,
       completed_at = ?,
       termination_reason = ?,
-      completion_summary = ?
+      completion_summary = ?,
+      standby_session_id = NULL
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -466,9 +474,9 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       phase = ?, execution_model = ?, auditor_model = ?, model_failed = ?, sandbox = ?,
       sandbox_container = ?, started_at = ?, completed_at = ?, termination_reason = ?,
       completion_summary = ?, workspace_id = ?, host_session_id = ?,
-      current_section_index = ?, total_sections = ?, final_audit_done = ?,
+      current_section_index = ?, total_sections = ?,
       execution_variant = ?, auditor_variant = ?, auditor_fallback_index = ?,
-      sandbox_settings = ?, base_commit = ?
+      sandbox_settings = ?, base_commit = ?, standby_session_id = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -511,12 +519,12 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       row.hostSessionId,
       row.currentSectionIndex ?? 0,
       row.totalSections ?? 0,
-      row.finalAuditDone ?? 0,
       row.executionVariant ?? null,
       row.auditorVariant ?? null,
       row.auditorFallbackIndex ?? 0,
       serializeSandboxSettings(row.sandboxSettings),
       row.baseCommit ?? null,
+      row.standbySessionId ?? null,
     ]
   }
 
@@ -648,6 +656,10 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       setCurrentSessionIdStmt.run(sessionId, projectId, loopName)
     },
 
+    setStandbySessionId(projectId: string, loopName: string, sessionId: string | null): void {
+      setStandbySessionIdStmt.run(sessionId, projectId, loopName)
+    },
+
     setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void {
       setWorkspaceIdStmt.run(workspaceId, projectId, loopName)
     },
@@ -747,7 +759,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.startedAt,
           opts.currentSectionIndex,
           opts.totalSections,
-          opts.finalAuditDone ? 1 : 0,
           projectId,
           loopName,
         )
@@ -790,8 +801,5 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       db.prepare(`UPDATE loops SET total_sections = ? WHERE project_id = ? AND loop_name = ?`).run(total, projectId, loopName)
     },
 
-    setFinalAuditDone(projectId, loopName, done) {
-      db.prepare(`UPDATE loops SET final_audit_done = ? WHERE project_id = ? AND loop_name = ?`).run(done ? 1 : 0, projectId, loopName)
-    },
   }
 }

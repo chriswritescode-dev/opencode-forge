@@ -6,8 +6,6 @@ import {
   buildSectionInitialPromptText,
   buildSectionAuditPrompt,
   buildSectionContinuationPrompt,
-  buildFinalAuditPrompt,
-  buildFinalAuditFixPrompt,
   buildPostActionPrompt,
   buildAttemptHistoryBlock,
   ATTEMPT_HISTORY_LIMIT,
@@ -17,6 +15,7 @@ import { CODER_DECISIONS_START_MARKER } from '../../src/utils/coder-decisions'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
 import type { LoopAttemptRow } from '../../src/storage/repos/loop-attempts-repo'
+import { blockingBugFindings } from '../../src/loop/section-scope'
 
 const defaultState = {
   active: true,
@@ -32,7 +31,6 @@ const defaultState = {
   auditCount: 0,
   currentSectionIndex: 0,
   totalSections: 0,
-  finalAuditDone: false,
 }
 
 const sectionState = {
@@ -42,7 +40,7 @@ const sectionState = {
 }
 
 function makeCtx(overrides?: Partial<PromptContext>): PromptContext {
-  return {
+  const ctx = {
     getPlanTextForState: () => 'Mock plan content',
     getOutstandingFindings: () => [],
     getSectionPlan: (_state, index) => makeSectionPlanRow(index, `Section ${index + 1}`, `Section plan for ${index + 1}`),
@@ -51,7 +49,9 @@ function makeCtx(overrides?: Partial<PromptContext>): PromptContext {
     getCoderDecisions: () => null,
     getFindingRecurrence: () => new Map(),
     ...overrides,
-  }
+  } as PromptContext
+  ctx.getBlockingBugFindings ??= (state) => blockingBugFindings(ctx.getOutstandingFindings(state.loopName, 'bug'), state)
+  return ctx
 }
 
 function makeSectionPlanRow(index: number, title: string, content: string) {
@@ -180,12 +180,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain(SECTION_SUMMARY_END_MARKER)
     })
 
-    test('final-auditing phase delegates to final audit', () => {
-      const ctx = makeCtx()
-      const result = buildAuditPrompt(ctx, { ...sectionState, phase: 'final_auditing' })
-      expect(result).toContain('[Final integration audit]')
-    })
-
     test('includes coder decisions block when present (non-section)', () => {
       const ctx = makeCtx({
         getCoderDecisions: () => '### Decisions\n- Chose X over Y\n### Verification\n- `pnpm test`\n### Notes\n- None',
@@ -312,10 +306,18 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).not.toContain('`section-read` with `section_index:')
     })
 
+    test('section audit states the section-wide blocking scope', () => {
+      const ctx = makeCtx()
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState, totalSections: 3, currentSectionIndex: 1 })
+      expect(result).toContain('This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs')
+      expect(result).toContain('Findings attributed to a later, not-yet-started section do not block this audit')
+      expect(result).toContain('`review-read` returns exactly that scope')
+      expect(result).not.toContain('Last open section:')
+    })
+
     test('section audit rewrites plan-adjust guidance without implying the objective shifts', () => {
       const ctx = makeCtx()
       const result = buildSectionAuditPrompt(ctx, { ...sectionState })
-      expect(result).toContain('unavailable in the final audit')
       expect(result).toContain('stored master plan row is unchanged')
       expect(result).toContain('confirm both with `plan-read`')
       expect(result).toContain('does not enforce this semantically')
@@ -364,7 +366,25 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).not.toContain('## Outstanding findings')
     })
 
-    test('section continuation filters by sectionIndex', () => {
+    test('section continuation includes earlier-section and cross-section findings, excluding later sections', () => {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/a.ts', line: 1, severity: 'bug', description: 'A', scenario: null, loopName: 'test-loop', sectionIndex: 0, projectId: 'p', createdAt: 0 },
+        { file: 'src/b.ts', line: 2, severity: 'bug', description: 'B', scenario: null, loopName: 'test-loop', sectionIndex: 1, projectId: 'p', createdAt: 0 },
+        { file: 'src/c.ts', line: 3, severity: 'bug', description: 'C', scenario: null, loopName: 'test-loop', sectionIndex: 2, projectId: 'p', createdAt: 0 },
+        { file: 'src/d.ts', line: 4, severity: 'bug', description: 'D', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+      ]
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+      })
+      const result = buildSectionContinuationPrompt(ctx, { ...sectionState, totalSections: 3, currentSectionIndex: 1 }, '')
+      expect(result).toContain('## Outstanding review findings (3)')
+      expect(result).toContain('`src/a.ts:1`')
+      expect(result).toContain('`src/b.ts:2`')
+      expect(result).toContain('`src/d.ts:4`')
+      expect(result).not.toContain('`src/c.ts:3`')
+    })
+
+    test('section continuation excludes later-section findings', () => {
       const findings: ReviewFindingRow[] = [
         { file: 'src/a.ts', line: 1, severity: 'bug', description: 'A', scenario: null, loopName: 'test-loop', sectionIndex: 0, projectId: 'p', createdAt: 0 },
         { file: 'src/b.ts', line: 2, severity: 'bug', description: 'B', scenario: null, loopName: 'test-loop', sectionIndex: 1, projectId: 'p', createdAt: 0 },
@@ -375,72 +395,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildSectionContinuationPrompt(ctx, { ...sectionState }, '')
       expect(result).toContain('`src/a.ts:1`')
       expect(result).not.toContain('`src/b.ts:2`')
-    })
-  })
-
-  describe('buildFinalAuditPrompt', () => {
-    test('final audit includes plan and completion summary', () => {
-      const ctx = makeCtx()
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
-      expect(result).toContain('[Final integration audit]')
-      expect(result).toContain('Master Plan')
-      expect(result).toContain('Mock plan content')
-      expect(result).toContain('Final audit instructions')
-    })
-
-    test('final audit includes the effective ordered section plan after the Master Plan', () => {
-      const ctx = makeCtx({
-        getSectionPlans: () => [
-          makeSectionPlanRow(0, 'Base', 'original instructions'),
-          makeSectionPlanRow(1, 'Amended', 'amended live instructions'),
-        ],
-      })
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
-      const masterPos = result.indexOf('## Master Plan')
-      const effectivePos = result.indexOf('## Effective section plan')
-      expect(effectivePos).toBeGreaterThan(masterPos)
-      expect(result).toContain('supersede the master plan\'s original per-section instructions')
-      expect(result).toContain('master objective and top-level Verification remain authoritative')
-      expect(result).toContain('Titles are display labels')
-      expect(result).toContain('### Section 2 (index 1): Amended')
-      expect(result).toContain('amended live instructions')
-      expect(result).toContain('verify the requirements in the Effective section plan')
-    })
-
-    test('final audit omits the effective section plan when no section rows exist', () => {
-      const ctx = makeCtx()
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
-      expect(result).not.toContain('Effective section plan')
-    })
-
-    test('final audit with completed sections digest', () => {
-      const ctx = makeCtx({
-        getCompletedSectionDigest: (): SectionDigestEntry[] => [
-          { index: 0, title: 'Section A', summaryDone: 'Implemented X', summaryDeviations: 'none', summaryFollowUps: 'none' },
-        ],
-      })
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
-      expect(result).toContain("Completed Sections' Summaries")
-      expect(result).toContain('## Section 1: Section A')
-      expect(result).toContain('### Done\nImplemented X')
-    })
-
-    test('includes coder decisions when present', () => {
-      const ctx = makeCtx({
-        getCoderDecisions: () => '### Decisions\n- Chose Y\n### Verification\n- FOO=bar pnpm test',
-      })
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
-      expect(result).toContain('Coder decisions & verification notes')
-      expect(result).toContain('Chose Y')
-      expect(result).toContain('FOO=bar pnpm test')
-    })
-
-    test('omits coder decisions section when null', () => {
-      const ctx = makeCtx({
-        getCoderDecisions: () => null,
-      })
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
-      expect(result).not.toContain('Coder decisions & verification notes')
     })
   })
 
@@ -475,76 +429,6 @@ describe('prompt builders (src/loop/prompts)', () => {
     })
   })
 
-  describe('buildFinalAuditFixPrompt', () => {
-    test('includes plan and fix instructions without findings block when none outstanding', () => {
-      const ctx = makeCtx()
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
-      expect(result).toContain('[Final-audit fix -- iteration 1/5]')
-      expect(result).toContain('## Master Plan')
-      expect(result).toContain('Mock plan content')
-      expect(result).toContain('Fix the reported bugs')
-      expect(result).toContain('Scope your changes to what the findings require')
-      expect(result).not.toContain('## Final auditor feedback')
-      expect(result).not.toContain('## Outstanding review findings')
-    })
-
-    test('includes the effective ordered section plan after the Master Plan', () => {
-      const ctx = makeCtx({
-        getSectionPlans: () => [
-          makeSectionPlanRow(0, 'Base', 'original instructions'),
-          makeSectionPlanRow(1, 'Amended', 'amended live instructions'),
-        ],
-      })
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
-      const masterPos = result.indexOf('## Master Plan')
-      const effectivePos = result.indexOf('## Effective section plan')
-      expect(effectivePos).toBeGreaterThan(masterPos)
-      expect(result).toContain('supersede the master plan\'s original per-section instructions')
-      expect(result).toContain('master objective and top-level Verification remain authoritative')
-      expect(result).toContain('### Section 2 (index 1): Amended')
-      expect(result).toContain('amended live instructions')
-    })
-
-    test('omits the effective section plan when no section rows exist', () => {
-      const ctx = makeCtx()
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
-      expect(result).not.toContain('Effective section plan')
-    })
-
-    test('lists outstanding bug findings', () => {
-      const findings: ReviewFindingRow[] = [
-        { file: 'src/a.ts', line: 12, severity: 'bug', description: 'A', scenario: null, loopName: 'test-loop', sectionIndex: 0, projectId: 'p', createdAt: 0 },
-        { file: 'src/b.ts', line: 34, severity: 'bug', description: 'B', scenario: null, loopName: 'test-loop', sectionIndex: 1, projectId: 'p', createdAt: 0 },
-      ]
-      const ctx = makeCtx({
-        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
-      })
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
-      expect(result).toContain('## Outstanding review findings (2)')
-      expect(result).toContain('`src/a.ts:12` (bug)')
-      expect(result).toContain('`src/b.ts:34` (bug)')
-      expect(result).not.toContain('## Final auditor feedback')
-    })
-
-    test('omits outstanding-findings section when there are none', () => {
-      const ctx = makeCtx({
-        getOutstandingFindings: () => [],
-      })
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
-      expect(result).not.toContain('## Outstanding review findings')
-    })
-
-    test('states the real re-audit contract instead of promising an entire-codebase re-run', () => {
-      const ctx = makeCtx()
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState })
-      expect(result).toContain("the loop's full accumulated changes")
-      expect(result).toContain('merge-base')
-      expect(result).toContain('all uncommitted and untracked changes')
-      expect(result).toContain('affected integration paths')
-      expect(result).not.toContain('entire codebase')
-    })
-  })
-
   describe('reproduction-first remediation policy (shared outstanding-findings block)', () => {
     const bug = (file: string, line: number, description: string, sectionIndex: number | null = null): ReviewFindingRow => ({
       file, line, severity: 'bug', description, scenario: null, loopName: 'test-loop', sectionIndex, projectId: 'p', createdAt: 0,
@@ -572,7 +456,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       }
     }
 
-    test('final fix with section-owned and cross-section bugs renders the shared policy and every finding', () => {
+    test('section continuation renders the shared policy and every blocking finding', () => {
       const findings = [
         bug('src/a.ts', 12, 'A'),
         bug('src/b.ts', 34, 'B', 1),
@@ -580,18 +464,19 @@ describe('prompt builders (src/loop/prompts)', () => {
       ]
       const ctx = makeCtx({
         getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+        getBlockingBugFindings: () => findings,
       })
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState, totalSections: 2 })
+      const result = buildSectionContinuationPrompt(ctx, { ...sectionState, totalSections: 3, currentSectionIndex: 1 }, '')
       expect(result).toContain('## Outstanding review findings (3)')
       for (const f of findings) expect(result).toContain(`\`${f.file}:${f.line}\` (bug)`)
       expectReproductionFirstPolicy(result)
     })
 
-    test('final fix prefers the explicit outstandingBugs input over the repository lookup', () => {
+    test('section continuation prefers the explicit outstandingBugs input over the repository lookup', () => {
       const repoFindings = [bug('src/repo.ts', 1, 'repo')]
       const explicit = [bug('src/explicit.ts', 2, 'explicit'), bug('src/explicit.ts', 3, 'explicit two')]
-      const ctx = makeCtx({ getOutstandingFindings: () => repoFindings })
-      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, explicit)
+      const ctx = makeCtx({ getOutstandingFindings: () => repoFindings, getBlockingBugFindings: () => repoFindings })
+      const result = buildSectionContinuationPrompt(ctx, { ...sectionState }, '', explicit)
       expect(result).toContain('## Outstanding review findings (2)')
       expect(result).toContain('`src/explicit.ts:2` (bug)')
       expect(result).toContain('`src/explicit.ts:3` (bug)')
@@ -618,8 +503,8 @@ describe('prompt builders (src/loop/prompts)', () => {
     })
 
     test('no findings renders neither the block nor the policy', () => {
-      const ctx = makeCtx()
-      expect(buildFinalAuditFixPrompt(ctx, { ...sectionState })).not.toContain('Remediation policy')
+      const ctx = makeCtx({ getBlockingBugFindings: () => [] })
+      expect(buildSectionContinuationPrompt(ctx, { ...sectionState }, '')).not.toContain('Remediation policy')
       expect(buildContinuationPrompt(ctx, { ...defaultState })).not.toContain('Remediation policy')
       expect(buildSectionContinuationPrompt(ctx, { ...sectionState }, '')).not.toContain('Remediation policy')
     })
@@ -633,11 +518,12 @@ describe('prompt builders (src/loop/prompts)', () => {
       return makeCtx({
         getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
         getFindingRecurrence: () => new Map([['x:src/bug.ts:5', count]]),
+        getBlockingBugFindings: () => findings,
       })
     }
 
     test('at threshold the coder block demands a revisited causal hypothesis and a reproducer', () => {
-      const result = buildFinalAuditFixPrompt(ctxWithRecurrence(3), { ...sectionState })
+      const result = buildSectionContinuationPrompt(ctxWithRecurrence(3), { ...sectionState }, '')
       expect(result).toContain('Recurring blocking findings')
       expect(result).toContain('`src/bug.ts:5`')
       expect(result).toContain('recurred 3×')
@@ -647,18 +533,18 @@ describe('prompt builders (src/loop/prompts)', () => {
     })
 
     test('below threshold the coder escalation block is absent', () => {
-      const result = buildFinalAuditFixPrompt(ctxWithRecurrence(2), { ...sectionState })
+      const result = buildSectionContinuationPrompt(ctxWithRecurrence(2), { ...sectionState }, '')
       expect(result).not.toContain('Recurring blocking findings')
       expect(result).not.toContain('revisit the causal hypothesis')
     })
 
     test('escalation changes the requested diagnostic method only, not gates or authority', () => {
-      const withRecurrence = buildFinalAuditFixPrompt(ctxWithRecurrence(3), { ...sectionState })
-      const withoutRecurrence = buildFinalAuditFixPrompt(makeCtx(), { ...sectionState })
+      const withRecurrence = buildSectionContinuationPrompt(ctxWithRecurrence(3), { ...sectionState }, '')
+      const withoutRecurrence = buildSectionContinuationPrompt(makeCtx(), { ...sectionState }, '')
       for (const result of [withRecurrence, withoutRecurrence]) {
         expect(result).not.toContain('review-delete')
         expect(result).toContain('coder-decisions:start')
-        expect(result).toContain('Fix the reported bugs')
+        expect(result).toContain('## Section plan')
       }
       expect(withRecurrence).toContain('Recurring blocking findings')
       expect(withoutRecurrence).not.toContain('Recurring blocking findings')
@@ -677,18 +563,16 @@ describe('prompt builders (src/loop/prompts)', () => {
   describe('coder decisions template consumers and auditor renderer', () => {
     const startMarkerCount = (text: string) => text.split(CODER_DECISIONS_START_MARKER).length - 1
 
-    test('all four coder consumers retain exactly one decisions block with the evidence template', () => {
+    test('all three coder consumers retain exactly one decisions block with the evidence template', () => {
       const ctx = makeCtx()
       const legacyContinuation = buildContinuationPrompt(ctx, { ...defaultState })
       const sectionInitial = buildSectionInitialPrompt(ctx, { ...sectionState })
       const sectionContinuation = buildSectionContinuationPrompt(ctx, { ...sectionState })
-      const finalFix = buildFinalAuditFixPrompt(ctx, { ...sectionState })
 
       for (const [label, prompt] of [
         ['legacy continuation', legacyContinuation],
         ['section initial', sectionInitial],
         ['section continuation', sectionContinuation],
-        ['final fix', finalFix],
       ] as const) {
         expect(startMarkerCount(prompt), label).toBe(1)
         expect(prompt, label).toContain('the exact command, the worktree-relative working directory, and the pass/fail/not-run outcome')
@@ -698,18 +582,16 @@ describe('prompt builders (src/loop/prompts)', () => {
       }
     })
 
-    test('all three auditor paths share the coder decisions renderer and its evidence policy', () => {
+    test('both auditor paths share the coder decisions renderer and its evidence policy', () => {
       const ctx = makeCtx({
         getCoderDecisions: () => '### Decisions\n- documented choice\n### Verification\n- FOO=bar pnpm test — pass',
       })
       const legacyAudit = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
       const sectionAudit = buildSectionAuditPrompt(ctx, { ...sectionState })
-      const finalAudit = buildFinalAuditPrompt(ctx, { ...sectionState })
 
       for (const [label, prompt] of [
         ['legacy audit', legacyAudit],
         ['section audit', sectionAudit],
-        ['final audit', finalAudit],
       ] as const) {
         expect(prompt, label).toContain('Coder decisions & verification notes')
         expect(prompt, label).toContain('never an automatic waiver')
@@ -722,13 +604,13 @@ describe('prompt builders (src/loop/prompts)', () => {
       const ctx = makeCtx({
         getCoderDecisions: () => '### Decisions\n- documented choice\n### Verification\n- FOO=bar pnpm test — pass',
       })
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState })
       expect(result).toContain('A documented decision alone, or a different test passing, is not proof')
     })
 
     test('missing coder decisions provide no evidence and render no waiver language', () => {
       const ctx = makeCtx({ getCoderDecisions: () => null })
-      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState })
       expect(result).not.toContain('Coder decisions & verification notes')
       expect(result).not.toContain('never an automatic waiver')
     })
@@ -825,7 +707,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       for (const result of [
         buildSectionAuditPrompt(ctx, { ...sectionState }),
         buildAuditPrompt(ctx, { ...defaultState, iteration: 2 }),
-        buildFinalAuditPrompt(ctx, { ...sectionState }),
       ]) {
         expect(result).not.toContain('Audit attempt history')
         expect(result).not.toContain('git diff --no-ext-diff')
@@ -875,20 +756,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('full established scope')
     })
 
-    test('final audit request forces the final_auditing phase on the history query', () => {
-      const getAttemptHistory = vi.fn(() => [makeAttemptRow({ id: 1, attemptNumber: 1, scope: 'final', outcome: null })])
-      const ctx = makeCtx({ getAttemptHistory })
-      buildFinalAuditPrompt(ctx, { ...sectionState })
-      expect(getAttemptHistory).toHaveBeenCalledWith(expect.objectContaining({ phase: 'final_auditing' }), ATTEMPT_HISTORY_LIMIT)
-    })
-
-    test('final fix request forces the final_audit_fix phase on the history query', () => {
-      const getAttemptHistory = vi.fn(() => [makeAttemptRow({ id: 1, attemptNumber: 1, scope: 'final', outcome: 'dirty' })])
-      const ctx = makeCtx({ getAttemptHistory })
-      buildFinalAuditFixPrompt(ctx, { ...sectionState })
-      expect(getAttemptHistory).toHaveBeenCalledWith(expect.objectContaining({ phase: 'final_audit_fix' }), ATTEMPT_HISTORY_LIMIT)
-    })
-
     test('section initial wrapper includes history; standalone Text builder does not', () => {
       const attempts = [makeAttemptRow({ id: 1, attemptNumber: 1, outcome: 'dirty' })]
       const wrapper = buildSectionInitialPrompt(ctxWithAttempts(attempts), { ...sectionState })
@@ -917,18 +784,10 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('the delta orders the review, it does not replace the full scope')
     })
 
-    test('final audit remains the full integration gate with delta-first prioritization only', () => {
-      const result = buildFinalAuditPrompt(makeCtx(), { ...sectionState })
-      expect(result).toContain("the loop's full accumulated changes")
-      expect(result).toContain('Delta-first ordering from the attempt history may prioritize what you verify first')
-      expect(result).toContain('the delta never narrows this final gate')
-    })
-
     test('audit prompts point to the attempts pagination usage of review-read', () => {
       for (const result of [
         buildSectionAuditPrompt(makeCtx(), { ...sectionState }),
         buildAuditPrompt(makeCtx(), { ...defaultState, iteration: 2 }),
-        buildFinalAuditPrompt(makeCtx(), { ...sectionState }),
       ]) {
         expect(result).toContain('{attempts: true, beforeId: <id>, limit: <n>}')
       }
@@ -938,33 +797,6 @@ describe('prompt builders (src/loop/prompts)', () => {
 
 describe('audit prompts use the exact base commit', () => {
   const SHA = 'c'.repeat(40)
-
-  test('final audit states the exact base commit scope when set', () => {
-    const result = buildFinalAuditPrompt(makeCtx(), { ...sectionState, baseCommit: SHA })
-    expect(result).toContain(`every commit since base commit \`${SHA}\``)
-    expect(result).toContain(`\`git diff ${SHA}\` covers committed, staged and unstaged tracked changes`)
-    expect(result).toContain('plus untracked files')
-    expect(result).not.toContain('merge-base')
-  })
-
-  test('final audit keeps the legacy merge-base wording when unset', () => {
-    const result = buildFinalAuditPrompt(makeCtx(), { ...sectionState })
-    expect(result).toContain("merge-base with its base branch")
-    expect(result).not.toContain('base commit')
-  })
-
-  test('final-audit fix states the exact base commit scope when set', () => {
-    const result = buildFinalAuditFixPrompt(makeCtx(), { ...sectionState, baseCommit: SHA })
-    expect(result).toContain(`every commit since base commit \`${SHA}\``)
-    expect(result).toContain('plus untracked files')
-    expect(result).not.toContain('merge-base')
-  })
-
-  test('final-audit fix keeps the legacy merge-base wording when unset', () => {
-    const result = buildFinalAuditFixPrompt(makeCtx(), { ...sectionState })
-    expect(result).toContain("merge-base with its base branch")
-    expect(result).not.toContain('base commit')
-  })
 
   test('non-sectioned plan audit states the base commit when set', () => {
     const result = buildAuditPrompt(makeCtx(), { ...defaultState, iteration: 2, baseCommit: SHA })

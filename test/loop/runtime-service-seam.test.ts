@@ -5,6 +5,7 @@ import type { LoopState } from '../../src/loop/state'
 import type { ForgeClient } from '../../src/client/port'
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { blockingBugFindings } from '../../src/loop/section-scope'
 
 /**
  * Build a minimal fake LoopService that records calls to setState and
@@ -32,6 +33,7 @@ function makeFakeLoopService(): LoopService {
     terminateAll: vi.fn(() => Promise.resolve()),
     hasOutstandingFindings: vi.fn(() => false),
     getOutstandingFindings: vi.fn(() => []),
+    getBlockingBugFindings: vi.fn(() => []),
     setCoderDecisions: vi.fn(),
     captureAttempt: vi.fn(async () => true),
     finishAttempt: vi.fn(),
@@ -58,19 +60,17 @@ function makeFakeLoopService(): LoopService {
     getSectionPlan: vi.fn(() => null),
     getSectionPlans: vi.fn(() => []),
     getNextIncompleteSectionPlan: vi.fn(() => null),
+    isLastOpenSection: vi.fn(() => false),
     getCompletedSectionDigest: vi.fn(() => []),
     parseSectionSummary: vi.fn(() => null),
     buildSectionInitialPrompt: vi.fn(() => ''),
     buildSectionAuditPrompt: vi.fn(() => ''),
     buildSectionContinuationPrompt: vi.fn(() => ''),
-    buildFinalAuditPrompt: vi.fn(() => ''),
-    buildFinalAuditFixPrompt: vi.fn(() => ''),
     buildPostActionPrompt: vi.fn(() => ''),
     completeSection: vi.fn(),
     incrementSectionAttempts: vi.fn(),
     resetSectionForRewind: vi.fn(),
     setCurrentSectionIndex: vi.fn(),
-    setFinalAuditDone: vi.fn(),
     startSection: vi.fn(),
     bulkInsertSections: vi.fn(),
     setTotalSections: vi.fn(),
@@ -137,7 +137,6 @@ describe('LoopService seam', () => {
       status: 'running' as const,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
       phase: 'coding' as const,
     }
 
@@ -173,6 +172,7 @@ function makeStatefulFakeLoopService(initialState: LoopState): LoopService {
   base.resolveLoopName = vi.fn((sid: string) => sessionIdToLoop.get(sid) ?? null)
   base.parseSectionSummary = vi.fn(() => null)
   base.getOutstandingFindings = vi.fn(() => [])
+  base.getBlockingBugFindings = vi.fn((s: LoopState) => blockingBugFindings(base.getOutstandingFindings() as any, s))
   base.hasOutstandingFindings = vi.fn(() => false)
   base.terminate = vi.fn(
     (_name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number }) => {
@@ -206,7 +206,6 @@ describe('LoopService seam — sectioned dirty audit max-iterations safety net',
       phase: 'auditing',
       currentSectionIndex: 0,
       totalSections: 2,
-      finalAuditDone: false,
     }
     const fakeService = makeStatefulFakeLoopService(initialState)
     // An outstanding bug finding makes the audit genuinely dirty; a summary-less

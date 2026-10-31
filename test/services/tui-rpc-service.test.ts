@@ -43,7 +43,6 @@ function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
     hostSessionId: 'host-1',
     currentSectionIndex: 0,
     totalSections: 1,
-    finalAuditDone: 0,
     executionVariant: 'high',
     auditorVariant: 'low',
     ...overrides,

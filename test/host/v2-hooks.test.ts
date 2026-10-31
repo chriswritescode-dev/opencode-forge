@@ -679,7 +679,6 @@ describe('createForgeCore integration', () => {
       hostSessionId: null,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }

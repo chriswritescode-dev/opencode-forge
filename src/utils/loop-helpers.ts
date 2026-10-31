@@ -125,11 +125,20 @@ export function resolveLoopAuditorChoice(
 }
 
 export function isAuditorPhase(phase: LoopState['phase'] | undefined): boolean {
-  return phase === 'auditing' || phase === 'final_auditing'
+  return phase === 'auditing'
 }
 
 export function usageRoleForPhase(phase: LoopState['phase'] | undefined): 'code' | 'auditor' {
   return isAuditorPhase(phase) ? 'auditor' : 'code'
+}
+
+/**
+ * The phase whose role owns a loop's standby session: the opposite of the
+ * current phase (the coder session stands by while auditing, the audit session
+ * while coding). Single source for standby usage attribution.
+ */
+export function standbyPhaseFor(phase: LoopState['phase']): LoopState['phase'] {
+  return phase === 'auditing' ? 'coding' : 'auditing'
 }
 
 // Resolves the label used to attribute assistant usage when a message's own

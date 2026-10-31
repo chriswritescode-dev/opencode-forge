@@ -102,7 +102,6 @@ describe('Runtime transition logging', () => {
       phase: 'auditing',
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
       ...overrides,
     } as LoopState
   }
@@ -135,13 +134,13 @@ describe('Runtime transition logging', () => {
     return loopTransitionsRepo.listForLoop(projectId, loopName)
   }
 
-  describe('Bug 1: no phantom final_audit_fix row on iteration cap', () => {
-    test('capped dirty final audit records only the terminate row, not a final_audit_fix row', async () => {
+  describe('Bug 1: capped dirty last open section records only the terminate row', () => {
+    test('capped dirty last open section records only the terminate row', async () => {
       const state = buildInitialState({
-        phase: 'final_auditing',
+        phase: 'auditing',
         iteration: 5,
         maxIterations: 5,
-        currentSectionIndex: 0,
+        currentSectionIndex: 1,
         totalSections: 2,
       })
 
@@ -152,27 +151,36 @@ describe('Runtime transition logging', () => {
         line: 1,
         severity: 'bug',
         description: 'unfixed bug',
-        sectionIndex: 0,
+        sectionIndex: 1,
       })
 
       const loopInstance = buildLoop({
-        clientTweaks: { session: { messages: async () => assistantMessage('final audit still has findings') } },
+        clientTweaks: { session: { messages: async () => assistantMessage('last open section still has findings') } },
       })
       loopInstance.start({ state })
+
+      db.run(
+        `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, loopName, 0, 'Section 1', 'Content 1', 'completed', 0, Date.now(), Date.now(), Date.now()],
+      )
+      db.run(
+        `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, loopName, 1, 'Section 2', 'Content 2', 'in_progress', 0, Date.now(), null, Date.now()],
+      )
 
       await tickIdle(loopInstance, 'audit-sess')
 
       const rows = getRows()
       expect(rows).toHaveLength(1)
       expect(rows[0].transitionKind).toBe('terminate')
-      expect(rows[0].fromPhase).toBe('final_auditing')
+      expect(rows[0].fromPhase).toBe('auditing')
       expect(rows[0].toPhase).toBeNull()
       expect(rows[0].eventType).toBe('max_iterations')
     })
   })
 
-  describe('Bug 2a: rewind fast-path produces exactly one row', () => {
-    test('rewind-all-completed jump to final audit logs a section-clean/start-final-audit row', async () => {
+  describe('Bug 2a: rewind completion produces exactly one terminal row', () => {
+    test('rewind-all-completed clean audit completes the loop with one terminate row', async () => {
       const state = buildInitialState({
         phase: 'auditing',
         iteration: 1,
@@ -181,18 +189,19 @@ describe('Runtime transition logging', () => {
         totalSections: 3,
       })
 
-      // Insert all 3 sections as completed with summaries so the digest matches totalSections.
-      // Insert AFTER loopInstance.start writes the parent loops row (section_plans
-      // has an FK to loops(project_id, loop_name)).
+      // Sections 0 and 2 are already completed; the current section 1 is open.
+      // Insert AFTER loopInstance.start writes the parent loops row
+      // (section_plans has an FK to loops(project_id, loop_name)).
       const loopInstance = buildLoop({
         clientTweaks: { session: { messages: async () => assistantMessage(sectionSummaryText('completed section 1 cleanly')) } },
       })
       loopInstance.start({ state })
 
+      const statuses = ['completed', 'in_progress', 'completed']
       for (let i = 0; i < 3; i++) {
         db.run(
           `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, summary_done, summary_deviations, summary_follow_ups, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [projectId, loopName, i, `Section ${i + 1}`, `Content ${i + 1}`, 'completed', 0, Date.now(), Date.now(), `Done ${i}`, null, null, Date.now()],
+          [projectId, loopName, i, `Section ${i + 1}`, `Content ${i + 1}`, statuses[i], 0, Date.now(), statuses[i] === 'completed' ? Date.now() : null, statuses[i] === 'completed' ? `Done ${i}` : null, null, null, Date.now()],
         )
       }
 
@@ -200,11 +209,12 @@ describe('Runtime transition logging', () => {
 
       const rows = getRows()
       expect(rows).toHaveLength(1)
-      expect(rows[0].eventType).toBe('section-clean')
-      expect(rows[0].transitionKind).toBe('start-final-audit')
+      expect(rows[0].transitionKind).toBe('terminate')
+      expect(rows[0].eventType).toBe('completed')
       expect(rows[0].fromPhase).toBe('auditing')
-      expect(rows[0].toPhase).toBe('final_auditing')
+      expect(rows[0].toPhase).toBeNull()
       expect(rows[0].sectionIndex).toBe(1)
+      expect(loopInstance.service.getAnyState(loopName)!.terminationReason).toBe('completed')
     })
   })
 
@@ -316,51 +326,6 @@ describe('Runtime transition logging', () => {
       // Strict id ordering check: the phase row's id is strictly less than the
       // terminal row's id (this is the bug-3 regression guard).
       expect(rows[0].id).toBeLessThan(rows[1].id)
-    })
-  })
-
-  describe('Bug 4: failed final-audit creation leaves no phantom final_auditing row', () => {
-    test('section-clean → start-final-audit with session.create failing records no transition row', async () => {
-      const state = buildInitialState({
-        phase: 'auditing',
-        iteration: 1,
-        maxIterations: 10,
-        currentSectionIndex: 1,
-        totalSections: 2,
-      })
-
-      const loopInstance = buildLoop({
-        clientTweaks: {
-          session: {
-            // Audit text carries a section-summary so the section-clean path fires.
-            messages: async () => assistantMessage(sectionSummaryText('completed section 1 cleanly')),
-            // session.create throws so createAuditSession returns null and
-            // startFinalAuditTransition returns false WITHOUT persisting the
-            // final_auditing phase or recording its start-final-audit row.
-            create: async () => { throw new Error('session.create unavailable') },
-          },
-        },
-      })
-      loopInstance.start({ state })
-
-      for (let i = 0; i < 2; i++) {
-        db.run(
-          `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, summary_done, summary_deviations, summary_follow_ups, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [projectId, loopName, i, `Section ${i + 1}`, `Content ${i + 1}`, 'completed', 0, Date.now(), Date.now(), `Done ${i}`, null, null, Date.now()],
-        )
-      }
-
-      await tickIdle(loopInstance, 'audit-sess')
-
-      const rows = getRows()
-      // No phantom final_auditing row: start-final-audit transition recording
-      // is gated on successful phase persistence inside startFinalAuditTransition.
-      expect(rows.filter(r => r.transitionKind === 'start-final-audit')).toHaveLength(0)
-      expect(rows.filter(r => r.toPhase === 'final_auditing')).toHaveLength(0)
-      // handlePromptError increments the error count but does not terminate
-      // (no retryFn, errorCount starts at 0, MAX_RETRIES not yet exhausted),
-      // so no terminal row is produced either.
-      expect(rows.filter(r => r.transitionKind === 'terminate')).toHaveLength(0)
     })
   })
 
@@ -522,15 +487,14 @@ describe('Runtime transition logging', () => {
     })
   })
 
-  describe('Bug 8: terminateLoop records the authoritative phase on final-audit provider-limit', () => {
-    test('persisted final-audit error with usage-limit terminates with fromPhase=final_auditing', async () => {
-      // A loop in final_auditing whose assistant message carries a provider-
-      // limit error signal must terminate with fromPhase=final_auditing. This
-      // guards the defensive fix in terminateLoop that adopts the authoritative
-      // under-admission-guard state rather than the caller's snapshot: a stale
-      // caller could have recorded the wrong fromPhase/iteration/session.
+  describe('Bug 8: terminateLoop records the authoritative phase on provider-limit', () => {
+    test('persisted audit error with usage-limit terminates with fromPhase=auditing', async () => {
+      // A loop in auditing whose assistant message carries a provider-limit
+      // error signal must terminate with fromPhase=auditing. This guards the
+      // defensive fix in terminateLoop that adopts the authoritative
+      // under-admission-guard state rather than the caller's snapshot.
       const state = buildInitialState({
-        phase: 'final_auditing',
+        phase: 'auditing',
         sessionId: 'audit-sess',
         iteration: 2,
         maxIterations: 10,
@@ -570,9 +534,7 @@ describe('Runtime transition logging', () => {
       expect(rows).toHaveLength(1)
       expect(rows[0].transitionKind).toBe('terminate')
       expect(rows[0].eventType).toBe('provider_limit')
-      // Authoritative phase at termination time — final_auditing, not a stale
-      // caller-supplied phase.
-      expect(rows[0].fromPhase).toBe('final_auditing')
+      expect(rows[0].fromPhase).toBe('auditing')
       expect(rows[0].toPhase).toBeNull()
       expect(rows[0].status).toBe('errored')
       expect(rows[0].iteration).toBe(2)

@@ -1,7 +1,8 @@
 import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 import { formatFindingDetails } from '../utils/review-format'
-import { auditScope } from '../loop/state'
+import { auditScope, type LoopState } from '../loop/state'
+import { isFindingInSectionScope } from '../loop/section-scope'
 
 const z = tool.schema
 
@@ -28,17 +29,17 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
   }
 
   /**
-   * Phases where current-section scoping must be bypassed: the final audit
-   * reviews all sections, and the final-audit fix pass works on the
-   * cross-section findings that audit produced.
+   * Sectioned loops scope review tools to the findings that block the current
+   * section: cross-section findings plus findings attributed to the current or
+   * an earlier section. The treating phase is the audit or its coding retry.
    */
-  function isFinalAuditScope(phase: string): boolean {
-    return phase === 'final_auditing' || phase === 'final_audit_fix'
+  function isSectionScopedPhase(state: LoopState): boolean {
+    return state.totalSections > 0 && (state.phase === 'auditing' || state.phase === 'coding')
   }
 
   return {
     'review-write': tool({
-      description: 'Store a code review finding with file location, severity, and description. Automatically injects loopName and sectionIndex from the current loop section (not during the final audit — pass sectionIndex explicitly there). Use crossSection: true to write a cross-section finding (sectionIndex null). Use sectionIndex to override the auto-injected value.',
+      description: 'Store a code review finding with file location, severity, and description. Automatically injects loopName and sectionIndex from the current loop section. Use crossSection: true to write a cross-section finding (sectionIndex null). Use sectionIndex to override the auto-injected value.',
       args: {
         file: z.string().describe('The file path where the finding is located'),
         line: z.number().describe('The line number of the finding'),
@@ -63,10 +64,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
         row.loopName = await resolveLoopName(toolCtx)
         if (row.loopName) {
           const loopState = loop.service.getActiveState(row.loopName)
-          // During the final audit the "current section" is just the last section;
-          // auto-injecting it would misattribute cross-section findings, so the
-          // final audit must pass sectionIndex explicitly (matching read/delete).
-          if (loopState && loopState.totalSections > 0 && !isFinalAuditScope(loopState.phase)) {
+          if (loopState && loopState.totalSections > 0) {
             row.sectionIndex = loopState.currentSectionIndex
           }
         }
@@ -102,12 +100,12 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
     }),
 
     'review-read': tool({
-      description: 'Retrieve code review findings. No args lists findings for the current scope; outside a loop only non-loop findings are returned. Use loopName to target a specific loop (e.g. a completed loop you are reviewing from outside it), which returns all of that loop\'s findings across sections. Use file to filter by file path. Use pattern for regex search. Automatically scoped to current section when running in a sectioned loop. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections. With attempts: true, return the durable audit-attempt history as JSON {attempts, nextBeforeId} instead of findings — paginate with beforeId (positive integer cursor) and limit (1-100); file/pattern/crossSection filtering is rejected in that mode. Attempt scope follows the same scoping rules as findings: default current scope, explicit loopName or allSections: true returns all scopes.',
+      description: 'Retrieve code review findings. No args lists findings for the current scope (in a sectioned loop: cross-section findings plus findings from the current or an earlier section); outside a loop only non-loop findings are returned. Use loopName to target a specific loop (e.g. a completed loop you are reviewing from outside it), which returns all of that loop\'s findings across sections. Use file to filter by file path. Use pattern for regex search. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections. With attempts: true, return the durable audit-attempt history as JSON {attempts, nextBeforeId} instead of findings — paginate with beforeId (positive integer cursor) and limit (1-100); file/pattern/crossSection filtering is rejected in that mode. Attempt scope follows the same scoping rules as findings: default current scope, explicit loopName or allSections: true returns all scopes.',
       args: {
         loopName: z.string().optional().describe('Target findings from a specific loop by name, overriding the session-resolved scope. Returns all of that loop\'s sections.'),
         file: z.string().optional().describe('Filter findings by file path'),
         pattern: z.string().optional().describe('Regex pattern to search across findings'),
-        crossSection: z.boolean().optional().describe('Return only cross-section findings (sectionIndex null) instead of current section.'),
+        crossSection: z.boolean().optional().describe('Return only cross-section findings (sectionIndex null) instead of the default scope.'),
         allSections: z.boolean().optional().describe('Return all findings across all sections, ignoring current section scoping.'),
         attempts: z.boolean().optional().describe('Return the loop attempt history as JSON {attempts, nextBeforeId} instead of findings.'),
         beforeId: z.number().optional().describe('Pagination cursor for attempts mode: return attempts with id < beforeId. Must be a positive integer.'),
@@ -147,18 +145,14 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           : await resolveLoopName(toolCtx)
         let findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
 
-        // Filter by section scope when in a sectioned loop
-        // During final_auditing, return all sections so the auditor can see cross-section findings
-        // An explicit loopName targets another loop, so its sections are all returned
         if (loopName && !explicitLoop && !args.allSections) {
           const loopState = loop.service.getActiveState(loopName)
-          if (loopState && loopState.totalSections > 0 && !isFinalAuditScope(loopState.phase)) {
+          if (loopState && isSectionScopedPhase(loopState)) {
             if (args.crossSection) {
               // crossSection: return only cross-section findings (sectionIndex === null)
               findings = findings.filter((f) => f.sectionIndex === null)
             } else {
-              // Default: return only current section findings (cross-section findings surface at final audit only)
-              findings = findings.filter((f) => f.sectionIndex === loopState.currentSectionIndex)
+              findings = findings.filter((f) => isFindingInSectionScope(f, loopState.currentSectionIndex))
             }
           }
         } else if (explicitLoop && args.crossSection) {
@@ -197,7 +191,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
     }),
 
     'review-delete': tool({
-      description: 'Delete a code review finding by file and line number. Automatically scoped to current section when running in a sectioned loop. Use crossSection=true to delete cross-section findings.',
+      description: 'Delete a code review finding by file and line number. In a sectioned loop the default scope is the findings from the current or an earlier section plus cross-section findings. Use crossSection=true to delete a cross-section finding.',
       args: {
         file: z.string().describe('The file path of the finding to delete'),
         line: z.number().describe('The line number of the finding to delete'),
@@ -212,8 +206,15 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           sectionIndex = null
         } else if (sectionIndex === undefined && loopName) {
           const loopState = loop.service.getActiveState(loopName)
-          if (loopState && loopState.totalSections > 0 && !isFinalAuditScope(loopState.phase)) {
-            sectionIndex = loopState.currentSectionIndex
+          if (loopState && isSectionScopedPhase(loopState)) {
+            const matches = reviewFindingsRepo
+              .listByLoopName(projectId, loopName)
+              .filter(f => f.file === args.file && f.line === args.line && isFindingInSectionScope(f, loopState.currentSectionIndex))
+            const target =
+              matches.find(f => f.sectionIndex === loopState.currentSectionIndex) ??
+              matches.filter(f => f.sectionIndex !== null).sort((a, b) => (b.sectionIndex ?? 0) - (a.sectionIndex ?? 0))[0] ??
+              matches.find(f => f.sectionIndex === null)
+            sectionIndex = target ? target.sectionIndex : loopState.currentSectionIndex
           }
         }
 

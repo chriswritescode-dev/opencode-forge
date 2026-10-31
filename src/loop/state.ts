@@ -32,13 +32,14 @@ interface LoopStateBase {
   auditorFallbackIndex?: number
   currentSectionIndex: number
   totalSections: number
-  finalAuditDone: boolean
   executionVariant?: string
   auditorVariant?: string
   /** Per-loop sandbox overrides; undefined when the loop uses config defaults. */
   sandboxSettings?: LoopSandboxSettings
   /** Exact commit sha the loop's worktree branched from; undefined for legacy rows started before base commits were recorded. */
   baseCommit?: string
+  /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
+  standbySessionId?: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -49,22 +50,13 @@ export interface AuditingState extends LoopStateBase {
   phase: 'auditing'
 }
 
-export interface FinalAuditingState extends LoopStateBase {
-  phase: 'final_auditing'
-}
-
 export interface PostActionState extends LoopStateBase {
   phase: 'post_action'
 }
 
-export interface FinalAuditFixState extends LoopStateBase {
-  phase: 'final_audit_fix'
-}
-
-export type LoopState = CodingState | AuditingState | FinalAuditingState | PostActionState | FinalAuditFixState
+export type LoopState = CodingState | AuditingState | PostActionState
 
 export function auditScope(state: Pick<LoopState, 'phase' | 'totalSections' | 'currentSectionIndex'>): string {
-  if (state.phase === 'final_auditing' || state.phase === 'final_audit_fix') return 'final'
   return state.totalSections > 0 ? `section:${state.currentSectionIndex}` : 'plan'
 }
 
@@ -98,11 +90,11 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     auditorFallbackIndex: row.auditorFallbackIndex ?? 0,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
-    finalAuditDone: row.finalAuditDone === 1,
     executionVariant: row.executionVariant ?? undefined,
     auditorVariant: row.auditorVariant ?? undefined,
     sandboxSettings: row.sandboxSettings ?? undefined,
     baseCommit: row.baseCommit ?? undefined,
+    standbySessionId: row.standbySessionId ?? undefined,
   }
 
   switch (row.phase) {
@@ -110,12 +102,8 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
       return { ...base, phase: 'coding' } satisfies CodingState
     case 'auditing':
       return { ...base, phase: 'auditing' } satisfies AuditingState
-    case 'final_auditing':
-      return { ...base, phase: 'final_auditing' } satisfies FinalAuditingState
     case 'post_action':
       return { ...base, phase: 'post_action' } satisfies PostActionState
-    case 'final_audit_fix':
-      return { ...base, phase: 'final_audit_fix' } satisfies FinalAuditFixState
   }
 }
 
@@ -157,10 +145,10 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     auditorFallbackIndex: state.auditorFallbackIndex ?? 0,
     currentSectionIndex: state.currentSectionIndex,
     totalSections: state.totalSections,
-    finalAuditDone: state.finalAuditDone ? 1 : 0,
     executionVariant: state.executionVariant ?? null,
     auditorVariant: state.auditorVariant ?? null,
     sandboxSettings: state.sandboxSettings ?? null,
     baseCommit: state.baseCommit ?? null,
+    standbySessionId: state.standbySessionId ?? null,
   }
 }

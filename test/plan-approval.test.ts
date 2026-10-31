@@ -96,7 +96,6 @@ describe('Plan Approval Tool Interception', () => {
         worktree: true,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
       }
       loopService.setState(loopName, state as any)
     }

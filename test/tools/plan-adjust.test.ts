@@ -55,7 +55,7 @@ describe('plan-adjust tool', () => {
     currentSectionIndex?: number
     totalSections?: number
     currentSessionId?: string
-    phase?: 'auditing' | 'coding' | 'final_auditing' | 'post_action' | 'final_audit_fix'
+    phase?: 'auditing' | 'coding' | 'post_action'
   }) {
     loopsRepo.insert({
       projectId,
@@ -84,7 +84,6 @@ describe('plan-adjust tool', () => {
       hostSessionId: null,
       currentSectionIndex: opts?.currentSectionIndex ?? 0,
       totalSections: opts?.totalSections ?? 0,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }, { lastAuditResult: null })

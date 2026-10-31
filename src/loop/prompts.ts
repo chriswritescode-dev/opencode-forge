@@ -4,8 +4,9 @@ import type { LoopAttemptRow } from '../storage/repos/loop-attempts-repo'
 import type { SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
 import { CODER_DECISIONS_INSTRUCTION } from '../utils/coder-decisions'
-import { findingRecurrenceKey, RECURRENCE_ESCALATION_THRESHOLD } from './finding-recurrence'
+import { findingRecurrenceKey, isRecurrenceEscalated } from './finding-recurrence'
 import { formatFindingDetails } from '../utils/review-format'
+import { blockingBugFindings } from './section-scope'
 
 export interface SectionDigestEntry {
   index: number
@@ -24,6 +25,7 @@ export interface PromptContext {
   getCoderDecisions(loopName?: string): string | null
   getFindingRecurrence(loopName?: string): Map<string, number>
   getAttemptHistory?(state: LoopState, limit?: number): LoopAttemptRow[]
+  getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
 }
 
 /**
@@ -54,13 +56,6 @@ function formatSectionsSummary(digest: SectionDigestEntry[]): string {
   }).join('\n\n')
 }
 
-function buildEffectiveSectionPlanBlock(ctx: PromptContext, state: LoopState): string {
-  const rows = ctx.getSectionPlans(state)
-  if (rows.length === 0) return ''
-  const body = rows.map(r => `### Section ${r.sectionIndex + 1} (index ${r.sectionIndex}): ${r.title}\n${r.content}`).join('\n\n')
-  return `\n\n## Effective section plan\nThese live section rows supersede the master plan's original per-section instructions; the master objective and top-level Verification remain authoritative. Titles are display labels — the content under each heading is the executable requirement.\n\n${body}`
-}
-
 function getEscalatedFindings(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): { file: string; line: number; count: number }[] {
   const loopName = state.loopName
   const bugFindings = outstandingBugs ?? ctx.getOutstandingFindings(loopName, 'bug')
@@ -69,7 +64,7 @@ function getEscalatedFindings(ctx: PromptContext, state: LoopState, outstandingB
   for (const f of bugFindings) {
     const key = findingRecurrenceKey(f)
     const count = recurrence.get(key) ?? 0
-    if (count >= RECURRENCE_ESCALATION_THRESHOLD) {
+    if (isRecurrenceEscalated(count)) {
       escalated.push({ file: f.file, line: f.line, count })
     }
   }
@@ -150,7 +145,7 @@ function buildDeltaAuditGuidance(latest: LoopAttemptRow): string[] {
       '- Delta-first is ordering, not narrowing: verify ALL outstanding findings via review-read, the affected callers/contracts, and the acceptance criteria in scope.',
       '- Rerun any verification the delta invalidated, plus the explicit plan checks for this scope.',
       '- Expand beyond the delta when changed shared behavior affects callers or contracts outside the span.',
-      '- Do not repeat unchanged inspection or unaffected verification merely because this is a fresh session. Carry forward previous evidence only where the delta and plan have not invalidated it.',
+      '- Do not repeat unchanged inspection or unaffected verification merely because this is a new audit turn. Carry forward previous evidence only where the delta and plan have not invalidated it.',
       '- This delta is only the last known previously audited span; if either ref is unavailable or the worktree has drifted past the snapshot commit, fall back to the full established scope for this phase.',
     )
   } else {
@@ -211,14 +206,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, no
     return buildSectionContinuationPrompt(ctx, state, notice, outstandingBugs)
   }
 
-  let systemLine = `Loop iteration ${String(state.iteration)}`
-  if (state.maxIterations > 0) {
-    systemLine += ` / ${String(state.maxIterations)}`
-  } else {
-    systemLine += ` | No max iterations set - loop runs until auditor all-clear or cancelled`
-  }
-
-  let prompt = `[${systemLine}]`
+  let prompt = `[${iterationSystemLine(state)}]`
 
   prompt += buildLoopNoticeBlock(notice)
   prompt += buildAttemptHistoryBlock(ctx, state, 'coder')
@@ -242,9 +230,6 @@ function auditChangeScope(state: Pick<LoopState, 'baseCommit'>): string {
 
 export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
   if (state.totalSections > 0) {
-    if (state.phase === 'final_auditing') {
-      return buildFinalAuditPrompt(ctx, state)
-    }
     return buildSectionAuditPrompt(ctx, state)
   }
 
@@ -361,7 +346,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
     ? `call \`section-read\` with \`section_index: ${idx + 1}\` and verify its plan against the current worktree`
     : 'this is the last section, so skip the proactive next-section check'
 
-  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck} — then end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}\n- \`plan-adjust\` (section audits only; unavailable in the final audit) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
+  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to a later, not-yet-started section do not block this audit.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck} — then end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {
@@ -390,35 +375,68 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
 
   header += buildLoopNoticeBlock(notice)
   header += buildAttemptHistoryBlock(ctx, state, 'coder')
-  header += buildOutstandingFindingsCoderBlock(
-    (outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug')).filter(f => f.sectionIndex === idx),
-  )
-  header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
+  const blockingBugs = outstandingBugs ? blockingBugFindings(outstandingBugs, state) : ctx.getBlockingBugFindings(state)
+  header += buildOutstandingFindingsCoderBlock(blockingBugs)
+  header += buildRecurringFindingsCoderBlock(ctx, state, blockingBugs)
 
   return header + CODER_DECISIONS_INSTRUCTION
 }
 
-export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): string {
-  const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
-  const digest = ctx.getCompletedSectionDigest(state)
+/** The `[Loop iteration i/max]` system line shared by non-sectioned coder prompts. */
+function iterationSystemLine(state: Pick<LoopState, 'iteration' | 'maxIterations'>): string {
+  if (state.maxIterations > 0) return `Loop iteration ${String(state.iteration)} / ${String(state.maxIterations)}`
+  return `Loop iteration ${String(state.iteration)} | No max iterations set - loop runs until auditor all-clear or cancelled`
+}
 
-  let header = `[Final-audit fix -- iteration ${state.iteration}/${state.maxIterations}]`
-  header += `\n\n## Master Plan\n${planText}`
-  header += buildEffectiveSectionPlanBlock(ctx, state)
+/**
+ * Follow-up sent to a reused coder session on a same-section retry. The session
+ * already holds the section plan, the plan text and the earlier attempt history,
+ * so this carries only the loop notice, the findings that are still open and the
+ * decisions instruction, keeping the retry cheap.
+ */
+export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[], notice?: string): string {
+  const header = state.totalSections > 0
+    ? `[Loop section ${String(state.currentSectionIndex + 1)}/${String(state.totalSections)} -- iteration ${String(state.iteration)}/${String(state.maxIterations)} (follow-up)]`
+    : `[${iterationSystemLine(state)} (follow-up)]`
 
-  if (digest.length > 0) {
-    header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
-  }
+  const findings = state.totalSections > 0
+    ? (outstandingBugs ? blockingBugFindings(outstandingBugs, state) : ctx.getBlockingBugFindings(state))
+    : ctx.getOutstandingFindings(state.loopName)
 
-  header += buildAttemptHistoryBlock(ctx, { ...state, phase: 'final_audit_fix' } as LoopState, 'coder')
+  const intro = findings.length > 0
+    ? 'The audit of your previous changes left the findings below open. Your earlier context still applies; re-read any file you change.'
+    : 'The audit of your previous changes left no open findings. Your earlier context still applies; re-read any file you change.'
 
-  header += buildOutstandingFindingsCoderBlock(outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug'))
+  let prompt = `${header}${buildLoopNoticeBlock(notice)}\n\n${intro}`
+  prompt += buildOutstandingFindingsCoderBlock(findings)
+  prompt += buildRecurringFindingsCoderBlock(ctx, state, state.totalSections > 0 ? findings : outstandingBugs)
 
-  header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final integration audit re-runs over the loop's full accumulated changes — ${auditChangeScope(state)} — and the affected integration paths.`
+  return prompt + CODER_DECISIONS_INSTRUCTION
+}
 
-  header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
+/**
+ * Follow-up sent to a reused audit session for the next same-section attempt.
+ * The session keeps its earlier reads and command results; this restates the
+ * coder's decisions, the latest attempt's delta guidance and the verification
+ * steps for the findings that are still open.
+ */
+export function buildAuditFollowUpPrompt(ctx: PromptContext, state: LoopState): string {
+  const header = state.totalSections > 0
+    ? `[Loop section audit ${String(state.currentSectionIndex + 1)}/${String(state.totalSections)} (follow-up)]`
+    : `[Loop audit iteration ${String(state.iteration)}${state.maxIterations > 0 ? ` / ${String(state.maxIterations)}` : ''} (follow-up)]`
 
-  return header + CODER_DECISIONS_INSTRUCTION
+  let prompt = `${header}\n\nThe coder has finished the next attempt for this scope. Your earlier file reads and command results may be stale.`
+
+  prompt += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
+  prompt += buildAttemptHistoryBlock(ctx, state, 'auditor')
+
+  const summaryRule = state.totalSections > 0
+    ? `\n- When this section is clear, end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}`
+    : ''
+
+  prompt += `\n\n---\nAudit instructions:\n- Re-read the files that changed since your last turn (\`git status\` and \`git diff\` show what the coder touched).\n- Use review-read to load the findings in scope, verify every outstanding one against the current code, delete the resolved ones with review-delete, and keep the unresolved ones open.\n- Write severity: bug findings for unmet acceptance criteria or failed verification.\n- Verify with concrete source or contract evidence and the finding's own narrow verification rather than re-running unrelated work.${summaryRule}`
+
+  return prompt
 }
 
 export interface PostActionPromptOptions {
@@ -474,33 +492,4 @@ const POST_ACTION_COMPLETION_RULE = `Do not end your turn while any step is stil
  */
 export function buildPostActionContinuePromptText(): string {
   return `Your last reply did not confirm that the post-action workflow is complete. Check every step of it now. If anything is unfinished — subagent results not yet received or merged, findings or summaries not yet saved, checks not yet run — finish it in this turn, running subagents in the foreground so you wait for their results.\n\n${POST_ACTION_COMPLETION_RULE}`
-}
-
-export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
-  const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
-  const digest = ctx.getCompletedSectionDigest(state)
-  const effectiveSectionPlan = buildEffectiveSectionPlanBlock(ctx, state)
-
-  let header = `[Final integration audit]`
-  header += `\n\n## Master Plan\n${planText}`
-  header += effectiveSectionPlan
-
-  if (digest.length > 0) {
-    header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
-  }
-
-  header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
-  header += buildAttemptHistoryBlock(ctx, { ...state, phase: 'final_auditing' } as LoopState, 'auditor')
-
-  const verificationScope = effectiveSectionPlan
-    ? 'Verify the master plan\'s objective and top-level Verification commands, then verify the requirements in the Effective section plan.'
-    : 'Verify the master plan\'s objective and top-level Verification commands.'
-  header += `\n\n---\nFinal audit instructions:\n- Review scope: the loop's full accumulated changes — ${auditChangeScope(state)}.\n- Delta-first ordering from the attempt history may prioritize what you verify first, but the full integration scope above stays mandatory — the delta never narrows this final gate.\n- ${verificationScope}\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Use review-read to load findings; {attempts: true, beforeId: <id>, limit: <n>} pages older attempt history.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
-
-  const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
-  if (recurringBlock) {
-    header += `\n\n${recurringBlock}`
-  }
-
-  return header
 }

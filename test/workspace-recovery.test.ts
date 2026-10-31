@@ -29,7 +29,6 @@ function makeState(overrides: Partial<LoopState> = {}): LoopState {
     phase: 'coding',
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: false,
     ...overrides,
   }
 }

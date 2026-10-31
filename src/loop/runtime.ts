@@ -5,6 +5,7 @@ import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
 import type { LoopState } from './state'
 import { transitionSectionIndex } from './state'
+import { isFindingInSectionScope } from './section-scope'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
@@ -15,12 +16,12 @@ import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopAttemptsRepo } from '../storage/repos/loop-attempts-repo'
 import { activeLoopSessions, createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
-import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase } from '../utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase, standbyPhaseFor } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, type LoopPermissionRulesetOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopSessionReuseRole } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
@@ -327,6 +328,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const MAX_POST_ACTION_CONTINUES = 3
 
   const codingLaunchRecoveryAttempts = new Map<string, number>()
+  /**
+   * Latest assistant message id seen in a session when it was activated for
+   * reuse (loopName → session). A reused session still lists the previous
+   * turn's reply until the new one arrives, so a phase handler that reads that
+   * same id must treat the turn as "no assistant reply yet" instead of
+   * processing the stale result. Per-instance state is correct here: only the
+   * instance that owns the loop's worktree drives its phases.
+   */
+  const standbyTurnBaselines = new Map<string, { sessionId: string; messageId?: string }>()
   interface RetainedSessionMeta {
     sessionId: string
     role: 'code' | 'auditor'
@@ -352,8 +362,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 }
 
   /**
-   * Optional metadata passed into shared commit helpers (rotateAndSendContinuation,
-   * startFinalAuditTransition) so the non-terminal transition row is recorded
+   * Optional metadata passed into shared commit helpers (rotateAndSendContinuation)
+   * so the non-terminal transition row is recorded
    * AFTER the persisted phase commit but BEFORE the prompt send. Logging between
    * those two points guarantees (a) no phantom row when phase persistence fails
    * and (b) the row's id precedes any terminate row produced by a downstream
@@ -388,12 +398,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * Terminal transitions are logged inside `terminateLoop` (whose `terminatingLoops`
    * admission guard is the single source of truth for terminal rows), so callers
    * MUST only invoke this helper for `continue`/`rotate`/`advance-section`/
-   * `rewind-section`/`fix-for-final-audit`/`start-final-audit` outcomes.
+   * `rewind-section` outcomes.
    * `noop` outcomes produce no row.
    *
    * NOTE: callers must invoke this AFTER the corresponding phase persistence
    * (replaceSession / setPhase) succeeds. For paths routed through
-   * `rotateAndSendContinuation` or `startFinalAuditTransition`, pass the
+   * `rotateAndSendContinuation`, pass the
    * transition descriptor into those helpers instead so the row lands between
    * the phase commit and the prompt send.
    */
@@ -531,19 +541,218 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
 
   /**
+   * Records the assistant message id a reused session already held when it was
+   * activated, so its first read cannot be mistaken for the new turn's reply.
+   */
+  function setStandbyTurnBaseline(loopName: string, sessionId: string, messageId: string | undefined): void {
+    if (messageId) standbyTurnBaselines.set(loopName, { sessionId, messageId })
+    else standbyTurnBaselines.delete(loopName)
+  }
+
+  function clearStandbyTurnBaseline(loopName: string): void {
+    standbyTurnBaselines.delete(loopName)
+  }
+
+  /**
+   * Whether `messageId` is the reply the reused session already held at
+   * activation: the new turn's assistant message has not landed yet, so the
+   * phase handler must treat it as "no assistant reply" rather than a result.
+   */
+  function isStaleReusedTurn(loopName: string, sessionId: string, messageId: string | undefined): boolean {
+    const baseline = standbyTurnBaselines.get(loopName)
+    return !!baseline && baseline.sessionId === sessionId && baseline.messageId !== undefined && baseline.messageId === messageId
+  }
+
+  /**
+   * A standby session that may carry over into the next phase. `needsCompaction`
+   * marks a session whose last turn reached the role's context-reuse threshold:
+   * it is still reused, but its context is compacted before the follow-up turn.
+   */
+  interface StandbyCandidate {
+    sessionId: string
+    latestAssistantMessageId?: string
+    needsCompaction: boolean
+  }
+
+  /**
+   * Whether a session of `role` can carry over as the next standby: it must
+   * still exist, and its role's reuse percentage must not be `0`. A last
+   * assistant turn at or above that percentage of the model's context window
+   * marks the candidate for compaction instead of rejecting it. An unknown
+   * context window (no model on the message, a failed lookup, or no limit)
+   * allows reuse without compaction.
+   */
+  async function inspectStandbyCandidate(
+    sessionId: string,
+    state: LoopState,
+    role: LoopSessionReuseRole,
+  ): Promise<StandbyCandidate | null> {
+    try {
+      const messages = await client.session.messages({ sessionID: sessionId, directory: state.worktreeDir, limit: 4 })
+      if (messages.length === 0) {
+        logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; the session has no messages`)
+        return null
+      }
+      const lastAssistant = [...messages].reverse().find((message) => message.info.role === 'assistant')
+      if (!lastAssistant) return { sessionId, needsCompaction: false }
+
+      const maxPercent = resolveSessionReuseContextPercent(getConfig(), role)
+      if (maxPercent === 0) {
+        logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; session reuse is disabled for the ${role} role`)
+        return null
+      }
+
+      const tokens = lastAssistant.info.tokens
+      const contextTokens = tokens ? tokens.input + tokens.cache.read + tokens.cache.write : 0
+      const { providerID, modelID } = lastAssistant.info
+
+      let contextLimit: number | undefined
+      if (providerID && modelID) {
+        try {
+          contextLimit = await client.model.contextLimit({ providerID, modelID })
+        } catch (err) {
+          logger.log(`Loop: context-window lookup failed for ${providerID}/${modelID} (${role} session ${sessionId})`, err)
+          contextLimit = undefined
+        }
+      }
+
+      if (contextLimit === undefined) {
+        logger.log(`Loop: reusing session ${sessionId} (${role}) for ${state.loopName}; used ${contextTokens} tokens with an unknown context window for ${providerID ?? 'unknown'}/${modelID ?? 'unknown'}`)
+        return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: false }
+      }
+
+      const contextPercent = (contextTokens / contextLimit) * 100
+      if (contextPercent >= maxPercent) {
+        logger.log(`Loop: reusing session ${sessionId} (${role}) for ${state.loopName} with compaction; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), at or above the ${maxPercent}% reuse threshold`)
+        return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: true }
+      }
+
+      logger.log(`Loop: session ${sessionId} (${role}) is reusable for ${state.loopName}; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), below the ${maxPercent}% reuse threshold`)
+      return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: false }
+    } catch (err) {
+      logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; session lookup failed`, err)
+      return null
+    }
+  }
+
+  /**
+   * Compacts a reused standby session before its follow-up turn when its last
+   * turn reached the context threshold. Compaction and the follow-up prompt are
+   * both queued, so the host runs the compaction first and the prompt lands in
+   * the same session. Returns false when the compaction could not be enqueued,
+   * so the caller rotates to a fresh session instead of prompting a session
+   * whose context would overflow.
+   */
+  async function compactStandbySession(
+    loopName: string,
+    state: LoopState,
+    standby: StandbyCandidate,
+  ): Promise<boolean> {
+    if (!standby.needsCompaction) return true
+    try {
+      await client.session.compact({ sessionID: standby.sessionId, directory: state.worktreeDir })
+      logger.log(`Loop: compacting reused session ${standby.sessionId} for ${loopName} before its follow-up turn`)
+      return true
+    } catch (err) {
+      logger.log(`Loop: compaction of reused session ${standby.sessionId} failed for ${loopName}; rotating to a fresh session`, err)
+      return false
+    }
+  }
+
+  /**
+   * The single reusability predicate for the recorded standby: it must still
+   * exist, its role's reuse percentage must not be `0`, and it must have no
+   * blocking bug finding at the recurrence escalation threshold. Standbys only
+   * ever hold the other role of the current section (every section change and
+   * loop end releases them), so same-section membership holds by construction
+   * rather than by a stored field.
+   */
+  async function inspectReusableStandby(state: LoopState): Promise<StandbyCandidate | null> {
+    const standbySessionId = state.standbySessionId
+    if (!standbySessionId || standbySessionId === state.sessionId) return null
+
+    if (loopService.hasEscalatedBugFindings(state)) {
+      logger.log(`Loop: standby session ${standbySessionId} is not reusable for ${state.loopName}; a bug finding reached the recurrence escalation threshold`)
+      return null
+    }
+
+    return inspectStandbyCandidate(standbySessionId, state, usageRoleForPhase(standbyPhaseFor(state.phase)))
+  }
+
+  /**
+   * Shared session-activation bookkeeping for a freshly created session and a
+   * reused standby session: clears the old prompt lifecycle and retry timer,
+   * registers the new session, keeps the retired session resolvable for delayed
+   * errors, and restarts the watchdog.
+   */
+  function activateLoopSession(loopName: string, previousSessionId: string | null, newSessionId: string): void {
+    clearPromptPending(projectId, loopName, logger)
+    const oldRetryTimeout = retryTimeouts.get(loopName)
+    if (oldRetryTimeout) {
+      clearTimeout(oldRetryTimeout)
+      retryTimeouts.delete(loopName)
+    }
+    loopService.registerLoopSession(newSessionId, loopName)
+    sessionToLoop.set(newSessionId, loopName)
+    if (previousSessionId) sessionToLoop.set(previousSessionId, loopName)
+    clearStandbyTurnBaseline(loopName)
+    watchdog.stop(loopName)
+    watchdog.start(loopName)
+  }
+
+  /**
+   * Captures usage for and deletes the loop's recorded standby session, then
+   * clears the column. A standby always holds the role opposite the current
+   * phase, so its usage is attributed through the opposite phase's role.
+   */
+  async function discardStandbySession(loopName: string, state: LoopState, context: string): Promise<void> {
+    const standbySessionId = state.standbySessionId
+    if (!standbySessionId) return
+    loopService.setStandbySessionId(loopName, null)
+    if (standbySessionId === state.sessionId) return
+    const standbyPhase = standbyPhaseFor(state.phase)
+    await scheduleSessionDelete({
+      loopName,
+      sessionId: standbySessionId,
+      directory: state.worktreeDir,
+      context,
+      phase: standbyPhase,
+      state,
+    })
+  }
+
+  /** Re-titles a reused session for the new iteration. Best-effort: a failed title update never blocks the phase switch. */
+  async function updateReusedSessionTitle(
+    loopName: string,
+    sessionId: string,
+    state: LoopState,
+    context: { iteration: number; currentSectionIndex: number; totalSections: number },
+  ): Promise<void> {
+    try {
+      await client.session.update({
+        sessionID: sessionId,
+        directory: state.worktreeDir,
+        title: formatLoopSessionTitle(loopName, context),
+      })
+    } catch (err) {
+      logger.debug(`Loop: failed to update the title of reused session ${sessionId}`, err)
+    }
+  }
+
+  /**
    * Rotates to a new session in the same workspace. Creates and binds the new session FIRST,
-   * then fire-and-forget deletes the old session. This ordering ensures the workspace always
-   * has at least one bound session, preventing the host from pruning it from non-focused TUIs.
+   * then (unless `options.keepPreviousSession`) fire-and-forget deletes the old session, so the
+   * caller can retain it as the standby. This ordering ensures the workspace always has at
+   * least one bound session, preventing the host from pruning it from non-focused TUIs.
    */
   async function rotateSession(
     loopName: string,
     state: LoopState,
     titleContext?: { iteration?: number; currentSectionIndex?: number },
+    options?: { keepPreviousSession?: boolean },
   ): Promise<string> {
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
-
-    clearPromptPending(projectId, loopName, logger)
 
     logger.log(
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
@@ -577,22 +786,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       detachFromWorkspace(loopName, state, 'during session rotation')
     }
 
-    const oldRetryTimeout = retryTimeouts.get(loopName)
-    if (oldRetryTimeout) {
-      clearTimeout(oldRetryTimeout)
-      retryTimeouts.delete(loopName)
+    activateLoopSession(loopName, oldSessionId, newSessionId)
+
+    if (!options?.keepPreviousSession) {
+      void scheduleSessionDelete({ loopName, sessionId: oldSessionId, directory: sessionDir, context: 'after session rotation', phase: state.phase, state })
     }
-
-    loopService.registerLoopSession(newSessionId, loopName)
-    sessionToLoop.set(newSessionId, loopName)
-    // Retain the old session in the reverse index so delayed errors from the
-    // pre-rotation session still resolve to this loop after DB-level replacement.
-    sessionToLoop.set(oldSessionId, loopName)
-
-    watchdog.stop(loopName)
-    watchdog.start(loopName)
-
-    void scheduleSessionDelete({ loopName, sessionId: oldSessionId, directory: sessionDir, context: 'after session rotation', phase: state.phase, state })
 
     logger.log(`Loop: rotated session ${oldSessionId} → ${newSessionId}`)
 
@@ -642,6 +840,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
+   * Shared completion tail: enter the configured post-action phase when one is
+   * enabled, otherwise terminate the loop with `reason`. Sectioned completion
+   * (the last open section audit) and the non-sectioned audit-clear path both
+   * finish through here so the post-action/terminate decision has one owner.
+   */
+  async function finishLoop(loopName: string, state: LoopState, reason: TerminationReason): Promise<void> {
+    await discardStandbySession(loopName, state, 'at loop completion')
+    if (reason.kind === 'completed' && await enterPostActionPhase(loopName, state)) {
+      // The post_action entry row is logged inside enterPostActionPhase (after
+      // the persisted phase commit, before the prompt send) so a prompt-send
+      // failure cannot insert a terminal row before the phase row.
+      return
+    }
+    await terminateLoop(loopName, state, reason)
+  }
+
+  /**
    * Shared: check audit clear and terminate if ready.
    * Returns true if the loop was terminated (caller should return).
    */
@@ -652,11 +867,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     logger.debug(`Loop: checking audit clear loop=${loopName} auditCount=${currentState.auditCount ?? 0} loopName=${currentState.loopName ?? '(none)'}`)
     if ((currentState.auditCount ?? 0) < 1) {
       logger.debug(`Loop: audit clear gate blocked by auditCount<1`)
-      return false
-    }
-    // For sectioned loops, require finalAuditDone === true before terminating
-    if (currentState.totalSections > 0 && !currentState.finalAuditDone) {
-      logger.debug(`Loop: audit clear gate blocked for sectioned loop — finalAuditDone=false`)
       return false
     }
     const findings = loopService.getOutstandingFindings(currentState.loopName)
@@ -672,13 +882,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const trans = nextTransition(currentState, { type: 'audit-clear' })
     if (trans.kind !== 'terminate') return false
     logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)
-    if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) {
-      // The post_action entry row is logged inside enterPostActionPhase (after
-      // the persisted phase commit, before the prompt send) so a prompt-send
-      // failure cannot insert a terminal row before the phase row.
-      return true
-    }
-    await terminateLoop(loopName, currentState, trans.reason)
+    await finishLoop(loopName, currentState, trans.reason)
     logger.log(`Loop completed: auditor all-clear at iteration ${currentState.iteration} (audits=${currentState.auditCount ?? 0})`)
     return true
   }
@@ -752,9 +956,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // AND before sending the post-action prompt. If the prompt send fails below,
     // terminateLoop is invoked from inside this helper and would otherwise insert
     // its terminal row before the entry row, reversing chronological id order.
-    // The source event type mirrors the audit-clear/final-audit-clean verdict
-    // that drove the redirect; both reduce to "phase" non-terminal rows.
-    const sourceEventType = currentState.phase === 'final_auditing' ? 'final-audit-clean' : 'audit-clear'
+    // The source event type mirrors the section-clean/audit-clear verdict that
+    // drove the redirect; both reduce to "phase" non-terminal rows.
+    const sourceEventType = currentState.totalSections > 0 ? 'section-clean' : 'audit-clear'
     loopService.recordTransition(loopName, {
       eventType: sourceEventType,
       transitionKind: 'phase',
@@ -795,7 +999,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function bumpDirtyAuditRecurrence(loopName: string, bugFindings: ReviewFindingRow[], sectionIndex?: number): void {
-    const findings = sectionIndex === undefined ? bugFindings : bugFindings.filter(f => f.sectionIndex === sectionIndex)
+    const findings = sectionIndex === undefined ? bugFindings : bugFindings.filter(f => isFindingInSectionScope(f, sectionIndex))
     loopService.bumpFindingRecurrence(loopName, findings)
   }
 
@@ -830,13 +1034,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     assistantErrorDetected: boolean,
     errorContext: string,
     transition?: TransitionLogEntry,
+    options?: { keepPreviousSessionAsStandby?: boolean; resetError?: boolean },
   ): Promise<void> {
     let activeSessionId = currentState.sessionId
     try {
       activeSessionId = await rotateSession(loopName, currentState, {
         iteration: stateUpdates.iteration ?? currentState.iteration,
         currentSectionIndex: stateUpdates.currentSectionIndex ?? currentState.currentSectionIndex,
-      })
+      }, { keepPreviousSession: options?.keepPreviousSessionAsStandby })
     } catch (err) {
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
     }
@@ -845,10 +1050,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       newSessionId: activeSessionId,
       phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
-      resetError: !assistantErrorDetected && currentState.errorCount > 0,
+      resetError: options?.resetError ?? (!assistantErrorDetected && currentState.errorCount > 0),
       auditCount: stateUpdates.auditCount,
       lastAuditResult: stateUpdates.lastAuditResult ?? null,
     })
+
+    if (options?.keepPreviousSessionAsStandby && activeSessionId !== currentState.sessionId) {
+      loopService.setStandbySessionId(loopName, currentState.sessionId)
+    }
 
     if (transition) {
       // Record using the pre-transition state's iteration/sectionIndex so the
@@ -888,7 +1097,145 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
+  interface CodingSwitchInput {
+    loopName: string
+    currentState: LoopState
+    stateUpdates: Partial<LoopState>
+    /** Short findings-only prompt for a reused coder session. */
+    followUpPrompt: string
+    /** Full continuation prompt used when a fresh coder session is required. */
+    fullPrompt: string
+    assistantErrorDetected: boolean
+    errorContext: string
+    transition: TransitionLogEntry
+    /** Audit-error / audit-failure paths delete the failed audit session instead of retaining it. */
+    discardAuditSession?: boolean
+    /** Pre-resolved standby probe for a caller that already inspected it. */
+    standby?: StandbyCandidate | null
+    /** Overrides the default reset-on-successful-retry decision. */
+    resetError?: boolean
+    /** Marks the loop's model as failed after the phase commit (audit-failure recovery). */
+    markModelFailed?: boolean
+  }
+
+  /**
+   * Shared dirty-audit → coding switch. Reuses the standby coder session when it
+   * is still usable and sends only the findings follow-up; otherwise rotates to a
+   * fresh coder session with the full continuation prompt. A reused session that
+   * reached its context threshold is compacted first, and a failed compaction
+   * falls back to the fresh-session path. The audit session becomes the next
+   * standby unless it failed (then it is deleted).
+   */
+  async function switchToCodingPhase(input: CodingSwitchInput): Promise<void> {
+    const { loopName, currentState, stateUpdates, followUpPrompt, fullPrompt, assistantErrorDetected, errorContext, transition } = input
+    const auditSessionId = currentState.sessionId
+    const candidate = input.standby === undefined ? await inspectReusableStandby(currentState) : input.standby
+    const resetError = input.resetError ?? (!assistantErrorDetected && currentState.errorCount > 0)
+    let standby = candidate
+    if (standby && !await compactStandbySession(loopName, currentState, standby)) standby = null
+
+    if (!standby) {
+      await discardStandbySession(loopName, currentState, 'before coder rotation')
+      const auditCandidate = input.discardAuditSession || loopService.hasEscalatedBugFindings(currentState)
+        ? null
+        : await inspectStandbyCandidate(auditSessionId, currentState, 'auditor')
+      await rotateAndSendContinuation(
+        loopName,
+        currentState,
+        stateUpdates,
+        fullPrompt,
+        assistantErrorDetected,
+        errorContext,
+        transition,
+        { keepPreviousSessionAsStandby: auditCandidate !== null, resetError },
+      )
+      return
+    }
+
+    loopService.replaceSession(loopName, {
+      newSessionId: standby.sessionId,
+      phase: stateUpdates.phase ?? 'coding',
+      iteration: stateUpdates.iteration ?? currentState.iteration,
+      resetError,
+      auditCount: stateUpdates.auditCount,
+      lastAuditResult: stateUpdates.lastAuditResult ?? null,
+    })
+
+    activateLoopSession(loopName, auditSessionId, standby.sessionId)
+    setStandbyTurnBaseline(loopName, standby.sessionId, standby.latestAssistantMessageId)
+    recordTransitionEntry(loopName, currentState, transition)
+    if (input.markModelFailed) {
+      loopService.setModelFailed(loopName, true)
+    }
+
+    if (input.discardAuditSession) {
+      loopService.setStandbySessionId(loopName, null)
+      await scheduleSessionDelete({ loopName, sessionId: auditSessionId, directory: currentState.worktreeDir, context: 'after failed audit', phase: 'auditing', state: currentState })
+    } else {
+      loopService.setStandbySessionId(loopName, auditSessionId)
+    }
+
+    const nextIteration = stateUpdates.iteration ?? currentState.iteration
+    logger.log(`Loop: reusing coder session ${standby.sessionId} for ${loopName} (iteration ${nextIteration})`)
+    await updateReusedSessionTitle(loopName, standby.sessionId, currentState, {
+      iteration: nextIteration ?? 0,
+      currentSectionIndex: stateUpdates.currentSectionIndex ?? currentState.currentSectionIndex ?? 0,
+      totalSections: currentState.totalSections ?? 0,
+    })
+
+    const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+    const { sent, usedModel } = await sendPromptWithRetryRecovery({
+      loopName,
+      sessionId: standby.sessionId,
+      promptText: followUpPrompt,
+      agent: 'code',
+      model: loopModel,
+      variant: currentState.executionVariant,
+      errorContext,
+      sendErrorContext: `failed to send continuation prompt ${errorContext}`,
+      errorState: currentState,
+      activityTag: 'phase-activity',
+    })
+    if (!sent) return
+    if (usedModel) {
+      logger.log(`${errorContext} using model: ${usedModel.providerID}/${usedModel.modelID}`)
+    } else {
+      logger.log(`${errorContext} using default model (fallback)`)
+    }
+  }
+
   async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string, eventType: string): Promise<void> {
+    const standby = await inspectReusableStandby(state)
+    const notice = `Auditor session failed: ${reason}. Continuing without new findings.`
+
+    if (standby) {
+      await switchToCodingPhase({
+        loopName,
+        currentState: state,
+        stateUpdates: {
+          phase: 'coding',
+          iteration: state.iteration,
+          lastAuditResult: state.lastAuditResult || undefined,
+        },
+        followUpPrompt: loopService.buildCoderFollowUpPrompt({ ...state, iteration: state.iteration ?? 0 }, undefined, notice),
+        fullPrompt: loopService.buildContinuationPrompt({ ...state, iteration: state.iteration ?? 0 }, notice),
+        assistantErrorDetected: true,
+        errorContext: 'audit failure continuation',
+        resetError: false,
+        markModelFailed: /provider|auth|model|api\s*error/i.test(reason),
+        discardAuditSession: true,
+        standby,
+        transition: {
+          eventType,
+          transitionKind: 'error-recovery',
+          fromPhase: state.phase,
+          toPhase: 'coding',
+        },
+      })
+      return
+    }
+
+    await discardStandbySession(loopName, state, 'before coder rotation')
     const newSessionId = await rotateSession(loopName, state)
 
     loopService.replaceSession(loopName, {
@@ -931,9 +1278,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
-    if (state.phase === 'final_audit_fix') {
-      return loopService.buildFinalAuditFixPrompt(state)
-    }
     if (state.totalSections > 0) {
       // `lastAuditResult` is only a "this section has already been audited"
       // marker here; its text is display-only and never replayed to the coder.
@@ -1060,8 +1404,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     // Adopt the authoritative under-lock state for every downstream side
     // effect (usage capture, persistence, terminal transition, host teardown).
-    // The caller's snapshot can lag phase rotations (e.g. final_auditing ->
-    // final_audit_fix) that happened between the caller observing the state
+    // The caller's snapshot can lag phase rotations that happened between the
+    // caller observing the state
     // and terminateLoop acquiring the admission guard; using the stale
     // snapshot would record the wrong fromPhase/iteration/section/session.
     state = current
@@ -1086,8 +1430,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     coalescedLimitSessions.delete(loopName)
     summaryRepromptedSections.delete(loopName)
     postActionContinueAttempts.delete(loopName)
+    clearStandbyTurnBaseline(loopName)
     clearPromptPending(projectId, loopName, logger)
     clearPromptInFlight(projectId, loopName)
+
+    await discardStandbySession(loopName, state, 'at loop termination')
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
@@ -1209,7 +1556,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function resendAuditPromptWithAuditorModel(loopName: string, state: LoopState): Promise<{ error?: unknown }> {
     await abortForInternalResend(loopName, state.sessionId)
 
-    const promptText = state.phase === 'final_auditing' ? loopService.buildFinalAuditPrompt(state) : loopService.buildAuditPrompt(state)
+    const promptText = loopService.buildAuditPrompt(state)
     const choice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
     const { error } = await sendPromptWithFallback({
       loopName,
@@ -1545,7 +1892,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   })
 
   /**
-   * Shared idle/no-assistant gate for the auditing, final_auditing, and post_action phases.
+   * Shared idle/no-assistant gate for the auditing and post_action phases.
    * If the last message is not from the assistant, schedules a bounded retry (re-invoking `rerun`)
    * or terminates with `exhaustedReason` once MAX_IDLE_RETRIES is reached. When an assistant message
    * is present it clears any pending idle-retry timer/attempts. Returns true when the caller should
@@ -1586,87 +1933,123 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Persist the loop's transition into the final_auditing phase: provision an
-   * auditor session, replace the loop's active session, and send the final
-   * audit prompt. Returns false if the auditor session could not be created
-   * or the prompt could not be sent (caller leaves the loop in its prior phase).
-   *
-   * When `transition` is supplied, the non-terminal transition row is recorded
-   * AFTER `replaceSession` (the persisted phase commit) and BEFORE the prompt
-   * send. This leaves no phantom row when session creation fails (returns false
-   * before persistence), and guarantees the transition row's id precedes any
-   * terminate row produced by a downstream prompt-send failure.
+   * Sends an audit prompt, handling workspace re-bind recovery and retry
+   * registration. The fresh-audit and standby-reuse paths share this dispatch so
+   * both recover identically; `buildPrompt` supplies the text re-sent on a retry.
    */
-  async function startFinalAuditTransition(
+  async function dispatchAuditPrompt(
     loopName: string,
-    currentState: LoopState,
-    transition?: TransitionLogEntry,
-    coderHandoff?: { completionKey: string; decisions: string | null },
-  ): Promise<boolean> {
-    const finalAuditState: LoopState = { ...(loopService.getActiveState(loopName) ?? currentState), phase: 'final_auditing' }
-    if (deps.loopAttemptsRepo) {
-      const key = coderHandoff?.completionKey ?? `final-audit:${currentState.sessionId}:${currentState.iteration}`
-      if (!await loopService.captureAttempt(finalAuditState, key, coderHandoff?.decisions ?? null)) return false
-    }
-    const finalAuditPrompt = loopService.buildFinalAuditPrompt(finalAuditState)
-    const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
-
-    const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before final audit creation')
-    const created = await createAuditSession({
-      client,
+    state: LoopState,
+    sessionId: string,
+    buildPrompt: (state: LoopState) => string,
+    auditorChoice: { model?: { providerID: string; modelID: string }; variant?: string },
+    activityTag: string,
+  ): Promise<void> {
+    let currentState = state
+    const { error: auditPromptErr, usedModel: actualAuditorModel } = await sendPromptWithFallback({
       loopName,
-      iteration: currentState.iteration ?? 0,
-      currentSectionIndex: currentState.currentSectionIndex ?? 0,
-      totalSections: currentState.totalSections ?? 0,
-      worktreeDir: currentState.worktreeDir,
-      workspaceId: ensured.workspaceId ?? currentState.workspaceId,
-      auditorModel: auditorChoice.model,
-      prompt: finalAuditPrompt,
-      permissionOptions: await resolveLoopPermissionOptionsForLoop(currentState),
-      logger,
-    })
-    if (!created) {
-      logger.error(`Loop: final audit session creation failed for ${loopName}`)
-      await handlePromptError(loopName, finalAuditState, 'failed to create final audit session', new Error('audit session creation failed'))
-      return false
-    }
-
-    loopService.setPhaseAndResetError(loopName, 'final_auditing')
-
-    // Retain the old session in the reverse index so delayed errors from the
-    // pre-transition session still resolve to this loop after DB-level replacement.
-    sessionToLoop.set(currentState.sessionId, loopName)
-    loopService.replaceSession(loopName, {
-      newSessionId: created.auditSessionId,
-      phase: 'final_auditing',
-    })
-    sessionToLoop.set(created.auditSessionId, loopName)
-
-    // Record the transition row only after the phase commit above succeeded and
-    // before the prompt send below: a failed prompt may itself terminate the
-    // loop, and the row's id must precede that terminate row.
-    if (transition) {
-      recordTransitionEntry(loopName, currentState, transition)
-    }
-
-    // The retired session is a code session (pre-final-audit)
-    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation', phase: 'coding', state: currentState })
-
-    const { error: finalAuditPromptErr } = await sendPromptWithFallback({
-      loopName,
-      sessionId: created.auditSessionId,
-      promptText: finalAuditPrompt,
+      sessionId,
+      promptText: buildPrompt(currentState),
       agent: 'auditor-loop',
       model: auditorChoice.model,
       variant: auditorChoice.variant,
     })
 
-    if (finalAuditPromptErr) {
-      logger.error(`Loop: failed to send final audit prompt for ${loopName}`, finalAuditPromptErr)
-      await handlePromptError(loopName, finalAuditState, 'failed to send final audit prompt', finalAuditPromptErr)
-      return false
+    if (auditPromptErr) {
+      let effectiveErr: unknown = auditPromptErr
+      if (isWorkspaceNotFoundError(auditPromptErr) && currentState.workspaceId) {
+        const recovered = await recoverFromMissingWorkspace(loopName, currentState, sessionId, 'during audit prompt recovery')
+        currentState = loopService.getActiveState(loopName) ?? currentState
+        if (recovered.recovered || !currentState.workspaceId) {
+          const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
+          const retryResult = await promptAuditSession(client, {
+            sessionId,
+            worktreeDir: currentState.worktreeDir,
+            workspaceId: currentState.workspaceId,
+            prompt: buildPrompt(currentState),
+            auditorModel: retryChoice.model,
+            auditorVariant: retryChoice.variant,
+          })
+          if (retryResult.ok) {
+            logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
+            watchdog.recordActivity(loopName, 'audit-recover')
+            return
+          }
+          // Resend failed — use the actual resend error for classification and retry
+          effectiveErr = retryResult.error
+        }
+      }
+      const retryFn = buildPromptRetryFn({
+        loopName,
+        sessionId,
+        agent: 'auditor-loop',
+        errorContext: 'failed to send audit prompt',
+        send: async (fresh) => {
+          const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
+          const retryResult = await promptAuditSession(client, {
+            sessionId,
+            worktreeDir: fresh.worktreeDir,
+            workspaceId: fresh.workspaceId,
+            prompt: buildPrompt(fresh),
+            auditorModel: retryChoice.model,
+            auditorVariant: retryChoice.variant,
+          })
+          if (!retryResult.ok) throw retryResult.error
+        },
+      })
+      await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', effectiveErr, retryFn)
+      return
     }
-    watchdog.recordActivity(loopName, 'final-audit-prompt-sent')
+    if (actualAuditorModel) {
+      logger.log(`auditor using model: ${actualAuditorModel.providerID}/${actualAuditorModel.modelID} (session ${sessionId})`)
+    } else {
+      logger.log(`auditor using default model (fallback) (session ${sessionId})`)
+    }
+    watchdog.recordActivity(loopName, activityTag)
+  }
+
+  /**
+   * coding → auditing switch onto a reused standby audit session. The coder
+   * session becomes the standby, so the next dirty audit can return to it with
+   * its exploration intact. A reused audit session that reached its context
+   * threshold is compacted before the audit follow-up; when that compaction
+   * cannot be enqueued the phase is left untouched and the caller rotates to a
+   * fresh audit session, so a session is never prompted past its context window.
+   * Returns whether the reused session was activated.
+   */
+  async function switchToAuditingPhase(
+    loopName: string,
+    currentState: LoopState,
+    standby: StandbyCandidate,
+    idleTrans: Transition,
+  ): Promise<boolean> {
+    if (!await compactStandbySession(loopName, currentState, standby)) return false
+
+    const codeSessionId = currentState.sessionId
+    const auditSessionId = standby.sessionId
+
+    loopService.replaceSession(loopName, { newSessionId: auditSessionId, phase: 'auditing' })
+    activateLoopSession(loopName, codeSessionId, auditSessionId)
+    setStandbyTurnBaseline(loopName, auditSessionId, standby.latestAssistantMessageId)
+    loopService.setStandbySessionId(loopName, codeSessionId)
+    logTransition(loopName, currentState, { type: 'coding-idle-complete' }, idleTrans, 'auditing')
+
+    logger.log(`Loop: reusing audit session ${auditSessionId} for ${loopName}`)
+    await updateReusedSessionTitle(loopName, auditSessionId, currentState, {
+      iteration: currentState.iteration ?? 0,
+      currentSectionIndex: currentState.currentSectionIndex ?? 0,
+      totalSections: currentState.totalSections ?? 0,
+    })
+
+    const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
+    await dispatchAuditPrompt(
+      loopName,
+      currentState,
+      auditSessionId,
+      (state) => loopService.buildAuditFollowUpPrompt(state),
+      auditorChoice,
+      'audit-reused',
+    )
     return true
   }
 
@@ -1690,7 +2073,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
     const assistantError = assistantInfo.error
-    const lastMessageRole = assistantInfo.lastMessageRole
+    const staleReusedTurn = isStaleReusedTurn(loopName, currentState.sessionId, assistantInfo.messageId)
+    if (staleReusedTurn) {
+      logger.log(`Loop: reused coding session ${currentState.sessionId} still holds its previous reply for ${loopName}; waiting for the new turn`)
+    }
+    const lastMessageRole = staleReusedTurn ? 'assistant:stale-reuse' : assistantInfo.lastMessageRole
 
     // Classify persisted provider-limit errors before the no-assistant gate.
     // A finish:'error' assistant message has lastMessageRole 'assistant:error'
@@ -1751,12 +2138,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Parse coder decisions from the coding assistant's response and store for the audit prompt.
     if (!await loopService.captureAttempt(currentState, completionKey(currentState, assistantInfo), parseCoderDecisions(assistantInfo.text))) return
 
-    // Phase-runner dispatch (see phaseRunners below) routes a final_audit_fix loop
-    // to runFinalAuditFixPhase, so runCodingPhase only handles the regular coding phase.
     const currentConfig = getConfig()
     const auditorChoice = resolveLoopAuditorChoice(currentConfig, loopService, loopName, logger)
-    const auditPrompt = loopService.buildAuditPrompt(currentState)
     const codeSessionId = currentState.sessionId
+
+    const idleTrans = nextTransition(currentState, { type: 'coding-idle-complete' })
+    if (idleTrans.kind === 'terminate') {
+      await terminateLoop(loopName, currentState, idleTrans.reason)
+      return
+    }
+    if (idleTrans.kind !== 'rotate') {
+      return
+    }
+
+    const standbyAuditSession = await inspectReusableStandby(currentState)
+    if (standbyAuditSession && await switchToAuditingPhase(loopName, currentState, standbyAuditSession, idleTrans)) {
+      return
+    }
 
     async function createAuditWithRetry(input: {
       loopName: string
@@ -1790,12 +2188,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       worktreeDir: currentState.worktreeDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       auditorModel: auditorChoice.model,
-      prompt: auditPrompt,
+      prompt: loopService.buildAuditPrompt(currentState),
       permissionOptions: await resolveLoopPermissionOptionsForLoop(currentState),
     })
 
     if (!created) {
       logger.error(`Loop: audit session creation failed after ${MAX_RETRIES} attempts for ${loopName}, rotating to fresh code session`)
+      await discardStandbySession(loopName, currentState, 'after audit creation failure')
       loopService.resetError(loopName)
       try {
         const rotatedSessionId = await rotateSession(loopName, currentState)
@@ -1834,96 +2233,33 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
-    // Consult the pure transition table for the coding→auditing rotation.
-    // Every phase change must flow through nextTransition so the table is the
-    // single source of truth (fixed finding runtime.ts:1369).
-    const idleTrans = nextTransition(currentState, { type: 'coding-idle-complete' })
-    if (idleTrans.kind === 'terminate') {
-      await terminateLoop(loopName, currentState, idleTrans.reason)
-      return
-    }
-    if (idleTrans.kind !== 'rotate') {
-      return
-    }
-
-    // Retain the old session in the reverse index so delayed errors from the
-    // pre-transition session still resolve to this loop after DB-level replacement.
-    sessionToLoop.set(codeSessionId, loopName)
+    await discardStandbySession(loopName, currentState, 'after audit creation')
+    const retainCoderAsStandby = !loopService.hasEscalatedBugFindings(currentState)
     loopService.replaceSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
     })
+    if (retainCoderAsStandby) {
+      loopService.setStandbySessionId(loopName, codeSessionId)
+    } else {
+      void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation (escalated finding)', phase: 'coding', state: currentState })
+    }
+    sessionToLoop.set(codeSessionId, loopName)
     sessionToLoop.set(created.auditSessionId, loopName)
+    clearStandbyTurnBaseline(loopName)
 
     // Record the coding→auditing rotation derived from the pure transition
     // table.  logTransition (non-terminal-only wrapper) writes the row.
     logTransition(loopName, currentState, { type: 'coding-idle-complete' }, idleTrans, 'auditing')
 
-    // The retired session is a code session.
-    void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation', phase: 'coding', state: currentState })
-
-    const { error: auditPromptErr, usedModel: actualAuditorModel } = await sendPromptWithFallback({
+    await dispatchAuditPrompt(
       loopName,
-      sessionId: created.auditSessionId,
-      promptText: loopService.buildAuditPrompt(currentState),
-      agent: 'auditor-loop',
-      model: auditorChoice.model,
-      variant: auditorChoice.variant,
-    })
-
-    if (auditPromptErr) {
-      let effectiveErr: unknown = auditPromptErr
-      if (isWorkspaceNotFoundError(auditPromptErr) && currentState.workspaceId) {
-        const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, 'during audit prompt recovery')
-        currentState = loopService.getActiveState(loopName) ?? currentState
-        if (recovered.recovered || !currentState.workspaceId) {
-          const auditPromptText = loopService.buildAuditPrompt(currentState)
-          const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
-          const retryResult = await promptAuditSession(client, {
-            sessionId: created.auditSessionId,
-            worktreeDir: currentState.worktreeDir,
-            workspaceId: currentState.workspaceId,
-            prompt: auditPromptText,
-            auditorModel: retryChoice.model,
-            auditorVariant: retryChoice.variant,
-          })
-          if (retryResult.ok) {
-            logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
-            watchdog.recordActivity(loopName, 'audit-recover')
-            return
-          }
-          // Resend failed — use the actual resend error for classification and retry
-          effectiveErr = retryResult.error
-        }
-      }
-      const retryFn = buildPromptRetryFn({
-        loopName,
-        sessionId: created.auditSessionId,
-        agent: 'auditor-loop',
-        errorContext: 'failed to send audit prompt',
-        send: async (fresh) => {
-          const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
-          const retryResult = await promptAuditSession(client, {
-            sessionId: created.auditSessionId,
-            worktreeDir: fresh.worktreeDir,
-            workspaceId: fresh.workspaceId,
-            prompt: loopService.buildAuditPrompt(fresh),
-            auditorModel: retryChoice.model,
-            auditorVariant: retryChoice.variant,
-          })
-          if (!retryResult.ok) throw retryResult.error
-        },
-      })
-      await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', effectiveErr, retryFn)
-      return
-    }
-    if (actualAuditorModel) {
-      logger.log(`auditor using model: ${actualAuditorModel.providerID}/${actualAuditorModel.modelID} (session ${created.auditSessionId})`)
-    } else {
-      logger.log(`auditor using default model (fallback) (session ${created.auditSessionId})`)
-    }
-
-    watchdog.recordActivity(loopName, 'audit-created')
+      currentState,
+      created.auditSessionId,
+      (state) => loopService.buildAuditPrompt(state),
+      auditorChoice,
+      'audit-created',
+    )
   }
 
   async function runAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
@@ -1946,7 +2282,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const auditSessionId = currentState.sessionId
 
-    const { text: auditText, error: assistantError, errorSignal: auditErrorSignal, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+    const { text: auditText, error: assistantError, errorSignal: auditErrorSignal, messageId: auditMessageId, lastMessageRole: auditLastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+    const staleReusedTurn = isStaleReusedTurn(loopName, auditSessionId, auditMessageId)
+    if (staleReusedTurn) {
+      logger.log(`Loop: reused audit session ${auditSessionId} still holds its previous reply for ${loopName}; waiting for the new audit turn`)
+    }
+    const lastMessageRole = staleReusedTurn ? 'assistant:stale-reuse' : auditLastMessageRole
 
     // Classify persisted provider-limit errors before the no-assistant gate
     // so that finish:'error' assistant messages terminate immediately.
@@ -1981,10 +2322,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (currentState.totalSections > 0) {
         const idx = currentState.currentSectionIndex
         const sectionSummary = loopService.parseSectionSummary(auditText || '')
-        const sectionAllBugFindings = loopService.getOutstandingFindings(loopName, 'bug')
-        const sectionBugFindings = sectionAllBugFindings.filter(f => f.sectionIndex === idx)
+        const blockingBugs = loopService.getBlockingBugFindings(currentState)
+        const isLastOpen = loopService.isLastOpenSection(currentState)
 
-        if (sectionSummary && sectionBugFindings.length === 0) {
+        if (sectionSummary && blockingBugs.length === 0) {
           loopService.finishAttempt(currentState, 'clean')
           logger.log(`Loop: section ${idx} audit clean, marking completed`)
           summaryRepromptedSections.delete(loopName)
@@ -1996,104 +2337,69 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           loopService.completeSection(loopName, idx, sectionSummary)
           commitSectionCheckpoint(currentState, idx)
 
-          // Pre-check: rewind fast-path — all sections completed even though we
-          // are not on the last one (possible after a rewind). This bypasses the
-          // transition event because `isLastSection` would be false here, but the
-          // correct destination is still final-audit. Synthesize the same
-          // section-clean / isLastSection=true transition the regular path would
-          // have produced and log it so the persisted phase change is recorded.
-          if (idx < currentState.totalSections - 1) {
-            const allCompleted = loopService.getCompletedSectionDigest(currentState).length === currentState.totalSections
-            if (allCompleted) {
-              logger.log(`Loop: all ${currentState.totalSections} sections completed after rewind, jumping straight to final audit`)
-              // Same guard as the regular path: prevent skipping appended sections.
-              const rewindFresh = loopsRepo.get(projectId, currentState.loopName ?? '')
-              if (rewindFresh && rewindFresh.totalSections > currentState.totalSections) {
-                logger.log(`Loop: amendment appended sections after rewind jump; staying for re-audit`)
-                return
-              }
-              const rewindEvent: TransitionEvent = { type: 'section-clean', isLastSection: true }
-              const rewindTrans = nextTransition(currentState, rewindEvent)
-              if (rewindTrans.kind === 'start-final-audit') {
-                await startFinalAuditTransition(loopName, currentState, {
-                  eventType: rewindEvent.type,
-                  transitionKind: rewindTrans.kind,
-                  fromPhase: currentState.phase,
-                  toPhase: 'final_auditing',
-                })
-              }
-              return
-            }
+          let lastOpen = isLastOpen
+          const freshRow = loopsRepo.get(projectId, currentState.loopName ?? '')
+          if (freshRow && freshRow.totalSections > currentState.totalSections) {
+            logger.log(`Loop: amendment appended sections after section ${idx}; no longer the last open section`)
+            lastOpen = false
           }
 
-          const isLastSection = idx >= currentState.totalSections - 1
-          const sectionEvent: TransitionEvent = { type: 'section-clean', isLastSection }
+          const sectionEvent: TransitionEvent = { type: 'section-clean', isLastOpenSection: lastOpen }
           const sectionTrans = nextTransition(currentState, sectionEvent)
-          if (sectionTrans.kind === 'start-final-audit') {
-            // Guard: prevent premature final-audit transition when an amendment
-            // appended sections after the one we just finished. Without this check,
-            // newly appended work at the former final position could be skipped.
-            const freshRowForAudit = loopsRepo.get(projectId, currentState.loopName ?? '')
-            if (freshRowForAudit && freshRowForAudit.totalSections > currentState.totalSections) {
-              logger.log(`Loop: amendment appended sections at index ${idx + 1}; staying in section ${idx} for re-audit`)
-              return
-            }
-            logger.log(`Loop: all ${currentState.totalSections} sections completed, transitioning to final-audit`)
-            await startFinalAuditTransition(loopName, currentState, {
+          if (sectionTrans.kind === 'terminate') {
+            logger.log(`Loop: last open section ${idx} audit clean for ${loopName}, completing`)
+            await finishLoop(loopName, currentState, sectionTrans.reason)
+            return
+          }
+          if (sectionTrans.kind !== 'advance-section') return
+
+          const nextSection = loopService.getNextIncompleteSectionPlan(currentState)
+          const nextIdx = nextSection?.sectionIndex ?? idx + 1
+          const nextIter = await nextIterationOrTerminate(loopName, currentState)
+          if (nextIter === null) return
+
+          logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
+          loopService.setCurrentSectionIndex(loopName, nextIdx)
+          loopService.startSection(loopName, nextIdx)
+
+          await discardStandbySession(loopName, currentState, 'after section advance')
+
+          loopService.replaceSession(loopName, {
+            newSessionId: currentState.sessionId,
+            phase: 'coding',
+            iteration: nextIter,
+          })
+
+          const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
+          const continuationPrompt = loopService.buildSectionInitialPrompt(updatedState)
+          await rotateAndSendContinuation(
+            loopName,
+            currentState,
+            {
+              iteration: nextIter,
+              currentSectionIndex: nextIdx,
+              phase: 'coding',
+              lastAuditResult: auditText || undefined,
+              auditCount: newAuditCount,
+            },
+            continuationPrompt,
+            assistantErrorDetected,
+            'section coding continuation',
+            {
               eventType: sectionEvent.type,
               transitionKind: sectionTrans.kind,
               fromPhase: currentState.phase,
-              toPhase: 'final_auditing',
-            })
-            return
-          }
-          if (sectionTrans.kind === 'advance-section') {
-            const nextIdx = idx + 1
-            const nextIter = await nextIterationOrTerminate(loopName, currentState)
-            if (nextIter === null) return
-
-            logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
-            loopService.setCurrentSectionIndex(loopName, nextIdx)
-            loopService.startSection(loopName, nextIdx)
-
-            loopService.replaceSession(loopName, {
-              newSessionId: currentState.sessionId,
-              phase: 'coding',
-              iteration: nextIter,
-            })
-
-            const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
-            const continuationPrompt = loopService.buildSectionInitialPrompt(updatedState)
-            await rotateAndSendContinuation(
-              loopName,
-              currentState,
-              {
-                iteration: nextIter,
-                currentSectionIndex: nextIdx,
-                phase: 'coding',
-                lastAuditResult: auditText || undefined,
-                auditCount: newAuditCount,
-              },
-              continuationPrompt,
-              assistantErrorDetected,
-              'section coding continuation',
-              {
-                eventType: sectionEvent.type,
-                transitionKind: sectionTrans.kind,
-                fromPhase: currentState.phase,
-                toPhase: 'coding',
-              },
-            )
-            return
-          }
+              toPhase: 'coding',
+            },
+          )
           return
         }
 
-        // Clean-but-no-summary guard: the audit reported zero blocking bugs for
+        // Clean-but-no-summary guard: the audit reported no blocking bugs for
         // this section but its response had no parseable summary block. Rotating
         // to the coder would waste a full iteration with nothing to fix, so
         // re-prompt the same audit session once for the block (or real findings).
-        if (!sectionSummary && sectionBugFindings.length === 0 && summaryRepromptedSections.get(loopName) !== idx) {
+        if (!sectionSummary && blockingBugs.length === 0 && summaryRepromptedSections.get(loopName) !== idx) {
           summaryRepromptedSections.set(loopName, idx)
           logger.log(`Loop: section ${idx} audit has no blocking findings but no summary block; re-prompting auditor for ${loopName}`)
           const repromptChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
@@ -2117,42 +2423,39 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         summaryRepromptedSections.delete(loopName)
         loopService.finishAttempt(currentState, 'dirty')
-        logger.log(`Loop: section ${idx} audit dirty, retrying same section`)
+        logger.log(`Loop: section ${idx} audit dirty (${blockingBugs.length} blocking bug findings), retrying same section`)
 
         const nextIter = await nextIterationOrTerminate(loopName, currentState)
         if (nextIter === null) return
 
         loopService.incrementSectionAttempts(loopName, idx)
 
-        bumpDirtyAuditRecurrence(loopName, sectionAllBugFindings, idx)
+        bumpDirtyAuditRecurrence(loopName, blockingBugs)
 
         loopService.setLastAuditResult(loopName, auditText || '')
-        loopService.replaceSession(loopName, {
-          newSessionId: currentState.sessionId,
-          phase: 'coding',
-          iteration: nextIter,
-        })
 
-        const continuationPrompt = loopService.buildSectionContinuationPrompt({ ...currentState, iteration: nextIter }, undefined, sectionAllBugFindings)
-        await rotateAndSendContinuation(
+        const continuationPrompt = loopService.buildSectionContinuationPrompt({ ...currentState, iteration: nextIter }, undefined, blockingBugs)
+        const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIter }, blockingBugs)
+        await switchToCodingPhase({
           loopName,
           currentState,
-          {
+          stateUpdates: {
             iteration: nextIter,
             phase: 'coding',
             lastAuditResult: auditText || undefined,
             auditCount: newAuditCount,
           },
-          continuationPrompt,
+          followUpPrompt,
+          fullPrompt: continuationPrompt,
           assistantErrorDetected,
-          'section retry continuation',
-          {
+          errorContext: 'section retry continuation',
+          transition: {
             eventType: 'section-dirty',
             transitionKind: dirtyTrans.kind,
             fromPhase: currentState.phase,
             toPhase: 'coding',
           },
-        )
+        })
         return
       }
 
@@ -2174,26 +2477,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         undefined,
         outstandingBugs,
       )
+      const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIteration }, outstandingBugs)
 
-      await rotateAndSendContinuation(
+      await switchToCodingPhase({
         loopName,
         currentState,
-        {
+        stateUpdates: {
           iteration: nextIteration,
           phase: 'coding',
           lastAuditResult: auditText || undefined,
           auditCount: newAuditCount,
         },
-        continuationPrompt,
+        followUpPrompt,
+        fullPrompt: continuationPrompt,
         assistantErrorDetected,
-        'coding continuation',
-        {
+        errorContext: 'coding continuation',
+        transition: {
           eventType: 'audit-dirty',
           transitionKind: dirtyTrans.kind,
           fromPhase: candidateState.phase,
           toPhase: 'coding',
         },
-      )
+      })
     } else {
       logger.log(`Loop: audit error detected, continuing without incrementing audit count`)
       const nextIteration = await nextIterationOrTerminate(loopName, currentState)
@@ -2201,221 +2506,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
       )
-      // Pass the recovery transition into the shared helper so the row is
-      // recorded after the rotate-to-coding phase commit but before the prompt
-      // send; a prompt failure that terminates the loop will then produce a
-      // terminate row whose id strictly follows this recovery row.
-      await rotateAndSendContinuation(
+      const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIteration })
+      await switchToCodingPhase({
         loopName,
         currentState,
-        {
+        stateUpdates: {
           iteration: nextIteration,
           phase: 'coding',
           lastAuditResult: auditText || undefined,
           auditCount: currentState.auditCount ?? 0,
         },
-        continuationPrompt,
+        followUpPrompt,
+        fullPrompt: continuationPrompt,
         assistantErrorDetected,
-        'coding continuation',
-        {
+        errorContext: 'coding continuation',
+        transition: {
           eventType: 'audit-error',
           transitionKind: 'error-recovery',
           fromPhase: 'auditing',
           toPhase: 'coding',
         },
-      )
-    }
-  }
-
-  async function runFinalAuditPhase(loopName: string, _state: LoopState): Promise<void> {
-    let currentState = loopService.getActiveState(loopName)
-    if (!currentState?.active) {
-      logger.log(`Loop: loop ${loopName} no longer active, skipping final audit phase`)
-      return
-    }
-
-    if (currentState.phase !== 'final_auditing') {
-      logger.log(`Loop: runFinalAuditPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
-      return
-    }
-
-    if (!currentState.worktreeDir) {
-      logger.error(`Loop: loop ${loopName} missing worktreeDir in final audit phase, terminating`)
-      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
-      return
-    }
-
-    const auditSessionId = currentState.sessionId
-
-    const { text: auditText, error: assistantError, errorSignal: finalAuditErrorSignal, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
-
-    // Classify persisted provider-limit errors before the no-assistant gate
-    // so that finish:'error' assistant messages terminate immediately.
-    if (finalAuditErrorSignal) {
-      const limitReason = classifyProviderLimit(finalAuditErrorSignal)
-      if (limitReason) {
-        if (await handleAuditorProviderLimit(loopName, limitReason)) return
-        logger.error(`Loop: provider limit in persisted final audit error for ${loopName}: ${limitReason}, terminating`)
-        await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
-        return
-      }
-    }
-
-    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'final audit phase', exhaustedReason: { kind: 'final_audit_retry_exhausted' }, rerun: runFinalAuditPhase })) return
-
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'final_auditing', finalAuditErrorSignal)
-    if (!errorResult) return
-    const assistantErrorDetected = errorResult.assistantErrorDetected
-    currentState = errorResult.currentState
-
-    currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'final_auditing')
-    if (await deferUntilQuiescent(currentState)) return
-
-    if (!assistantErrorDetected) {
-      loopService.resetAuditorFallbackIndex(loopName)
-      currentState = { ...currentState, auditorFallbackIndex: 0 }
-      const hasOutstandingBugs = loopService.hasOutstandingFindings(loopName, 'bug')
-      loopService.finishAttempt(currentState, hasOutstandingBugs ? 'dirty' : 'clean')
-
-      const finalAuditEvent: TransitionEvent = { type: hasOutstandingBugs ? 'final-audit-dirty' : 'final-audit-clean' }
-      const trans = nextTransition(currentState, finalAuditEvent)
-      if (trans.kind === 'terminate') {
-        logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
-        loopService.setFinalAuditDone(loopName, true)
-        if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) {
-          // The post_action entry row is logged inside enterPostActionPhase
-          // (after the persisted phase commit, before the prompt send).
-          return
-        }
-        await terminateLoop(loopName, currentState, trans.reason)
-        return
-      }
-
-      // Dirty final audit: rotate to a coding session that fixes the findings,
-      // then on coding idle return straight to final_auditing (no section rewind).
-      // The transition row is logged AFTER the iteration-cap check and the
-      // persisted phase change succeed so a cap-terminate or rotation failure
-      // never leaves a phantom final_audit_fix row behind.
-      const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
-      logger.log(`Loop: final audit dirty (${outstandingBugs.length} outstanding bug findings), rotating to coding for fix for ${loopName}`)
-
-      const nextIter = await nextIterationOrTerminate(loopName, currentState)
-      if (nextIter === null) return
-
-      // Persist the audit text so recovery paths can rebuild the fix prompt if needed.
-      if (auditText) loopService.setLastAuditResult(loopName, auditText)
-
-      bumpDirtyAuditRecurrence(loopName, outstandingBugs)
-
-      const fixPrompt = loopService.buildFinalAuditFixPrompt({ ...currentState, iteration: nextIter }, outstandingBugs)
-
-      let newCodeSessionId: string
-      try {
-        newCodeSessionId = await rotateSession(loopName, currentState, {
-          iteration: nextIter,
-        })
-      } catch (err) {
-        logger.error(`Loop: session rotation failed during final audit fix, aborting rotation`, err)
-        return
-      }
-
-      // Persist the new phase so the persisted state machine drives dispatch on the
-      // next idle event. replaceSession atomically swaps the session and the phase.
-      loopService.replaceSession(loopName, {
-        newSessionId: newCodeSessionId,
-        phase: 'final_audit_fix',
-        iteration: nextIter,
-        resetError: currentState.errorCount > 0,
+        discardAuditSession: true,
       })
-
-      // Record the final_auditing → final_audit_fix transition only after the
-      // persisted phase commit above succeeds.
-      logTransition(loopName, currentState, finalAuditEvent, trans, 'final_audit_fix')
-
-      const { error: promptErr } = await sendPromptWithFallback({
-        loopName,
-        sessionId: newCodeSessionId,
-        promptText: fixPrompt,
-        agent: 'code',
-        variant: currentState.executionVariant,
-      })
-      if (promptErr) {
-        logger.error(`Loop: failed to send final-audit fix prompt for ${loopName}`, promptErr)
-        // Roll back to the coding phase so subsequent idle/error handling treats the
-        // loop as a regular coding pass rather than re-attempting the fix dispatch.
-        loopService.setPhase(loopName, 'coding')
-        // Record the recovery to coding; the persisted phase just changed via setPhase.
-        loopService.recordTransition(loopName, {
-          eventType: 'final-audit-fix-prompt-error',
-          transitionKind: 'error-recovery',
-          fromPhase: 'final_audit_fix',
-          toPhase: 'coding',
-          iteration: nextIter,
-          sectionIndex: transitionSectionIndex(currentState),
-        })
-        await handlePromptError(loopName, currentState, 'failed to send final-audit fix prompt', promptErr)
-        return
-      }
-      watchdog.recordActivity(loopName, 'final-audit-fix-prompt-sent')
-    }
-  }
-
-  async function runFinalAuditFixPhase(loopName: string, _state: LoopState): Promise<void> {
-    let currentState = loopService.getActiveState(loopName)
-    if (!currentState?.active) {
-      logger.log(`Loop: loop ${loopName} no longer active, skipping final-audit-fix phase`)
-      return
-    }
-
-    if (currentState.phase !== 'final_audit_fix') {
-      logger.log(`Loop: runFinalAuditFixPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
-      return
-    }
-
-    if (!currentState.worktreeDir) {
-      logger.error(`Loop: loop ${loopName} missing worktreeDir in final-audit-fix phase, terminating`)
-      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
-      return
-    }
-
-    const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
-    const lastMessageRole = assistantInfo.lastMessageRole
-
-    // Classify persisted provider-limit errors before the no-assistant gate.
-    if (assistantInfo.errorSignal) {
-      const limitReason = classifyProviderLimit(assistantInfo.errorSignal)
-      if (limitReason) {
-        logger.error(`Loop: provider limit in persisted final-audit-fix error for ${loopName}: ${limitReason}, terminating`)
-        await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
-        return
-      }
-    }
-
-    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'final-audit-fix phase', exhaustedReason: { kind: 'coding_no_assistant' }, rerun: runFinalAuditFixPhase })) return
-
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantInfo.error, 'coding', assistantInfo.errorSignal)
-    if (!errorResult) return
-    currentState = errorResult.currentState
-    currentState = resetErrorCountIfNeeded(loopName, currentState, errorResult.assistantErrorDetected, 'coding')
-    if (await deferUntilQuiescent(currentState)) return
-
-    // Persist coder decisions emitted during the fix pass so the next final audit
-    // prompt can surface them alongside the audit findings.
-    const decisions = parseCoderDecisions(assistantInfo.text)
-    loopService.setCoderDecisions(loopName, decisions)
-
-    const trans = nextTransition(currentState, { type: 'coding-idle-complete' })
-    if (trans.kind === 'start-final-audit') {
-      logger.log(`Loop: final-audit fix coding complete for ${loopName}, transitioning back to final_auditing`)
-      const started = await startFinalAuditTransition(loopName, currentState, {
-        eventType: 'coding-idle-complete',
-        transitionKind: trans.kind,
-        fromPhase: currentState.phase,
-        toPhase: 'final_auditing',
-      }, { completionKey: completionKey(currentState, assistantInfo), decisions })
-      if (!started) {
-        logger.error(`Loop: failed to restart final audit after fix for ${loopName}`)
-      }
     }
   }
 
@@ -2500,8 +2612,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const phaseRunners: Record<LoopState['phase'], (loopName: string, state: LoopState) => Promise<void>> = {
     coding: runCodingPhase,
     auditing: runAuditingPhase,
-    final_auditing: runFinalAuditPhase,
-    final_audit_fix: runFinalAuditFixPhase,
     post_action: runPostActionPhase,
   }
 
@@ -2563,13 +2673,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             )
             return
           }
-          if (state.phase === 'final_auditing') {
-            await resumeOrFallback(loopName, state, eventSessionId,
-              async (ln, s) => { logger.log(`Loop: final audit session ${eventSessionId} aborted after assistant response, processing audit result`); await runFinalAuditPhase(ln, s) },
-              async (ln, s) => { logger.log(`Loop: final audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted', 'final-audit-session-aborted') },
-            )
-            return
-          }
           if (state.phase === 'post_action') {
             await resumeOrFallback(loopName, state, eventSessionId,
               async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted after assistant response, processing result`); await runPostActionPhase(ln, s, false) },
@@ -2577,9 +2680,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             )
             return
           }
-          // coding and final_audit_fix share the default abort handling: a coding-style
-          // session aborted by the user terminates the loop as user_aborted. Intentional
-          // fall-through — final_audit_fix is a coding pass driving the fix prompt.
+          // coding shares the default abort handling: a coding session aborted by
+          // the user terminates the loop as user_aborted.
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
           await terminateLoop(loopName, state, { kind: 'user_aborted' })
         })
@@ -2622,25 +2724,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           return
         }
         const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
-        if (state.phase === 'final_auditing') {
-          const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
-          if (lastMessageRole === 'assistant') {
-            logger.log(`Loop: final audit session ${eventSessionId} error after assistant response, processing audit result`)
-            await runFinalAuditPhase(loopName, state)
-            return
-          }
-          logger.error(`Loop: final audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
-          await rotateToCodingAfterAuditFailure(loopName, state, errorMessage, 'final-audit-session-error')
-          return
-        }
         if (state.phase === 'post_action') {
           logger.error(`Loop: post-action session error for ${eventSessionId}: ${errorMessage}, completing as best-effort`)
           await terminateLoop(loopName, state, { kind: 'completed' })
           return
         }
-        // coding and final_audit_fix share the default error handling: surface the
-        // error, flag a model failure when applicable, and let the next idle/error
-        // event drive recovery. Intentional fall-through — no phase-specific branch.
+        // coding keeps the default error handling: surface the error, flag a model
+        // failure when applicable, and let the next idle/error event drive recovery.
         logger.error(`Loop: session error for ${eventSessionId}: ${errorMessage}`)
         const isModelError = /provider|auth|model|api\s*error/i.test(errorMessage)
         if (isModelError && !state.modelFailed) {
@@ -2940,6 +3030,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const shutdownReason: TerminationReason = { kind: 'shutdown' }
     const shutdownStatus = terminationStatusFor(shutdownReason)
     const shutdownReasonText = terminationReasonToString(shutdownReason)
+    void discardStandbySession(loopName, fresh, 'at loop shutdown')
     loopService.recordTransition(loopName, {
       eventType: shutdownReason.kind,
       transitionKind: 'terminate',
@@ -2971,6 +3062,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     coalescedLimitSessions.clear()
     postActionContinueAttempts.clear()
     loopRetainedSessions.clear()
+    standbyTurnBaselines.clear()
     sessionToLoop.clear()
     terminatingLoops.clear()
     watchdog.clearAll()
@@ -3027,6 +3119,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     codingLaunchRecoveryAttempts.delete(loopName)
     coalescedLimitSessions.delete(loopName)
     postActionContinueAttempts.delete(loopName)
+    clearStandbyTurnBaseline(loopName)
+
+    const stateForStandby = loopService.getAnyState(loopName)
+    if (stateForStandby) {
+      await discardStandbySession(loopName, stateForStandby, 'on loop timer clear')
+    }
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
@@ -3161,6 +3259,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     sessionToLoop.set(params.newSessionId, name)
     if (oldState?.sessionId) {
       sessionToLoop.set(oldState.sessionId, name)
+    }
+    if (oldState) {
+      void discardStandbySession(name, oldState, 'at loop restart')
     }
     loopRegistry.add(projectId, name)
     // Record at most one phase-changing restart row, matching the production

@@ -509,4 +509,25 @@ export const migrations: Migration[] = [
       db.run(loadSql('153_create_goals.sql'))
     },
   },
+  {
+    id: '154',
+    description: 'Remove the final audit phase: rewrite retired phases, reopen the last section, drop final_audit_done',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'final_audit_done')) return
+      const hasSectionPlans =
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all() as unknown[]).length > 0
+      if (hasSectionPlans) db.run(loadSql('154_reopen_final_audit_section.sql'))
+      db.run(loadSql('154_remove_final_audit.sql'))
+    },
+  },
+  {
+    id: '155',
+    description: 'Add standby_session_id to loops: the other role session kept for same-section reuse',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'standby_session_id')) return
+      db.run(loadSql('155_add_loop_standby_session.sql'))
+    },
+  },
 ]

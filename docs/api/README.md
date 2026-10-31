@@ -47,7 +47,7 @@ bunx opencode-forge --link        # point the server shim and cli.json at the cu
 bunx opencode-forge --vendor      # self-contained copy (portable)
 ```
 
-From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`. Both modes write a server shim `<configDir>/plugin/opencode-forge.js` (OpenCode loads the server plugin from `*.js` files there) and register the TUI in `cli.json`'s `plugins` array. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
+From a source checkout, use `pnpm run setup --link` or `pnpm run setup --vendor`. Both modes register the TUI in `cli.json`'s `plugins` array. `--link` also writes a server shim `<configDir>/plugin/opencode-forge.js`; `--vendor` instead places the self-contained package at `<configDir>/plugin/opencode-forge`, which OpenCode discovers directly, so it writes no shim and removes a stale one. In a non-interactive shell the flags still require `-y`, `-f`, or `-k`.
 
 | | `--link` | `--vendor` |
 | --- | --- | --- |
@@ -123,7 +123,7 @@ The per-loop settings submenu — max iterations and sandbox resource overrides:
 
 ## Loop Flow
 
-The diagram below shows the overall flow of the Forge loop system — from loop trigger and provisioning through coding/auditing, section advancement, the final audit, and the optional post-action phase. See [Loop System](_media/loop-system.md) for the full lifecycle. Source: [`diagrams/loop-flow.mmd`](_media/loop-flow.mmd).
+The diagram below shows the overall flow of the Forge loop system — from loop trigger and provisioning through coding/auditing, section advancement, and the optional post-action phase. See [Loop System](_media/loop-system.md) for the full lifecycle. Source: [`diagrams/loop-flow.mmd`](_media/loop-flow.mmd).
 
 ![Loop Flow](_media/loop-flow.webp)
 

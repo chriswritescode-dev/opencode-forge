@@ -49,7 +49,7 @@ export interface CreateFakeForgeClientResult {
   client: ForgeClient
   /**
    * Every method invocation, in call order, across all namespaces. Useful for
-   * sequencing assertions that span `session`, `workspace`, and `toast`.
+   * sequencing assertions that span `session`, `workspace`, `model`, and `toast`.
    */
   calls: RecordedCall[]
 }
@@ -126,6 +126,11 @@ export function createFakeForgeClient(
         async (_p: Record<string, unknown>) => {},
         overrides?.session?.abort,
       ),
+      compact: makeMethod(
+        'session.compact',
+        async (_p: Record<string, unknown>) => {},
+        overrides?.session?.compact,
+      ),
       delete: makeMethod(
         'session.delete',
         async (_p: Record<string, unknown>) => {},
@@ -156,6 +161,13 @@ export function createFakeForgeClient(
         'workspace.warp',
         async (_p: Record<string, unknown>) => {},
         overrides?.workspace?.warp,
+      ),
+    },
+    model: {
+      contextLimit: makeMethod(
+        'model.contextLimit',
+        async (_p: Record<string, unknown>) => undefined,
+        overrides?.model?.contextLimit,
       ),
     },
     toast: makeMethod(

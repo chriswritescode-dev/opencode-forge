@@ -50,6 +50,18 @@ function assistantMessage(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function compactionMessage(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'msg_compaction',
+    type: 'compaction',
+    time: { created: 5 },
+    status: 'completed',
+    reason: 'manual',
+    summary: 'Everything that happened so far.',
+    ...overrides,
+  }
+}
+
 describe('createForgeClientFromV2', () => {
   describe('session.create', () => {
     it('maps title, directory, and permissions onto the V2 create input', async () => {
@@ -281,6 +293,40 @@ describe('createForgeClientFromV2', () => {
       expect(messages.map((message) => message.info.id)).toEqual(['msg_2', 'msg_3'])
     })
 
+    it('never exposes a compaction record as a conversation turn', async () => {
+      const { client } = clientFor({
+        session: {
+          context: vi.fn().mockResolvedValue([
+            { id: 'msg_user', type: 'user', time: { created: 1 }, text: 'do the work' },
+            assistantMessage({ content: [{ type: 'text', text: 'done' }] }),
+            compactionMessage(),
+            compactionMessage({ id: 'msg_compaction_failed', status: 'failed', summary: undefined }),
+          ]),
+        },
+      })
+
+      const messages = await client.session.messages({ sessionID: 'ses_1' })
+
+      expect(messages.map((message) => message.info.role)).toEqual(['user', 'assistant'])
+      expect(messages[1].info.id).toBe('msg_assistant')
+    })
+
+    it('does not spend a limit slot on a trailing compaction record', async () => {
+      const { client } = clientFor({
+        session: {
+          context: vi.fn().mockResolvedValue([
+            { id: 'msg_user', type: 'user', time: { created: 1 }, text: 'do the work' },
+            assistantMessage({ content: [{ type: 'text', text: 'done' }] }),
+            compactionMessage(),
+          ]),
+        },
+      })
+
+      const messages = await client.session.messages({ sessionID: 'ses_1', limit: 2 })
+
+      expect(messages.map((message) => message.info.id)).toEqual(['msg_user', 'msg_assistant'])
+    })
+
     it('surfaces a failed tool state as a V1 error string', async () => {
       const { client } = clientFor({
         session: {
@@ -335,6 +381,32 @@ describe('createForgeClientFromV2', () => {
         parts: [],
       })
       expect(messages[1].info.id).toBe('msg_assistant')
+    })
+
+    it('counts compaction tokens through the session usage remainder', async () => {
+      const { client } = clientFor({
+        session: {
+          context: vi.fn().mockResolvedValue([
+            assistantMessage(),
+            compactionMessage({
+              cost: 0.25,
+              tokens: { input: 5, output: 2, reasoning: 0, cache: { read: 1, write: 0 } },
+            }),
+          ]),
+          get: vi.fn().mockResolvedValue(sessionInfo({
+            cost: 0.75,
+            tokens: { input: 15, output: 22, reasoning: 0, cache: { read: 1, write: 0 } },
+            model: { id: 'claude-sonnet-4', providerID: 'anthropic' },
+          })),
+        },
+      })
+
+      const messages = await client.session.messages({ sessionID: 'ses_1' })
+
+      expect(messages[0].info.id).toBe('ses_1:usage-remainder')
+      expect(messages[0].info.cost).toBe(0.25)
+      expect(messages[0].info.tokens).toEqual({ input: 5, output: 2, reasoning: 0, cache: { read: 1, write: 0 } })
+      expect(messages.map((message) => message.info.id)).toEqual(['ses_1:usage-remainder', 'msg_assistant'])
     })
 
     it('omits the remainder when the cumulative totals equal the visible sum', async () => {
@@ -464,6 +536,55 @@ describe('createForgeClientFromV2', () => {
     })
   })
 
+  describe('model.contextLimit', () => {
+    function modelListDefaults() {
+      return vi.fn().mockResolvedValue({
+        location: { directory: '/tmp/forge-project' },
+        data: [
+          { providerID: 'anthropic', id: 'claude-sonnet-4', limit: { context: 200_000, output: 8_000 } },
+          { providerID: 'anthropic', id: 'no-window', limit: { context: 0, output: 8_000 } },
+        ],
+      })
+    }
+
+    it('returns the context window of a known model', async () => {
+      const list = modelListDefaults()
+      const { client, calls } = clientFor({ model: { list } })
+
+      await expect(client.model.contextLimit({ providerID: 'anthropic', modelID: 'claude-sonnet-4' })).resolves.toBe(200_000)
+      expect(calls).toEqual([
+        { method: 'model.list', args: [{ location: { directory: '/tmp/forge-project' } }] },
+      ])
+    })
+
+    it('returns undefined for an unknown model or a non-positive limit', async () => {
+      const { client } = clientFor({ model: { list: modelListDefaults() } })
+
+      await expect(client.model.contextLimit({ providerID: 'anthropic', modelID: 'missing' })).resolves.toBeUndefined()
+      await expect(client.model.contextLimit({ providerID: 'anthropic', modelID: 'no-window' })).resolves.toBeUndefined()
+    })
+
+    it('lists models once for repeated lookups', async () => {
+      const list = modelListDefaults()
+      const { client, calls } = clientFor({ model: { list } })
+
+      await client.model.contextLimit({ providerID: 'anthropic', modelID: 'claude-sonnet-4' })
+      await client.model.contextLimit({ providerID: 'anthropic', modelID: 'no-window' })
+
+      expect(list).toHaveBeenCalledTimes(1)
+      expect(calls.filter((call) => call.method === 'model.list')).toHaveLength(1)
+    })
+
+    it('classifies a host failure', async () => {
+      const { client } = clientFor({ model: { list: vi.fn().mockRejectedValue(new Error('model list unavailable')) } })
+
+      const err = failure(await client.model.contextLimit({ providerID: 'anthropic', modelID: 'claude-sonnet-4' }).catch((e: unknown) => e))
+
+      expect(err.kind).toBe('request')
+      expect(err.method).toBe('model.contextLimit')
+    })
+  })
+
   describe('toast', () => {
     it('emits the mapped toast payload when an emitter is configured', async () => {
       const publishToast = vi.fn()
@@ -505,6 +626,30 @@ describe('createForgeClientFromV2', () => {
       expect(calls).toEqual([
         { method: 'session.interrupt', args: [{ sessionID: 'ses_1', resume: false }] },
       ])
+    })
+  })
+
+  describe('session.compact', () => {
+    it('enqueues the compaction so a later prompt runs after it', async () => {
+      const { client, calls } = clientFor()
+
+      await client.session.compact({ sessionID: 'ses_1', directory: '/wt' })
+
+      expect(calls).toEqual([
+        { method: 'session.compact', args: [{ sessionID: 'ses_1', delivery: 'queue' }] },
+      ])
+    })
+
+    it('classifies a host failure as a forge client error', async () => {
+      const { client } = clientFor({
+        session: {
+          compact: vi.fn().mockRejectedValue(Object.assign(new Error('inbox unavailable'), { status: 503 })),
+        },
+      })
+
+      const err = await client.session.compact({ sessionID: 'ses_1' }).catch((e: unknown) => e)
+
+      expect(failure(err).method).toBe('session.compact')
     })
   })
 
@@ -679,6 +824,7 @@ describe('ForgeClient surface', () => {
     const surface: ForgeClient = client
 
     expect(Object.keys(surface).sort()).toEqual([
+      'model',
       'recordStatusEvent',
       'session',
       'toast',

@@ -46,7 +46,6 @@ function makeLoop(over: Record<string, any> = {}): any {
       hostSessionId: null,
       currentSectionIndex: 0,
       totalSections: 1,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
       ...loopOver,
@@ -671,16 +670,16 @@ describe('dashboard App machine graph', () => {
     return null
   }
 
-  test('renders an SVG with five phase nodes and highlights the current phase', async () => {
+  test('renders an SVG with three phase nodes and highlights the current phase', async () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
     const svg = container.querySelector('svg.mg-svg')
     expect(svg).toBeTruthy()
 
-    // Five phase nodes (terminal is omitted while running).
+    // Three phase nodes (terminal is omitted while running).
     const phaseNodes = container.querySelectorAll('g.mg-node')
-    expect(phaseNodes.length).toBe(5)
+    expect(phaseNodes.length).toBe(3)
     expect(container.querySelector('g.mg-terminal')).toBeFalsy()
 
     // Fixture has phase=coding and status=running → coding node is active.
@@ -727,8 +726,8 @@ describe('dashboard App machine graph', () => {
     // Active class moved.
     expect(phaseNodeByText('coding')!.classList.contains('mg-node-active')).toBe(false)
     expect(phaseNodeByText('auditing')!.classList.contains('mg-node-active')).toBe(true)
-    // Still five phase nodes (status still running → no terminal).
-    expect(container.querySelectorAll('g.mg-node').length).toBe(5)
+    // Still three phase nodes (status still running → no terminal).
+    expect(container.querySelectorAll('g.mg-node').length).toBe(3)
     expect(container.querySelector('g.mg-terminal')).toBeFalsy()
   })
 
@@ -888,7 +887,11 @@ describe('dashboard App machine graph', () => {
     expect(container.querySelector('[data-edge-key="post_action→completed"]')).toBeNull()
   })
 
-  test('recovery edges final_audit_fix↔coding render matching SVG edge counts for persisted rows', async () => {
+  test('historical rows for retired final-audit phases render without dangling SVG edges', async () => {
+    // `loop_transitions` keeps rows written before the final-audit phases were
+    // removed. The graph must keep rendering: the retired phases have no node
+    // or edge, their rows stay visible in the history list, and an unmatched
+    // row must not leak its count onto a live edge.
     payload = makePayload({
       dashLoop: {
         transitions: [
@@ -896,77 +899,12 @@ describe('dashboard App machine graph', () => {
             id: 1,
             projectId: 'p1',
             loopName: 'loop-a',
-            eventType: 'final-audit-fix-prompt-error',
-            transitionKind: 'error-recovery',
-            fromPhase: 'final_audit_fix',
-            toPhase: 'coding',
-            status: null,
-            reason: null,
-            iteration: 3,
-            sectionIndex: null,
-            createdAt: 1700000010000,
-          },
-          {
-            id: 2,
-            projectId: 'p1',
-            loopName: 'loop-a',
-            eventType: 'set-phase',
+            eventType: 'audit-clear',
             transitionKind: 'phase',
-            fromPhase: 'coding',
-            toPhase: 'final_audit_fix',
+            fromPhase: 'auditing',
+            toPhase: 'final_auditing',
             status: null,
             reason: null,
-            iteration: 4,
-            sectionIndex: null,
-            createdAt: 1700000020000,
-          },
-        ],
-      },
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    // Both edges exist and carry the persisted transition's count.
-    const fafToCoding = container.querySelector(
-      '[data-edge-key="final_audit_fix→coding"] .mg-edge-label',
-    )
-    expect(fafToCoding).toBeTruthy()
-    expect(fafToCoding!.textContent).toBe('1')
-
-    const codingToFaf = container.querySelector(
-      '[data-edge-key="coding→final_audit_fix"] .mg-edge-label',
-    )
-    expect(codingToFaf).toBeTruthy()
-    expect(codingToFaf!.textContent).toBe('1')
-
-    // History rows reflect the same persisted transitions.
-    const rows = container.querySelectorAll('.mg-history-row')
-    expect(rows.length).toBe(2)
-    expect(rows[0].textContent).toContain('set-phase')
-    expect(rows[0].textContent).toContain('coding → final_audit_fix')
-    expect(rows[1].textContent).toContain('final-audit-fix-prompt-error')
-    expect(rows[1].textContent).toContain('final_audit_fix → coding')
-  })
-
-  test('final_auditing→coding recovery edge renders a matching SVG count for the persisted row', async () => {
-    // `rotateToCodingAfterAuditFailure` (runtime.ts:617-635) records a
-    // `final_auditing → coding` row with transitionKind 'error-recovery' when
-    // a final audit session aborts (runtime.ts:2094) or errors before any
-    // assistant response (runtime.ts:2151). The canvas must surface that
-    // edge and count it instead of silently dropping the persisted row.
-    payload = makePayload({
-      dashLoop: {
-        transitions: [
-          {
-            id: 1,
-            projectId: 'p1',
-            loopName: 'loop-a',
-            eventType: 'final-audit-session-aborted',
-            transitionKind: 'error-recovery',
-            fromPhase: 'final_auditing',
-            toPhase: 'coding',
-            status: null,
-            reason: 'aborted',
             iteration: 2,
             sectionIndex: null,
             createdAt: 1700000010000,
@@ -975,36 +913,94 @@ describe('dashboard App machine graph', () => {
             id: 2,
             projectId: 'p1',
             loopName: 'loop-a',
-            eventType: 'final-audit-session-error',
-            transitionKind: 'error-recovery',
+            eventType: 'final-audit-findings',
+            transitionKind: 'phase',
             fromPhase: 'final_auditing',
-            toPhase: 'coding',
+            toPhase: 'final_audit_fix',
             status: null,
-            reason: 'upstream 5xx',
-            iteration: 3,
+            reason: null,
+            iteration: 2,
             sectionIndex: null,
             createdAt: 1700000020000,
           },
+          {
+            id: 3,
+            projectId: 'p1',
+            loopName: 'loop-a',
+            eventType: 'final-audit-fix-clear',
+            transitionKind: 'phase',
+            fromPhase: 'final_audit_fix',
+            toPhase: 'post_action',
+            status: null,
+            reason: null,
+            iteration: 3,
+            sectionIndex: null,
+            createdAt: 1700000030000,
+          },
+          {
+            id: 4,
+            projectId: 'p1',
+            loopName: 'loop-a',
+            eventType: 'completed',
+            transitionKind: 'terminate',
+            fromPhase: 'final_audit_fix',
+            toPhase: null,
+            status: 'completed',
+            reason: null,
+            iteration: 3,
+            sectionIndex: null,
+            createdAt: 1700000040000,
+          },
         ],
       },
+      loop: { status: 'completed', phase: 'final_audit_fix', completedAt: 1700000040000 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    // The edge is rendered and its count aggregates both persisted rows.
-    const recoveryLabel = container.querySelector(
-      '[data-edge-key="final_auditing→coding"] .mg-edge-label',
-    )
-    expect(recoveryLabel).toBeTruthy()
-    expect(recoveryLabel!.textContent).toBe('2')
+    const svg = container.querySelector('svg.mg-svg') as SVGElement
+    expect(svg).toBeTruthy()
+    expect(container.querySelectorAll('g.mg-node').length).toBe(3)
+    expect(container.querySelector('g.mg-terminal')).toBeTruthy()
+    // A retired persisted phase highlights no live node.
+    expect(container.querySelectorAll('g.mg-node.mg-node-active').length).toBe(0)
 
-    // Both history rows surface the persisted transitions, latest first.
+    // No edge group is drawn for a retired phase, in either direction.
+    for (const key of [
+      'auditing→final_auditing',
+      'final_auditing→final_audit_fix',
+      'final_audit_fix→post_action',
+      'final_audit_fix→terminal',
+    ]) {
+      expect(container.querySelector(`[data-edge-key="${key}"]`)).toBeNull()
+    }
+
+    // Every rendered edge keeps a path, and unmatched rows leave the live
+    // edges uncounted instead of being misattributed to them.
+    for (const edge of container.querySelectorAll('g.mg-edge')) {
+      expect(edge.querySelector('path.mg-edge-path')?.getAttribute('d')).toBeTruthy()
+    }
+    const auditToPost = container.querySelector(
+      '[data-edge-key="auditing→post_action"] .mg-edge-label',
+    )
+    expect(auditToPost).toBeTruthy()
+    expect(auditToPost!.textContent).toBe('')
+    const postToTerminal = container.querySelector(
+      '[data-edge-key="post_action→terminal"] .mg-edge-label',
+    )
+    expect(postToTerminal!.textContent).toBe('')
+
+    // History rows still show the persisted phases verbatim, latest first.
     const rows = container.querySelectorAll('.mg-history-row')
-    expect(rows.length).toBe(2)
-    expect(rows[0].textContent).toContain('final-audit-session-error')
-    expect(rows[0].textContent).toContain('final_auditing → coding')
-    expect(rows[1].textContent).toContain('final-audit-session-aborted')
-    expect(rows[1].textContent).toContain('final_auditing → coding')
+    expect(rows.length).toBe(4)
+    expect(rows[0].textContent).toContain('completed')
+    expect(rows[0].textContent).toContain('final_audit_fix → completed')
+    expect(rows[1].textContent).toContain('final-audit-fix-clear')
+    expect(rows[1].textContent).toContain('final_audit_fix → post_action')
+    expect(rows[2].textContent).toContain('final-audit-findings')
+    expect(rows[2].textContent).toContain('final_auditing → final_audit_fix')
+    expect(rows[3].textContent).toContain('audit-clear')
+    expect(rows[3].textContent).toContain('auditing → final_auditing')
   })
 
   test('poll reordering of multiple loops preserves the selected loop SVG root identity', async () => {
@@ -2341,7 +2337,7 @@ describe('dashboard App loop detail tabs', () => {
     await clickTab('timeline')
     const graph = container.querySelector('.mg-graph') as HTMLElement
     expect(graph).toBeTruthy()
-    expect(graph.querySelectorAll('g.mg-node').length).toBe(5)
+    expect(graph.querySelectorAll('g.mg-node').length).toBe(3)
   })
 
   test('a lazily built tab body keeps its node identity across a hide/show cycle and a poll', async () => {
@@ -3394,14 +3390,14 @@ describe('dashboard App overview tab content', () => {
   test('a running loop shows the live phase pill with a human label', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
-      loop: { phase: 'final_audit_fix' },
+      loop: { phase: 'post_action' },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
     const pill = container.querySelector('.loop-detail-header .ldh-phase')
     expect(pill).toBeTruthy()
-    expect(pill!.textContent).toBe('Final audit fix')
+    expect(pill!.textContent).toBe('Post-action')
   })
 
   test('a termination reason that only repeats the status renders no banner', async () => {
@@ -3557,7 +3553,7 @@ describe('dashboard App timeline tab', () => {
     expect(body.querySelector('.tl-event-expand')).toBeNull()
   })
 
-  test('the machine graph renders unhidden at the top of the Timeline tab with five phase nodes', async () => {
+  test('the machine graph renders unhidden at the top of the Timeline tab with three phase nodes', async () => {
     window.location.hash = '#p1/loop/loop-a/timeline'
     payload = makePayload()
     dispose = render(() => App() as unknown as Element, container)
@@ -3569,7 +3565,7 @@ describe('dashboard App timeline tab', () => {
 
     const graph = body.querySelector('.mg-graph') as HTMLElement
     expect(graph).toBeTruthy()
-    expect(graph.querySelectorAll('g.mg-node').length).toBe(5)
+    expect(graph.querySelectorAll('g.mg-node').length).toBe(3)
 
     // It is the first child of the timeline tab, above the phase bar.
     const timeline = body.querySelector('.timeline-tab') as HTMLElement
@@ -3645,11 +3641,11 @@ describe('dashboard App timeline tab', () => {
       dashLoop: {
         transitions: transitionFixture([
           { fromPhase: 'coding', toPhase: 'auditing', createdAt: startedAt + 5000 },
-          { fromPhase: 'auditing', toPhase: 'final_auditing', createdAt: startedAt + 8000 },
+          { fromPhase: 'auditing', toPhase: 'post_action', createdAt: startedAt + 8000 },
         ]),
         transitionsCapped: true,
       },
-      loop: { startedAt, phase: 'final_auditing', status: 'running', completedAt: null },
+      loop: { startedAt, phase: 'post_action', status: 'running', completedAt: null },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -3668,15 +3664,15 @@ describe('dashboard App timeline tab', () => {
     // Only the two known spans are rendered as segs; the unknown leading
     // coding interval is not attributed to the coding phase.
     const segs = Array.from(body.querySelectorAll('.phase-seg')) as HTMLElement[]
-    expect(segs.map(s => s.dataset.phase)).toEqual(['auditing', 'final_auditing'])
+    expect(segs.map(s => s.dataset.phase)).toEqual(['auditing', 'post_action'])
     expect(segs.every(s => s.dataset.phase !== '' && s.dataset.phase !== 'coding')).toBe(true)
 
-    // Totals exclude coding entirely: the only rows are auditing and final_auditing,
+    // Totals exclude coding entirely: the only rows are auditing and post_action,
     // rendered with their human labels.
     const totalLabels = Array.from(body.querySelectorAll('.legend-label')).map(el => el.textContent?.trim() ?? '')
     expect(totalLabels).not.toContain('coding')
     expect(totalLabels).toContain('Auditing')
-    expect(totalLabels).toContain('Final audit')
+    expect(totalLabels).toContain('Post-action')
   })
 
   test('the overview phase bar is accompanied by a legend naming each phase', async () => {
@@ -3730,7 +3726,7 @@ describe('dashboard App timeline tab', () => {
     for (const seg of segs) {
       const title = seg.title
       expect(title.length).toBeGreaterThan(0)
-      expect(title).toMatch(/^(Coding|Auditing|Final audit|Final audit fix|Post-action) ·/)
+      expect(title).toMatch(/^(Coding|Auditing|Post-action) ·/)
     }
   })
 

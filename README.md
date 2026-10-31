@@ -119,7 +119,7 @@ The per-loop settings submenu — max iterations and sandbox resource overrides:
 
 ## Loop Flow
 
-The diagram below shows the overall flow of the Forge loop system — from loop trigger and provisioning through coding/auditing, section advancement, the final audit, and the optional post-action phase. See [Loop System](docs/loop-system.md) for the full lifecycle. Source: [`diagrams/loop-flow.mmd`](diagrams/loop-flow.mmd).
+The diagram below shows the overall flow of the Forge loop system — from loop trigger and provisioning through coding/auditing, section advancement, and the optional post-action phase. See [Loop System](docs/loop-system.md) for the full lifecycle. Source: [`diagrams/loop-flow.mmd`](diagrams/loop-flow.mmd).
 
 ![Loop Flow](diagrams/loop-flow.webp)
 

@@ -51,9 +51,19 @@ export type SessionAbortParams = {
   directory?: string
 }
 
+export type SessionCompactParams = {
+  sessionID: string
+  directory?: string
+}
+
 export type SessionDeleteParams = {
   sessionID: string
   directory?: string
+}
+
+export type ModelContextLimitParams = {
+  providerID: string
+  modelID: string
 }
 
 // ── Session result types ─────────────────────────────────────────────────────
@@ -225,6 +235,12 @@ export interface ForgeClient {
     status(params?: SessionStatusParams): Promise<SessionStatus>
     promptAsync(params: SessionPromptAsyncParams): Promise<void>
     abort(params: SessionAbortParams): Promise<void>
+    /**
+     * Enqueues a compaction in the session inbox. The host runs it before any
+     * prompt queued after it, so the session keeps its identity and its history
+     * collapses into the compaction summary.
+     */
+    compact(params: SessionCompactParams): Promise<void>
     delete(params: SessionDeleteParams): Promise<void>
   }
   workspace: {
@@ -232,6 +248,13 @@ export interface ForgeClient {
     list(params?: WorkspaceListParams): Promise<WorkspaceList>
     remove(params: WorkspaceRemoveParams): Promise<void>
     warp(params: WorkspaceWarpParams): Promise<void>
+  }
+  model: {
+    /**
+     * Context window of a model in tokens, or `undefined` when the host does not
+     * know the model or reports no positive `limit.context`.
+     */
+    contextLimit(params: ModelContextLimitParams): Promise<number | undefined>
   }
   /** Emits a toast notification to the host TUI. */
   toast(input: ToastInput): Promise<void>

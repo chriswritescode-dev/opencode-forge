@@ -167,7 +167,6 @@ describe('Loop', () => {
         started_at: Date.now(),
         current_section_index: 0,
         total_sections: 0,
-        final_audit_done: 0,
       }
       const values = { ...defaults, ...overrides }
       db.run(
@@ -318,7 +317,7 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 1, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       // Count 1 is below threshold, so no escalation
       expect(prompt1).not.toContain('Recurring blocking findings')
@@ -331,7 +330,7 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 2, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       // Count 2 is still below threshold
       expect(prompt2).not.toContain('Recurring blocking findings')
@@ -342,7 +341,7 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       expect(prompt3).toContain('Recurring blocking findings')
       expect(prompt3).toContain('src/bug.ts:10')
@@ -356,7 +355,7 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       expect(auditPrompt).toContain('Recurring findings — re-evaluate')
       expect(auditPrompt).toContain('src/bug.ts:10')
@@ -397,75 +396,53 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'test-loop-2', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 4, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       // Count=1, below threshold — no escalation
       expect(prompt).not.toContain('Recurring blocking findings')
     })
 
-    test('escalates recurrence in final-audit fix and final-audit prompts after threshold', () => {
+    test('escalates recurrence in the coder and auditor prompts after threshold', () => {
       const reviewFindingsRepo = createReviewFindingsRepo(db)
 
       reviewFindingsRepo.write({
-        projectId, file: 'src/final-bug.ts', line: 42, severity: 'bug', description: 'Final audit bug', scenario: 'test', loopName: 'test-loop-final',
+        projectId, file: 'src/final-bug.ts', line: 42, severity: 'bug', description: 'Escalating bug', scenario: 'test', loopName: 'test-loop-escalating',
       })
 
-      const findings = loop.service.getOutstandingFindings('test-loop-final', 'bug')
+      const findings = loop.service.getOutstandingFindings('test-loop-escalating', 'bug')
       expect(findings.length).toBe(1)
 
-      const finalAuditState = {
-        active: true, sessionId: 's1', loopName: 'test-loop-final', worktreeDir: '/tmp/test',
+      const state = {
+        active: true, sessionId: 's1', loopName: 'test-loop-escalating', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'final_auditing', errorCount: 0, auditCount: 2,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 2,
+        currentSectionIndex: 0, totalSections: 0,
       } as any
 
       // Bump once — below threshold, no escalation
-      loop.service.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt1 = loop.service.buildFinalAuditFixPrompt(finalAuditState)
-      expect(fixPrompt1).not.toContain('Recurring blocking findings')
+      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
+      const prompt1 = loop.service.buildContinuationPrompt(state, undefined, findings)
+      expect(prompt1).not.toContain('Recurring blocking findings')
 
       // Bump twice — still below threshold
-      loop.service.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt2 = loop.service.buildFinalAuditFixPrompt(finalAuditState)
-      expect(fixPrompt2).not.toContain('Recurring blocking findings')
+      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
+      const prompt2 = loop.service.buildContinuationPrompt(state, undefined, findings)
+      expect(prompt2).not.toContain('Recurring blocking findings')
 
       // Bump third time — threshold reached, escalation appears
-      loop.service.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt3 = loop.service.buildFinalAuditFixPrompt(finalAuditState)
-      expect(fixPrompt3).toContain('Recurring blocking findings')
-      expect(fixPrompt3).toContain('src/final-bug.ts:42')
-      expect(fixPrompt3).toContain('recurred 3×')
-      expect(fixPrompt3).toContain('revisit the causal hypothesis')
-      expect(fixPrompt3).toContain('reproducer or counterexample')
+      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
+      const prompt3 = loop.service.buildContinuationPrompt(state, undefined, findings)
+      expect(prompt3).toContain('Recurring blocking findings')
+      expect(prompt3).toContain('src/final-bug.ts:42')
+      expect(prompt3).toContain('recurred 3×')
+      expect(prompt3).toContain('revisit the causal hypothesis')
+      expect(prompt3).toContain('reproducer or counterexample')
 
-      // Also surfaces in the final-audit prompt
-      const auditPrompt = loop.service.buildFinalAuditPrompt(finalAuditState)
+      // Also surfaces in the auditor prompt
+      const auditPrompt = loop.service.buildAuditPrompt({ ...state, phase: 'auditing' })
       expect(auditPrompt).toContain('Recurring findings — re-evaluate')
       expect(auditPrompt).toContain('src/final-bug.ts:42')
       expect(auditPrompt).toContain('Recurring Findings policy')
-    })
-
-    test('final-audit fix renders explicit outstandingBugs over the repository lookup', () => {
-      const explicit: ReviewFindingRow[] = [{
-        file: 'src/explicit.ts', line: 7, severity: 'bug', description: 'Explicit bug', scenario: null, loopName: 'explicit-bugs', sectionIndex: null, projectId, createdAt: 0,
-      }]
-      const state = {
-        active: true, sessionId: 's1', loopName: 'explicit-bugs', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 2, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'final_auditing', errorCount: 0, auditCount: 1,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
-      } as any
-
-      const withExplicit = loop.service.buildFinalAuditFixPrompt(state, explicit)
-      expect(withExplicit).toContain('## Outstanding review findings (1)')
-      expect(withExplicit).toContain('`src/explicit.ts:7` (bug)')
-      expect(withExplicit).toContain('Read every finding')
-      expect(withExplicit).toContain('Never delete findings')
-
-      const withoutExplicit = loop.service.buildFinalAuditFixPrompt(state)
-      expect(withoutExplicit).not.toContain('## Outstanding review findings')
-      expect(withoutExplicit).not.toContain('Read every finding')
     })
   })
 
@@ -498,7 +475,7 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'reset-test', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'auditing', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       expect(prompt).toContain('Recurring findings — re-evaluate')
       expect(prompt).toContain('`src/section1.ts:2` (3×)')
@@ -512,7 +489,7 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'reset-test', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       expect(contPrompt).toContain('Recurring blocking findings')
       expect(contPrompt).toContain('`src/section1.ts:2` (recurred 3×)')
@@ -545,7 +522,7 @@ describe('Loop', () => {
         active: true, sessionId: 's1', loopName: 'reset-fresh', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0, finalAuditDone: false,
+        currentSectionIndex: 0, totalSections: 0,
       } as any)
       // Count=1 is below threshold, so no escalation
       expect(prompt).not.toContain('Recurring blocking findings')
@@ -583,7 +560,6 @@ describe('Loop', () => {
         auditCount: 0,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
       } as LoopState
 
       // Set coder decisions
@@ -623,7 +599,6 @@ describe('Loop', () => {
         auditCount: 0,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
       } as LoopState
 
       const prompt = service.buildAuditPrompt(state)
@@ -649,7 +624,6 @@ describe('Loop', () => {
         started_at: Date.now(),
         current_section_index: 1,
         total_sections: 4,
-        final_audit_done: 0,
       }
       const values = { ...defaults, ...overrides }
       db.run(
@@ -1253,7 +1227,7 @@ describe('Loop', () => {
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
         currentSectionIndex: 1, totalSections: 2,
-        finalAuditDone: 0, executionVariant: null, auditorVariant: null,
+        executionVariant: null, auditorVariant: null,
       } as any, { lastAuditResult: null, postActionReport: null })
 
       service.setCurrentSectionIndex('adj', 2)
@@ -1280,7 +1254,7 @@ describe('Loop', () => {
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
         currentSectionIndex: 4, totalSections: 5,
-        finalAuditDone: 0, executionVariant: null, auditorVariant: null,
+        executionVariant: null, auditorVariant: null,
       } as any, { lastAuditResult: null, postActionReport: null })
 
       service.setTotalSections('adj', 3)
@@ -1326,7 +1300,7 @@ describe('Loop', () => {
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
         currentSectionIndex: 0, totalSections: 2,
-        finalAuditDone: 0, executionVariant: null, auditorVariant: null,
+        executionVariant: null, auditorVariant: null,
       } as any, { lastAuditResult: null, postActionReport: null })
 
       dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj', 0, 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])
@@ -1394,7 +1368,7 @@ describe('Loop', () => {
         startedAt: Date.now(), completedAt: null, terminationReason: null,
         completionSummary: null, workspaceId: null, hostSessionId: null,
         currentSectionIndex: 0, totalSections: 3,
-        finalAuditDone: 0, executionVariant: null, auditorVariant: null,
+        executionVariant: null, auditorVariant: null,
       } as any, { lastAuditResult: null, postActionReport: null })
 
       dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 0, 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])

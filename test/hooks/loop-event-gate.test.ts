@@ -92,7 +92,6 @@ describe('Loop Event Idle Gate', () => {
       auditorModel: 'test/auditor',
       currentSectionIndex: 0,
       totalSections: 2,
-      finalAuditDone: false,
       ...overrides,
     }
   }

@@ -73,7 +73,6 @@ describe('LoopService section management', () => {
       hostSessionId: null,
       currentSectionIndex: 0,
       totalSections: 2,
-      finalAuditDone: 0,
     }, { lastAuditResult: null })
   }
 
@@ -156,19 +155,27 @@ describe('LoopService section management', () => {
     })
   })
 
-  describe('setFinalAuditDone', () => {
-    test('sets final audit done flag', () => {
+  describe('isLastOpenSection', () => {
+    test('is true when every other section is completed', () => {
       insertLoop('test-loop')
+      insertSections('test-loop', 2)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'in_progress')
+      loopsRepo.setCurrentSectionIndex(projectId, 'test-loop', 1)
 
-      loopService.setFinalAuditDone('test-loop', true)
+      const state = loopService.getActiveState('test-loop')!
+      expect(loopService.isLastOpenSection(state)).toBe(true)
+    })
 
-      const state = loopService.getActiveState('test-loop')
-      expect(state).not.toBeNull()
-      expect(state!.finalAuditDone).toBe(true)
+    test('is false while another section is still open', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'in_progress')
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(loopService.isLastOpenSection(state)).toBe(false)
     })
   })
-
-
 
   describe('buildAuditPrompt routing', () => {
     test('uses section audit prompt for sectioned loops', () => {
@@ -210,7 +217,6 @@ describe('LoopService section management', () => {
         hostSessionId: null,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: 0,
       }, { lastAuditResult: null })
 
       const state = loopService.getActiveState('no-sections')!
@@ -221,20 +227,24 @@ describe('LoopService section management', () => {
     })
   })
 
-  describe('buildFinalAuditPrompt', () => {
-    test('includes section summaries and final-audit instructions', () => {
+  describe('buildSectionAuditPrompt section scope', () => {
+    test('includes the section-wide blocking rule and prior section summaries', () => {
       insertLoop('test-loop')
       insertSections('test-loop', 2)
       sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
       sectionPlansRepo.setSummary(projectId, 'test-loop', 0, { done: 'Feature A implemented' })
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'in_progress')
+      sectionPlansRepo.setCompletedAt(projectId, 'test-loop', 0, Date.now())
+      loopsRepo.setCurrentSectionIndex(projectId, 'test-loop', 1)
 
       const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildFinalAuditPrompt(state)
+      const prompt = loopService.buildSectionAuditPrompt(state)
 
-      expect(prompt).toContain('Final integration audit')
+      expect(prompt).toContain('Loop section audit 2/2')
       expect(prompt).toContain('Section 1: Section 1')
       expect(prompt).toContain('Feature A implemented')
-      expect(prompt).toContain('crossSection: true')
+      expect(prompt).toContain('This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs')
+      expect(prompt).not.toContain('Last open section:')
     })
   })
 
@@ -353,7 +363,7 @@ describe('LoopService section management', () => {
       expect(prompt).toContain('Test bug')
     })
 
-    test('excludes cross-section findings from continuation prompt', () => {
+    test('includes cross-section findings in the continuation prompt', () => {
       insertLoop('test-loop')
       insertSections('test-loop', 2)
 
@@ -365,6 +375,27 @@ describe('LoopService section management', () => {
         description: 'Cross-section bug',
         loopName: 'test-loop',
         sectionIndex: null,
+      })
+
+      const state = loopService.getActiveState('test-loop')!
+      const prompt = loopService.buildSectionContinuationPrompt(state)
+
+      expect(prompt).toContain('Outstanding review findings (1)')
+      expect(prompt).toContain('src/test.ts:10')
+    })
+
+    test('excludes bugs attributed to a later section from the continuation prompt', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/later.ts',
+        line: 11,
+        severity: 'bug',
+        description: 'Later-section bug',
+        loopName: 'test-loop',
+        sectionIndex: 1,
       })
 
       const state = loopService.getActiveState('test-loop')!
@@ -413,7 +444,6 @@ describe('section-read tool contract', () => {
       hostSessionId: null,
       currentSectionIndex: 0,
       totalSections: 2,
-      finalAuditDone: 0,
     }, { lastAuditResult: null })
 
     sectionPlansRepo.bulkInsert({

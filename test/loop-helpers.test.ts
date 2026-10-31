@@ -352,7 +352,7 @@ describe('resolveUsageFallbackModelLabel', () => {
 
   it('at index 0 matches the legacy primary label for the same inputs', () => {
     const state: any = {
-      phase: 'final_auditing',
+      phase: 'auditing',
       auditorModel: 'provider/state-auditor',
       executionModel: 'provider/state-exec',
       auditorFallbackIndex: 0,

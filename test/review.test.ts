@@ -118,7 +118,6 @@ describe('review-write', () => {
       startedAt: Date.now(),
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }, { lastAuditResult: null })
@@ -140,7 +139,7 @@ describe('review-write', () => {
     expect(findings[0].loopName).toBe('test-loop')
   })
 
-  test('sectioned loop auto-injects currentSectionIndex during a section audit but not during the final audit', async () => {
+  test('sectioned loop auto-injects currentSectionIndex in every phase', async () => {
     const loopsRepo = createLoopsRepo(db)
     const baseRow = {
       projectId: 'test-project',
@@ -165,7 +164,6 @@ describe('review-write', () => {
       hostSessionId: null,
       startedAt: Date.now(),
       totalSections: 3,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }
@@ -178,9 +176,9 @@ describe('review-write', () => {
     }, { lastAuditResult: null })
     loopsRepo.insert({
       ...baseRow,
-      loopName: 'final-loop',
-      currentSessionId: 'final-session',
-      phase: 'final_auditing',
+      loopName: 'coding-loop',
+      currentSessionId: 'coding-session',
+      phase: 'coding',
       currentSectionIndex: 2,
     }, { lastAuditResult: null })
 
@@ -189,22 +187,22 @@ describe('review-write', () => {
       { sessionID: 'section-session', directory: TEST_DIR } as any
     )
     await tools['review-write'].execute(
-      { file: 'src/final-default.ts', line: 2, severity: 'bug', description: 'Final audit finding without explicit section' },
-      { sessionID: 'final-session', directory: TEST_DIR } as any
+      { file: 'src/coding-default.ts', line: 2, severity: 'bug', description: 'Coding finding without explicit section' },
+      { sessionID: 'coding-session', directory: TEST_DIR } as any
     )
     await tools['review-write'].execute(
-      { file: 'src/final-explicit.ts', line: 3, severity: 'bug', description: 'Final audit finding with explicit section', sectionIndex: 0 },
-      { sessionID: 'final-session', directory: TEST_DIR } as any
+      { file: 'src/coding-explicit.ts', line: 3, severity: 'bug', description: 'Coding finding with explicit section', sectionIndex: 0 },
+      { sessionID: 'coding-session', directory: TEST_DIR } as any
     )
 
     const findings = reviewFindingsRepo.listAll('test-project')
     const byFile = new Map(findings.map((f) => [f.file, f]))
     // Section audit: auto-injected current section.
     expect(byFile.get('src/section.ts')!.sectionIndex).toBe(1)
-    // Final audit: no auto-injection — the last section must not silently own it.
-    expect(byFile.get('src/final-default.ts')!.sectionIndex).toBeNull()
-    // Final audit: explicit attribution still honored.
-    expect(byFile.get('src/final-explicit.ts')!.sectionIndex).toBe(0)
+    // Coding pass: auto-injected current section.
+    expect(byFile.get('src/coding-default.ts')!.sectionIndex).toBe(2)
+    // Explicit attribution still honored.
+    expect(byFile.get('src/coding-explicit.ts')!.sectionIndex).toBe(0)
   })
 
   test('outside a loop session writes empty loop_name', async () => {
@@ -368,7 +366,6 @@ describe('review-read', () => {
       startedAt: Date.now(),
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }, { lastAuditResult: null })
@@ -476,7 +473,6 @@ describe('review-delete', () => {
       startedAt: Date.now(),
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }, { lastAuditResult: null })
@@ -554,7 +550,6 @@ describe('review-read attempts mode', () => {
       startedAt: Date.now(),
       currentSectionIndex: 0,
       totalSections: 2,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }, { lastAuditResult: null })

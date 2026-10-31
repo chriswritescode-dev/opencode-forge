@@ -6,19 +6,15 @@ export type Transition =
   | { kind: 'rotate' }
   | { kind: 'advance-section' }
   | { kind: 'rewind-section' }
-  | { kind: 'fix-for-final-audit' }
-  | { kind: 'start-final-audit' }
   | { kind: 'terminate'; reason: TerminationReason }
   | { kind: 'noop' }
 
 export type TransitionEvent =
   | { type: 'coding-idle-complete' }
-  | { type: 'section-clean'; isLastSection: boolean }
+  | { type: 'section-clean'; isLastOpenSection: boolean }
   | { type: 'section-dirty' }
   | { type: 'audit-clear' }
   | { type: 'audit-dirty' }
-  | { type: 'final-audit-clean' }
-  | { type: 'final-audit-dirty' }
   | { type: 'iteration-cap' }
   | { type: 'user-abort' }
   | { type: 'shutdown' }
@@ -27,7 +23,6 @@ export type TransitionEvent =
   | { type: 'missing-worktree-dir' }
   | { type: 'session-creation-failed' }
   | { type: 'audit-retry-exhausted' }
-  | { type: 'final-audit-retry-exhausted' }
   | { type: 'coding-no-assistant' }
   | { type: 'post-action-complete' }
 
@@ -45,14 +40,8 @@ export function nextTransition(state: LoopState, event: TransitionEvent): Transi
     case 'auditing':
       return handleAuditingEvent(event)
 
-    case 'final_auditing':
-      return handleFinalAuditEvent(event)
-
     case 'post_action':
       return handlePostActionEvent(event)
-
-    case 'final_audit_fix':
-      return handleFinalAuditFixEvent(event)
   }
 }
 
@@ -84,8 +73,8 @@ function handleCodingEvent(event: TransitionEvent): Transition {
 function handleAuditingEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'section-clean':
-      if (event.isLastSection) {
-        return { kind: 'start-final-audit' }
+      if (event.isLastOpenSection) {
+        return { kind: 'terminate', reason: { kind: 'completed' } }
       }
       return { kind: 'advance-section' }
     case 'section-dirty':
@@ -113,31 +102,6 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
   }
 }
 
-function handleFinalAuditEvent(event: TransitionEvent): Transition {
-  switch (event.type) {
-    case 'final-audit-clean':
-      return { kind: 'terminate', reason: { kind: 'completed' } }
-    case 'final-audit-dirty':
-      return { kind: 'fix-for-final-audit' }
-    case 'final-audit-retry-exhausted':
-      return { kind: 'terminate', reason: { kind: 'final_audit_retry_exhausted' } }
-    case 'iteration-cap':
-      return { kind: 'terminate', reason: { kind: 'max_iterations' } }
-    case 'user-abort':
-      return { kind: 'terminate', reason: { kind: 'user_aborted' } }
-    case 'shutdown':
-      return { kind: 'terminate', reason: { kind: 'shutdown' } }
-    case 'stall-timeout':
-      return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
-    case 'missing-worktree-dir':
-      return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
-    case 'error-max-retries':
-      return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
-    default:
-      return { kind: 'noop' }
-  }
-}
-
 function handlePostActionEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'post-action-complete':
@@ -157,13 +121,4 @@ function handlePostActionEvent(event: TransitionEvent): Transition {
     default:
       return { kind: 'noop' }
   }
-}
-
-function handleFinalAuditFixEvent(event: TransitionEvent): Transition {
-  // The fix phase IS a coding pass; the only divergence is that a completed
-  // idle returns to the final audit instead of rotating to a section audit.
-  if (event.type === 'coding-idle-complete') {
-    return { kind: 'start-final-audit' }
-  }
-  return handleCodingEvent(event)
 }

@@ -16,17 +16,18 @@ import {
   buildSectionInitialPrompt as _buildSectionInitialPrompt,
   buildSectionAuditPrompt as _buildSectionAuditPrompt,
   buildSectionContinuationPrompt as _buildSectionContinuationPrompt,
-  buildFinalAuditPrompt as _buildFinalAuditPrompt,
-  buildFinalAuditFixPrompt as _buildFinalAuditFixPrompt,
+  buildCoderFollowUpPrompt as _buildCoderFollowUpPrompt,
+  buildAuditFollowUpPrompt as _buildAuditFollowUpPrompt,
   buildPostActionPrompt as _buildPostActionPrompt,
   type PostActionPromptOptions,
   type PromptContext,
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
-import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
+import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
+import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -68,6 +69,10 @@ export interface LoopService {
   resolveActiveLoopForSession(sessionId: string): LoopState | null
   findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null
   buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
+  /** Short same-section retry prompt for a reused coder session; the session already holds the plan and history. */
+  buildCoderFollowUpPrompt(state: LoopState, outstandingBugs?: ReviewFindingRow[], notice?: string): string
+  /** Short same-section follow-up prompt for a reused audit session. */
+  buildAuditFollowUpPrompt(state: LoopState): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
   listRecent(): LoopState[]
@@ -78,6 +83,19 @@ export interface LoopService {
   terminateAll(): Promise<void>
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
+  /**
+   * Bug findings that block the current section: cross-section findings and
+   * findings attributed to the current or an earlier section. Findings from a
+   * later, not-yet-started section do not block. Every bug blocks a
+   * non-sectioned loop.
+   */
+  getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
+  /**
+   * Whether any bug finding that blocks the current section (sectioned loops)
+   * or the plan (non-sectioned loops) has reached the recurrence escalation
+   * threshold. Escalated findings force fresh sessions for both roles.
+   */
+  hasEscalatedBugFindings(state: LoopState): boolean
   setCoderDecisions(name: string, decisions: string | null): void
   captureAttempt(state: LoopState, completionKey: string, decisions: string | null): Promise<boolean>
   finishAttempt(state: LoopState, outcome: 'clean' | 'dirty'): void
@@ -98,6 +116,11 @@ export interface LoopService {
   clearLastAuditResult(name: string): void
   setPostActionReport(name: string, text: string): void
   setSandboxContainer(name: string, containerName: string | null): void
+  /**
+   * Record (or clear, with null) the other role's session kept for reuse on the
+   * next same-section phase switch.
+   */
+  setStandbySessionId(name: string, sessionId: string | null): void
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
@@ -112,14 +135,17 @@ export interface LoopService {
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
   buildSectionContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
-  buildFinalAuditPrompt(state: LoopState): string
-  buildFinalAuditFixPrompt(state: LoopState, outstandingBugs?: ReviewFindingRow[]): string
   buildPostActionPrompt(state: LoopState, opts: PostActionPromptOptions): string
   completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
   incrementSectionAttempts(loopName: string, index: number): void
   resetSectionForRewind(loopName: string, index: number): void
   setCurrentSectionIndex(loopName: string, index: number): void
-  setFinalAuditDone(loopName: string, done: boolean): void
+  /**
+   * Whether `state` is the loop's last open section: every other section plan
+   * row is already completed. Covers both the final index and the rewind case
+   * where all later sections finished before the current one.
+   */
+  isLastOpenSection(state: LoopState): boolean
   startSection(loopName: string, index: number): void
   bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
   setTotalSections(loopName: string, total: number): void
@@ -290,7 +316,7 @@ export function createLoopService(
       auditCount: opts.auditCount,
       lastAuditResult: opts.lastAuditResult,
     })
-    if (state && loopAttemptsRepo && (opts.phase === 'auditing' || opts.phase === 'final_auditing')) {
+    if (state && loopAttemptsRepo && opts.phase === 'auditing') {
       loopAttemptsRepo.bindAudit(projectId, name, auditScope({ ...state, phase: opts.phase }), state.sessionId, opts.newSessionId, replace)
     } else replace()
     notifyLoopChange('rotate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
@@ -321,10 +347,18 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
+  }
+
+  function buildCoderFollowUpPrompt(state: LoopState, outstandingBugs?: ReviewFindingRow[], notice?: string): string {
+    return _buildCoderFollowUpPrompt(_promptCtx, state, outstandingBugs, notice)
+  }
+
+  function buildAuditFollowUpPrompt(state: LoopState): string {
+    return _buildAuditFollowUpPrompt(_promptCtx, state)
   }
 
   function getPlanTextForState(state: LoopState): string | null {
@@ -409,6 +443,17 @@ export function createLoopService(
   function getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[] {
     const rows = loopName ? reviewFindingsRepo.listByLoopName(projectId, loopName) : reviewFindingsRepo.listAll(projectId)
     return severity ? rows.filter((r) => r.severity === severity) : rows
+  }
+
+  function getBlockingBugFindings(state: LoopState): ReviewFindingRow[] {
+    return blockingBugFindings(getOutstandingFindings(state.loopName), state)
+  }
+
+  function hasEscalatedBugFindings(state: LoopState): boolean {
+    const bugs = state.totalSections > 0
+      ? getBlockingBugFindings(state)
+      : getOutstandingFindings(state.loopName, 'bug')
+    return hasEscalatedFindings(bugs, getFindingRecurrence(state.loopName))
   }
 
   function hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean {
@@ -496,11 +541,11 @@ export function createLoopService(
 
   function attemptFindings(state: LoopState): ReviewFindingRow[] {
     const findings = getOutstandingFindings(state.loopName)
-    return auditScope(state).startsWith('section:') ? findings.filter(f => f.sectionIndex === state.currentSectionIndex) : findings
+    return auditScope(state).startsWith('section:') ? findings.filter(f => isFindingInSectionScope(f, state.currentSectionIndex)) : findings
   }
 
   function finishAttempt(state: LoopState, outcome: 'clean' | 'dirty'): void {
-    if (!loopAttemptsRepo || (state.phase !== 'auditing' && state.phase !== 'final_auditing')) return
+    if (!loopAttemptsRepo || state.phase !== 'auditing') return
     const scope = auditScope(state)
     const active = getActiveState(state.loopName)
     if (!active || active.sessionId !== state.sessionId || active.phase !== state.phase || auditScope(active) !== scope) return
@@ -622,6 +667,12 @@ export function createLoopService(
     notifyLoopChange('sandbox', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
+  function setStandbySessionId(name: string, sessionId: string | null): void {
+    const state = getAnyState(name)
+    loopsRepo.setStandbySessionId(projectId, name, sessionId)
+    notifyLoopChange('session', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
   function clearWorkspaceId(name: string): void {
     const state = getAnyState(name)
     loopsRepo.clearWorkspaceId(projectId, name)
@@ -647,6 +698,15 @@ export function createLoopService(
   function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {
     if (!sectionPlansRepo) return null
     return sectionPlansRepo.getNextIncomplete(projectId, state.loopName)
+  }
+
+  function isLastOpenSection(state: LoopState): boolean {
+    if (state.totalSections <= 0) return false
+    const sections = getSectionPlans(state)
+    if (sections.length === 0) return state.currentSectionIndex >= state.totalSections - 1
+    const completed = sections.filter(s => s.status === 'completed').length
+    if (completed < state.totalSections - 1) return false
+    return sections.every(s => s.sectionIndex === state.currentSectionIndex || s.status === 'completed')
   }
 
   function getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[] {
@@ -675,14 +735,6 @@ export function createLoopService(
 
   function buildSectionContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildSectionContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
-  }
-
-  function buildFinalAuditPrompt(state: LoopState): string {
-    return _buildFinalAuditPrompt(_promptCtx, state)
-  }
-
-  function buildFinalAuditFixPrompt(state: LoopState, outstandingBugs?: ReviewFindingRow[]): string {
-    return _buildFinalAuditFixPrompt(_promptCtx, state, outstandingBugs)
   }
 
   function buildPostActionPrompt(state: LoopState, opts: PostActionPromptOptions): string {
@@ -720,10 +772,6 @@ export function createLoopService(
       index = row.totalSections - 1
     }
     loopsRepo.setCurrentSectionIndex(projectId, loopName, index)
-  }
-
-  function setFinalAuditDone(loopName: string, done: boolean): void {
-    loopsRepo.setFinalAuditDone(projectId, loopName, done)
   }
 
   function startSection(loopName: string, index: number): void {
@@ -1010,6 +1058,8 @@ export function createLoopService(
     findActiveByWorktreeDir,
     setStatus,
     buildContinuationPrompt,
+    buildCoderFollowUpPrompt,
+    buildAuditFollowUpPrompt,
     buildAuditPrompt,
     listActive,
     listRecent,
@@ -1020,6 +1070,8 @@ export function createLoopService(
     terminateAll,
     hasOutstandingFindings,
     getOutstandingFindings,
+    getBlockingBugFindings,
+    hasEscalatedBugFindings,
     setCoderDecisions,
     captureAttempt,
     finishAttempt,
@@ -1038,6 +1090,7 @@ export function createLoopService(
     clearLastAuditResult,
     setPostActionReport,
     setSandboxContainer,
+    setStandbySessionId,
     terminate,
     clearWorkspaceId,
     setWorkspaceId,
@@ -1051,14 +1104,12 @@ export function createLoopService(
     buildSectionInitialPrompt,
     buildSectionAuditPrompt,
     buildSectionContinuationPrompt,
-    buildFinalAuditPrompt,
-    buildFinalAuditFixPrompt,
     buildPostActionPrompt,
     completeSection,
     incrementSectionAttempts,
     resetSectionForRewind,
     setCurrentSectionIndex,
-    setFinalAuditDone,
+    isLastOpenSection,
     startSection,
     bulkInsertSections,
     setTotalSections,

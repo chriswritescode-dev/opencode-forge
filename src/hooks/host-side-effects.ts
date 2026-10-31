@@ -252,7 +252,6 @@ function resolveReasonLabel(reason: TerminationReason): string {
       return 'errored'
     case 'session_creation_failed':
     case 'audit_retry_exhausted':
-    case 'final_audit_retry_exhausted':
     case 'coding_no_assistant':
     case 'restart_prompt_failed':
       return 'errored'
