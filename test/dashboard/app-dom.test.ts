@@ -8,8 +8,6 @@ import { fmtTime, MAX_RENDERED_LOOP_ROWS, MAX_RENDERED_FINDING_ROWS, MAX_RENDERE
 // Payload builders (minimal runtime shape; tests are not typechecked by tsc)
 // ---------------------------------------------------------------------------
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 function makeLoop(over: Record<string, any> = {}): any {
   const loopOver = over.loop || {}
   delete over.loop

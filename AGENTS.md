@@ -5,7 +5,8 @@
 - Install with `pnpm install --frozen-lockfile`; `pnpm-lock.yaml` is canonical. Bun is still required because build, setup, and dashboard scripts run through it—do not substitute `bun install`.
 - Full verification: `pnpm build && pnpm typecheck && pnpm lint && pnpm test`. Build must precede tests because `test/dashboard/app-bundle.test.ts` rejects a stale source hash.
 - Focus a Node test with `pnpm test --project node test/path.test.ts`; add `-t "test name"` for one case. Run dashboard DOM tests with `pnpm test --project dom test/dashboard/app-dom.test.ts`. The `dom` project is the only happy-dom suite; all other tests use the `node` project and a `bun:sqlite` shim.
-- `pnpm typecheck` covers `src/`, not tests or scripts. ESLint also ignores tests and generated dashboard files.
+- `tsc` is TypeScript 7 (native, devDependency alias `typescript-7`). The `typescript` package is an alias for `@typescript/typescript6` because typedoc needs the JavaScript compiler API, which TypeScript 7.0 does not ship; keep both aliases until typedoc supports 7.
+- `pnpm typecheck` covers `src/`, not tests or scripts. Oxlint also ignores tests and generated dashboard files.
 
 ## Package surfaces
 
