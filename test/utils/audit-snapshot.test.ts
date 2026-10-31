@@ -181,7 +181,20 @@ describe('captureAuditSnapshot', () => {
   it('does not fail on secret-like files inside .forge and still excludes them', async () => {
     const repo = initRepo('audit-snapshot-forge-secret-')
     mkdirSync(join(repo, '.forge'))
-    writeFileSync(join(repo, '.forge', 'cache.pem'), '-----BEGIN\n', 'utf-8')
+    writeFileSync(join(repo, '.forge', 'cache.pem'), `-----BEGIN ${hexSha()}\n`, 'utf-8')
+    const pemBlob = gitOut(repo, 'hash-object .forge/cache.pem').trim()
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    expect(treePaths(repo, snapshot.commit).some((path) => path.startsWith('.forge/'))).toBe(false)
+    expect(() => gitOut(repo, `cat-file -e ${pemBlob}`)).toThrow()
+  })
+
+  it('captures a worktree with a nested git repository inside an unignored .forge', async () => {
+    const repo = initRepo('audit-snapshot-forge-nested-')
+    const nested = join(repo, '.forge', 'nested')
+    mkdirSync(nested, { recursive: true })
+    execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m inner-init', { cwd: nested, encoding: 'utf-8' })
 
     const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
 
