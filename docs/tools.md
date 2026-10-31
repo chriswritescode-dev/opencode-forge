@@ -84,7 +84,7 @@ Arguments:
 
 ### `plan-adjust`
 
-Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in non-sectioned loops and during the final audit). Revises the executable section instructions only: the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or the pending section suffix from the current section + 1 onward (`sections`). `sections` is destructive — it replaces the entire pending suffix, so any omitted milestone is deleted; confirm the retained list with `section-read` `pending_suffix: true` before calling. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. The tool performs no semantic validation of the adjusted instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots and a required rationale.
+Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in non-sectioned loops and outside the auditing phase). Revises the executable section instructions only: the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or the pending section suffix from the current section + 1 onward (`sections`). `sections` is destructive — it replaces the entire pending suffix, so any omitted milestone is deleted; confirm the retained list with `section-read` `pending_suffix: true` before calling. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. The tool performs no semantic validation of the adjusted instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots and a required rationale.
 
 Arguments:
 
@@ -96,7 +96,7 @@ Arguments:
 
 ## Review Tools
 
-Review findings are scoped to the current loop when invoked from a loop session. Sectioned loops automatically scope findings to the current section unless overridden.
+Review findings are scoped to the current loop when invoked from a loop session. Sectioned loops scope findings to the current and earlier sections plus cross-section findings unless overridden; bugs attributed to a later, not-yet-started section are excluded, and `allSections` reads everything.
 
 ### `review-write`
 
@@ -123,7 +123,7 @@ Arguments:
 | `pattern` | Regex search across finding descriptions and scenarios. |
 | `crossSection` | Read only cross-section findings. |
 | `allSections` | Read findings from all sections instead of the current section. |
-| `attempts` | Return durable audit-attempt history instead of live findings. Defaults to the current section/plan/final-audit scope; explicit `loopName` or `allSections` reads all scopes. |
+| `attempts` | Return durable audit-attempt history instead of live findings. Defaults to the current section/plan scope; explicit `loopName` or `allSections` reads all scopes. |
 | `limit` | With `attempts: true`, page size from 1 to 100 (default 20). |
 | `beforeId` | With `attempts: true`, read attempts older than this positive integer ID. |
 

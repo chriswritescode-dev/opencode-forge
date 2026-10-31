@@ -30,7 +30,6 @@ function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     findPartial: vi.fn(),
     setCurrentSectionIndex: vi.fn(),
     setTotalSections: vi.fn(),
-    setFinalAuditDone: vi.fn(),
     ...overrides,
   }
 }

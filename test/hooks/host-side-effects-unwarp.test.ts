@@ -20,7 +20,6 @@ function buildState(overrides?: Partial<LoopState>): LoopState {
     auditCount: 0,
     currentSectionIndex: 0,
     totalSections: 1,
-    finalAuditDone: false,
     worktree: true,
     workspaceId: 'ws_abc',
     ...overrides,

@@ -8,6 +8,14 @@ export type PermissionRule = { permission: string; pattern: string; action: 'all
  *  the Forge-hosted planner prompt, and the plan-adjust cap so all agree. */
 export const MAX_TOTAL_SECTIONS = 24
 
+/**
+ * Context-size ceiling for reusing a standby loop session across a
+ * same-section phase switch. A session whose last assistant turn already holds
+ * this many context tokens (input plus cache read/write) is retired instead of
+ * resumed, so a long audit retry cannot overflow the model window.
+ */
+export const LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS = 150_000
+
 /** Tools that author the loop's plan of record. Kept by the architect agents, denied to every
  *  implementation and audit session, and excluded by the code agent. */
 export const PLAN_OF_RECORD_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const

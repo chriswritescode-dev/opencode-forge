@@ -16,7 +16,6 @@ function makeState(overrides: Partial<LoopState> & { phase: LoopState['phase'] }
 
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: false,
     ...overrides,
   }
 }
@@ -85,18 +84,18 @@ describe('nextTransition', () => {
         totalSections: 3,
         currentSectionIndex: 1,
       })
-      const transition = nextTransition(state, { type: 'section-clean', isLastSection: false })
+      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: false })
       expect(transition).toEqual({ kind: 'advance-section' })
     })
 
-    it('starts final audit on last section clean', () => {
+    it('terminates with completed on last open section clean', () => {
       const state = makeState({
         phase: 'auditing',
         totalSections: 3,
         currentSectionIndex: 2,
       })
-      const transition = nextTransition(state, { type: 'section-clean', isLastSection: true })
-      expect(transition).toEqual({ kind: 'start-final-audit' })
+      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: true })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
     })
 
     it('rotates to coding on dirty section', () => {
@@ -170,122 +169,6 @@ describe('nextTransition', () => {
     })
   })
 
-  describe('final-auditing phase', () => {
-    it('terminates with completed on final-audit-clean', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'final-audit-clean' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
-    })
-
-    it('rotates to fix-for-final-audit on final-audit-dirty', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'final-audit-dirty' })
-      expect(transition).toEqual({ kind: 'fix-for-final-audit' })
-    })
-
-    it('terminates with final_audit_retry_exhausted', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'final-audit-retry-exhausted' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'final_audit_retry_exhausted' } })
-    })
-
-    it('terminates with max_iterations on iteration-cap', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'iteration-cap' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'max_iterations' } })
-    })
-
-    it('terminates with user_aborted on user-abort', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'user-abort' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'user_aborted' } })
-    })
-
-    it('terminates with shutdown', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'shutdown' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'shutdown' } })
-    })
-
-    it('terminates with stall_timeout', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'stall-timeout' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'stall_timeout' } })
-    })
-
-    it('terminates with missing_worktree_dir', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'missing-worktree-dir' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'missing_worktree_dir' } })
-    })
-  })
-
-
-
-  describe('final_audit_fix phase', () => {
-    it('starts final audit on coding-idle-complete', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'coding-idle-complete' })
-      expect(transition).toEqual({ kind: 'start-final-audit' })
-    })
-
-    it('terminates with missing_worktree_dir on missing-worktree-dir event', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'missing-worktree-dir' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'missing_worktree_dir' } })
-    })
-
-    it('terminates with session_creation_failed', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'session-creation-failed' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'session_creation_failed' } })
-    })
-
-    it('terminates with max_iterations on iteration-cap', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'iteration-cap' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'max_iterations' } })
-    })
-
-    it('terminates with user_aborted on user-abort', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'user-abort' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'user_aborted' } })
-    })
-
-    it('terminates with shutdown', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'shutdown' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'shutdown' } })
-    })
-
-    it('terminates with stall_timeout', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'stall-timeout' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'stall_timeout' } })
-    })
-
-    it('terminates with missing_worktree_dir', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'missing-worktree-dir' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'missing_worktree_dir' } })
-    })
-
-    it('terminates with error_max_retries', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'error-max-retries', context: 'send prompt' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'error_max_retries', message: 'send prompt' } })
-    })
-
-    it('returns noop for unhandled events', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
-      const transition = nextTransition(state, { type: 'nonexistent-event' as any })
-      expect(transition).toEqual({ kind: 'noop' })
-    })
-  })
-
-
-
   describe('post_action phase', () => {
     it('terminates with completed on post-action-complete', () => {
       const state = makeState({ phase: 'post_action' })
@@ -339,27 +222,15 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'noop' })
     })
 
-    it('returns noop for unhandled events in final_auditing phase', () => {
-      const state = makeState({ phase: 'final_auditing' })
-      const transition = nextTransition(state, { type: 'nonexistent-event' as any })
-      expect(transition).toEqual({ kind: 'noop' })
-    })
-
     it('returns noop for unhandled events in post_action phase', () => {
       const state = makeState({ phase: 'post_action' })
-      const transition = nextTransition(state, { type: 'nonexistent-event' as any })
-      expect(transition).toEqual({ kind: 'noop' })
-    })
-
-    it('returns noop for unhandled events in final_audit_fix phase', () => {
-      const state = makeState({ phase: 'final_audit_fix' })
       const transition = nextTransition(state, { type: 'nonexistent-event' as any })
       expect(transition).toEqual({ kind: 'noop' })
     })
   })
 
   describe('cross-phase error events', () => {
-    const phases = ['coding', 'auditing', 'final_auditing', 'post_action', 'final_audit_fix'] as const
+    const phases = ['coding', 'auditing', 'post_action'] as const
 
     phases.forEach(phase => {
       it(`handles error-max-retries in ${phase} phase`, () => {

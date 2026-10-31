@@ -81,7 +81,6 @@ function makeLoopState(loopName: string, sessionId: string, overrides: Partial<L
     auditorModel: 'test/auditor',
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: false,
     ...overrides,
   }
 }
@@ -319,13 +318,15 @@ describe('durable attempt handoff', () => {
 
       const afterAudit = harness.service.getActiveState(loopName)!
       expect(afterAudit.phase).toBe('coding')
+      // The dirty audit resumes the coder session kept as standby for this section.
       const coderBId = afterAudit.sessionId
-      expect(coderBId).not.toBe('coder-a')
+      expect(coderBId).toBe('coder-a')
+      expect(afterAudit.standbySessionId).toBe(auditSessionId)
 
       const continuationPrompt = promptsTo(harness.calls, coderBId, 'code').at(-1)!
-      expect(continuationPrompt).toContain('Coder decisions from latest attempt 1')
-      expect(continuationPrompt).toContain('chose the append-only ledger approach')
-      expect(continuationPrompt).toContain('outcome: dirty')
+      expect(continuationPrompt).toContain('(follow-up)')
+      expect(continuationPrompt).toContain('Retry handler drops the second event')
+      expect(continuationPrompt).not.toContain('Coder decisions from latest attempt 1')
     })
 
     test('subsequent code pass records the exact snapshot delta and the audit prompt carries latest notes and prior hypotheses', async () => {
@@ -334,7 +335,7 @@ describe('durable attempt handoff', () => {
       vi.mocked(compareAuditSnapshots).mockResolvedValue(DELTA_SUMMARY)
       const harness = createRuntimeHarness({})
 
-      const { coderBId } = await drivePlanLoopThroughDirtyAudit(harness, loopName)
+      const { coderBId, auditSessionId } = await drivePlanLoopThroughDirtyAudit(harness, loopName)
 
       harness.messagesBySession.set(coderBId, [
         assistantMessage('msg-b1', `Patched the retry handler.\n${coderDecisionsBlock('second pass guards replay idempotency')}`),
@@ -354,6 +355,9 @@ describe('durable attempt handoff', () => {
 
       const auditState = harness.service.getActiveState(loopName)!
       expect(auditState.phase).toBe('auditing')
+      // The same audit session is reused across attempts, so attempt 2 carries the
+      // same auditor session id as attempt 1.
+      expect(auditState.sessionId).toBe(auditSessionId)
       expect(row2.auditorSessionId).toBe(auditState.sessionId)
 
       const secondAuditPrompt = auditorPrompts(harness.calls).at(-1)!
@@ -363,69 +367,6 @@ describe('durable attempt handoff', () => {
       expect(secondAuditPrompt).toContain(`git diff --no-ext-diff --no-textconv ${COMMIT_A} ${COMMIT_B} --`)
     })
 
-    test('final-audit fix repeat keeps recording under the same final scope and builds the delta from the first final snapshot', async () => {
-      const loopName = 'handoff-final-scope'
-      queueSnapshotCommits([COMMIT_A, COMMIT_B])
-      vi.mocked(compareAuditSnapshots).mockResolvedValue(DELTA_SUMMARY)
-      const harness = createRuntimeHarness({})
-
-      const state = makeLoopState(loopName, 'fix-a', { phase: 'final_audit_fix', iteration: 2, auditCount: 1 })
-      harness.service.setState(loopName, state)
-      harness.messagesBySession.set('fix-a', [
-        assistantMessage('msg-f1', `Fixed the race.\n${coderDecisionsBlock('final fix round one decisions')}`),
-      ])
-      await idleTick(harness.loop, 'fix-a')
-
-      const firstRows = harness.service.getAttemptHistory(loopName, 'final')
-      expect(firstRows.length).toBe(1)
-      const row1 = firstRows[0]
-      expect(row1.scope).toBe('final')
-      expect(row1.completionKey).toBe('fix-a:msg-f1')
-      expect(row1.coderDecisions).toContain('final fix round one decisions')
-      expect(row1.fallbackReason).toBe(FIRST_AUDIT_FALLBACK)
-      expect(row1.snapshotCommit).toBe(COMMIT_A)
-      expect(harness.calls.filter(call => call.method === 'session.messages'
-        && (call.params as { sessionID?: string; limit?: number }).sessionID === 'fix-a'
-        && (call.params as { limit?: number }).limit === 4)).toHaveLength(1)
-
-      const auditState = harness.service.getActiveState(loopName)!
-      expect(auditState.phase).toBe('final_auditing')
-      const auditSessionId = auditState.sessionId
-      expect(row1.auditorSessionId).toBe(auditSessionId)
-
-      harness.messagesBySession.set(auditSessionId, [assistantMessage('msg-fa1', 'The race is still reproducible under replay.')])
-      reviewFindingsRepo.write({
-        projectId: PROJECT_ID,
-        loopName,
-        file: 'src/replay.ts',
-        line: 3,
-        severity: 'bug',
-        description: 'Replay still races',
-      })
-      await busyTick(harness.loop, auditSessionId)
-      await idleTick(harness.loop, auditSessionId)
-
-      const finishedRows = harness.service.getAttemptHistory(loopName, 'final')
-      expect(finishedRows[0].outcome).toBe('dirty')
-
-      const fixBId = harness.service.getActiveState(loopName)!.sessionId
-      expect(harness.service.getActiveState(loopName)!.phase).toBe('final_audit_fix')
-      harness.messagesBySession.set(fixBId, [
-        assistantMessage('msg-f2', `Fixed it for real.\n${coderDecisionsBlock('final fix round two decisions')}`),
-      ])
-      await busyTick(harness.loop, fixBId)
-      await idleTick(harness.loop, fixBId)
-
-      const rows = harness.service.getAttemptHistory(loopName, 'final')
-      expect(rows.length).toBe(2)
-      expect(rows[0].scope).toBe('final')
-      expect(rows[1].scope).toBe('final')
-      expect(rows[1].attemptNumber).toBe(2)
-      expect(rows[1].previousCommit).toBe(COMMIT_A)
-      expect(rows[1].diffSummary).toBe(DELTA_SUMMARY)
-      expect(rows[1].snapshotCommit).toBe(COMMIT_B)
-      expect(rows[1].coderDecisions).toContain('final fix round two decisions')
-    })
   })
 
   describe('quiescence gate', () => {

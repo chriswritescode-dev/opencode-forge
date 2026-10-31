@@ -3,16 +3,17 @@ import { createMemo } from 'solid-js'
 import { formatRelativeTime } from './helpers'
 import type { LoopRow, LoopTransitionRow } from './types'
 
-// ── Live state-machine canvas ────────────────────────────────────────────
-//
-// A fixed-layout SVG of the five loop phases plus a conditional terminal
-// node, with the current phase highlighted and per-edge traversal counts fed
-// by `loop.transitions`. Below the SVG, a compact transition history list.
-//
-// Like the rest of the dashboard app this uses `solid-js/html` (no JSX) and
-// reactive thunks for every dynamic field so the whole subtree is built once
-// per selected loop and survives polls — only attributes/text re-bind in
-// place, preserving scroll position and node identity.
+/**
+ * Live state-machine canvas: a fixed-layout SVG of the three loop phases plus
+ * a conditional terminal node, with the current phase highlighted and
+ * per-edge traversal counts fed by `loop.transitions`. Below the SVG, a
+ * compact transition history list.
+ *
+ * Like the rest of the dashboard app this uses `solid-js/html` (no JSX) and
+ * reactive thunks for every dynamic field so the whole subtree is built once
+ * per selected loop and survives polls — only attributes/text re-bind in
+ * place, preserving scroll position and node identity.
+ */
 
 interface MgNode {
   phase: LoopRow['phase']
@@ -21,20 +22,16 @@ interface MgNode {
   cy: number
 }
 
-// coding → auditing → final_auditing → post_action left-to-right;
-// final_audit_fix sits below final_auditing; the terminal node sits below
-// post_action on the bottom row so every phase has a clean diagonal to it.
+/** Phase nodes left-to-right; the terminal node sits centred below the row. */
 const PHASE_NODES: MgNode[] = [
-  { phase: 'coding', label: 'coding', cx: 70, cy: 60 },
-  { phase: 'auditing', label: 'auditing', cx: 220, cy: 60 },
-  { phase: 'final_auditing', label: 'final_auditing', cx: 370, cy: 60 },
-  { phase: 'post_action', label: 'post_action', cx: 520, cy: 60 },
-  { phase: 'final_audit_fix', label: 'final_audit_fix', cx: 370, cy: 160 },
+  { phase: 'coding', label: 'coding', cx: 100, cy: 60 },
+  { phase: 'auditing', label: 'auditing', cx: 290, cy: 60 },
+  { phase: 'post_action', label: 'post_action', cx: 480, cy: 60 },
 ]
 
 const NODE_W = 110
 const NODE_H = 36
-const TERMINAL_CX = 655
+const TERMINAL_CX = 290
 const TERMINAL_CY = 160
 
 interface MgEdge {
@@ -44,106 +41,42 @@ interface MgEdge {
   labelY: number
 }
 
-// Fixed-layout edges. Each `key` ("fromPhase→toPhase") matches a key built by
-// the counts memo over `props.transitions()`:
-//   - non-terminal rows: `${fromPhase}→${toPhase}`
-//   - terminal rows (toPhase is null): `${fromPhase}→terminal`
-// so every persisted transition has a corresponding SVG edge and a count
-// label can be looked up directly. Curved back-edges use a quadratic Bézier
-// control point above the node row to keep them visually distinct from the
-// forward arrows; terminal diagonals run below the row to the terminal node;
-// the two recovery edges between coding and final_audit_fix curve through the
-// empty space below the top row and below the bottom row respectively.
+/**
+ * Fixed-layout edges. Each `key` ("fromPhase→toPhase") matches a key built by
+ * the counts memo over `props.transitions()`:
+ *   - non-terminal rows: `${fromPhase}→${toPhase}`
+ *   - terminal rows (toPhase is null): `${fromPhase}→terminal`
+ * Every persisted transition whose phases this build still renders finds a
+ * matching count label. A persisted row for a phase this build no longer shows
+ * (historical `final_auditing` / `final_audit_fix` rows) is counted under a key
+ * no SVG group asks for, so the graph renders without that edge instead of
+ * drawing a dangling one.
+ */
 const EDGES: MgEdge[] = [
-  // Forward chain along the top row.
-  { key: 'coding→auditing', d: 'M 125 60 L 165 60', labelX: 145, labelY: 52 },
-  { key: 'auditing→final_auditing', d: 'M 275 60 L 315 60', labelX: 295, labelY: 52 },
-  { key: 'final_auditing→post_action', d: 'M 425 60 L 465 60', labelX: 445, labelY: 52 },
-  // Back-edges above the row.
-  {
-    key: 'auditing→coding',
-    d: 'M 220 42 Q 145 14 70 42',
-    labelX: 145,
-    labelY: 18,
-  },
-  // Non-sectioned plan loops: auditing skips final_auditing straight to post_action.
-  {
-    key: 'auditing→post_action',
-    d: 'M 220 42 Q 370 8 520 42',
-    labelX: 370,
-    labelY: 16,
-  },
-  // Recovery back-edge across the whole top row: persisted by
-  // `rotateToCodingAfterAuditFailure` (runtime.ts:617-635) when a
-  // `final_auditing` session aborts (eventType 'final-audit-session-aborted'
-  // at runtime.ts:2094) or errors before any assistant response (eventType
-  // 'final-audit-session-error' at runtime.ts:2151). Recorded with
-  // transitionKind 'error-recovery' AFTER the persisted phase commit to
-  // coding, so the row shows `final_auditing → coding`. Curves below the
-  // top row through the empty mid-band to stay distinct from the upper
-  // back-edges and from the `coding↔final_audit_fix` recovery curves.
-  {
-    key: 'final_auditing→coding',
-    d: 'M 370 78 C 370 110 145 110 70 78',
-    labelX: 220,
-    labelY: 102,
-  },
-  // Vertical edges between final_auditing and final_audit_fix.
-  {
-    key: 'final_auditing→final_audit_fix',
-    d: 'M 370 78 L 370 142',
-    labelX: 358,
-    labelY: 112,
-  },
-  {
-    key: 'final_audit_fix→final_auditing',
-    d: 'M 415 142 L 415 78',
-    labelX: 442,
-    labelY: 116,
-  },
-  // Recovery edges between final_audit_fix and coding.
-  // `final_audit_fix→coding` is persisted by the final-audit-fix prompt-error
-  // rollback (runtime.ts: recordTransition with transitionKind 'error-recovery')
-  // and by restart of a stopped final_audit_fix loop (the restart row goes
-  // from the prior persisted phase into the coding restart phase).
-  // `coding→final_audit_fix` is the symmetric visual edge: no runtime path
-  // emits it today, but the public `setPhase` wrapper can record any phase pair,
-  // so rendering the edge keeps a persisted row from ever being silently
-  // dropped (counts default to empty when absent).
-  {
-    key: 'coding→final_audit_fix',
-    d: 'M 70 78 C 70 95 200 115 315 142',
-    labelX: 175,
-    labelY: 118,
-  },
-  {
-    key: 'final_audit_fix→coding',
-    d: 'M 315 178 C 250 210 100 210 70 78',
-    labelX: 175,
-    labelY: 205,
-  },
-  // Terminal diagonals — one per phase that can terminate, converging on the
-  // shared visual `terminal` target. Any persisted terminate row counts
-  // against its origin phase's edge here.
-  { key: 'coding→terminal', d: 'M 125 78 L 600 142', labelX: 240, labelY: 90 },
-  { key: 'auditing→terminal', d: 'M 275 78 L 600 142', labelX: 395, labelY: 90 },
-  { key: 'final_auditing→terminal', d: 'M 425 78 L 600 142', labelX: 505, labelY: 90 },
-  { key: 'post_action→terminal', d: 'M 520 78 L 600 142', labelX: 565, labelY: 95 },
-  { key: 'final_audit_fix→terminal', d: 'M 425 160 L 600 160', labelX: 512, labelY: 152 },
+  { key: 'coding→auditing', d: 'M 155 60 L 235 60', labelX: 195, labelY: 52 },
+  { key: 'auditing→post_action', d: 'M 345 60 L 425 60', labelX: 385, labelY: 52 },
+  { key: 'auditing→coding', d: 'M 290 42 Q 195 14 100 42', labelX: 195, labelY: 18 },
+  { key: 'coding→terminal', d: 'M 130 78 L 272 142', labelX: 201, labelY: 102 },
+  { key: 'auditing→terminal', d: 'M 290 78 L 290 142', labelX: 317, labelY: 112 },
+  { key: 'post_action→terminal', d: 'M 450 78 L 308 142', labelX: 379, labelY: 102 },
 ]
 
-// Build the visual edge-count key for a persisted transition row. Terminal
-// rows (`toPhase === null`, recorded by `terminateLoop`) collapse onto a
-// shared `terminal` visual target so a terminate from any phase lands on
-// the matching phase→terminal edge.
+/**
+ * Visual edge-count key for a persisted transition row. Terminal rows
+ * (`toPhase === null`, recorded by `terminateLoop`) collapse onto the shared
+ * `terminal` visual target so a terminate from any phase lands on the matching
+ * phase→terminal edge.
+ */
 function edgeKeyFor(t: LoopTransitionRow): string {
   if (t.toPhase === null) return t.fromPhase + '→terminal'
   return t.fromPhase + '→' + t.toPhase
 }
 
-// Human-readable flow target for the history list. Terminal rows show the
-// resulting status (e.g. "completed"); phase rows show the destination
-// phase exactly as persisted.
+/**
+ * Human-readable flow target for the history list. Terminal rows show the
+ * resulting status (e.g. "completed"); phase rows show the destination phase
+ * exactly as persisted, including phases this build no longer renders.
+ */
 function flowTargetFor(t: LoopTransitionRow): string {
   return t.toPhase ?? t.status ?? ''
 }
@@ -162,9 +95,11 @@ export function LoopMachineGraph(props: {
   const lp = () => props.loop()
   const isRunning = createMemo(() => lp().status === 'running')
 
-  // Per-edge traversal counts, keyed by `edgeKeyFor`. Recomputed when the
-  // transitions array changes; the edge label thunks below read this memo so
-  // the counts update in place without rebuilding the SVG.
+  /**
+   * Per-edge traversal counts, keyed by `edgeKeyFor`. Recomputed when the
+   * transitions array changes; the edge label thunks below read this memo so
+   * the counts update in place without rebuilding the SVG.
+   */
   const counts = createMemo(() => {
     const m = new Map<string, number>()
     for (const t of props.transitions()) {
@@ -207,7 +142,7 @@ export function LoopMachineGraph(props: {
   </svg>`)
 
   return html`<div class="mg-graph">
-    <svg class="mg-svg" viewBox="0 0 720 220" preserveAspectRatio="xMidYMid meet">
+    <svg class="mg-svg" viewBox="0 0 580 200" preserveAspectRatio="xMidYMid meet">
       <defs>
         <marker id="mg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--fg-muted)"></path>

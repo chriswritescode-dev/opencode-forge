@@ -182,19 +182,21 @@ Source: [src/hooks/index.ts](../src/hooks/index.ts)
 
 ## `loop/` — Core Loop State Machine
 
-The heart of Forge. Implements autonomous iterative development with phases: `coding → auditing → final_auditing → post_action`.
+The heart of Forge. Implements autonomous iterative development with phases: `coding → auditing → post_action`.
 
 ### Files
 
 | File | Purpose |
 |------|---------|
 | `index.ts` | Public API barrel (all re-exports) |
-| `runtime.ts` | `createLoop()` factory, `Loop` interface |
+| `runtime.ts` | `createLoop()` factory, `Loop` interface, session rotation and standby-session reuse (`inspectReusableStandby`, `switchToCodingPhase`, `switchToAuditingPhase`) |
 | `service.ts` | DB-backed `LoopService` (`createLoopService`) |
-| `state.ts` | Discriminated union `LoopState` (4 phases: `coding`, `auditing`, `final_auditing`, `post_action`), row↔state converters |
+| `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `post_action`), row↔state converters |
 | `transitions.ts` | Pure `nextTransition()` table — no side effects; includes `'post-action-complete'` event and `handlePostActionEvent` |
 | `termination.ts` | `TerminationReason` union, `terminationStatusFor()` |
-| `prompts.ts` | Prompt builders for each loop phase, including `buildPostActionPrompt()` |
+| `prompts.ts` | Prompt builders for each loop phase, including `buildPostActionPrompt()` and the reused-session follow-ups `buildCoderFollowUpPrompt()` / `buildAuditFollowUpPrompt()` |
+| `section-scope.ts` | `blockingBugFindings()` / `isFindingInSectionScope()` — the single rule for which findings block a section |
+| `finding-recurrence.ts` | Recurrence keys and `RECURRENCE_ESCALATION_THRESHOLD`, shared by prompt escalation and the session-reuse predicate |
 | `post-action-config.ts` | `ResolvedPostActionConfig` interface and `resolvePostActionConfig()` resolver |
 | `section-summary.ts` | Parse audit output markers |
 | `idle-gate.ts` | Session busy detection and timeout tracking |
@@ -207,12 +209,11 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 ### Key Types
 
 ```typescript
-type Phase = 'coding' | 'auditing' | 'final_auditing' | 'post_action'
+type Phase = 'coding' | 'auditing' | 'post_action'
 
 type LoopState =
   | CodingState
   | AuditingState
-  | FinalAuditingState
   | PostActionState
 
 type TerminationReason =
@@ -225,7 +226,6 @@ type TerminationReason =
   | { kind: 'missing_worktree_dir' }
   | { kind: 'session_creation_failed' }
   | { kind: 'audit_retry_exhausted' }
-  | { kind: 'final_audit_retry_exhausted' }
   | { kind: 'coding_no_assistant' }
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
@@ -247,13 +247,14 @@ MAX_RETRIES: number
 nextTransition(state, event): Transition
 
 // Prompts
-buildContinuationPrompt(state, auditFindings?): string
-buildAuditPrompt(state): string
-buildSectionInitialPrompt(state, sectionIndex?): string
-buildSectionAuditPrompt(state, sectionIndex?): string
-buildSectionContinuationPrompt(state, sectionIndex?): string
-buildFinalAuditPrompt(state): string
-buildPostActionPrompt(state, opts): string
+buildContinuationPrompt(ctx, state, notice?, outstandingBugs?): string
+buildAuditPrompt(ctx, state): string
+buildSectionInitialPrompt(ctx, state): string
+buildSectionAuditPrompt(ctx, state): string
+buildSectionContinuationPrompt(ctx, state, notice?, outstandingBugs?): string
+buildCoderFollowUpPrompt(ctx, state, outstandingBugs?, notice?): string
+buildAuditFollowUpPrompt(ctx, state): string
+buildPostActionPrompt(ctx, state, opts): string
 
 // Termination
 terminationStatusFor(reason: TerminationReason): TerminationStatus
@@ -602,10 +603,16 @@ All data access goes through typed repo interfaces:
 ### State Machine Pattern
 
 The loop follows a strict phase-based state machine:
-- States: `coding`, `auditing`, `final_auditing`, `post_action`
+- States: `coding`, `auditing`, `post_action`
 - Transitions managed by `nextTransition()` in `transitions.ts`
-- Each phase has dedicated prompt builders and session rotation logic
+- Each phase has dedicated prompt builders and session rotation logic; a dirty audit retry resumes the standby session instead of rotating (see below)
 - State changes are persisted to SQLite after every mutation
+
+### Session Reuse
+
+`loops.standby_session_id` (migration 155) holds the one session a loop may resume: always the role opposite the current phase. It is set when a fresh audit session replaces the coder and when a resumed coder replaces the audit session, and is released (usage captured, session deleted) on a section advance, loop completion, termination, shutdown, restart, or any switch to a fresh session.
+
+`inspectReusableStandby` is the single reuse predicate: the standby exists with messages, is not the current session, has no bug finding at the recurrence escalation threshold, and its last assistant turn's context stays under `LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS` (150,000). Reused sessions get `buildCoderFollowUpPrompt` / `buildAuditFollowUpPrompt` instead of the full plan prompt, and `standbyTurnBaselines` keeps the phase handler from mistaking the session's previous reply for the new turn.
 
 ### Notification Pattern
 

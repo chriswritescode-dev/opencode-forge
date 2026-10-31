@@ -54,7 +54,6 @@ function loopState(overrides: Partial<LoopState> & { status: LoopState['status']
     auditCount: 0,
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: false,
     phase: 'coding',
     ...overrides,
   } as LoopState

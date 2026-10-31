@@ -35,7 +35,6 @@ function buildSpyLoopsRepo(): LoopsRepo {
     findPartial: vi.fn(),
     setCurrentSectionIndex: vi.fn(),
     setTotalSections: vi.fn(),
-    setFinalAuditDone: vi.fn(),
   }
 }
 

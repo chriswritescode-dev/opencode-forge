@@ -2,8 +2,6 @@
 const PHASE_LABELS: Record<string, string> = {
   coding: 'Coding',
   auditing: 'Auditing',
-  final_auditing: 'Final audit',
-  final_audit_fix: 'Final audit fix',
   post_action: 'Post-action',
 }
 

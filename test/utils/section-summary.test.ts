@@ -23,6 +23,7 @@ describe('section-summary markers', () => {
       getSectionPlans: () => [],
       getCoderDecisions: () => null,
       getFindingRecurrence: () => new Map(),
+      isLastOpenSection: () => false,
     }
     const state = {
       loopName: 'l', sessionId: 's', active: true, phase: 'auditing',

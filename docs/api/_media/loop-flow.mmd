@@ -4,14 +4,10 @@ stateDiagram-v2
     direction TB
     [*] --> Coding: loop triggered
     Coding --> Auditing: session idle
-    Auditing --> Coding: findings remain
-    Auditing --> FinalAuditing: last section clean
-    Auditing --> PostAction: audit clear, post-action enabled
-    Auditing --> [*]: audit clear
-    FinalAuditing --> FinalAuditFix: bugs
-    FinalAuditFix --> FinalAuditing: fix idle
-    FinalAuditing --> PostAction: clean final audit, post-action enabled
-    FinalAuditing --> [*]: clean final audit
+    Auditing --> Coding: findings remain, retry section
+    Auditing --> Coding: clean, next section
+    Auditing --> PostAction: clean, no section left, post-action enabled
+    Auditing --> [*]: clean, no section left
     PostAction --> [*]: post-action complete
     Coding --> [*]: max iterations / 3 consecutive errors / stall timeout / cancellation
     note right of Coding
@@ -20,6 +16,16 @@ stateDiagram-v2
         Plan loops decompose the plan into up to
         24 sections once at start.
     end note
-    note right of PostAction
+    note right of Auditing
+        A section advances only when no bug finding is
+        outstanding for it, any earlier section, or
+        across sections; when no section is still open,
+        a clean audit finishes the loop.
+        Same-section retries reuse the previous coder
+        and audit sessions; a new section, a recurring
+        finding, or an unavailable session starts
+        fresh ones.
+    end note
+    note left of PostAction
         Only when loop.postAction.enabled
     end note

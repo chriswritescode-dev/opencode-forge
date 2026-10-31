@@ -63,27 +63,36 @@ describe('loadPrompt', () => {
     expect(prompt).toContain('**Verification**')
   })
 
-  test('auditor-final-audit-addendum integrates impact analysis into the lifecycle and defers delegation to the loop policy', () => {
-    const prompt = loadPrompt(['agents', 'auditor-final-audit-addendum.md'])
-    expect(prompt).toContain('### Whole-Change Impact Analysis')
-    expect(prompt).toContain('not an additional generic review after it')
-    expect(prompt).toContain('follows the delegation policy in the Loop Audit Context')
-    expect(prompt).not.toContain('Never ask multiple subtasks')
-    expect(prompt).toContain('every untracked file read in full')
-    expect(prompt).toContain('AUDIT_SCOPE:1')
+  test('auditor-loop-addendum blocks a section on bugs at or before it, with no final-audit special case', () => {
+    const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
+    expect(prompt).toContain('A clean section means no outstanding bugs at or before it')
+    expect(prompt).toContain('attributed to this section or any earlier section')
+    expect(prompt).toContain('later, not-yet-started section do not block')
+    expect(prompt).toContain('`review-read` returns the current and earlier sections')
+    expect(prompt).toContain('Every section, including the last, follows this same rule')
+    expect(prompt).not.toContain('Last open section')
+    expect(prompt).not.toContain("Confirm the master plan's top-level Verification commands")
+    expect(prompt).not.toContain('final audit')
+    expect(prompt).not.toContain('AUDIT_SCOPE:1')
   })
 
-  test('auditor addenda treat sandbox-unsatisfiable requirements as plan defects, not coder failures', () => {
+  test('auditor-loop-addendum documents session continuation for same-section retries', () => {
+    const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
+    expect(prompt).toContain('**Follow-up turns.**')
+    expect(prompt).toContain('possibly stale')
+    expect(prompt).toContain('audit the delta plus anything it affects')
+    expect(prompt).toContain('apply to every turn')
+    expect(prompt).not.toContain('single-iteration')
+    expect(prompt).not.toContain('this session is deleted by the loop runner')
+  })
+
+  test('auditor-loop-addendum treats sandbox-unsatisfiable requirements as plan defects, not coder failures', () => {
     const loop = loadPrompt(['agents', 'auditor-loop-addendum.md'])
     expect(loop).toContain('**Sandbox feasibility.**')
     expect(loop).toContain('satisfiable inside the sandbox')
     expect(loop).toContain('applying Terraform or other infrastructure-as-code against a cloud provider')
     expect(loop).toContain('Never write a finding demanding the unsatisfiable requirement itself')
     expect(loop).toContain('This substitution is not weakening')
-
-    const final = loadPrompt(['agents', 'auditor-final-audit-addendum.md'])
-    expect(final).toContain("unsatisfiable inside the sandbox under the loop addendum's Sandbox feasibility rule")
-    expect(final).toContain('required post-loop manual step')
   })
 
   test('buildAgents with custom promptsDir uses the custom prompt', () => {

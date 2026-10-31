@@ -334,7 +334,7 @@ describe('audit→code rotation ordering', () => {
     vi.clearAllMocks()
   })
 
-  test('successful audit→code rotation: create→bind→delete order', async () => {
+  test('successful audit→code rotation: create→bind order, audit session retained', async () => {
     const loopName = 'test-rotate-order'
     const worktreeDir = join(tempDir, 'worktree')
     
@@ -360,7 +360,6 @@ describe('audit→code rotation ordering', () => {
       workspaceId: 'ws-1',
       currentSectionIndex: 0,
       totalSections: 1,
-      finalAuditDone: false,
     }
 
     loopService.setState(loopName, state)
@@ -414,11 +413,15 @@ describe('audit→code rotation ordering', () => {
 
     expect(createIndex).toBeGreaterThanOrEqual(0)
     expect(restoreIndex).toBeGreaterThanOrEqual(0)
-    expect(deleteIndex).toBeGreaterThanOrEqual(0)
 
-    // Order: create new session → bind (restore) workspace → delete old session
+    // Order: create new session → bind (restore) workspace. The audit session is
+    // retained as the standby for the next same-section attempt, so it is not deleted.
     expect(createIndex).toBeLessThan(restoreIndex)
-    expect(restoreIndex).toBeLessThan(deleteIndex)
+    expect(deleteIndex).toBe(-1)
+
+    const after = loopService.getActiveState(loopName)!
+    expect(after.phase).toBe('coding')
+    expect(after.sessionId).toBe('new-code-1')
 
     const restoreCall = calls.find(c => c.method === 'workspace.warp')
     expect((restoreCall?.params as any).id).toBe('ws-1')
@@ -451,7 +454,6 @@ describe('audit→code rotation ordering', () => {
       workspaceId: 'ws-1',
       currentSectionIndex: 0,
       totalSections: 1,
-      finalAuditDone: false,
     }
 
     loopService.setState(loopName, state)

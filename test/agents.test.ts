@@ -129,7 +129,7 @@ describe('Agent definitions', () => {
       expect(prompt).not.toContain('use short-lived Task subtasks')
     })
 
-    test('auditor-loop prompt includes LOOP_ADDENDUM and FINAL_AUDIT_ADDENDUM content', () => {
+    test('auditor-loop prompt includes the loop addendum content', () => {
       const prompt = auditorLoopAgent.systemPrompt
       expect(prompt).toContain('<!-- forge-section -->')
       expect(prompt).toContain('section-summary block')
@@ -143,30 +143,30 @@ describe('Agent definitions', () => {
       expect(auditorLoopAgent.systemPrompt).not.toContain('section-summary:start')
     })
 
-    test('auditor-loop final rules contain direct Whole-Change Impact Analysis with the four concrete categories', () => {
+    test('auditor-loop prompt blocks a section on bugs at or before it, uniformly for every section', () => {
       const prompt = auditorLoopAgent.systemPrompt
-      expect(prompt).toContain('### Whole-Change Impact Analysis')
-      expect(prompt).toContain('There is no separate agent; you perform it yourself.')
-      expect(prompt).toContain('**Duplication**')
-      expect(prompt).toContain('**Parallel implementations**')
-      expect(prompt).toContain('**Missed callers or companion updates**')
-      expect(prompt).toContain('**Unreachable or superseded code**')
+      expect(prompt).toContain('A clean section means no outstanding bugs at or before it')
+      expect(prompt).toContain('attributed to this section or any earlier section')
+      expect(prompt).toContain('later, not-yet-started section do not block')
+      expect(prompt).toContain('`review-read` returns the current and earlier sections')
+      expect(prompt).toContain('Every section, including the last, follows this same rule')
+      expect(prompt).toContain('post-action phase')
+      expect(prompt).not.toContain('Last open section')
+      expect(prompt).not.toContain("Confirm the master plan's top-level Verification commands")
+      expect(prompt).not.toContain('Final Audit Rules')
+      expect(prompt).not.toContain('Whole-Change Impact Analysis')
+      expect(prompt).not.toContain('AUDIT_SCOPE:1')
     })
 
-    test('auditor-loop final rules establish the complete change set and fail closed on unestablishable scope', () => {
+    test('auditor-loop prompt documents session continuation for same-section retries', () => {
       const prompt = auditorLoopAgent.systemPrompt
-      expect(prompt).toContain('merge-base')
-      expect(prompt).toContain('all uncommitted and untracked changes')
-      expect(prompt).toContain('every untracked file read in full')
-      expect(prompt).toContain('not an additional generic review after it')
-      expect(prompt).toContain('AUDIT_SCOPE:1')
-    })
-
-    test('auditor-loop final rules defer delegation to the loop policy', () => {
-      const prompt = auditorLoopAgent.systemPrompt
-      expect(prompt).toContain('follows the delegation policy in the Loop Audit Context')
-      const delegationOwners = prompt.split('Never ask multiple subtasks').length - 1
-      expect(delegationOwners).toBe(1)
+      expect(prompt).toContain('**Follow-up turns.**')
+      expect(prompt).toContain('possibly stale')
+      expect(prompt).toContain('Re-read every changed file')
+      expect(prompt).toContain('audit the delta plus anything it affects')
+      expect(prompt).toContain('apply to every turn')
+      expect(prompt).not.toContain('single-iteration')
+      expect(prompt).not.toContain('deleted by the loop runner')
     })
 
     test('auditor-loop combined prompt does not reference impact-reviewer or a separate impact agent', () => {
@@ -185,7 +185,8 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('relevant configuration or environment')
       expect(prompt).toContain('commit hash alone')
       expect(prompt).toContain('missing, stale, ambiguous, or invalidated')
-      // The final-audit addendum must not demand an unconditional second full run.
+      // The last open section audit confirms top-level verification through evidence
+      // reuse, never an unconditional second full run.
       expect(prompt).not.toContain("Run the master plan's top-level verification commands against the final state")
       // Current-code proof conditions must remain for finding deletion.
       expect(prompt).toContain('current code plus')

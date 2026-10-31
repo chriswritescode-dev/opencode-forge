@@ -279,7 +279,7 @@ A review re-run on 2026-10-29 reproduced probes 1–4 on 2.2.2 with the same res
 
 These need a real model or `msb` and remain owner manual checks:
 
-- A full plan loop with sections: phase transitions, coder/auditor sessions, section audit, final audit, teardown commit and worktree removal.
+- A full plan loop with sections: phase transitions, coder/auditor sessions (including the session reuse on a same-section retry), section audits, teardown commit and worktree removal.
 - Patch-loop execution.
 - Sandbox start, `exec`, and network policy.
 - TUI sidebar rendering with live loops (only plugin load and palette commands were checked; the sidebar needs a loop row to render).

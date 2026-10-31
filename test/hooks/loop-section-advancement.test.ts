@@ -95,7 +95,6 @@ describe('Loop Section Advancement', () => {
       started_at: Date.now(),
       current_section_index: 0,
       total_sections: 3,
-      final_audit_done: 0,
     }
     const values = { ...defaults, ...overrides }
     db.run(
@@ -160,29 +159,41 @@ describe('Loop Section Advancement', () => {
     })
   })
 
-  describe('2. Last section transition to final audit', () => {
-    test('when last section is completed, setPhaseAndResetError transitions to final_auditing', () => {
-      insertLoop({ phase: 'coding', total_sections: 2 })
+  describe('2. Last open section detection', () => {
+    test('isLastOpenSection is true when every other section is completed', () => {
+      insertLoop({ phase: 'auditing', current_section_index: 1, total_sections: 2 })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'completed')
-
-      loopService.setPhaseAndResetError('test-loop', 'final_auditing')
-
-      const state = loopService.getActiveState('test-loop')
-      expect(state).not.toBeNull()
-      expect(state!.phase).toBe('final_auditing')
-      expect(state!.errorCount).toBe(0)
-    })
-
-    test('setFinalAuditDone marks final audit complete', () => {
-      insertLoop({ phase: 'final_auditing' })
-
-      loopService.setFinalAuditDone('test-loop', true)
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'in_progress')
 
       const state = loopService.getActiveState('test-loop')!
-      expect(state.finalAuditDone).toBe(true)
+      expect(loopService.isLastOpenSection(state)).toBe(true)
     })
 
+    test('isLastOpenSection treats an earlier index as last open after a rewind', () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 3 })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'completed')
+      insertSectionPlan(2, 'Section 3', 'Content 3', 'completed')
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(loopService.isLastOpenSection(state)).toBe(true)
+    })
+
+    test('isLastOpenSection is false while another section is still open', () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2 })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(loopService.isLastOpenSection(state)).toBe(false)
+    })
+
+    test('isLastOpenSection is false for a non-sectioned loop', () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 0 })
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(loopService.isLastOpenSection(state)).toBe(false)
+    })
   })
 
   describe('3. Section completion updates status', () => {

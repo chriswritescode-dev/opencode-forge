@@ -18,7 +18,6 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     status: 'running',
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: false,
     ...overrides,
   }
 }
@@ -490,8 +489,8 @@ describe('createLoopWatchdog', () => {
     watchdog.stop(loopName)
   })
 
-  it('absorbs provider-limit retry in final_auditing when fallback returns true and resets activity', async () => {
-    const stateRef = { current: createState({ phase: 'final_auditing', sessionId: 'audit-session' }) }
+  it('absorbs provider-limit retry in auditing when fallback returns true and resets activity', async () => {
+    const stateRef = { current: createState({ phase: 'auditing', sessionId: 'audit-session' }) }
     const terminateCalls: unknown[] = []
     const fallbackCalls: unknown[] = []
 
@@ -531,8 +530,8 @@ describe('createLoopWatchdog', () => {
     watchdog.stop(loopName)
   })
 
-  it('terminates with provider_limit in final_auditing when fallback returns false', async () => {
-    const stateRef = { current: createState({ phase: 'final_auditing', sessionId: 'audit-session' }) }
+  it('terminates with provider_limit in auditing when fallback returns false', async () => {
+    const stateRef = { current: createState({ phase: 'auditing', sessionId: 'audit-session' }) }
     const terminateCalls: unknown[] = []
     const fallbackCalls: unknown[] = []
 
@@ -574,7 +573,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('terminates with provider_limit when fallback absent (backwards compatible)', async () => {
-    const stateRef = { current: createState({ phase: 'final_auditing', sessionId: 'audit-session' }) }
+    const stateRef = { current: createState({ phase: 'auditing', sessionId: 'audit-session' }) }
     const terminateCalls: unknown[] = []
 
     const logger = createLogger()

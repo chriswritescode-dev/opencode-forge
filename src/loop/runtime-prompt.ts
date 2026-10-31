@@ -32,7 +32,7 @@ export interface SendPromptInput {
 export interface PromptDispatch {
   sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }>
 
-  getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string }>
+  getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string; messageId?: string }>
 
   getAssistantTranscript(sessionId: string, worktreeDir: string): Promise<string | null>
 }

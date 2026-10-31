@@ -22,7 +22,7 @@ The loop system provides autonomous iterative development with automatic code au
 
 - Restart preserves loop identity, plan, worktree path, section progress, review findings, and per-loop sandbox settings (a loop launched with the sandbox off stays off; its resource overrides apply if the sandbox is recreated).
 - Restart resets the iteration count to 1 and clears the error budget.
-- Restart creates a fresh session and preserves the section index. An ordinary `auditing` phase restarts as `coding`, while `final_auditing`, `final_audit_fix`, and an enabled `post_action` phase are preserved.
+- Restart creates a fresh session and preserves the section index. An ordinary `auditing` phase restarts as `coding`, while an enabled `post_action` phase is preserved. Any standby session is discarded, so a restart never resumes retained context.
 - Restarts into section coding with outstanding bug findings for the current section use the continuation prompt, including full finding details and the shared remediation policy; without current-section bugs, they use the initial section prompt.
 
 ### Stale Workspace Sweep
@@ -40,30 +40,22 @@ stateDiagram-v2
     Coding --> Auditing: coding idle complete
     Auditing --> Coding: section dirty or audit dirty
     Auditing --> Coding: next section
-    Auditing --> FinalAuditing: last section clean
-    Auditing --> [*]: audit clear
-    FinalAuditing --> FinalAuditFix: final audit dirty
-    FinalAuditFix --> FinalAuditing: fix pass idle complete
-    FinalAuditing --> PostAction: final audit clean
+    Auditing --> PostAction: clean, no section left, post-action enabled
     note right of PostAction: Only when loop.postAction.enabled
     PostAction --> [*]: post-action complete
     Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
-    Auditing --> [*]: max iterations / retry limit / stall timeout / cancellation
-    FinalAuditFix --> [*]: max iterations / retry limit / stall timeout / cancellation
-    FinalAuditing --> [*]: final audit clean (no post-action)
+    Auditing --> [*]: audit clear / clean, no section left
 ```
 
 ### Phases
 
-A loop has five persisted phases:
+A loop has three persisted phases:
 
 1. **`coding`** — a code session works on the current section or plan.
-2. **`auditing`** — the auditor reviews the change against conventions and stored findings.
-3. **`final_auditing`** — audits the whole accumulated diff (sectioned plan loops only).
-4. **`final_audit_fix`** — a coding pass that fixes final-audit findings without a section rewind.
-5. **`post_action`** — an optional best-effort action after a clean audit.
+2. **`auditing`** — the auditor reviews the current section (or the whole change for a non-sectioned plan loop) against conventions and stored findings. A clean section audit advances to the next section, or completes the loop — into `post_action` when configured — when no section is still open.
+3. **`post_action`** — an optional best-effort action after a clean audit.
 
-Each completed code or audit pass rotates to a fresh session, and audit findings feed back into the next coding iteration.
+Each completed code or audit pass rotates to a fresh session, except that a dirty audit resumes the standby session for the next attempt (see [Session Rotation](#session-rotation)); a new section always starts fresh. Audit findings feed back into the next coding iteration.
 
 ## Loop States
 
@@ -73,6 +65,7 @@ Each loop has a `LoopState` backed by the typed `loops` and `loop_large_fields` 
 interface LoopState {
   active: boolean                    // Whether loop is currently running
   sessionId: string                  // Current OpenCode session ID
+  standbySessionId?: string          // Retained session for the next same-scope retry
   loopName: string                   // Unique loop identifier
   worktreeDir: string                // Worktree path
   projectDir?: string                // Project directory path
@@ -81,7 +74,7 @@ interface LoopState {
   maxIterations: number              // Maximum iterations (0 = unlimited)
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
-  phase: 'coding' | 'auditing' | 'final_auditing' | 'final_audit_fix' | 'post_action'
+  phase: 'coding' | 'auditing' | 'post_action'
   lastAuditResult?: string           // Last audit output
   errorCount: number                 // Consecutive error count
   auditCount: number                 // Number of audits completed
@@ -99,25 +92,33 @@ interface LoopState {
   hostSessionId?: string             // Host session ID for post-completion redirect
   currentSectionIndex: number
   totalSections: number
-  finalAuditDone: boolean
 }
 ```
 
 ## Session Rotation
 
-Each iteration runs in a **fresh session** to keep context small and prioritize speed:
+Each phase switch runs in a **fresh session** to keep context small and prioritize speed, unless the loop resumes its standby (see below):
 
 1. **Coding phase** completes
-2. Current session is destroyed
-3. New session is created
-4. Continuation prompt is injected with:
+2. New session is created
+3. Continuation prompt is injected with:
    - Original task prompt
    - Current iteration number
    - Audit findings (if any)
+4. The previous session is deleted once its usage is captured, unless the loop retained it as the standby
 
-Rotated sessions are deleted from the OpenCode server right after their usage is captured, so a running loop has exactly one session: the current one. When a loop completes and its worktree is removed, its final session is deleted too, and the TUI removes any loop session whose worktree directory no longer exists. Loop sessions therefore drop out of OpenCode's session list once the loop moves on; loop history lives in `loop-status` and the [Dashboard](dashboard.md). A TUI can briefly keep showing deleted loop sessions from its local cache or tabs until it next refreshes the list from the server.
+**Standby session.** `loops.standby_session_id` (migration 155) records at most one retained session, always the role opposite the current phase. It is the only way a loop resumes a session it had switched away from.
 
-Continuation prompts are built by `buildContinuationPrompt` in `src/loop/prompts.ts`, which routes sectioned loops to the section continuation prompt and non-sectioned plan loops to the generic iteration prompt. Each variant composes the loop notice, the persisted attempt history, the outstanding review findings read from the review store (bug findings scoped to the current section for sectioned loops), and any recurring-findings block. Findings are inlined in full through the shared finding renderer; the auditor's response prose is never injected into a coder prompt.
+- When coding finishes and a fresh audit session is created, the coder becomes the standby — unless a bug finding has reached the recurrence escalation threshold, in which case it is deleted instead.
+- When a dirty audit sends work back to coding, the coder is resumed from the standby instead of a new session, and the audit session becomes the standby in turn (an audit session that errored is deleted instead). A sectioned loop only ever reuses within the same section: a clean section audit releases the standby before the next section's fresh coder session. A non-sectioned loop reuses the standby across its audit iterations.
+- Reuse requires `inspectReusableStandby` to pass: the standby is not the current session, still exists with messages, has no bug finding at the recurrence escalation threshold (`RECURRENCE_ESCALATION_THRESHOLD`, 3), and its last assistant turn's context (input plus cache read/write) is under `LOOP_SESSION_REUSE_MAX_CONTEXT_TOKENS` (150,000). Recurrence escalation forces a fresh session for both roles. When reuse fails, the loop rotates to a fresh session and captures the standby's usage before deleting it.
+- A resumed coder receives `buildCoderFollowUpPrompt` — the loop notice, the open findings, and the decisions instruction — not the full plan; its earlier context still applies. A resumed audit session receives `buildAuditFollowUpPrompt` — the coder's decisions, the attempt history, and a directive to re-read changed files (`git status` / `git diff`), verify every outstanding finding, and delete the resolved ones.
+- Reused sessions are re-titled for the new iteration. `standbyTurnBaselines` records the reused session's last assistant message id at activation, so that old reply is treated as "no reply yet" and the phase waits for the new turn instead of acting on a stale one.
+- The standby is released and deleted on loop completion, termination, shutdown, restart, and whenever the loop switches to a fresh session. A restart always starts a fresh session and discards any standby.
+
+Rotated and released sessions are deleted from the OpenCode server right after their usage is captured, so a running loop keeps only the sessions it is still using — the active one plus the standby. When a loop completes and its worktree is removed, its final session is deleted too, and the TUI removes any loop session whose worktree directory no longer exists. Loop sessions therefore drop out of OpenCode's session list once the loop moves on; loop history lives in `loop-status` and the [Dashboard](dashboard.md). A TUI can briefly keep showing deleted loop sessions from its local cache or tabs until it next refreshes the list from the server.
+
+Continuation prompts are built by `buildContinuationPrompt` in `src/loop/prompts.ts`, which routes sectioned loops to the section continuation prompt and non-sectioned plan loops to the generic iteration prompt. Each variant composes the loop notice, the persisted attempt history, the outstanding review findings read from the review store (the blocking bug findings for sectioned loops), and any recurring-findings block. Findings are inlined in full through the shared finding renderer; the auditor's response prose is never injected into a coder prompt.
 
 ## Usage Tracking
 
@@ -168,7 +169,7 @@ At the start of each audit:
 2. Resolved findings are deleted via `review-delete`
 3. Unresolved findings are carried forward
 
-Outstanding `severity: 'bug'` findings block completion of a sectioned plan loop; non-sectioned plan loops require zero outstanding findings of any severity. The loop terminates only when the auditor has run at least once and no blocking findings remain.
+Outstanding `severity: 'bug'` findings block a loop. In a sectioned loop the gate is uniform for every section: `blockingBugFindings` in `src/loop/section-scope.ts` counts cross-section findings plus findings attributed to the current or an earlier section, so a later, not-yet-started section's bugs do not block. Non-sectioned plan loops require zero outstanding findings of any severity. The loop terminates only when the auditor has run at least once and no blocking findings remain.
 
 ## Worktree Isolation
 
@@ -176,7 +177,7 @@ Loops always run in an isolated git worktree. Sandbox is optional and controlled
 
 Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, TUI loop launch, and the launch of a goal chunk before creating workspaces or sessions when this precondition is not met.
 
-Every loop records a **`base_commit`** — the worktree `HEAD` resolved right after the workspace is created — and preserves it across restart. It is the exact commit the worktree branched from, so an audit scopes to `git diff <base_commit>` (committed, staged, and unstaged tracked changes) plus untracked files instead of relying on a branch merge-base. The final audit, the final-audit fix prompt, and the non-sectioned audit prompt all use this scope, and the final-audit invocation's `Review scope:` line states the exact base commit. Rows persisted before base commits were recorded fall back to the legacy merge-base wording.
+Every loop records a **`base_commit`** — the worktree `HEAD` resolved right after the workspace is created — and preserves it across restart. It is the exact commit the worktree branched from, so an audit scopes to `git diff <base_commit>` (committed, staged, and unstaged tracked changes) plus untracked files instead of relying on a branch merge-base. A non-sectioned audit prompt uses this scope; a section audit scopes from the most recent `section <N>:` checkpoint commit instead, which is the base commit for the first section. Rows persisted before base commits were recorded fall back to the legacy merge-base wording.
 
 > Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
 
@@ -219,11 +220,11 @@ In user-facing language, a plan is decomposed into **milestones** — ordered un
 
 Titles are display labels, not executable requirements — the content under each section is. After a `plan-adjust` amendment the live section rows form the **effective plan** that supersedes the master plan's original per-section instructions, while the master objective and top-level Verification remain authoritative.
 
-Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. A plan is capped at `MAX_TOTAL_SECTIONS` (24) executed milestones; markers past the cap are dropped rather than merged, so the tail of an over-long plan is not executed. The same constant caps `plan-adjust` amendments, so a plan can never grow past it mid-loop. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in the persisted `final_audit_fix` phase — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification. A loop stopped mid-fix restarts as a coding pass that re-sends the final-audit fix prompt (rebuilt from the persisted outstanding findings).
+Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. A plan is capped at `MAX_TOTAL_SECTIONS` (24) executed milestones; markers past the cap are dropped rather than merged, so the tail of an over-long plan is not executed. The same constant caps `plan-adjust` amendments, so a plan can never grow past it mid-loop. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. A dirty section audit sends the new findings back to the same section. Every section follows the same rule: its audit is clean only when no bug finding is outstanding for it, for any earlier section, or across sections (bugs attributed to a later, not-yet-started section do not block). A clean audit advances to the next section, or completes the loop — into `post_action` when configured — when no section is still open. The plan's final section carries the master plan's top-level checks, so no separate whole-change audit runs.
 
 ### Plan Amendments
 
-After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`, which is destructive — an omitted milestone is deleted). The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. `plan-adjust` performs no semantic validation of the amended instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed, non-sectioned loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. Amendments are only accepted while the loop is in the `auditing` phase; `plan-adjust` remains rejected outside section auditing — including the final audit — so no final-audit amendment can append sections.
+After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`, which is destructive — an omitted milestone is deleted). The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. `plan-adjust` performs no semantic validation of the amended instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed, non-sectioned loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. Amendments are only accepted while the loop is in the `auditing` phase, so completed and post-action phases can never append sections.
 
 ### Transition Log
 
@@ -234,10 +235,9 @@ Every persisted phase change appends exactly one row to the `loop_transitions` t
 A loop completes when the active phase emits a clean audit result (optionally followed by a post-completion action phase):
 
 - Non-sectioned loops complete on `audit-clear`.
-- Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
-- Dirty section audits rotate back to coding for the same section so findings can be addressed.
-- Dirty final audits rotate to a coding session in the `final_audit_fix` phase (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
-- After a clean audit — a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Normal confirmed completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion; see [Behavior](#behavior) for the best-effort completion that follows exhausted or failed continuation attempts and the abort-with-reply exceptions.
+- Sectioned loops advance through clean section audits — each clean only when no bug finding is outstanding for that section, for any earlier section, or across sections — and complete when no section is still open. The plan's final section carries the master plan's top-level checks; there is no separate whole-change audit.
+- Dirty section audits rotate back to coding for the same section so findings can be addressed, reusing the section's coder and audit sessions.
+- After a clean audit — the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Normal confirmed completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion; see [Behavior](#behavior) for the best-effort completion that follows exhausted or failed continuation attempts and the abort-with-reply exceptions.
 
 ## Termination
 
@@ -249,7 +249,7 @@ In addition to a clean audit, the loop terminates when:
 
 ## Post-Completion Action Phase
 
-After a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops), before worktree teardown, the loop may run a **post-completion action** configured via `loop.postAction` in `forge-config.jsonc`. This phase is best-effort — it is not re-audited. When a skill is configured, that skill's unattended workflow governs its fixes and validation; without one, it relies only on safe, scoped fixes. The post-action runs as the `code` agent in a fresh session inside the worktree.
+After a clean audit (the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops), before worktree teardown, the loop may run a **post-completion action** configured via `loop.postAction` in `forge-config.jsonc`. This phase is best-effort — it is not re-audited. When a skill is configured, that skill's unattended workflow governs its fixes and validation; without one, it relies only on safe, scoped fixes. The post-action runs as the `code` agent in a fresh session inside the worktree.
 
 ```jsonc
 {
@@ -274,7 +274,7 @@ After a clean audit (a clean final audit for sectioned loops, `audit-clear` for 
 
 ### Behavior
 
-- Runs only after a clean audit completes (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops).
+- Runs only after a clean audit completes (the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops).
 - Runs **inside the worktree** as the `code` agent, with access to the full worktree state (including uncommitted changes).
 - **Best-effort:** The post-action result is not re-audited. When a skill is configured, that skill's unattended workflow governs the fixes and validation; without one, the phase applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
 - **Completion confirmation:** The prompt requires the agent to finish every step (subagents, merges, saved records) before ending its turn, and to end its final reply with the line `<!-- forge:post-action-complete -->` (`POST_ACTION_COMPLETE_MARKER` in `src/loop/prompts.ts`). When the session goes idle, Forge first waits until every loop session, subagents included, is idle and no prompt is queued in the session inbox; the wait is bounded by `busyStallTimeoutMs`, after which the loop terminates with an error because the worktree cannot be torn down safely. It then checks the final reply for the marker. Without it, Forge sends a continue prompt asking the agent to finish, up to 3 times; after the third, or if the continue prompt fails to send, the loop completes best-effort.
@@ -305,7 +305,7 @@ Launching that plan as a loop from the drafting session — through **any** surf
 
 ### Chunk lifecycle
 
-Each chunk is a normal plan loop: sections, final audit, and the configured `loop.postAction` all run as usual, and teardown is unchanged — commit, sandbox stop, worktree removed on completion, and the `forge/<loop>` branch kept. There is no goal-specific post-action and no goal-specific audit.
+Each chunk is a normal plan loop: sections and the configured `loop.postAction` run as usual, and teardown is unchanged — commit, sandbox stop, worktree removed on completion, and the `forge/<loop>` branch kept. There is no goal-specific post-action and no goal-specific audit.
 
 ### Advancement on `settled`
 
@@ -366,7 +366,6 @@ Cancellation:
 | Model error | Automatic fallback to default model, retry |
 | Error retry limit | Loop terminates with `terminationReason: 'error_max_retries'` |
 | Audit retry limit | Loop terminates with `terminationReason: 'audit_retry_exhausted'` |
-| Final audit retry limit | Loop terminates with `terminationReason: 'final_audit_retry_exhausted'` |
 | Stall timeout | Loop terminates with `terminationReason: 'stall_timeout'` after the configured consecutive stall limit |
 
 ## Model Configuration

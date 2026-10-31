@@ -14,7 +14,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
-| `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`/`final_auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
+| `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
 | `autoApprove` | unset | Deny rules applied while per-session auto-approve is on. See [Auto-Approve](#auto-approve). |
@@ -96,7 +96,7 @@ The block applies to loop, audit, and post-action sessions.
 
 ### Post-Action
 
-`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean audit (a clean final audit for sectioned loops, `audit-clear` for non-sectioned plan loops) and before teardown. See [Post-Completion Action Phase](loop-system.md#post-completion-action-phase) for completion confirmation.
+`loop.postAction` configures an optional post-completion action phase. It runs inside the worktree after a clean audit (the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops) and before teardown. See [Post-Completion Action Phase](loop-system.md#post-completion-action-phase) for completion confirmation.
 
 The phase is enabled only when `enabled === true` and at least one of `skill` or `prompt` is configured.
 

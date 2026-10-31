@@ -72,7 +72,6 @@ function mockLoopRow(overrides: Partial<DashboardLoop['loop']> = {}): DashboardL
     hostSessionId: null,
     currentSectionIndex: 1,
     totalSections: 5,
-    finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
     ...overrides,
@@ -1594,11 +1593,9 @@ describe('computePhaseSpans', () => {
 // ---------------------------------------------------------------------------
 
 describe('phaseLabel', () => {
-  test('maps the five known phases to human labels', () => {
+  test('maps the live phases to human labels', () => {
     expect(phaseLabel('coding')).toBe('Coding')
     expect(phaseLabel('auditing')).toBe('Auditing')
-    expect(phaseLabel('final_auditing')).toBe('Final audit')
-    expect(phaseLabel('final_audit_fix')).toBe('Final audit fix')
     expect(phaseLabel('post_action')).toBe('Post-action')
   })
 
@@ -1609,6 +1606,11 @@ describe('phaseLabel', () => {
   test('returns an unrecognised phase unchanged', () => {
     expect(phaseLabel('plan')).toBe('plan')
     expect(phaseLabel('completed')).toBe('completed')
+  })
+
+  test('retired final-audit phases from historical rows pass through unchanged', () => {
+    expect(phaseLabel('final_auditing')).toBe('final_auditing')
+    expect(phaseLabel('final_audit_fix')).toBe('final_audit_fix')
   })
 })
 
@@ -1625,13 +1627,13 @@ describe('phaseLegendRows', () => {
     const rows = phaseLegendRows([
       makeSpan('coding', 2000),
       makeSpan('auditing', 6000),
-      makeSpan('final_auditing', 2000),
+      makeSpan('post_action', 2000),
       makeSpan('', 999),
     ])
-    expect(rows.map(r => r.phase)).toEqual(['auditing', 'coding', 'final_auditing'])
+    expect(rows.map(r => r.phase)).toEqual(['auditing', 'coding', 'post_action'])
     expect(rows[0]).toEqual({ phase: 'auditing', label: 'Auditing', durationMs: 6000, pct: 60 })
     expect(rows[1]).toEqual({ phase: 'coding', label: 'Coding', durationMs: 2000, pct: 20 })
-    expect(rows[2]).toEqual({ phase: 'final_auditing', label: 'Final audit', durationMs: 2000, pct: 20 })
+    expect(rows[2]).toEqual({ phase: 'post_action', label: 'Post-action', durationMs: 2000, pct: 20 })
   })
 
   test('folds repeated visits to one phase into a single row', () => {

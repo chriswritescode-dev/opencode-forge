@@ -266,7 +266,6 @@ describe('attachLoopToSession', () => {
       errorCount: 0,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
       sandbox: false,
     }
     loopService.setState('reusable-loop', baseState as any)
@@ -328,7 +327,6 @@ describe('attachLoopToSession', () => {
       errorCount: 0,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
       sandbox: false,
     } as any)
 

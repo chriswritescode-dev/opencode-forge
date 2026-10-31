@@ -70,7 +70,7 @@ describe('review section scoping', () => {
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  function insertLoop(loopName: string, opts?: { currentSectionIndex?: number; totalSections?: number; sessionId?: string; phase?: 'coding' | 'auditing' | 'final_auditing' }) {
+  function insertLoop(loopName: string, opts?: { currentSectionIndex?: number; totalSections?: number; sessionId?: string; phase?: 'coding' | 'auditing' }) {
     loopsRepo.insert({
       projectId,
       loopName,
@@ -98,10 +98,20 @@ describe('review section scoping', () => {
       hostSessionId: null,
       currentSectionIndex: opts?.currentSectionIndex ?? 0,
       totalSections: opts?.totalSections ?? 0,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }, { lastAuditResult: null })
+  }
+
+  function seedSections(loopName: string, statuses: Array<'pending' | 'in_progress' | 'completed'>) {
+    sectionPlansRepo.bulkInsert({
+      projectId,
+      loopName,
+      sections: statuses.map((_, index) => ({ index, title: `Section ${index + 1}`, content: `Content ${index + 1}` })),
+    })
+    statuses.forEach((status, index) => {
+      sectionPlansRepo.setStatus(projectId, loopName, index, status)
+    })
   }
 
   function makeToolContext(sessionID: string) {
@@ -214,6 +224,7 @@ describe('review section scoping', () => {
 
     test('handles different current section index', async () => {
       insertLoop('scoped-loop-2', { currentSectionIndex: 1, totalSections: 2, sessionId: 'scoped-loop-2-session' })
+      seedSections('scoped-loop-2', ['pending', 'in_progress'])
 
       reviewFindingsRepo.write({
         projectId,
@@ -235,7 +246,8 @@ describe('review section scoping', () => {
       })
 
       const result = await tools['review-read'].execute({}, makeToolContext('scoped-loop-2-session'))
-      expect(result).not.toContain('Section 0 bug')
+      // Current section 1 plus the earlier section 0 are in the blocking scope.
+      expect(result).toContain('Section 0 bug')
       expect(result).toContain('Section 1 warning')
     })
 
@@ -402,9 +414,35 @@ describe('review section scoping', () => {
     })
   })
 
-  describe('review-delete during final audit mirrors review-read (all sections)', () => {
+  describe('later-section findings are out of scope for an earlier section', () => {
     beforeEach(() => {
-      insertLoop('final-loop', { currentSectionIndex: 4, totalSections: 5, phase: 'final_auditing' })
+      insertLoop('last-open-loop', { currentSectionIndex: 4, totalSections: 5, phase: 'auditing' })
+      seedSections('last-open-loop', ['completed', 'completed', 'completed', 'completed', 'in_progress'])
+    })
+
+    test('review-read returns findings from an earlier section and cross-section findings', async () => {
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Earlier section bug',
+        loopName: 'last-open-loop',
+        sectionIndex: 0,
+      })
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/b.ts',
+        line: 20,
+        severity: 'bug',
+        description: 'Cross-section bug',
+        loopName: 'last-open-loop',
+        sectionIndex: null,
+      })
+
+      const result = await tools['review-read'].execute({}, makeToolContext('last-open-loop-session'))
+      expect(result).toContain('Earlier section bug')
+      expect(result).toContain('Cross-section bug')
     })
 
     test('deletes a finding from an earlier section the auditor can see', async () => {
@@ -414,17 +452,17 @@ describe('review section scoping', () => {
         line: 10,
         severity: 'bug',
         description: 'Earlier section bug',
-        loopName: 'final-loop',
+        loopName: 'last-open-loop',
         sectionIndex: 0,
       })
 
       const result = await tools['review-delete'].execute(
         { file: 'src/a.ts', line: 10 },
-        makeToolContext('final-loop-session')
+        makeToolContext('last-open-loop-session')
       )
 
       expect(result).toContain('Deleted review finding')
-      expect(reviewFindingsRepo.listByLoopName(projectId, 'final-loop')).toHaveLength(0)
+      expect(reviewFindingsRepo.listByLoopName(projectId, 'last-open-loop')).toHaveLength(0)
     })
 
     test('deletes a cross-section finding without crossSection flag', async () => {
@@ -434,17 +472,110 @@ describe('review section scoping', () => {
         line: 20,
         severity: 'bug',
         description: 'Cross-section bug',
-        loopName: 'final-loop',
+        loopName: 'last-open-loop',
         sectionIndex: null,
       })
 
       const result = await tools['review-delete'].execute(
         { file: 'src/b.ts', line: 20 },
-        makeToolContext('final-loop-session')
+        makeToolContext('last-open-loop-session')
       )
 
       expect(result).toContain('Deleted review finding')
-      expect(reviewFindingsRepo.listByLoopName(projectId, 'final-loop')).toHaveLength(0)
+      expect(reviewFindingsRepo.listByLoopName(projectId, 'last-open-loop')).toHaveLength(0)
+    })
+  })
+
+  describe('section blocking scope', () => {
+    test('review-read includes the current and earlier sections but excludes later sections', async () => {
+      insertLoop('scoped-blocking-loop', { currentSectionIndex: 1, totalSections: 3, phase: 'auditing' })
+      seedSections('scoped-blocking-loop', ['completed', 'in_progress', 'pending'])
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Section 0 bug',
+        loopName: 'scoped-blocking-loop',
+        sectionIndex: 0,
+      })
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/b.ts',
+        line: 20,
+        severity: 'bug',
+        description: 'Section 1 bug',
+        loopName: 'scoped-blocking-loop',
+        sectionIndex: 1,
+      })
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/c.ts',
+        line: 30,
+        severity: 'bug',
+        description: 'Section 2 bug',
+        loopName: 'scoped-blocking-loop',
+        sectionIndex: 2,
+      })
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/d.ts',
+        line: 40,
+        severity: 'bug',
+        description: 'Cross-section bug',
+        loopName: 'scoped-blocking-loop',
+        sectionIndex: null,
+      })
+
+      const result = await tools['review-read'].execute({}, makeToolContext('scoped-blocking-loop-session'))
+      expect(result).toContain('Section 0 bug')
+      expect(result).toContain('Section 1 bug')
+      expect(result).toContain('Cross-section bug')
+      expect(result).not.toContain('Section 2 bug')
+    })
+
+    test('review-delete removes an earlier-section finding without an explicit section index', async () => {
+      insertLoop('delete-earlier-loop', { currentSectionIndex: 1, totalSections: 3, phase: 'auditing' })
+      seedSections('delete-earlier-loop', ['completed', 'in_progress', 'pending'])
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Earlier section bug',
+        loopName: 'delete-earlier-loop',
+        sectionIndex: 0,
+      })
+
+      const result = await tools['review-delete'].execute(
+        { file: 'src/a.ts', line: 10 },
+        makeToolContext('delete-earlier-loop-session')
+      )
+
+      expect(result).toContain('Deleted review finding')
+      expect(reviewFindingsRepo.listByLoopName(projectId, 'delete-earlier-loop')).toHaveLength(0)
+    })
+
+    test('review-delete leaves a later-section finding alone without an explicit section index', async () => {
+      insertLoop('delete-later-loop', { currentSectionIndex: 1, totalSections: 3, phase: 'auditing' })
+      seedSections('delete-later-loop', ['completed', 'in_progress', 'pending'])
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/c.ts',
+        line: 30,
+        severity: 'bug',
+        description: 'Later section bug',
+        loopName: 'delete-later-loop',
+        sectionIndex: 2,
+      })
+
+      const result = await tools['review-delete'].execute(
+        { file: 'src/c.ts', line: 30 },
+        makeToolContext('delete-later-loop-session')
+      )
+
+      expect(result).toContain('No review finding found')
+      expect(reviewFindingsRepo.listByLoopName(projectId, 'delete-later-loop')).toHaveLength(1)
     })
   })
 

@@ -95,7 +95,6 @@ describe('execution in-flight guard', () => {
         hostSessionId: null,
         currentSectionIndex: 0,
         totalSections: 5,
-        finalAuditDone: 0,
       }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
@@ -206,7 +205,6 @@ describe('execution in-flight guard', () => {
         hostSessionId: null,
         currentSectionIndex: 2,
         totalSections: 5,
-        finalAuditDone: 0,
       }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
@@ -311,7 +309,6 @@ describe('execution in-flight guard', () => {
         hostSessionId: null,
         currentSectionIndex: 1,
         totalSections: 4,
-        finalAuditDone: 0,
       }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({

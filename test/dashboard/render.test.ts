@@ -222,7 +222,7 @@ describe('renderDashboardHtml', () => {
       const ref = value?.match(/^var\((--[a-zA-Z0-9-]+)\)$/)
       return ref ? resolve(ref[1], seen) : value ?? ''
     }
-    const phaseTokens = ['--ph-coding', '--ph-auditing', '--ph-final-auditing', '--ph-final-audit-fix', '--ph-post-action']
+    const phaseTokens = ['--ph-coding', '--ph-auditing', '--ph-post-action']
     const phaseLiterals = phaseTokens.map(name => resolve(name))
     expect(new Set(phaseLiterals).size).toBe(phaseTokens.length)
 
@@ -231,6 +231,25 @@ describe('renderDashboardHtml', () => {
     expect(new Set(statusLiterals).size).toBe(statusTokens.length)
 
     expect(new Set([...statusTokens, ...phaseTokens]).size).toBe(statusTokens.length + phaseTokens.length)
+  })
+
+  test('retired final-audit phases have no phase rules and fall back to the neutral phase colour', () => {
+    const html = renderDashboardHtml()
+    const style = stylesheet(html)
+
+    // No dedicated token or rule survives for a phase the loop can no longer
+    // enter; historical rows carrying those strings must still paint.
+    for (const retired of ['final_auditing', 'final_audit_fix', '--ph-final-auditing', '--ph-final-audit-fix']) {
+      expect(style).not.toContain(retired)
+    }
+    for (const phase of ['coding', 'auditing', 'post_action']) {
+      expect(style).toContain(`[data-phase="${phase}"] { --phase-color: var(--ph-`)
+    }
+    const neutral = style.match(/\[data-phase\]\s*\{\s*--phase-color:\s*var\((--[a-zA-Z0-9-]+)\)/)
+    expect(neutral).toBeTruthy()
+    // The neutral rule must precede the specific ones: equal specificity means
+    // the later rule wins, so a live phase keeps its own colour.
+    expect(style.indexOf('[data-phase] {')).toBeLessThan(style.indexOf('[data-phase="coding"]'))
   })
 
   test('the app bar is sticky above page content and below popovers', () => {

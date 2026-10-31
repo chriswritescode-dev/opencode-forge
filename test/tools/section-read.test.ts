@@ -76,7 +76,6 @@ describe('section-read tool', () => {
       hostSessionId: null,
       currentSectionIndex: opts?.currentSectionIndex ?? 0,
       totalSections: opts?.totalSections ?? 0,
-      finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
     }, { lastAuditResult: null })

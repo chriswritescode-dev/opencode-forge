@@ -1142,7 +1142,8 @@ test('migration 137 is idempotent on re-opened databases', () => {
 
 test('migration 141 extends loops phase CHECK to include final_audit_fix', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '141')
 
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
   expect(row.sql).toContain("'final_audit_fix'")
@@ -1161,10 +1162,12 @@ test('migration 141 extends loops phase CHECK to include final_audit_fix', () =>
 test('migration 141 is idempotent on re-opened databases', () => {
   const dbPath = createTempDb()
 
-  const db1 = openForgeDatabase(dbPath)
+  const db1 = new Database(dbPath)
+  applyMigrationsThrough(db1, '141')
   db1.close()
 
-  const db2 = openForgeDatabase(dbPath)
+  const db2 = new Database(dbPath)
+  applyMigrationsThrough(db2, '141')
 
   const row = db2.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
   expect(row.sql).toContain("'final_audit_fix'")
@@ -1173,6 +1176,108 @@ test('migration 141 is idempotent on re-opened databases', () => {
   expect(count.count).toBe(1)
 
   db2.close()
+})
+
+test('migration 154 removes the final audit phase and reopens the last section', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '153')
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, current_section_index, total_sections, auditor_fallback_index, sandbox_settings, base_commit)
+    VALUES ('proj-1', 'running-final', 'running', 'sess-running-final', 0, '/tmp/wt', '/tmp/proj', 5, 2, 1, 0, 'final_auditing', 100, 1, 2, 3, NULL, 'abc123')
+  `).run()
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, current_section_index, total_sections, completed_at)
+    VALUES ('proj-1', 'finished-fix', 'completed', 'sess-finished-fix', 0, '/tmp/wt', '/tmp/proj', 5, 4, 2, 0, 'final_audit_fix', 50, 0, 1, 60)
+  `).run()
+  for (const index of [0, 1]) {
+    db.prepare(`
+      INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at)
+      VALUES ('proj-1', 'running-final', ?, ?, ?, 'completed', 0, 10, 20, 10)
+    `).run(index, `Section ${index + 1}`, `Content ${index + 1}`)
+  }
+  db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at)
+    VALUES ('proj-1', 'finished-fix', 0, 'Section 1', 'Content 1', 'completed', 0, 10, 20, 10)
+  `).run()
+
+  // The migration runner disables FK enforcement around every migration so the
+  // loops table rebuild does not cascade into child tables.
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '154')
+  db.run('PRAGMA foreign_keys=ON')
+
+  const running = db.prepare("SELECT phase, current_section_index, total_sections, auditor_fallback_index, base_commit FROM loops WHERE loop_name = 'running-final'").get() as {
+    phase: string
+    current_section_index: number
+    total_sections: number
+    auditor_fallback_index: number
+    base_commit: string | null
+  }
+  expect(running).toMatchObject({ phase: 'auditing', current_section_index: 1, total_sections: 2, auditor_fallback_index: 3, base_commit: 'abc123' })
+
+  const finished = db.prepare("SELECT phase, status, completed_at FROM loops WHERE loop_name = 'finished-fix'").get() as { phase: string; status: string; completed_at: number | null }
+  expect(finished).toMatchObject({ phase: 'coding', status: 'completed', completed_at: 60 })
+
+  // The running loop's current (last) section is reopened; earlier sections stay completed.
+  const reopened = db.prepare("SELECT status, completed_at FROM section_plans WHERE loop_name = 'running-final' AND section_index = 1").get() as { status: string; completed_at: number | null }
+  expect(reopened.status).toBe('in_progress')
+  expect(reopened.completed_at).toBeNull()
+
+  const untouched = db.prepare("SELECT status, completed_at FROM section_plans WHERE loop_name = 'running-final' AND section_index = 0").get() as { status: string; completed_at: number | null }
+  expect(untouched.status).toBe('completed')
+  expect(untouched.completed_at).toBe(20)
+
+  // Historical (non-running) loops keep their section rows untouched.
+  const historicalSection = db.prepare("SELECT status FROM section_plans WHERE loop_name = 'finished-fix' AND section_index = 0").get() as { status: string }
+  expect(historicalSection.status).toBe('completed')
+
+  expect(loopTableColumns(db, 'loops')).not.toContain('final_audit_done')
+
+  const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(schema.sql).toContain("phase IN ('coding','auditing','post_action')")
+  expect(schema.sql).not.toContain('final_auditing')
+
+  expect(() => {
+    db.prepare(`
+      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+      VALUES ('proj-1', 'rejected-final', 'running', 'sess-rejected-final', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'final_auditing', 1)
+    `).run()
+  }).toThrow(/CHECK constraint failed/)
+
+  // Indexes (including the partial unique session index) survive the rebuild.
+  expect(indexExists(db, 'idx_loops_status')).toBe(true)
+  expect(indexExists(db, 'idx_loops_project_name')).toBe(true)
+  const sessionIdx = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'").get() as { sql: string } | null
+  expect(sessionIdx!.sql).toContain("status = 'running'")
+
+  // Primary key preserved: the same (project_id, loop_name) cannot be inserted twice.
+  expect(() => {
+    db.prepare(`
+      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+      VALUES ('proj-1', 'running-final', 'running', 'sess-dup', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+    `).run()
+  }).toThrow(/UNIQUE constraint failed/)
+
+  db.close()
+})
+
+test('migration 154 is idempotent', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '153')
+
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '154')
+  applySingleMigration(db, '154')
+  db.run('PRAGMA foreign_keys=ON')
+
+  expect(loopTableColumns(db, 'loops')).not.toContain('final_audit_done')
+  const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(schema.sql).toContain("phase IN ('coding','auditing','post_action')")
+
+  db.close()
 })
 
 test('migration 144 adds auditor_fallback_index to loops and is idempotent', () => {
@@ -1643,6 +1748,43 @@ test('migration 152 is a no-op when applied twice', () => {
 
   const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
   expect(cols.filter((c) => c.name === 'base_commit').length).toBe(1)
+
+  db.close()
+})
+
+test('migration 155 adds nullable standby_session_id to loops and is idempotent', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
+  const col = cols.find((c) => c.name === 'standby_session_id')
+  expect(col).toBeDefined()
+  // Nullable text so loops persisted before this column hydrate as "no standby".
+  expect(col!.notnull).toBe(0)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-standby', 'running', 'sess-standby', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  const row = db.prepare("SELECT standby_session_id FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-standby'").get() as { standby_session_id: string | null }
+  expect(row.standby_session_id).toBeNull()
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('155') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 155 is a no-op when applied twice', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '154')
+
+  applySingleMigration(db, '155')
+  expect(() => applySingleMigration(db, '155')).not.toThrow()
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'standby_session_id').length).toBe(1)
 
   db.close()
 })

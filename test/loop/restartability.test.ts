@@ -18,7 +18,6 @@ function makeState(overrides: Partial<LoopState> = {}): LoopState {
     auditCount: 0,
     currentSectionIndex: 0,
     totalSections: 0,
-    finalAuditDone: false,
     status: 'cancelled',
     terminationReason: 'user_aborted',
     worktree: true,

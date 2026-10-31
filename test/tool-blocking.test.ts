@@ -63,7 +63,6 @@ describe('Tool Blocking Logic', () => {
         worktree: true,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
       }
       loopService.setState(loopName, state)
 
@@ -96,7 +95,6 @@ describe('Tool Blocking Logic', () => {
         worktree: true,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
       }
       loopService.setState(loopName, inactiveState)
 
@@ -168,7 +166,6 @@ describe('Tool Blocking Logic', () => {
         auditorVariant: undefined,
         currentSectionIndex: 0,
         totalSections: 0,
-        finalAuditDone: false,
         hostSessionId: 'host-toolblock',
       })
       loopService.registerLoopSession(auditorSessionId, hostLoopName)

@@ -15,11 +15,12 @@ import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata, createPlanExecutionSession } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
-import { auditorModelChoiceAt, buildAuditorModelChain } from '../utils/loop-helpers'
+import { auditorModelChoiceAt, buildAuditorModelChain, usageRoleForPhase, standbyPhaseFor } from '../utils/loop-helpers'
+import { createUsageCapture } from '../loop/runtime-usage'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -33,6 +34,7 @@ import { sendLoopPrompt } from '../loop/send-loop-prompt'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
+import { blockingBugFindings } from '../loop/section-scope'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists, forgeBranchName } from '../workspace/forge-naming'
 import { validateLoopBranchRequest } from '../workspace/loop-branch'
@@ -371,7 +373,6 @@ export interface LoopStatusView {
   hostSessionId?: string
   currentSectionIndex?: number
   totalSections?: number
-  finalAuditDone?: boolean
   usage?: import('../loop/token-usage').LoopUsageSummary
   restartable: boolean
   restartRequiresForce: boolean
@@ -611,7 +612,6 @@ export async function attachLoopToSession(
       hostSessionId: input.hostSessionId,
       currentSectionIndex: 0,
       totalSections: 0,
-      finalAuditDone: false,
     }
 
     deps.loop.service.setState(loopName, state)
@@ -1373,7 +1373,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId: state.hostSessionId,
         currentSectionIndex: state.currentSectionIndex,
         totalSections: state.totalSections,
-        finalAuditDone: state.finalAuditDone,
         usage,
         restartable: restartability.restartable,
         restartRequiresForce: restartability.restartRequiresForce,
@@ -1510,15 +1509,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // Captured pre-lock as the fallback for inactive loops (no under-lock state
     // to re-fetch). For active loops we refresh this from the authoritative
     // under-lock state below, so a session rotation during lock contention
-    // (e.g. final_auditing -> final_audit_fix rotates from audit session A to
-    // fix session B) reports B as the previous session — that is the session we
-    // actually aborted and replaced — not the stale pre-lock A.
+    // (e.g. a coding session rotating to an auditing session) reports the
+    // post-rotation session — the one we actually aborted and replaced — not
+    // the stale pre-lock snapshot.
     let previousSessionId = stoppedState.sessionId
     let bindFailed = false
-    // New session id produced by the restart, captured at outer scope so the
-    // deferred provider-limit fallback path (which runs after the callback
-    // closes) can report the restarted loop's session id.
-    let restartedSessionId: string | null = null
 
     type RestartOutcome =
       | { ok: true; newSessionId: string; previousSessionId: string; sandbox: boolean; bindFailed: boolean }
@@ -1527,9 +1522,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // per-loop state lock: deps.loop.terminate -> terminateLoopByName ->
       // withStateLock is non-reentrant, so calling it inside the runExclusive
       // callback (which already holds the lock) deadlocks. The callback returns
-      // this marker so the outer flow performs the canonical termination (or,
-      // for a final-audit restart, the auditor fallback) without any lock held.
-      | { ok: false; error: string; providerLimitMessage: string; deferAuditorFallback: boolean }
+      // this marker so the outer flow performs the canonical termination
+      // without any lock held.
+      | { ok: false; error: string; providerLimitMessage: string }
 
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
       // Re-read authoritative state under the per-loop lock.
@@ -1605,6 +1600,30 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         stoppedState.executionVariant = overrideExecutionVariant
       }
 
+      if (stoppedState.standbySessionId && stoppedState.standbySessionId !== previousSessionId) {
+        const standbyPhase = standbyPhaseFor(stoppedState.phase)
+        const standbyUsage = createUsageCapture({
+          client: deps.client,
+          logger: deps.logger,
+          getConfig: () => deps.config,
+          projectId: ctx.projectId,
+          loopSessionUsageRepo: deps.loopSessionUsageRepo,
+        })
+        await standbyUsage.captureLoopSessionUsage({
+          loopName: stoppedState.loopName,
+          sessionId: stoppedState.standbySessionId,
+          directory: stoppedState.worktreeDir,
+          role: usageRoleForPhase(standbyPhase),
+          fallbackModel: standbyUsage.getFallbackModelForSession(stoppedState, standbyPhase),
+        })
+        await deleteSessionBestEffort(
+          deps.client,
+          { sessionID: stoppedState.standbySessionId, directory: stoppedState.worktreeDir },
+          deps.logger,
+          `loop-restart: failed to delete standby session ${stoppedState.standbySessionId}`,
+        )
+      }
+
       if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
         deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
         // Persist the terminal transition row so the disabled post-action
@@ -1677,7 +1696,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset(permissionOptions) : permissionRuleset,
+        permission: permissionRuleset,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',
@@ -1711,13 +1730,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // else: existing totalSections preserved as-is
 
       const effectiveSessionId = newSessionId!
-      const restartPhase = stoppedState.phase === 'final_auditing'
-        ? 'final_auditing' as const
-        : stoppedState.phase === 'post_action'
-          ? 'post_action' as const
-          : stoppedState.phase === 'final_audit_fix'
-            ? 'final_audit_fix' as const
-            : 'coding' as const
+      const restartPhase = stoppedState.phase === 'post_action' ? 'post_action' as const : 'coding' as const
 
       const newState: import('../loop/state').LoopState = {
         active: true,
@@ -1747,7 +1760,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId: stoppedState.hostSessionId,
         currentSectionIndex: stoppedState.currentSectionIndex,
         totalSections: stoppedState.totalSections,
-        finalAuditDone: stoppedState.finalAuditDone,
       }
       // Build appropriate prompt based on persisted state
       let promptText: string
@@ -1756,23 +1768,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (stoppedState.phase === 'post_action') {
         postActionCfg = resolvePostActionConfig(deps.config)
         promptText = deps.loop.service.buildPostActionPrompt(newState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
-      } else if (stoppedState.phase === 'final_audit_fix') {
-        // Resume fixing the final-audit findings rather than re-coding the last
-        // section: the persisted findings carry the remediation for this
-        // recovery path.
-        const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
-        promptText = deps.loop.service.buildFinalAuditFixPrompt(newState, outstandingBugs)
       } else if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
-        if (stoppedState.phase === 'final_auditing') {
-          promptText = deps.loop.service.buildFinalAuditPrompt(newState)
+        const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
+        if (blockingBugFindings(outstandingBugs, stoppedState).length > 0) {
+          promptText = deps.loop.service.buildSectionContinuationPrompt(newState, undefined, outstandingBugs)
         } else {
-          const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
-          if (outstandingBugs.some((f) => f.sectionIndex === stoppedState.currentSectionIndex)) {
-            promptText = deps.loop.service.buildSectionContinuationPrompt(newState, undefined, outstandingBugs)
-          } else {
-            promptText = deps.loop.service.buildSectionInitialPrompt(newState)
-          }
+          promptText = deps.loop.service.buildSectionInitialPrompt(newState)
         }
       } else {
         // Legacy non-sectioned prompt
@@ -1789,7 +1791,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const restartAuditorModel = restartAuditorChoice.model
       const loopModel = stoppedState.phase === 'post_action' && postActionCfg?.model
         ? parseModelString(postActionCfg.model)
-        : stoppedState.phase === 'final_auditing' || stoppedState.phase === 'post_action'
+        : stoppedState.phase === 'post_action'
           ? restartAuditorModel
           : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
       // When a configured post-action model is used, fall back to the loop's auditor model if it fails.
@@ -1798,9 +1800,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         : undefined
       const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
-      // final_audit_fix is a coding-style phase: restart sends the final-audit fix
-      // prompt as the code agent (never the auditor-loop agent).
-      const promptAgent = stoppedState.phase === 'final_auditing' ? 'auditor-loop' as const : 'code' as const
+      // A stopped post-action loop restarts on the auditor-loop agent; every other
+      // restart sends a coding-style prompt as the code agent.
+      const promptAgent = stoppedState.phase === 'post_action' ? 'auditor-loop' as const : 'code' as const
 
       deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
         sessionId: newState.sessionId,
@@ -1816,7 +1818,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         executionVariant: command.executionVariant === undefined ? undefined : overrideExecutionVariant ?? null,
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
-        finalAuditDone: newState.finalAuditDone,
         startedAt: new Date(newState.startedAt).getTime(),
       })
 
@@ -1828,7 +1829,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // prompt send failure may then terminate the loop — the phase row must
       // already be in place so the transition log shows the real sequence
       // (phase change → terminal). We skip when persisted phase matches the
-      // restart phase (final_auditing / post_action stay in place).
+      // restart phase (post_action stays in place).
       const restartPhaseChanged = restartPhase !== stoppedState.phase
       if (restartPhaseChanged) {
         deps.loop.service.recordTransition(stoppedState.loopName, {
@@ -1900,28 +1901,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         if (limitReason) {
           deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
           clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
-          // For a final-audit restart the session is reused by the auditor
-          // fallback re-dispatch, so keep its reverse index intact. For a
-          // coding-style restart the loop terminates and the session is orphaned.
-          const isAuditorRestart = promptAgent === 'auditor-loop'
-          if (!isAuditorRestart) {
-            deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
-          }
-          // Defer the canonical termination (deps.loop.terminate) and the
-          // auditor fallback (deps.loop.handleAuditorProviderLimit) to outside
-          // the runExclusive callback: both reacquire the per-loop state lock
-          // via terminateLoopByName / the fallback re-dispatch, which is
-          // non-reentrant, so invoking them here would deadlock the
-          // runExclusive-held lock. The in-memory cleanup above
-          // (clearPromptPending, unregisterSessionReverseIndex) is lock-free
-          // and safe to perform under the held lock. Returning the marker lets
-          // the outer flow terminate or fall back after the lock is released.
-          restartedSessionId = effectiveSessionId
+          deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
+          // Defer the canonical termination (deps.loop.terminate) to outside
+          // the runExclusive callback: it reacquires the per-loop state lock
+          // via terminateLoopByName, which is non-reentrant, so invoking it
+          // here would deadlock the runExclusive-held lock. The in-memory
+          // cleanup above is lock-free and safe under the held lock. Returning
+          // the marker lets the outer flow terminate after the lock releases.
           return {
             ok: false as const,
             error: `Provider limit on restart prompt: ${limitReason}`,
             providerLimitMessage: limitReason,
-            deferAuditorFallback: isAuditorRestart,
           }
         }
 
@@ -1971,9 +1961,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           // the persisted phase, so the transition history stays continuous:
           //   previousPhase -> restartPhase (pre-prompt 'restart' phase row)
           //   restartPhase -> previousPhase (this 'rollback' row)
-          // When the restart preserved the phase (final_auditing / post_action
-          // stay in place), there is nothing to roll back phase-wise and no
-          // rollback row is emitted.
+          // When the restart preserved the phase (post_action stays in place),
+          // there is nothing to roll back phase-wise and no rollback row is emitted.
           if (restartPhaseChanged) {
             deps.loop.service.recordTransition(previousState.loopName, {
               eventType: 'restart_prompt_failed',
@@ -2061,52 +2050,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // runExclusive (terminateLoopByName -> withStateLock -> deadlock). Perform
     // the canonical termination here, after the lock has been released.
     if (!outcome.ok && 'providerLimitMessage' in outcome) {
-      // A final-audit restart prompt that was directly rejected on a provider
-      // limit is routed through the shared auditor fallback chain instead of
-      // terminating: advance the persisted index and re-dispatch on the next
-      // auditor model. The handler self-gates on the restarted phase, so a
-      // coding-style restart limit still declines and terminates as before.
-      // A final-audit restart fallback re-dispatch must hold the per-loop state
-      // lock, exactly like the in-loop tick handlers that call
-      // handleAuditorProviderLimit. resendAuditPromptWithAuditorModel aborts the
-      // session and that abort can emit its AbortError before the abort promise
-      // resolves; only the internal-abort marker set after the abort resolves
-      // tells the tick's error handler not to treat it as an audit failure.
-      // Without this lock the AbortError could be processed concurrently, rotate
-      // the loop back to coding, and leave a stale final-audit prompt racing the
-      // fallback re-dispatch. Serializing through runExclusive queues that event
-      // behind this fallback so the marker and replacement prompt are established
-      // first. The original restart lock has already released here (the callback
-      // above returned), so acquiring the lock does not deadlock.
-      if (outcome.deferAuditorFallback) {
-        // The same failed restart prompt can be observed by two detection
-        // paths: this deferred direct-rejection handler and the runtime's
-        // session.error / session.status retry tick handlers, which both call
-        // handleAuditorProviderLimit. The restart resets auditor_fallback_index
-        // to 0, so if the index has already advanced past 0 by the time we run,
-        // a lifecycle handler already advanced the chain and re-dispatched the
-        // audit on a fallback model for this same failure. Treating that as
-        // "chain exhausted" here would terminate a loop that already recovered,
-        // so recognize it as already handled and absorb instead.
-        //
-        // The recheck MUST run inside the same runExclusive acquisition as the
-        // conditional handleAuditorProviderLimit call. A queued lifecycle limit
-        // handler can advance and re-dispatch the fallback after the original
-        // restart lock releases but before our callback executes; reading the
-        // index before acquiring the lock would then see 0 and, once we hold the
-        // lock with the chain exhausted, terminate a loop that already recovered.
-        const absorbed = await deps.loopHandler!.runExclusive(stoppedState.loopName, async () => {
-          const currentState = deps.loop.service.getActiveState(stoppedState.loopName)
-          if (!!currentState && (currentState.auditorFallbackIndex ?? 0) > 0) {
-            return true
-          }
-          return deps.loop.handleAuditorProviderLimit(stoppedState.loopName, outcome.providerLimitMessage)
-        })
-        if (absorbed) {
-          deps.loopHandler!.startWatchdog(stoppedState.loopName)
-          return restartSucceeded(restartedSessionId!, previousSessionId, bindFailed)
-        }
-      }
       await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: outcome.providerLimitMessage })
       if (restartSandbox && deps.sandboxManager) {
         await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
