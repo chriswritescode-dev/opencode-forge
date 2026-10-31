@@ -19,6 +19,8 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `loop-handoff` | Record the coder or auditor handoff for the current loop phase, then end the turn. | [`src/tools/loop-handoff.ts`](../src/tools/loop-handoff.ts) |
+| `loop-complete` | Record the post-action report for the current loop phase, then end the turn. | [`src/tools/loop-handoff.ts`](../src/tools/loop-handoff.ts) |
 | `goal-write` | Save the ordered goal (objective and task list) for this session as a draft; the next loop launched from this session becomes chunk 1. Architect-only. | [`src/tools/goal.ts`](../src/tools/goal.ts) |
 | `goal-status` | List goals, inspect one goal's chunks, or restart a paused/interrupted goal (optionally raising `maxChunks`). | [`src/tools/goal.ts`](../src/tools/goal.ts) |
 | `goal-cancel` | Cancel a goal, optionally cancelling its running chunk loop. | [`src/tools/goal.ts`](../src/tools/goal.ts) |
@@ -173,7 +175,48 @@ Arguments:
 
 Completed loops are history-only and cannot be restarted. See [Loop System](loop-system.md#restartability).
 
-> Plan authoring (`plan-write`, `plan-edit`, `goal-write`), the loop management tools (`execute-plan`, `loop-cancel`, `loop-status`), the goal tools (`goal-status`, `goal-cancel`), and `question` are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work. `plan-read` stays available, and `plan-adjust` is callable by the auditor during a section audit.
+> Plan authoring (`plan-write`, `plan-edit`, `goal-write`), the loop management tools (`execute-plan`, `loop-cancel`, `loop-status`), the goal tools (`goal-status`, `goal-cancel`), and `question` are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work. `plan-read` stays available, and `plan-adjust` is callable by the auditor during a section audit. `loop-handoff` and `loop-complete` are Forge-managed as well: they are accepted only from the loop's current phase session and cannot be denied through `loop.permissions` (see [Loop Handoff Tools](#loop-handoff-tools)).
+
+## Loop Handoff Tools
+
+Two tools end a loop phase turn. `loop-handoff` covers the `coding` (coder) and `auditing` (auditor) phases; `loop-complete` covers `post_action`. Both accept only the fields of the phase's role, validate a strict schema that rejects unknown keys, and persist a pending record for the loop's current session. See [Loop System](loop-system.md#handoff-driven-turn-ends) for how a recorded handoff advances the loop.
+
+### `loop-handoff`
+
+The role comes from the loop phase: `coding` takes the coder fields, `auditing` takes the auditor fields. Coder fields and auditor fields are mutually exclusive by phase.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `changes` | Coder only. Array of `{ summary, reason }`, at least one entry: what changed and why. |
+| `deviations` | Coder only, optional. Array of `{ planItem, actual, reason }` recording where the implementation departed from the plan section. Defaults to an empty array. |
+| `verification` | Coder only. Array of `{ command, cwd, outcome, changedAfter }`, at least one entry. `cwd` is worktree-relative; `outcome` is `pass`, `fail`, or `not-run`; `changedAfter` records whether code changed after the check ran. |
+| `summary` | Auditor only, optional. `{ done, deviations, followUps }`, where `done` needs at least one entry and `deviations` and `followUps` default to empty. Required when a section audit is clean: no blocking bug findings remain. Forbidden while blocking bug findings remain open, and forbidden in non-sectioned loops. |
+| `notes` | Optional free text for either role. |
+
+### `loop-complete`
+
+Only valid in the `post_action` phase. Arguments:
+
+| Argument | Description |
+|---|---|
+| `outcome` | Required. `completed`, `completed_with_issues`, or `failed`. |
+| `steps` | Required. Array of `{ name, status, detail? }`, at least one entry. `status` is `done`, `skipped`, or `failed`; `detail` is optional free text. |
+| `followUps` | Optional string array. Defaults to an empty array. |
+| `notes` | Optional free text. |
+
+### Caller Rules
+
+Both tools share these rules:
+
+- Only the loop's current session may call them. A call is rejected outside an active loop and from any other session, including subagent sessions.
+- A call is rejected while any other loop session (a subagent) is busy or retrying. The error names the busy sessions and asks the caller to retry after they finish.
+- A successful call returns `Handoff recorded — end your turn now; make no further changes.` The call does not advance the loop by itself: the loop applies the pending record when the session's turn ends, after any queued prompt and busy child sessions have settled.
+- The last call wins: a second call in the same turn replaces the earlier pending record, and the reply says so.
+- A record is applied once and only by the session that wrote it. The loop never parses assistant text to decide that a turn ended.
+- `loop-handoff` is rejected in `post_action` with an error that says to use `loop-complete`; `loop-complete` is rejected outside `post_action`.
+- Agent availability: `architect` and `architect-auto` exclude both tools; the `auditor` subagent excludes both; the `auditor-loop` agent excludes `loop-complete`; the `code` agent excludes neither.
 
 ## Goal Tools
 

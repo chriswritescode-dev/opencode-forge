@@ -194,11 +194,11 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `post_action`), row↔state converters |
 | `transitions.ts` | Pure `nextTransition()` table — no side effects; includes `'post-action-complete'` event and `handlePostActionEvent` |
 | `termination.ts` | `TerminationReason` union, `terminationStatusFor()` |
+| `handoff.ts` | Per-role handoff schemas (`coderHandoffSchema`, `auditorHandoffSchema`, `postActionCompleteSchema`), record types, renderers (`formatCoderHandoff`, `formatSectionSummary`, `formatAuditHandoffResult`, `formatPostActionReport`, `formatPostActionSummary`), `handoffSchemaForRole()`, `handoffRoleForPhase()`, `handoffCompletionKey()` |
 | `prompts.ts` | Prompt builders for each loop phase, including `buildPostActionPrompt()` and the reused-session follow-ups `buildCoderFollowUpPrompt()` / `buildAuditFollowUpPrompt()` |
 | `section-scope.ts` | `blockingBugFindings()` / `isFindingInSectionScope()` — the single rule for which findings block a section |
 | `finding-recurrence.ts` | Recurrence keys and `RECURRENCE_ESCALATION_THRESHOLD`, shared by prompt escalation and the session-reuse predicate |
 | `post-action-config.ts` | `ResolvedPostActionConfig` interface and `resolvePostActionConfig()` resolver |
-| `section-summary.ts` | Parse audit output markers |
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
@@ -225,10 +225,11 @@ type TerminationReason =
   | { kind: 'stall_timeout' }
   | { kind: 'missing_worktree_dir' }
   | { kind: 'session_creation_failed' }
-  | { kind: 'audit_retry_exhausted' }
-  | { kind: 'coding_no_assistant' }
+  | { kind: 'handoff_missing' }
+  | { kind: 'restart_prompt_failed' }
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
+  | { kind: 'provider_limit'; message: string }
 ```
 
 ### Public API
@@ -261,10 +262,18 @@ terminationStatusFor(reason: TerminationReason): TerminationStatus
 terminationReasonToString(reason): string
 parseTerminationReasonString(str): TerminationReason
 
-// Section summary
-parseSectionSummary(text): { startLine, endLine, summary }
-SECTION_SUMMARY_START_MARKER: string
-SECTION_SUMMARY_END_MARKER: string
+// Handoff (imported directly from ./handoff; not re-exported by the barrel)
+coderHandoffSchema, auditorHandoffSchema, postActionCompleteSchema: z.ZodType
+CoderHandoffPayload, AuditorHandoffPayload, PostActionCompletePayload: types
+LoopHandoffRole, LoopHandoffPhase, LoopHandoffStatus, LoopHandoffRecord: types
+handoffSchemaForRole(role: LoopHandoffRole): z.ZodType
+handoffRoleForPhase(phase: string): LoopHandoffRole | null
+formatCoderHandoff(payload): string
+formatSectionSummary(summary): { done, deviations, followUps }
+formatAuditHandoffResult(payload, verdict): string
+formatPostActionReport(payload): string
+formatPostActionSummary(payload): string
+handoffCompletionKey(record): string
 
 // Idle gate
 sessionsAwaitingBusy: Map<string, ...>
@@ -414,7 +423,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 | Repository | Table(s) | Key Types |
 |---|---|---|
-| `LoopsRepo` | `loops`, `loop_large_fields` | `LoopRow`, `LoopLargeFields` |
+| `LoopsRepo` | `loops`, `loop_large_fields`, `loop_handoffs` | `LoopRow`, `LoopLargeFields`, `LoopHandoffRecord` — `loop_handoffs` is the schema-validated phase handoff history with one pending row per loop |
 | `PlansRepo` | `plans` | `PlanRow` |
 | `ReviewFindingsRepo` | `review_findings` | `ReviewFindingRow` |
 | `SectionPlansRepo` | `section_plans` | `SectionPlanRow` — one row per **milestone** (decomposed plan section). See [Loop System](loop-system.md#milestones-aka-sections). |
@@ -428,7 +437,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–153; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–156; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -455,6 +464,8 @@ Implements tools callable by AI agents during conversations.
 | `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
 | `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
+| `loop-handoff` | `loop-handoff.ts` | Record the coder or auditor handoff for the current loop phase (validated against the phase role's schema), then end the turn; only the loop's current session may call it |
+| `loop-complete` | `loop-handoff.ts` | Record the post-action completion record (outcome, steps, follow-ups) for the current loop session, then end the turn; only the loop's current post-action session may call it |
 | `goal-write` | `goal.ts` | Architect-only: save the ordered goal (objective + task list) for this session as a draft; the next loop launched from the session becomes chunk 1. Args: `title`, `objective` required; `tasks`, `maxChunks` optional |
 | `goal-status` | `goal.ts` | List goals, show one goal's detail, or restart a paused/interrupted goal (`restart` requires `goalId`; `force` discards in-flight planning; `maxChunks` raises the cap) |
 | `goal-cancel` | `goal.ts` | Cancel a goal by `goalId`, optionally cancelling its running chunk loop |
@@ -528,9 +539,9 @@ Cross-cutting helpers (~40 files) organized by concern:
 | Caching | `lru-cache.ts` | Generic LRU cache |
 | Paths | `opencode-paths.ts`, `shipped-paths.ts`, `resolve-project-root.ts` | Data/tool-output/tmp paths, bundled-asset root, project root |
 | Plan | `plan-execution.ts`, `plan-structure.ts`, `marked-plan-parser.ts`, `markdown-fences.ts` | Plan parsing, structure reports, marker extraction |
-| Sections | `section-capture.ts`, `section-summary.ts` | Section extraction/summary parsing |
+| Sections | `section-capture.ts` | Parsed section shape (`ParsedSection`) shared by the decomposer and `SectionPlansRepo` |
 | Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts`, `loop-registry.ts`, `loop-permission-options.ts`, `loop-permission-warnings.ts` | Loop model/format/session/permission helpers |
-| Sessions | `audit-session.ts`, `audit-snapshot.ts`, `coder-decisions.ts`, `session-ancestry.ts`, `session-titles.ts` | Session naming, ancestry, audit history |
+| Sessions | `audit-session.ts`, `audit-snapshot.ts`, `session-ancestry.ts`, `session-titles.ts` | Session naming, ancestry, audit history |
 | TUI | `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI preferences and models |
 | Workspace | `worktree-cleanup.ts`, `git-service.ts` | Worktree cleanup and git operations |
 | Sandbox | `sandbox-ready.ts` | Sandbox readiness probe |
@@ -608,13 +619,14 @@ The loop follows a strict phase-based state machine:
 - States: `coding`, `auditing`, `post_action`
 - Transitions managed by `nextTransition()` in `transitions.ts`
 - Each phase has dedicated prompt builders and session rotation logic; a reusable standby session is resumed on same-section phase switches in both directions (coding → auditing and dirty audit → coding), while a new section always starts fresh (see below)
+- A phase turn ends only on a persisted handoff (`loop-handoff`, or `loop-complete` in post-action); the runtime does not infer completion from assistant text
 - State changes are persisted to SQLite after every mutation
 
 ### Session Reuse
 
 `loops.standby_session_id` (migration 155) holds the one session a loop may resume: always the role opposite the current phase. It is set when a fresh audit session replaces the coder and when a resumed coder replaces the audit session, and is released (usage captured, session deleted) on a section advance, loop completion, termination, shutdown, restart, or any switch to a fresh session.
 
-`inspectReusableStandby` is the single reuse predicate: the standby exists with messages, is not the current session, has no bug finding at the recurrence escalation threshold, and its role's reuse percentage is not `0` (`loop.sessionReuse.coderContextPercent` / `auditorContextPercent`, resolved by `resolveSessionReuseContextPercent`). The percentage applies to the role the standby holds: coder while auditing, auditor while coding. `inspectStandbyCandidate` reads the model from the last assistant message and resolves `limit.context` through the `ForgeClient.model.contextLimit` port method; when the last turn reached the role's percentage it returns the candidate with `needsCompaction`, and `compactStandbySession` queues `ForgeClient.session.compact` before the follow-up prompt so the session continues from the compaction summary. An unknown context window allows reuse without compaction, and a failed compaction falls back to a fresh session with the full prompt. Reused sessions get `buildCoderFollowUpPrompt` / `buildAuditFollowUpPrompt` instead of the full plan prompt, and `standbyTurnBaselines` keeps the phase handler from mistaking the session's previous reply for the new turn.
+`inspectReusableStandby` is the single reuse predicate: the standby exists with messages, is not the current session, has no bug finding at the recurrence escalation threshold, and its role's reuse percentage is not `0` (`loop.sessionReuse.coderContextPercent` / `auditorContextPercent`, resolved by `resolveSessionReuseContextPercent`). The percentage applies to the role the standby holds: coder while auditing, auditor while coding. `inspectStandbyCandidate` reads the model from the last assistant message and resolves `limit.context` through the `ForgeClient.model.contextLimit` port method; when the last turn reached the role's percentage it returns the candidate with `needsCompaction`, and `compactStandbySession` queues `ForgeClient.session.compact` before the follow-up prompt so the session continues from the compaction summary. An unknown context window allows reuse without compaction, and a failed compaction falls back to a fresh session with the full prompt. Reused sessions get `buildCoderFollowUpPrompt` / `buildAuditFollowUpPrompt` instead of the full plan prompt. A reused session's previous reply is never mistaken for the new turn: turn completion comes only from a persisted handoff row scoped to that session and applied once.
 
 ### Notification Pattern
 

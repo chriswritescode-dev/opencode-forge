@@ -23,6 +23,7 @@ The loop system provides autonomous iterative development with automatic code au
 - Restart preserves loop identity, plan, worktree path, section progress, review findings, and per-loop sandbox settings (a loop launched with the sandbox off stays off; its resource overrides apply if the sandbox is recreated).
 - Restart resets the iteration count to 1 and clears the error budget.
 - Restart creates a fresh session and preserves the section index. An ordinary `auditing` phase restarts as `coding`, while an enabled `post_action` phase is preserved. Any standby session is discarded, so a restart never resumes retained context.
+- Restart marks any pending handoff `discarded`, so the loop starts fresh with no turn record carried over from before the restart.
 - Restarts into section coding with outstanding bug findings for the current section use the continuation prompt, including full finding details and the shared remediation policy; without current-section bugs, they use the initial section prompt.
 
 ### Stale Workspace Sweep
@@ -37,14 +38,16 @@ The loop system provides autonomous iterative development with automatic code au
 ```mermaid
 stateDiagram-v2
     [*] --> Coding: loop tool invoked
-    Coding --> Auditing: coding idle complete
-    Auditing --> Coding: section dirty or audit dirty
-    Auditing --> Coding: next section
-    Auditing --> PostAction: clean, no section left, post-action configured
+    Coding --> Auditing: loop-handoff
+    Auditing --> Coding: loop-handoff, findings remain, retry section
+    Auditing --> Coding: loop-handoff, clean, next section
+    Auditing --> PostAction: loop-handoff, clean, no section left, post-action configured
     note right of PostAction: Only when loop.postAction.enabled and a non-empty skill or prompt is set
-    PostAction --> [*]: post-action complete
-    Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
-    Auditing --> [*]: audit clear / clean, no section left
+    Auditing --> [*]: loop-handoff, clean, no section left
+    PostAction --> [*]: loop-complete
+    Coding --> [*]: 3 turns without loop-handoff (handoff_missing, errored) / max iterations / stall timeout / cancellation
+    Auditing --> [*]: 3 turns without loop-handoff (handoff_missing, errored)
+    PostAction --> [*]: 3 turns without loop-complete (completed)
 ```
 
 ### Phases
@@ -95,6 +98,62 @@ interface LoopState {
 }
 ```
 
+Per-turn output lives in `loop_handoffs`, not on the loop row: only the current record is `pending`, it resolves to `applied` or `discarded`, and the resolved rows remain as history. `lastAuditResult` and `completionSummary` on the loop row are display text, never decision input.
+
+## Handoff-Driven Turn Ends
+
+A phase turn ends only through a persisted handoff row written by `loop-handoff` (coding, auditing) or `loop-complete` (post-action). The runtime never parses assistant text for decisions, summaries, markers, or completion. The audit verdict comes only from the findings store, and post-action completion only from the recorded `loop-complete` payload.
+
+### `loop_handoffs`
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | integer | Auto-incrementing primary key |
+| `project_id`, `loop_name` | text | Loop identity; the foreign key `(project_id, loop_name)` references `loops` with `ON DELETE CASCADE`, so deleting a loop removes its handoffs |
+| `session_id` | text | Session that recorded the handoff |
+| `role` | text | `coder`, `auditor`, or `post_action` (`CHECK` constraint) |
+| `phase` | text | Phase at write time: `coding`, `auditing`, or `post_action` |
+| `section_index` | integer / null | Current section for sectioned loops, `null` for non-sectioned plan loops |
+| `iteration` | integer | Loop iteration at write time |
+| `payload` | JSON text | Strictly validated role payload |
+| `status` | text | `pending`, `applied`, or `discarded` (`CHECK` constraint) |
+| `created_at`, `resolved_at` | integer | Write and resolution timestamps; `resolved_at` is `null` while pending |
+
+A partial unique index (`idx_loop_handoffs_pending`) allows at most one `pending` row per loop, and a history index (`idx_loop_handoffs_loop`) keeps every resolved row in id order. Resolution is a single guarded update: marking a row `applied` matches on the recording `session_id` and `status = 'pending'`, and discarding matches `status = 'pending'`, so a record resolves exactly once.
+
+Every payload is validated strictly against its role schema on write (`recordHandoff` before the insert, and the repository again inside `upsertPendingHandoff`) and on every read (`mapHandoffRow`). An invalid row is logged and skipped; its payload is never coerced or partially applied.
+
+- **Coder payload** — `changes` (`{ summary, reason }`, at least one), `deviations` (`{ planItem, actual, reason }`), `verification` (`{ command, cwd, outcome: 'pass' | 'fail' | 'not-run', changedAfter }`, at least one), and optional `notes`.
+- **Auditor payload** — optional `summary` (`{ done, deviations, followUps }`) and optional `notes`. `summary` is required for a clean section audit, forbidden while blocking bug findings remain, and forbidden in non-sectioned loops.
+- **Post-action payload** — `outcome` (`completed`, `completed_with_issues`, or `failed`), `steps` (`{ name, status: 'done' | 'skipped' | 'failed', detail? }`, at least one), `followUps`, and optional `notes`.
+
+Recording rules:
+
+- Only the loop's current session may record a handoff; any other session is rejected.
+- The tool must match the phase: `loop-handoff` in coding and auditing, `loop-complete` in post-action. The wrong tool is rejected.
+- The call is rejected while any other loop session, subagents included, is busy or retrying, and rejected when that session status cannot be verified.
+- The last call in the same turn replaces the earlier pending record instead of adding a second one.
+- A successful call does not advance the loop. It only stores the record; the phase runner applies it when the turn ends.
+
+Turn-end sequence:
+
+1. In coding and auditing, a persisted provider-limit error is classified first and either terminates the loop or advances the auditor fallback chain.
+2. The persisted assistant result is handled for the phase; in post-action an assistant error applies any pending record and completes best-effort.
+3. The turn waits while another loop session, subagents included, is busy or retrying, or a prompt is still queued in the session inbox.
+4. `applyPendingHandoff` runs scoped to the current session and applies the record atomically, once.
+
+With a record the runner proceeds to `nextTransition`; a repeat resolution or a row recorded by a different session yields nothing. Without a record:
+
+- A turn that was never answered is re-sent the full phase prompt.
+- An answered turn receives the short nudge "You ended your turn without calling `loop-handoff`/`loop-complete`. Finish the work, then call it."
+- After 3 nudges (`MAX_HANDOFF_NUDGES`) the next idle ends the turn: coding and auditing terminate with `terminationReason: 'handoff_missing'` and status `errored`, while post-action completes as `completed`.
+
+**Coding.** A `coder` record is stored as the attempt's decisions through `handoffCompletionKey(record)` and its rendered `formatCoderHandoff` output, then the `coder-handoff` transition rotates to auditing. An assistant error still rotates to audit, with no decisions recorded and no nudge.
+
+**Auditing.** An assistant error discards the pending handoff and rotates back to coding without incrementing the audit count. With an `auditor` record the verdict comes only from the findings store, never from the payload; `lastAuditResult` is rendered from the payload and the verdict for display, and transition rows are logged as `auditor-handoff`: advancing to the next section, returning to the same dirty section, continuing a dirty non-sectioned audit, or entering post-action.
+
+**Post-action.** A `post_action` record sets `postActionReport` from `formatPostActionReport` and `completionSummary` from `formatPostActionSummary`, then completes the loop. An assistant error applies any pending record best-effort and completes. The loop status is always `completed` regardless of the reported outcome.
+
 ## Session Rotation
 
 Each phase switch runs in a **fresh session** to keep context small and prioritize speed, unless the loop resumes its standby (see below):
@@ -112,8 +171,8 @@ Each phase switch runs in a **fresh session** to keep context small and prioriti
 - When coding finishes and a fresh audit session is created, the coder becomes the standby — unless a bug finding has reached the recurrence escalation threshold, in which case it is deleted instead.
 - When a dirty audit sends work back to coding, the coder is resumed from the standby instead of a new session, and the audit session becomes the standby in turn (an audit session that errored is deleted instead). A sectioned loop only ever reuses within the same section: a clean section audit releases the standby before the next section's fresh coder session. A non-sectioned loop reuses the standby across its audit iterations.
 - Reuse requires `inspectReusableStandby` to pass: the standby is not the current session, still exists with messages, has no bug finding at the recurrence escalation threshold (`RECURRENCE_ESCALATION_THRESHOLD`, 3), and its role's reuse percentage is not `0` (`loop.sessionReuse.coderContextPercent` / `auditorContextPercent`, default 50 each; `0` disables reuse for that role). The role comes from the standby: the coder session while auditing, the audit session while coding. When its last assistant turn's context (input plus cache read/write) reached that percentage of the model's context window, the standby is not rejected: `inspectStandbyCandidate` marks it `needsCompaction`, and the loop queues a `session.compact` before the follow-up prompt so the host compacts the session first and the prompt runs in the same session against the summary. A compaction that cannot be enqueued falls back to the fresh-session path for that role. An unknown context window — no model on the message, a failed lookup, or no positive `limit.context` — allows reuse without compaction. Recurrence escalation forces a fresh session for both roles. When reuse fails, the loop rotates to a fresh session and captures the standby's usage before deleting it; the audit session is still retained as the next standby even when it is over its threshold, because it will be compacted when reused.
-- A resumed coder receives `buildCoderFollowUpPrompt` — the loop notice, the open findings, and the decisions instruction — not the full plan; its earlier context still applies, compacted into a summary when the reuse threshold was reached. A resumed audit session receives `buildAuditFollowUpPrompt` — the coder's decisions, the attempt history, and a directive to re-read changed files (`git status` / `git diff`), verify every outstanding finding, and delete the resolved ones.
-- Reused sessions are re-titled for the new iteration. `standbyTurnBaselines` records the reused session's last assistant message id at activation, so that old reply is treated as "no reply yet" and the phase waits for the new turn instead of acting on a stale one. Compaction messages never reach the phase handlers: `session.messages` on the client port exposes only `user` and `assistant` records, so a compaction summary cannot be consumed as the coder's or auditor's reply. An idle between the queued compaction and the queued follow-up prompt is deferred by the queued-prompt idle gate, because both inbox items are enqueued before the host runs either.
+- A resumed coder receives `buildCoderFollowUpPrompt` — the loop notice, the open findings, and the coder handoff instruction — not the full plan; its earlier context still applies, compacted into a summary when the reuse threshold was reached. A resumed audit session receives `buildAuditFollowUpPrompt` — the coder's decisions, the attempt history, and a directive to re-read changed files (`git status` / `git diff`), verify every outstanding finding, and delete the resolved ones.
+- Reused sessions are re-titled for the new iteration. A reused session's earlier reply is never mistaken for the new turn: turn completion comes only from a handoff row written by that session and applied once, scoped to it, so a stale reply cannot advance the phase. Compaction messages never reach the phase handlers: `session.messages` on the client port exposes only `user` and `assistant` records, so a compaction summary cannot be consumed as the coder's or auditor's reply. An idle between the queued compaction and the queued follow-up prompt is deferred by the queued-prompt idle gate, because both inbox items are enqueued before the host runs either.
 - The standby is released and deleted on loop completion, termination, shutdown, restart, and whenever the loop switches to a fresh session. A restart always starts a fresh session and discards any standby.
 
 Rotated and released sessions are deleted from the OpenCode server right after their usage is captured, so a running loop keeps only the sessions it is still using — the active one plus the standby. When a loop completes and its worktree is removed, its final session is deleted too, and the TUI removes any loop session whose worktree directory no longer exists. Loop sessions therefore drop out of OpenCode's session list once the loop moves on; loop history lives in `loop-status` and the [Dashboard](dashboard.md). A TUI can briefly keep showing deleted loop sessions from its local cache or tabs until it next refreshes the list from the server.
@@ -237,7 +296,7 @@ A loop completes when the active phase emits a clean audit result (optionally fo
 - Non-sectioned loops complete on `audit-clear`.
 - Sectioned loops advance through clean section audits — each clean only when no bug finding is outstanding for that section, for any earlier section, or across sections — and complete when no section is still open. The plan's final section carries the master plan's top-level checks; there is no separate whole-change audit.
 - Dirty section audits rotate back to coding for the same section so findings can be addressed, reusing the section's coder and audit sessions.
-- After a clean audit — the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Normal confirmed completion (`post-action-complete` event) occurs once the post-action session is idle, every loop session has settled, and the final reply confirms completion; see [Behavior](#behavior) for the best-effort completion that follows exhausted or failed continuation attempts and the abort-with-reply exceptions.
+- After a clean audit — the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops — if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. The phase completes when the post-action session records `loop-complete`, with a best-effort completion when 3 turns pass without one or when the session ends on an assistant error; see [Behavior](#behavior) for the record handling behind both paths.
 
 ## Termination
 
@@ -246,6 +305,7 @@ In addition to a clean audit, the loop terminates when:
 - **Max iterations** — The `maxIterations` cap is exceeded (0 = unlimited).
 - **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
 - **Consecutive errors** — 3 consecutive errors in either phase.
+- **Missing handoff** — 3 turns in coding or auditing without a `loop-handoff` record terminate with `terminationReason: 'handoff_missing'`; a post-action turn without `loop-complete` completes instead.
 
 ## Post-Completion Action Phase
 
@@ -277,11 +337,11 @@ After a clean audit (the clean section audit that completes a sectioned loop, `a
 - Runs only after a clean audit completes (the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops).
 - Runs **inside the worktree** as the `code` agent, with access to the full worktree state (including uncommitted changes).
 - **Best-effort:** The post-action result is not re-audited. When a skill is configured, that skill's unattended workflow governs the fixes and validation; without one, the phase applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
-- **Completion confirmation:** The prompt requires the agent to finish every step (subagents, merges, saved records) before ending its turn, and to end its final reply with the line `<!-- forge:post-action-complete -->` (`POST_ACTION_COMPLETE_MARKER` in `src/loop/prompts.ts`). When the session goes idle, Forge first waits until every loop session, subagents included, is idle and no prompt is queued in the session inbox; the wait is bounded by `busyStallTimeoutMs`, after which the loop terminates with an error because the worktree cannot be torn down safely. It then checks the final reply for the marker. Without it, Forge sends a continue prompt asking the agent to finish, up to 3 times; after the third, or if the continue prompt fails to send, the loop completes best-effort.
-- On a confirmed (or best-effort) `post-action-complete`, the loop terminates normally.
-- If the post-action session is aborted after it has replied, the reply is processed as-is: the settle wait and marker check are skipped.
-- If the post-action session fails to create, the loop terminates as completed without retrying.
-- **Outcome capture:** On `post-action-complete`, the post-action session's full assistant transcript (including any continue-prompt turns) is stored in the loop's `postActionReport`, and its final assistant message, with the completion marker removed, is stored in `completion_summary`. `loop-status` and the dashboard prefer the full **Post-Action Report** and fall back to **Completion Summary** when no report was captured. The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the audit; the report only provides context (alternate-review verdict, CI result, etc.). Completion summary and report are captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave them empty.
+- **Completion record:** The prompt requires the agent to finish every step (subagents, merges, saved records) and then call `loop-complete` with `outcome`, one `steps` entry per workflow step, `followUps`, and optional `notes`. When the session goes idle, Forge first waits until every loop session, subagents included, is not busy or retrying and no prompt is queued in the session inbox, then applies the pending record; a session that stays busy is left to the watchdog's stall handling. Without a record it nudges up to 3 times, then completes best-effort.
+- An applied record completes the loop normally, including one recorded in response to a nudge.
+- An aborted post-action session with a pending record processes that record; without one, the loop completes with no report.
+- If the post-action session fails to create, the loop completes as `completed` without retrying, and no record is applied.
+- **Outcome capture:** `postActionReport` is the rendered `formatPostActionReport` of the applied `loop-complete` payload, and `completion_summary` is `formatPostActionSummary` of the same payload. `loop-status` and the dashboard prefer the **Post-Action Report** and fall back to the **Completion Summary** when no report was captured. Both are captured only when a record is applied, including an assistant-error completion that has one; a completion without a record leaves them empty. The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the audit; the report only provides context (alternate-review verdict, CI result, etc.).
 
 ## Goals
 
@@ -358,6 +418,7 @@ Cancellation:
 2. Sets `terminationReason` to `'cancelled'`
 3. Stops sandbox if applicable
 4. Optionally cleans up worktree (if `cleanupWorktree: true`)
+5. Discards any pending handoff (termination marks it `discarded`)
 
 ## Error Handling
 
@@ -365,7 +426,7 @@ Cancellation:
 |------------|----------|
 | Model error | Automatic fallback to default model, retry |
 | Error retry limit | Loop terminates with `terminationReason: 'error_max_retries'` |
-| Audit retry limit | Loop terminates with `terminationReason: 'audit_retry_exhausted'` |
+| Missing handoff | Loop terminates with `terminationReason: 'handoff_missing'` after 3 turns without a handoff |
 | Stall timeout | Loop terminates with `terminationReason: 'stall_timeout'` after the configured consecutive stall limit |
 
 ## Model Configuration
