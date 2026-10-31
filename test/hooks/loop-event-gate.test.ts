@@ -14,6 +14,7 @@ import { markPromptSent, clearPromptPending, isAwaitingBusy, isAwaitingBusyExpir
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { recordCoderHandoff } from '../helpers/loop-handoff'
 
 const PROJECT_ID = 'test-project'
 
@@ -207,6 +208,7 @@ describe('Loop Event Idle Gate', () => {
 
       expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
 
+      await recordCoderHandoff(handler.loop, 'S1')
       await handler.onEvent({
         event: {
           type: 'session.status',
@@ -231,6 +233,7 @@ describe('Loop Event Idle Gate', () => {
 
         vi.setSystemTime(Date.now() + AWAITING_BUSY_TIMEOUT_MS + 1)
 
+        await recordCoderHandoff(handler.loop, 'S2')
         await handler.onEvent({
           event: {
             type: 'session.status',
@@ -280,6 +283,7 @@ describe('Loop Event Idle Gate', () => {
 
       expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
 
+      await recordCoderHandoff(handler.loop, 'S1')
       await handler.onEvent({
         event: {
           type: 'session.status',

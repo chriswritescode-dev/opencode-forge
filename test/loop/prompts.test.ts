@@ -6,12 +6,12 @@ import {
   buildSectionInitialPromptText,
   buildSectionAuditPrompt,
   buildSectionContinuationPrompt,
+  buildCoderFollowUpPrompt,
   buildPostActionPrompt,
   buildAttemptHistoryBlock,
   ATTEMPT_HISTORY_LIMIT,
 } from '../../src/loop/prompts'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
-import { CODER_DECISIONS_START_MARKER } from '../../src/utils/coder-decisions'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
 import type { LoopAttemptRow } from '../../src/storage/repos/loop-attempts-repo'
@@ -70,7 +70,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       const ctx = makeCtx()
       const result = buildContinuationPrompt(ctx, { ...defaultState })
       expect(result).toContain('[Loop iteration 1 / 5]')
-      expect(result).toContain('coder-decisions:start')
+      expect(result).toContain('call `loop-handoff` with')
     })
 
     test('continuation without findings - no max iterations', () => {
@@ -446,7 +446,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       'concrete source or contract evidence',
       'targeted verification after each root-cause fix',
       'full checks once after the fix batch',
-      'coder-decisions block',
+      'loop-handoff report',
       'Never delete findings',
     ]
 
@@ -543,7 +543,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       const withoutRecurrence = buildSectionContinuationPrompt(makeCtx(), { ...sectionState }, '')
       for (const result of [withRecurrence, withoutRecurrence]) {
         expect(result).not.toContain('review-delete')
-        expect(result).toContain('coder-decisions:start')
+        expect(result).toContain('call `loop-handoff` with')
         expect(result).toContain('## Section plan')
       }
       expect(withRecurrence).toContain('Recurring blocking findings')
@@ -561,24 +561,28 @@ describe('prompt builders (src/loop/prompts)', () => {
   })
 
   describe('coder decisions template consumers and auditor renderer', () => {
-    const startMarkerCount = (text: string) => text.split(CODER_DECISIONS_START_MARKER).length - 1
+    const handoffInstructionCount = (text: string) => text.split('call `loop-handoff` with').length - 1
 
-    test('all three coder consumers retain exactly one decisions block with the evidence template', () => {
+    test('all four coder consumers retain exactly one handoff instruction with the evidence fields', () => {
       const ctx = makeCtx()
       const legacyContinuation = buildContinuationPrompt(ctx, { ...defaultState })
       const sectionInitial = buildSectionInitialPrompt(ctx, { ...sectionState })
       const sectionContinuation = buildSectionContinuationPrompt(ctx, { ...sectionState })
+      const coderFollowUp = buildCoderFollowUpPrompt(ctx, { ...sectionState })
 
       for (const [label, prompt] of [
         ['legacy continuation', legacyContinuation],
         ['section initial', sectionInitial],
         ['section continuation', sectionContinuation],
+        ['coder follow-up', coderFollowUp],
       ] as const) {
-        expect(startMarkerCount(prompt), label).toBe(1)
-        expect(prompt, label).toContain('the exact command, the worktree-relative working directory, and the pass/fail/not-run outcome')
-        expect(prompt, label).toContain('do not paste credentials or huge logs')
-        expect(prompt, label).toContain('whether any source/test/config changes occurred after those commands ran')
-        expect(prompt, label).toContain('which regression check covers each fixed finding')
+        expect(handoffInstructionCount(prompt), label).toBe(1)
+        expect(prompt, label).toContain('`changes` (each change and why)')
+        expect(prompt, label).toContain('`deviations` (plan item, what you did instead, why)')
+        expect(prompt, label).toContain('worktree-relative `cwd`')
+        expect(prompt, label).toContain('pass/fail/not-run')
+        expect(prompt, label).toContain('whether code changed afterwards')
+        expect(prompt, label).toContain('then end your turn')
       }
     })
 

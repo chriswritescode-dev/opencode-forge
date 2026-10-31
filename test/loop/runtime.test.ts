@@ -24,6 +24,7 @@ import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { recordCoderHandoff } from '../helpers/loop-handoff'
 
 const PROJECT_ID = 'test-project'
 
@@ -180,6 +181,8 @@ describe('Loop Runtime', () => {
       })
       loopService.setState(state.loopName, state)
 
+      await recordCoderHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: {
@@ -227,7 +230,11 @@ describe('Loop Runtime', () => {
       expect(auditorCalls.length).toBe(0)
 
       const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
-      expect(codeCalls.length).toBe(0)
+      expect(codeCalls.length).toBe(1)
+      const nudgeText = ((codeCalls[0].params as any)?.parts as Array<{ text: string }>)
+        .map(part => part.text)
+        .join('\n')
+      expect(nudgeText).toContain('Loop iteration')
     })
   })
 
@@ -1061,6 +1068,8 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
     })
     loopService.setState(state.loopName, state)
 
+    await recordCoderHandoff(loop, state.sessionId)
+
     await loop.tick({
       type: 'session.status',
       properties: {
@@ -1531,6 +1540,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
       loopService.setState(state.loopName, state)
 
+      await recordCoderHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
@@ -1592,6 +1603,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
 
       // First rotation: coding→audit
+      await recordCoderHandoff(loop, state.sessionId)
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
@@ -1760,6 +1772,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
 
       // First transition: coding→audit, the coding session becomes the standby
+      await recordCoderHandoff(loop, state.sessionId)
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
@@ -1847,6 +1860,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       loopService.setState(state.loopName, state)
 
       // Rotation: coding→audit, queues coding session as 'code' role
+      await recordCoderHandoff(loop, state.sessionId)
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
@@ -1932,6 +1946,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
       loopService.setState(state.loopName, state)
 
+      await recordCoderHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: {
@@ -1967,6 +1983,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
       loopService.setState(state.loopName, state)
 
+      await recordCoderHandoff(loop, state.sessionId)
+
       await loop.tick({
         type: 'session.status',
         properties: {
@@ -2001,6 +2019,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         auditorVariant: 'audit-high',
       })
       loopService.setState(state.loopName, state)
+
+      await recordCoderHandoff(loop, state.sessionId)
 
       await loop.tick({
         type: 'session.status',
@@ -2769,6 +2789,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     }
 
     async function driveAuditSend(loop: Loop, state: LoopState): Promise<void> {
+      await recordCoderHandoff(loop, state.sessionId)
       await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'busy' } } })
       await loop.tick({ type: 'session.status', properties: { sessionID: state.sessionId, status: { type: 'idle' } } })
     }
@@ -3761,6 +3782,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       // Second audit: coding idles again and must dispatch on the PRIMARY auditor
       // model with the configured auditorVariant restored (index is back to 0).
+      await recordCoderHandoff(loop, newSessionId)
       await loop.tick({ type: 'session.status', properties: { sessionID: newSessionId, status: { type: 'busy' } } })
       await loop.tick({ type: 'session.status', properties: { sessionID: newSessionId, status: { type: 'idle' } } })
 
@@ -3980,6 +4002,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
 
       recordInboxSettled(state.sessionId, 'inbox-1')
+      await recordCoderHandoff(loop, state.sessionId)
       await loop.tick({
         type: 'session.status',
         properties: { sessionID: state.sessionId, status: { type: 'idle' } },
@@ -3988,7 +4011,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(loopService.getActiveState(state.loopName)!.phase).toBe('auditing')
     })
 
-    test('coding idle with no assistant and a queued prompt does not retry or recover', async () => {
+    test('coding idle does not nudge while a prompt is queued', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
           messages: async () => [
@@ -4001,32 +4024,24 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
-      vi.useFakeTimers()
-      try {
-        // The first idle schedules the bounded retry (attempt 1/1).
-        await loop.tick({
-          type: 'session.status',
-          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
-        })
+      recordInboxEnqueued(state.sessionId, 'inbox-1')
 
-        // The prompt is still queued when the retry re-invokes runCodingPhase.
-        recordInboxEnqueued(state.sessionId, 'inbox-1')
-        await vi.advanceTimersByTimeAsync(2000)
-      } finally {
-        vi.useRealTimers()
-      }
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+      })
 
       const afterState = loopService.getActiveState(state.loopName)
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(true)
       expect(afterState!.phase).toBe('coding')
       expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
-      expect(logs.some(l => l.message.includes('coding idle ignored'))).toBe(true)
+      expect(logs.some(l => l.message.includes('[idle-gate]') && l.message.includes('a prompt is still queued'))).toBe(true)
     })
   })
 
   describe('active-session idle suppression', () => {
-    test('coding idle with no assistant while the session is busy does not retry or recover', async () => {
+    test('coding idle does not nudge while the session is busy', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
           messages: async () => [
@@ -4059,7 +4074,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(logs.some(l => l.message.includes('is still active; waiting for its idle'))).toBe(true)
     })
 
-    test('coding idle retry and recovery resume once the session reports idle', async () => {
+    test('coding idle sends the full prompt nudge once the session reports idle', async () => {
       let statusType: 'busy' | 'idle' = 'busy'
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -4094,41 +4109,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(codePrompts.length).toBe(1)
-    })
-
-    test('code launch recovery does not resend when the session becomes active again', async () => {
-      let statusCalls = 0
-      const { client, calls } = createFakeForgeClient({
-        session: {
-          messages: async () => [
-            { info: { role: 'user' }, parts: [{ type: 'text', text: 'in flight' }] },
-          ],
-          status: async () => {
-            statusCalls += 1
-            return statusCalls >= 3
-              ? { 'loop-session-id': { type: 'busy' } }
-              : { 'loop-session-id': { type: 'idle' } }
-          },
-        },
-      })
-      const { loop, logs } = createRuntime({ client })
-
-      const state = makeState({ phase: 'coding' })
-      loopService.setState(state.loopName, state)
-
-      vi.useFakeTimers()
-      try {
-        await loop.tick({
-          type: 'session.status',
-          properties: { sessionID: state.sessionId, status: { type: 'idle' } },
-        })
-        await vi.advanceTimersByTimeAsync(2000)
-      } finally {
-        vi.useRealTimers()
-      }
-
-      expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
-      expect(logs.some(l => l.message.includes('is still active; waiting for its idle'))).toBe(true)
     })
   })
 })

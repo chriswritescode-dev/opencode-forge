@@ -14,6 +14,7 @@ import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler, type LoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { recordCoderHandoff } from '../helpers/loop-handoff'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { SECTION_SUMMARY_START_MARKER } from '../../src/utils/section-summary'
 import type { ModelContextLimitParams } from '../../src/client/port'
@@ -285,6 +286,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordCoderHandoff(handler!.loop, 'coder-1')
       await idle('coder-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -300,7 +302,7 @@ describe('Loop session reuse', () => {
       expect(after.standbySessionId).toBe('coder-1')
 
       const transitions = loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName)
-      expect(transitions.some((row) => row.eventType === 'coding-idle-complete' && row.toPhase === 'auditing')).toBe(true)
+      expect(transitions.some((row) => row.eventType === 'coder-handoff' && row.toPhase === 'auditing')).toBe(true)
     })
 
     test('the reused audit session is re-titled for the new iteration', async () => {
@@ -314,6 +316,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordCoderHandoff(handler!.loop, 'coder-1')
       await idle('coder-1')
 
       const update = calls.find((call) => call.method === 'session.update')
@@ -571,6 +574,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordCoderHandoff(handler!.loop, 'coder-1')
       await idle('coder-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -649,6 +653,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordCoderHandoff(handler!.loop, 'coder-1')
       await idle('coder-1')
 
       expect(createCalls(calls)).toHaveLength(1)
@@ -744,6 +749,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordCoderHandoff(handler!.loop, 'coder-1')
       await idle('coder-1')
 
       expect(createCalls(calls)).toHaveLength(0)
@@ -777,6 +783,7 @@ describe('Loop session reuse', () => {
         },
       })
 
+      await recordCoderHandoff(handler!.loop, 'coder-1')
       await idle('coder-1')
 
       expect(compactCalls(calls)).toEqual([{ sessionID: 'fat-audit', directory: state.worktreeDir }])
@@ -849,7 +856,6 @@ describe('Loop session reuse', () => {
       const { calls, logs, service } = createHarness({
         state,
         sections: 2,
-        status: async () => ({ 'coder-1': { type: 'busy' } }),
         messages: {
           'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.' })],
           'coder-1': [
@@ -870,9 +876,13 @@ describe('Loop session reuse', () => {
 
       expect(createCalls(calls)).toHaveLength(createsAfterReuse)
       expect(logs.some((line) => line.includes('last message role: compaction'))).toBe(true)
+      const coderPrompts = promptsTo(calls, 'coder-1')
+      expect(coderPrompts).toHaveLength(2)
+      expect(coderPrompts[1]).toContain(FULL_PROMPT_MARKER)
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('coding')
       expect(after.sessionId).toBe('coder-1')
+      expect(after.standbySessionId).toBe('audit-1')
     })
   })
 
@@ -1034,7 +1044,7 @@ describe('Loop session reuse', () => {
   })
 
   describe('stale-turn guard', () => {
-    test('an idle on a reused session whose last assistant message is unchanged is not processed', async () => {
+    test('an idle on a reused session whose last assistant message is unchanged nudges for a handoff and stays in coding', async () => {
       const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
@@ -1046,7 +1056,7 @@ describe('Loop session reuse', () => {
         sectionIndex: 0,
       })
 
-      const { calls, service, logs } = createHarness({
+      const { calls, service } = createHarness({
         state,
         sections: 2,
         messages: {
@@ -1060,17 +1070,22 @@ describe('Loop session reuse', () => {
       const createsAfterReuse = createCalls(calls).length
 
       // The reused coder session still lists its previous reply: this idle must
-      // wait for the new turn instead of reading that reply as the result.
+      // be answered with a handoff nudge instead of reading that reply as the
+      // result of the new coding turn.
       await handler!.onEvent({
         event: { type: 'session.status', properties: { sessionID: 'coder-1', status: { type: 'busy' } } },
       })
       await idle('coder-1')
 
       expect(createCalls(calls)).toHaveLength(createsAfterReuse)
+      const coderPrompts = promptsTo(calls, 'coder-1')
+      expect(coderPrompts).toHaveLength(2)
+      expect(coderPrompts[0]).toContain(FOLLOW_UP_MARKER)
+      expect(coderPrompts[1]).toContain(FULL_PROMPT_MARKER)
+      expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('coding')
       expect(after.sessionId).toBe('coder-1')
-      expect(logs.some((line) => line.includes('still holds its previous reply'))).toBe(true)
     })
   })
 })

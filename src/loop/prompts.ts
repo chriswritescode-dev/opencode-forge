@@ -3,7 +3,7 @@ import type { ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { LoopAttemptRow } from '../storage/repos/loop-attempts-repo'
 import type { SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
-import { CODER_DECISIONS_INSTRUCTION } from '../utils/coder-decisions'
+import type { LoopHandoffRole } from './handoff'
 import { findingRecurrenceKey, isRecurrenceEscalated } from './finding-recurrence'
 import { formatFindingDetails } from '../utils/review-format'
 import { blockingBugFindings } from './section-scope'
@@ -35,6 +35,21 @@ export interface PromptContext {
  * to it, they do not restate it.
  */
 const SECTION_SUMMARY_TEMPLATE = `${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}`
+
+/**
+ * The only coder handoff instruction. Every coder prompt ends with it so the
+ * attempt hands its decisions and verification evidence to the auditor through
+ * `loop-handoff` instead of free-text prose.
+ */
+export const CODER_HANDOFF_INSTRUCTION: string = `\n\n---
+## Required: coder handoff
+When this attempt is done, call \`loop-handoff\` with \`changes\` (each change and why), \`deviations\` (plan item, what you did instead, why), \`verification\` (each check: exact command, worktree-relative \`cwd\`, pass/fail/not-run, whether code changed afterwards), and optional \`notes\`, then end your turn.`
+
+/** Short follow-up sent when a phase session ended its turn without its handoff tool. */
+export function buildHandoffNudgePrompt(role: LoopHandoffRole): string {
+  const tool = role === 'post_action' ? 'loop-complete' : 'loop-handoff'
+  return `You ended your turn without calling \`${tool}\`. Finish the work, then call it.`
+}
 
 /**
  * One-shot follow-up sent to the audit session when it reported no blocking
@@ -75,7 +90,7 @@ function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState, 
   const escalated = getEscalatedFindings(ctx, state, outstandingBugs)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (recurred ${e.count}×)`)
-  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution, so the previous patches did not hold. For EACH: revisit the causal hypothesis behind the earlier fix, produce a specific reproducer or counterexample that demonstrates the failure, and then either fix it definitively or, if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it. Do not repeat the previous patch without a changed hypothesis.\n\n${lines.join('\n')}`
+  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution, so the previous patches did not hold. For EACH: revisit the causal hypothesis behind the earlier fix, produce a specific reproducer or counterexample that demonstrates the failure, and then either fix it definitively or, if it is intentional/correct, document the reasoning and the exact passing verification method in your loop-handoff report so the auditor can verify and clear it. Do not repeat the previous patch without a changed hypothesis.\n\n${lines.join('\n')}`
 }
 
 function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState): string {
@@ -93,7 +108,7 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
  */
 function buildOutstandingFindingsCoderBlock(findings: ReviewFindingRow[]): string {
   if (findings.length === 0) return ''
-  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the coder-decisions block at the end of this prompt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
+  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the loop-handoff report at the end of this attempt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
 }
 
 /**
@@ -213,7 +228,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, no
   prompt += buildOutstandingFindingsCoderBlock(ctx.getOutstandingFindings(state.loopName))
   prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
-  return prompt + CODER_DECISIONS_INSTRUCTION
+  return prompt + CODER_HANDOFF_INSTRUCTION
 }
 
 /**
@@ -320,7 +335,7 @@ export function buildSectionInitialPromptText(input: {
     header += input.attemptHistoryBlock
   }
 
-  return header + CODER_DECISIONS_INSTRUCTION
+  return header + CODER_HANDOFF_INSTRUCTION
 }
 
 export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -379,7 +394,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   header += buildOutstandingFindingsCoderBlock(blockingBugs)
   header += buildRecurringFindingsCoderBlock(ctx, state, blockingBugs)
 
-  return header + CODER_DECISIONS_INSTRUCTION
+  return header + CODER_HANDOFF_INSTRUCTION
 }
 
 /** The `[Loop iteration i/max]` system line shared by non-sectioned coder prompts. */
@@ -411,7 +426,7 @@ export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, o
   prompt += buildOutstandingFindingsCoderBlock(findings)
   prompt += buildRecurringFindingsCoderBlock(ctx, state, state.totalSections > 0 ? findings : outstandingBugs)
 
-  return prompt + CODER_DECISIONS_INSTRUCTION
+  return prompt + CODER_HANDOFF_INSTRUCTION
 }
 
 /**
