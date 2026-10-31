@@ -21,7 +21,7 @@ describe('Agent definitions', () => {
     })
 
     test('architect agent excludes mutation and subagent tools', () => {
-      expect(architectAgent.tools?.exclude).toEqual(['edit', 'write', 'patch', 'task'])
+      expect(architectAgent.tools?.exclude).toEqual(['edit', 'write', 'patch', 'task', 'loop-handoff', 'loop-complete'])
       expect(architectAgent.tools?.exclude).not.toContain('execute-plan')
     })
 
@@ -52,6 +52,8 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toContain('question')
       expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
       expect(auditorAgent.tools?.exclude).toContain('loop-status')
+      expect(auditorAgent.tools?.exclude).toContain('loop-complete')
+      expect(auditorAgent.tools?.exclude).toContain('loop-handoff')
     })
 
     test('code agent has expected tool exclusions', () => {
@@ -107,8 +109,16 @@ describe('Agent definitions', () => {
       expect(auditorLoopAgent.hidden).toBe(true)
     })
 
-    test('auditor-loop agent shares tool exclusions with auditor', () => {
-      expect(auditorLoopAgent.tools?.exclude).toEqual(auditorAgent.tools?.exclude)
+    test('auditor-loop shares the base auditor exclusions but keeps loop-handoff', () => {
+      const loopExcluded = auditorLoopAgent.tools?.exclude ?? []
+      const auditorExcluded = auditorAgent.tools?.exclude ?? []
+      for (const tool of auditorExcluded) {
+        if (tool === 'loop-handoff') continue
+        expect(loopExcluded).toContain(tool)
+      }
+      expect(loopExcluded).not.toContain('loop-handoff')
+      expect(auditorExcluded).toContain('loop-handoff')
+      expect(loopExcluded).toContain('loop-complete')
     })
 
     test('auditor-loop prompt extends the base auditor prompt with loop context', () => {

@@ -21,7 +21,7 @@ import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopSessionReuseRole } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildPostActionPermissionRuleset, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopPhaseToolName, type LoopSessionReuseRole } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
@@ -50,6 +50,8 @@ import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
 import { buildPostActionContinuePromptText, buildSectionSummaryRepromptText, POST_ACTION_COMPLETE_MARKER } from './prompts'
+import { handoffRoleForPhase, handoffSchemaForRole, type AuditorHandoffPayload, type LoopHandoffWriteInput } from './handoff'
+import type { ZodError } from 'zod'
 
 export interface LoopEvent {
   type: string
@@ -105,6 +107,14 @@ export interface StartLoopInput {
   state: LoopState
 }
 
+export type HandoffRecordingResult = { ok: true; replaced: boolean } | { ok: false; error: string }
+
+export interface HandoffRecordingInput {
+  sessionId: string
+  tool: LoopPhaseToolName
+  args: unknown
+}
+
 export interface Loop {
   tick(event: LoopEvent): Promise<void>
   start(input: StartLoopInput): void
@@ -155,6 +165,11 @@ export interface Loop {
   setParentSessionLookup(lookup: (sessionId: string) => Promise<string | null>): void
   /** Access the underlying LoopService for state/prompt/section operations. */
   service: LoopService
+  /**
+   * Record the current session's phase handoff. Only the loop's current coder, auditor, or
+   * post-action session may call it, and only with the role schema for its phase.
+   */
+  recordHandoff(input: HandoffRecordingInput): Promise<HandoffRecordingResult>
   /**
    * Resolve an auditor provider limit by advancing the fallback chain and
    * re-dispatching the audit prompt, or declining so the caller terminates.
@@ -462,6 +477,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
+   * Session ids of every loop session that is busy or retrying, including the current and
+   * standby sessions. Throws when the status query fails or ancestry cannot be resolved: callers
+   * must never treat an unverifiable status as quiescent.
+   */
+  async function findBusyLoopSessionIds(state: LoopState): Promise<string[]> {
+    const statuses = await fetchSessionStatuses(state.worktreeDir)
+    if (!statuses) throw new Error('Session status is unavailable')
+    const active = await activeLoopSessions(statuses, state.loopName, sessionId => resolveSessionLoopName(sessionId, true))
+    return active.map(([sessionId]) => sessionId)
+  }
+
+  /** Busy loop sessions other than the session recording a handoff and its standby sibling. */
+  async function findBusyChildSessions(state: LoopState): Promise<string[]> {
+    const busy = await findBusyLoopSessionIds(state)
+    return busy.filter((sessionId) => sessionId !== state.sessionId && sessionId !== state.standbySessionId)
+  }
+
+  /**
    * Defers a phase handoff indefinitely while any loop session (subagents included) is
    * busy or retrying, or a prompt is still queued in the session inbox, re-checking on the
    * existing 1.5s retry timer. Genuinely wedged sessions are left to the watchdog's
@@ -472,9 +505,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const loopName = state.loopName
     let reason: string | null = null
     try {
-      const statuses = await fetchSessionStatuses(state.worktreeDir)
-      if (!statuses) throw new Error('Session status is unavailable')
-      const active = await activeLoopSessions(statuses, loopName, sessionId => resolveSessionLoopName(sessionId, true))
+      const active = await findBusyLoopSessionIds(state)
       if (active.length > 0) reason = 'Loop sessions are still busy or retrying'
       else if (isPromptQueued(state.sessionId)) reason = 'A prompt is still queued in the session inbox'
     } catch (err) {
@@ -517,6 +548,81 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     } catch {
       return false
     }
+  }
+
+  const NOT_CURRENT_SESSION_ERROR = 'Not the current session of an active loop; only the loop\'s current coder, auditor or post-action session may call this tool.'
+
+  function formatHandoffValidationError(error: ZodError): string {
+    const details = error.issues.map((issue) => {
+      const path = issue.path.join('.')
+      return path ? `${path}: ${issue.message}` : issue.message
+    })
+    return `Invalid handoff payload: ${details.join('; ')}`
+  }
+
+  /**
+   * Records the current session's handoff under the per-loop state lock. Every check runs
+   * before the write so a rejected call leaves no pending row: session ownership, tool/phase
+   * pairing, subagent quiescence, the role's strict schema, and the audit summary rules.
+   */
+  async function recordHandoff(input: HandoffRecordingInput): Promise<HandoffRecordingResult> {
+    const active = loopService.resolveActiveLoopForSession(input.sessionId)
+    if (!active) return { ok: false, error: NOT_CURRENT_SESSION_ERROR }
+
+    return withStateLock(active.loopName, async () => {
+      const state = loopService.resolveActiveLoopForSession(input.sessionId)
+      if (!state) return { ok: false, error: NOT_CURRENT_SESSION_ERROR }
+
+      const role = handoffRoleForPhase(state.phase)
+      if (!role) return { ok: false, error: `No handoff is accepted while the loop is in phase "${state.phase}".` }
+      if (input.tool === LOOP_HANDOFF_TOOL_NAME && role === 'post_action') {
+        return { ok: false, error: 'In post-action, call loop-complete instead.' }
+      }
+      if (input.tool === LOOP_COMPLETE_TOOL_NAME && role !== 'post_action') {
+        return { ok: false, error: 'loop-complete is only for the post-action session; call loop-handoff.' }
+      }
+
+      let busyChildren: string[]
+      try {
+        busyChildren = await findBusyChildSessions(state)
+      } catch (err) {
+        return { ok: false, error: `Could not check subagent sessions: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      if (busyChildren.length > 0) {
+        return { ok: false, error: `Wait for these subagent sessions to finish, then call the tool again: ${busyChildren.join(', ')}` }
+      }
+
+      const parsed = handoffSchemaForRole(role).safeParse(input.args)
+      if (!parsed.success) return { ok: false, error: formatHandoffValidationError(parsed.error) }
+
+      if (role === 'auditor') {
+        const payload = parsed.data as AuditorHandoffPayload
+        if (state.totalSections > 0) {
+          const blocking = loopService.getBlockingBugFindings(state)
+          if (blocking.length === 0 && !payload.summary) {
+            return { ok: false, error: 'This section has no blocking bug findings, so it is clean: pass summary { done, deviations, followUps }.' }
+          }
+          if (blocking.length > 0 && payload.summary) {
+            const noun = blocking.length === 1 ? 'finding remains' : 'findings remain'
+            return { ok: false, error: `${blocking.length} blocking bug ${noun} open; omit summary or resolve them first.` }
+          }
+        } else if (payload.summary) {
+          return { ok: false, error: 'summary applies only to section audits; omit it.' }
+        }
+      }
+
+      const record = loopService.recordPendingHandoff({
+        loopName: state.loopName,
+        sessionId: input.sessionId,
+        role,
+        phase: state.phase,
+        sectionIndex: state.totalSections > 0 ? state.currentSectionIndex : null,
+        iteration: state.iteration,
+        payload: parsed.data,
+      } as LoopHandoffWriteInput)
+      watchdog.recordActivity(state.loopName, 'handoff-recorded')
+      return { ok: true, replaced: record.replaced }
+    })
   }
 
   /**
@@ -926,7 +1032,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!currentState.worktreeDir) return false
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
-    const permission = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(currentState))
+    const permission = buildPostActionPermissionRuleset(await resolveLoopPermissionOptionsForLoop(currentState))
     const created = await createLoopSessionWithWorkspace({
       client,
       title: formatPostActionSessionTitle(loopName),
@@ -3344,6 +3450,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       getParentSessionId = lookup
     },
     handleAuditorProviderLimit,
+    recordHandoff,
     service: loopService,
   }
 }

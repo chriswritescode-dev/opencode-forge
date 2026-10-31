@@ -19,7 +19,7 @@ export const coderHandoffSchema = z.object({
     changedAfter: z.boolean(),
   })).min(1),
   notes: z.string().optional(),
-})
+}).strict()
 
 export const auditorHandoffSummarySchema = z.object({
   done: z.array(nonBlank).min(1),
@@ -30,7 +30,7 @@ export const auditorHandoffSummarySchema = z.object({
 export const auditorHandoffSchema = z.object({
   summary: auditorHandoffSummarySchema.optional(),
   notes: z.string().optional(),
-})
+}).strict()
 
 export const postActionCompleteSchema = z.object({
   outcome: z.enum(['completed', 'completed_with_issues', 'failed']),
@@ -41,7 +41,7 @@ export const postActionCompleteSchema = z.object({
   })).min(1),
   followUps: z.array(nonBlank).default([]),
   notes: z.string().optional(),
-})
+}).strict()
 
 export type CoderHandoffPayload = z.infer<typeof coderHandoffSchema>
 export type AuditorHandoffSummary = z.infer<typeof auditorHandoffSummarySchema>

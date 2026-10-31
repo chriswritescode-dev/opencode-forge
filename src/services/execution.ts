@@ -20,7 +20,7 @@ import { createUsageCapture } from '../loop/runtime-usage'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildPostActionPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -1647,7 +1647,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
-      const permissionRuleset = buildLoopPermissionRuleset(permissionOptions)
+      const permissionRuleset = stoppedState.phase === 'post_action'
+        ? buildPostActionPermissionRuleset(permissionOptions)
+        : buildLoopPermissionRuleset(permissionOptions)
 
       stoppedState.iteration = 1
 

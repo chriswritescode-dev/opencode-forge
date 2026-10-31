@@ -1,10 +1,16 @@
 import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
-import { AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, SHARED_STRUCTURAL_DENY_PERMISSIONS } from '../constants/loop'
+import { AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, SHARED_STRUCTURAL_DENY_PERMISSIONS } from '../constants/loop'
 
 export const AUDITOR_TOOL_EXCLUDES = [
   ...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS,
   ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
+  LOOP_COMPLETE_TOOL_NAME,
+]
+
+export const AUDITOR_SUBAGENT_TOOL_EXCLUDES = [
+  ...AUDITOR_TOOL_EXCLUDES,
+  LOOP_HANDOFF_TOOL_NAME,
 ]
 
 function buildBasePrompt(promptsDir?: string): string {
@@ -24,7 +30,7 @@ export function buildAuditorAgent(promptsDir?: string): AgentDefinition {
     displayName: 'auditor',
     mode: 'subagent',
     tools: {
-      exclude: AUDITOR_TOOL_EXCLUDES,
+      exclude: AUDITOR_SUBAGENT_TOOL_EXCLUDES,
     },
     systemPrompt: buildBasePrompt(promptsDir),
   }

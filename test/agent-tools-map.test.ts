@@ -53,4 +53,20 @@ describe('per-agent tools.exclude (regression guard)', () => {
       expect(loopExcluded).toContain(tool)
     }
   })
+
+  test('loop phase tools follow the phase-role map', () => {
+    const allowed = (role: keyof typeof agents, tool: string) =>
+      !(agents[role].tools?.exclude ?? []).includes(tool)
+
+    expect(allowed('code', 'loop-handoff')).toBe(true)
+    expect(allowed('code', 'loop-complete')).toBe(true)
+
+    expect(allowed('auditor-loop', 'loop-handoff')).toBe(true)
+    expect(allowed('auditor-loop', 'loop-complete')).toBe(false)
+
+    for (const role of ['auditor', 'architect', 'architect-auto'] as const) {
+      expect(allowed(role, 'loop-handoff')).toBe(false)
+      expect(allowed(role, 'loop-complete')).toBe(false)
+    }
+  })
 })

@@ -57,6 +57,12 @@ export const LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['review-write', 'review-de
 /** Structural deny names exclusive to audit sessions (code-mutation tools). */
 export const AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS = ['edit', 'write'] as const
 
+/** Tools that end a loop phase turn by recording the role's handoff. */
+export const LOOP_HANDOFF_TOOL_NAME = 'loop-handoff'
+export const LOOP_COMPLETE_TOOL_NAME = 'loop-complete'
+export const LOOP_PHASE_TOOL_NAMES = [LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME] as const
+export type LoopPhaseToolName = (typeof LOOP_PHASE_TOOL_NAMES)[number]
+
 /** Permissions config may not name: the blanket allow, the external_directory key, and
  *  every structural deny. Loop/audit rulesets are the only legal consumers of these. */
 export const FORGE_MANAGED_PERMISSIONS: ReadonlySet<string> = new Set([
@@ -65,6 +71,7 @@ export const FORGE_MANAGED_PERMISSIONS: ReadonlySet<string> = new Set([
   ...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS,
   ...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS,
   ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
+  ...LOOP_PHASE_TOOL_NAMES,
 ])
 
 /** Loop-protocol and core tools a loop cannot function without. Only a *blanket* deny (pattern `*`)
@@ -270,15 +277,14 @@ export interface LoopPermissionRulesetOptions {
 }
 
 /**
- * Builds the permission ruleset for loop sessions.
- *
- * All loops use worktree isolation with a blanket allow-all, plus explicit deny rules for review
- * tools, plan tools, and loop-management tools. External directories are covered by the blanket
- * allow so an unattended loop never waits on an approval: in a sandboxed loop the sandbox mounts
- * are the boundary (the sandbox tool hook refuses host file tools outside them), and a loop with
- * the sandbox disabled has host access.
+ * Builds the permission ruleset shared by loop sessions and post-action sessions. Both allow
+ * everything, layer configured rules before Forge's structural denies, and deny the phase tool
+ * the executing role must not call.
  */
-export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
+function buildWorktreePermissionRuleset(
+  options: LoopPermissionRulesetOptions,
+  deniedPhaseTool: LoopPhaseToolName,
+): PermissionRule[] {
   const rules: PermissionRule[] = []
 
   // Blanket allow-all for worktree loops (isolated environment).
@@ -289,9 +295,30 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
   rules.push(...(options.extraRules ?? []))
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.
-  rules.push(...denyRulesFor([...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS]))
+  rules.push(...denyRulesFor([...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS, deniedPhaseTool]))
 
   return rules
+}
+
+/**
+ * Builds the permission ruleset for loop sessions.
+ *
+ * All loops use worktree isolation with a blanket allow-all, plus explicit deny rules for review
+ * tools, plan tools, and loop-management tools. External directories are covered by the blanket
+ * allow so an unattended loop never waits on an approval: in a sandboxed loop the sandbox mounts
+ * are the boundary (the sandbox tool hook refuses host file tools outside them), and a loop with
+ * the sandbox disabled has host access.
+ */
+export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
+  return buildWorktreePermissionRuleset(options, LOOP_COMPLETE_TOOL_NAME)
+}
+
+/**
+ * Builds the permission ruleset for a post-action session: the loop ruleset, except the session
+ * completes the phase with `loop-complete` and therefore may not call `loop-handoff`.
+ */
+export function buildPostActionPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
+  return buildWorktreePermissionRuleset(options, LOOP_HANDOFF_TOOL_NAME)
 }
 
 /**
@@ -309,7 +336,7 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
     ...(options.extraRules ?? []),
     // Audit sessions must not mutate code, must never launch loops or manage other loops.
     // Placed after *:allow so findLast picks them up.
-    ...denyRulesFor([...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS]),
+    ...denyRulesFor([...AUDIT_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS, LOOP_COMPLETE_TOOL_NAME]),
   ]
   return rules
 }
