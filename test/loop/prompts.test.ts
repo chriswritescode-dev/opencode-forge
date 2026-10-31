@@ -375,7 +375,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       ]
       const ctx = makeCtx({
         getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
-        getBlockingBugFindings: () => findings.filter(f => f.sectionIndex === null || f.sectionIndex <= 1),
       })
       const result = buildSectionContinuationPrompt(ctx, { ...sectionState, totalSections: 3, currentSectionIndex: 1 }, '')
       expect(result).toContain('## Outstanding review findings (3)')

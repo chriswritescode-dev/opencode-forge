@@ -607,7 +607,7 @@ All data access goes through typed repo interfaces:
 The loop follows a strict phase-based state machine:
 - States: `coding`, `auditing`, `post_action`
 - Transitions managed by `nextTransition()` in `transitions.ts`
-- Each phase has dedicated prompt builders and session rotation logic; a dirty audit retry resumes the standby session instead of rotating (see below)
+- Each phase has dedicated prompt builders and session rotation logic; a reusable standby session is resumed on same-section phase switches in both directions (coding → auditing and dirty audit → coding), while a new section always starts fresh (see below)
 - State changes are persisted to SQLite after every mutation
 
 ### Session Reuse

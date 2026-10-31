@@ -100,12 +100,12 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
     }),
 
     'review-read': tool({
-      description: 'Retrieve code review findings. No args lists findings for the current scope (in a sectioned loop: cross-section findings plus findings from the current or an earlier section); outside a loop only non-loop findings are returned. Use loopName to target a specific loop (e.g. a completed loop you are reviewing from outside it), which returns all of that loop\'s findings across sections. Use file to filter by file path. Use pattern for regex search. Automatically scoped to current section when running in a sectioned loop. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections. With attempts: true, return the durable audit-attempt history as JSON {attempts, nextBeforeId} instead of findings — paginate with beforeId (positive integer cursor) and limit (1-100); file/pattern/crossSection filtering is rejected in that mode. Attempt scope follows the same scoping rules as findings: default current scope, explicit loopName or allSections: true returns all scopes.',
+      description: 'Retrieve code review findings. No args lists findings for the current scope (in a sectioned loop: cross-section findings plus findings from the current or an earlier section); outside a loop only non-loop findings are returned. Use loopName to target a specific loop (e.g. a completed loop you are reviewing from outside it), which returns all of that loop\'s findings across sections. Use file to filter by file path. Use pattern for regex search. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections. With attempts: true, return the durable audit-attempt history as JSON {attempts, nextBeforeId} instead of findings — paginate with beforeId (positive integer cursor) and limit (1-100); file/pattern/crossSection filtering is rejected in that mode. Attempt scope follows the same scoping rules as findings: default current scope, explicit loopName or allSections: true returns all scopes.',
       args: {
         loopName: z.string().optional().describe('Target findings from a specific loop by name, overriding the session-resolved scope. Returns all of that loop\'s sections.'),
         file: z.string().optional().describe('Filter findings by file path'),
         pattern: z.string().optional().describe('Regex pattern to search across findings'),
-        crossSection: z.boolean().optional().describe('Return only cross-section findings (sectionIndex null) instead of current section.'),
+        crossSection: z.boolean().optional().describe('Return only cross-section findings (sectionIndex null) instead of the default scope.'),
         allSections: z.boolean().optional().describe('Return all findings across all sections, ignoring current section scoping.'),
         attempts: z.boolean().optional().describe('Return the loop attempt history as JSON {attempts, nextBeforeId} instead of findings.'),
         beforeId: z.number().optional().describe('Pagination cursor for attempts mode: return attempts with id < beforeId. Must be a positive integer.'),
@@ -191,7 +191,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
     }),
 
     'review-delete': tool({
-      description: 'Delete a code review finding by file and line number. Automatically scoped to current section when running in a sectioned loop, where findings from the current or an earlier section and cross-section findings can be deleted. Use crossSection=true to delete cross-section findings.',
+      description: 'Delete a code review finding by file and line number. In a sectioned loop the default scope is the findings from the current or an earlier section plus cross-section findings. Use crossSection=true to delete a cross-section finding.',
       args: {
         file: z.string().describe('The file path of the finding to delete'),
         line: z.number().describe('The line number of the finding to delete'),

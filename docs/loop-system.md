@@ -55,7 +55,7 @@ A loop has three persisted phases:
 2. **`auditing`** — the auditor reviews the current section (or the whole change for a non-sectioned plan loop) against conventions and stored findings. A clean section audit advances to the next section, or completes the loop — into `post_action` when configured — when no section is still open.
 3. **`post_action`** — an optional best-effort action after a clean audit.
 
-Each completed code or audit pass rotates to a fresh session, except that a dirty audit resumes the standby session for the next attempt (see [Session Rotation](#session-rotation)); a new section always starts fresh. Audit findings feed back into the next coding iteration.
+Each completed code or audit pass rotates to a fresh session, except that a reusable standby session is resumed on same-section phase switches in both directions — coding → auditing and dirty audit → coding (see [Session Rotation](#session-rotation)); a new section always starts fresh. Audit findings feed back into the next coding iteration.
 
 ## Loop States
 

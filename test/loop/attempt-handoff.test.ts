@@ -701,6 +701,47 @@ describe('durable attempt handoff', () => {
       expect(service.getAttemptHistory(loopName, 'section:1')).toHaveLength(0)
     })
 
+    test('section-scoped attempts count cross-section and earlier-section bugs toward recurrence escalation', async () => {
+      const loopName = 'handoff-section-recurrence'
+      const service = createDurableService()
+      const state = makeLoopState(loopName, 'sr-coder', { totalSections: 2, currentSectionIndex: 1 })
+      service.setState(loopName, state)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/cross.ts',
+        line: 3,
+        severity: 'bug',
+        description: 'Cross-section bug',
+        sectionIndex: null,
+      })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/earlier.ts',
+        line: 4,
+        severity: 'bug',
+        description: 'Earlier-section bug',
+        sectionIndex: 0,
+      })
+
+      for (let iteration = 1; iteration <= 3; iteration++) {
+        expect(await service.captureAttempt({ ...state, iteration }, `sr:key-${iteration}`, null)).toBe(true)
+        service.replaceSession(loopName, { newSessionId: `sr-auditor-${iteration}`, phase: 'auditing' })
+        service.finishAttempt(service.getActiveState(loopName)!, 'dirty')
+        service.replaceSession(loopName, { newSessionId: state.sessionId, phase: 'coding', iteration })
+      }
+
+      const rows = service.getAttemptHistory(loopName, 'section:1')
+      expect(rows.length).toBe(3)
+      for (const row of rows) {
+        expect((row.findingsAfter ?? []).map(f => f.file).sort()).toEqual(['src/cross.ts', 'src/earlier.ts'])
+      }
+      const active = service.getActiveState(loopName)!
+      expect(service.hasEscalatedBugFindings(active)).toBe(true)
+      expect(service.buildCoderFollowUpPrompt(active)).toContain('recurred 3×')
+    })
+
     test('attempt history and finding recurrence survive recreating the service over the same storage', async () => {
       const loopName = 'handoff-durable'
       queueSnapshotCommits([COMMIT_A, COMMIT_B, COMMIT_C])

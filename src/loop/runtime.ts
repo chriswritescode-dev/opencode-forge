@@ -5,6 +5,7 @@ import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
 import type { LoopState } from './state'
 import { transitionSectionIndex } from './state'
+import { isFindingInSectionScope } from './section-scope'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
@@ -998,7 +999,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function bumpDirtyAuditRecurrence(loopName: string, bugFindings: ReviewFindingRow[], sectionIndex?: number): void {
-    const findings = sectionIndex === undefined ? bugFindings : bugFindings.filter(f => f.sectionIndex === sectionIndex)
+    const findings = sectionIndex === undefined ? bugFindings : bugFindings.filter(f => isFindingInSectionScope(f, sectionIndex))
     loopService.bumpFindingRecurrence(loopName, findings)
   }
 

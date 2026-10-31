@@ -27,7 +27,7 @@ import { terminationStatusFor, terminationReasonToString, type TerminationReason
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
-import { blockingBugFindings } from './section-scope'
+import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -541,7 +541,7 @@ export function createLoopService(
 
   function attemptFindings(state: LoopState): ReviewFindingRow[] {
     const findings = getOutstandingFindings(state.loopName)
-    return auditScope(state).startsWith('section:') ? findings.filter(f => f.sectionIndex === state.currentSectionIndex) : findings
+    return auditScope(state).startsWith('section:') ? findings.filter(f => isFindingInSectionScope(f, state.currentSectionIndex)) : findings
   }
 
   function finishAttempt(state: LoopState, outcome: 'clean' | 'dirty'): void {
