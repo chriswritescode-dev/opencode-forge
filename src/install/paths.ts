@@ -77,7 +77,7 @@ export function resolveBundledSkillsDir(): string {
   return join(resolvePluginDir(), '..', 'skills')
 }
 
-/** Server re-export shim filename; OpenCode 2.x loads the server plugin from `*.js` files in `<configDir>/plugin`. */
+/** Server re-export shim filename; the external mode writes it so OpenCode loads the server plugin from `<configDir>/plugin`. */
 const PLUGIN_SHIM_FILENAME = 'opencode-forge.js'
 
 /** opencode's global plugin directory (`<configDir>/plugin`), home of the vendored copy. */

@@ -13,8 +13,6 @@ import {
   VENDORED_ASSETS,
 } from './paths'
 
-export type ShimMode = 'external' | 'vendored'
-
 export interface LinkResult {
   action: 'created' | 'updated' | 'unchanged' | 'missing-entry'
   shimPath: string
@@ -27,15 +25,14 @@ export interface UnlinkResult {
 }
 
 /**
- * Source of the `<configDir>/plugin/opencode-forge.js` re-export shim. OpenCode 2.x loads the
- * server plugin from `*.js` files in that directory; the `cli.json` entry loads only the TUI.
+ * Source of the `<configDir>/plugin/opencode-forge.js` re-export shim. Used by the external mode,
+ * where the built server entry lives outside the config directory. The vendored copy needs no
+ * shim: OpenCode discovers `<configDir>/plugin/opencode-forge` as a plugin package, and loading
+ * both would register the same plugin id twice (one copy fails).
  */
 export function buildShimSource(serverEntry: string): string {
   return `export { default } from ${JSON.stringify(serverEntry)}\n`
 }
-
-/** Shim re-export target for the vendored copy, relative to the shim's own directory. */
-export const VENDORED_SERVER_SPEC = './opencode-forge/dist/index.js'
 
 /** Relative specifier for `cli.json`, resolved by opencode against the config dir. */
 export const VENDORED_CLI_SPEC = './plugin/opencode-forge/dist'
@@ -71,14 +68,14 @@ export function resolveCliPluginDir(): string | undefined {
 }
 
 /**
- * Write the server re-export shim: the absolute built entry for the external mode, or the
- * vendored copy's entry for the vendored mode.
+ * Write the server re-export shim pointing at the built entry of this checkout. Only the
+ * external mode writes a shim; the vendored copy is discovered directly from `plugin/`.
  */
-export function linkPlugin(options: { dryRun: boolean; mode: ShimMode }): LinkResult {
+export function linkPlugin(options: { dryRun: boolean }): LinkResult {
   const shimPath = resolvePluginShimPath()
   const entry = resolveServerEntry()
   if (!entry) return { action: 'missing-entry', shimPath }
-  const target = options.mode === 'vendored' ? VENDORED_SERVER_SPEC : entry
+  const target = entry
   const source = buildShimSource(target)
   const existing = existsSync(shimPath) ? readFileSync(shimPath, 'utf-8') : undefined
   if (existing === source) return { action: 'unchanged', shimPath, target }

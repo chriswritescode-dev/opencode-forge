@@ -56,25 +56,19 @@ describe('buildShimSource', () => {
 
 describe('linkPlugin', () => {
   test('external mode writes an absolute shim, then reports unchanged and updated', () => {
-    const created = linkPlugin({ dryRun: false, mode: 'external' })
+    const created = linkPlugin({ dryRun: false })
     expect(created.action).toBe('created')
     expect(created.target).toMatch(/dist[\\/]index\.js$/)
     expect(readFileSync(resolvePluginShimPath(), 'utf-8')).toBe(buildShimSource(created.target!))
 
-    expect(linkPlugin({ dryRun: false, mode: 'external' }).action).toBe('unchanged')
+    expect(linkPlugin({ dryRun: false }).action).toBe('unchanged')
 
     writeFileSync(resolvePluginShimPath(), 'export { default } from "/somewhere/else"\n')
-    expect(linkPlugin({ dryRun: false, mode: 'external' }).action).toBe('updated')
-  })
-
-  test('vendored mode writes a shim relative to the plugin directory', () => {
-    const result = linkPlugin({ dryRun: false, mode: 'vendored' })
-    expect(result.target).toBe('./opencode-forge/dist/index.js')
-    expect(readFileSync(resolvePluginShimPath(), 'utf-8')).toBe('export { default } from "./opencode-forge/dist/index.js"\n')
+    expect(linkPlugin({ dryRun: false }).action).toBe('updated')
   })
 
   test('dry run reports the action without writing anything', () => {
-    expect(linkPlugin({ dryRun: true, mode: 'external' }).action).toBe('created')
+    expect(linkPlugin({ dryRun: true }).action).toBe('created')
     expect(existsSync(resolvePluginShimPath())).toBe(false)
   })
 })

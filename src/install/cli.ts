@@ -295,12 +295,13 @@ async function runPluginLinkStep(
     stdout.write(`  copied: ${vendor.vendorDir}\n`)
     list('copied', vendor.copied)
     list('missing', vendor.missing)
-    reportShim(linkPlugin({ dryRun: opts.dryRun, mode: 'vendored' }))
+    const staleShim = unlinkPlugin({ dryRun: opts.dryRun })
+    stdout.write(`  ${staleShim.action}: ${staleShim.shimPath} (vendored package is discovered directly)\n`)
     ensurePluginEntries({ dryRun: opts.dryRun, cliSpec: VENDORED_CLI_SPEC })
     return
   }
   const cliSpec = resolveCliPluginDir()
-  const linked = linkPlugin({ dryRun: opts.dryRun, mode: 'external' })
+  const linked = linkPlugin({ dryRun: opts.dryRun })
   if (!cliSpec || linked.action === 'missing-entry') {
     stdout.write('  missing-entry: the built dist directory could not be found.\n')
     stdout.write('  Run `pnpm build` first, then re-run.\n')
