@@ -1802,9 +1802,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         : undefined
       const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
-      // A stopped post-action loop restarts on the auditor-loop agent; every other
-      // restart sends a coding-style prompt as the code agent.
-      const promptAgent = stoppedState.phase === 'post_action' ? 'auditor-loop' as const : 'code' as const
+      // Restart sends the persisted phase's prompt as the code agent: the post-action
+      // session must be able to call `loop-complete`, which the auditor agent excludes.
+      const promptAgent = 'code' as const
 
       deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
         sessionId: newState.sessionId,
@@ -1844,9 +1844,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         })
       }
 
-      const restartVariant = promptAgent === 'auditor-loop'
-        ? restartAuditorChoice.variant
-        : stoppedState.executionVariant
+      const restartVariant = stoppedState.executionVariant
 
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
         markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)

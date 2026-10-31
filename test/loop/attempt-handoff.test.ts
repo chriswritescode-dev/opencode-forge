@@ -12,13 +12,13 @@ import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-re
 import { createLoopService, type LoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
-import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
+import { LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
-import { recordAuditorHandoff, recordCoderHandoff } from '../helpers/loop-handoff'
+import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 
 vi.mock('../../src/utils/audit-snapshot', () => ({
@@ -437,19 +437,17 @@ describe('durable attempt handoff', () => {
       expect(auditorPrompts(harness.calls).length).toBe(1)
     })
 
-    test('post-action waits for a busy background subagent before completing the loop', async () => {
+    test('a loop-complete record whose child session became busy is applied only after the child session is idle', async () => {
       vi.useFakeTimers()
       const loopName = 'handoff-post-action-subagent'
       const harness = createRuntimeHarness({
-        statuses: { 'reviewer-ses': { type: 'busy' } },
         getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
       })
 
       harness.service.setState(loopName, makeLoopState(loopName, 'pa-ses', { phase: 'post_action' }))
       harness.service.registerLoopSession('pa-ses', loopName)
-      harness.messagesBySession.set('pa-ses', [
-        assistantMessage('msg-pa1', `Reviewers launched; merging when they report.\n${POST_ACTION_COMPLETE_MARKER}`),
-      ])
+      await recordPostActionComplete(harness.loop, 'pa-ses')
+      harness.statuses['reviewer-ses'] = { type: 'busy' }
       await idleTick(harness.loop, 'pa-ses')
       await vi.advanceTimersByTimeAsync(1700)
 
@@ -464,9 +462,8 @@ describe('durable attempt handoff', () => {
       expect(finalState.terminationReason).toBe('completed')
     })
 
-    test('post-action keeps deferring for a long-running busy subagent without terminating', async () => {
-      vi.useFakeTimers()
-      const loopName = 'handoff-post-action-subagent-long'
+    test('rejects loop-complete while a post-action subagent session is busy', async () => {
+      const loopName = 'handoff-post-action-busy-reject'
       const harness = createRuntimeHarness({
         statuses: { 'reviewer-ses': { type: 'busy' } },
         getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
@@ -474,9 +471,31 @@ describe('durable attempt handoff', () => {
 
       harness.service.setState(loopName, makeLoopState(loopName, 'pa-ses', { phase: 'post_action' }))
       harness.service.registerLoopSession('pa-ses', loopName)
-      harness.messagesBySession.set('pa-ses', [
-        assistantMessage('msg-pa1', `Reviewers launched; merging when they report.\n${POST_ACTION_COMPLETE_MARKER}`),
-      ])
+
+      const result = await harness.loop.recordHandoff({
+        sessionId: 'pa-ses',
+        tool: LOOP_COMPLETE_TOOL_NAME,
+        args: { outcome: 'completed', steps: [{ name: 'merge', status: 'done' }], followUps: [] },
+      })
+
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.error).toContain('Wait for these subagent sessions to finish')
+      expect(result.error).toContain('reviewer-ses')
+      expect(harness.service.listHandoffs(loopName)).toHaveLength(0)
+    })
+
+    test('post-action keeps deferring for a long-running busy subagent without terminating', async () => {
+      vi.useFakeTimers()
+      const loopName = 'handoff-post-action-subagent-long'
+      const harness = createRuntimeHarness({
+        getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
+      })
+
+      harness.service.setState(loopName, makeLoopState(loopName, 'pa-ses', { phase: 'post_action' }))
+      harness.service.registerLoopSession('pa-ses', loopName)
+      await recordPostActionComplete(harness.loop, 'pa-ses')
+      harness.statuses['reviewer-ses'] = { type: 'busy' }
       await idleTick(harness.loop, 'pa-ses')
 
       await vi.advanceTimersByTimeAsync(16 * 60 * 1000)

@@ -47,8 +47,8 @@ import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
-import { buildHandoffNudgePrompt, buildPostActionContinuePromptText, POST_ACTION_COMPLETE_MARKER } from './prompts'
-import { formatAuditHandoffResult, formatCoderHandoff, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, handoffSchemaForRole, type AuditorHandoffPayload, type LoopHandoffWriteInput } from './handoff'
+import { buildHandoffNudgePrompt } from './prompts'
+import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, handoffSchemaForRole, type AuditorHandoffPayload, type LoopHandoffWriteInput } from './handoff'
 import type { ZodError } from 'zod'
 
 export interface LoopEvent {
@@ -204,11 +204,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
 
-  const { sendPromptWithFallback, getLastAssistantInfo, getAssistantTranscript } = createPromptDispatch({ client, logger, getConfig, loopService, projectId })
+  const { sendPromptWithFallback, getLastAssistantInfo } = createPromptDispatch({ client, logger, getConfig, loopService, projectId })
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
-  const idleRetryAttempts = new Map<string, number>()
   /** Handoff nudges sent since the last applied handoff (loopName → count). */
   const handoffNudges = new Map<string, number>()
 
@@ -225,13 +224,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   function stateLockKey(loopName: string): string {
     return projectLoopKey(projectId, loopName)
   }
-
-  /**
-   * Continue prompts already sent to the post-action session (loopName → count).
-   * An idle post-action reply without POST_ACTION_COMPLETE_MARKER is re-prompted
-   * at most MAX_POST_ACTION_CONTINUES times before the loop completes best-effort.
-   */
-  const postActionContinueAttempts = new Map<string, number>()
 
   /**
    * Commit the just-completed section's work as a `section <N>: <title>`
@@ -327,11 +319,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   const coalescedLimitSessions = new Map<string, string>()
 
-  const IDLE_RETRY_DELAY_MS = 1500
   const AUDITOR_FALLBACK_SETTLE_MS = 250
-  const MAX_IDLE_RETRIES = 1
   const MAX_HANDOFF_NUDGES = 3
-  const MAX_POST_ACTION_CONTINUES = 3
 
   interface RetainedSessionMeta {
     sessionId: string
@@ -1481,10 +1470,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       clearTimeout(idleRetryTimeout)
       idleRetryTimeouts.delete(loopName)
     }
-    idleRetryAttempts.delete(loopName)
     handoffNudges.delete(loopName)
     coalescedLimitSessions.delete(loopName)
-    postActionContinueAttempts.delete(loopName)
     clearPromptPending(projectId, loopName, logger)
     clearPromptInFlight(projectId, loopName)
 
@@ -1944,47 +1931,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     resolveSessionLoopName,
     isPromptQueued,
   })
-
-  /**
-   * Shared idle/no-assistant gate for the auditing and post_action phases.
-   * If the last message is not from the assistant, schedules a bounded retry (re-invoking `rerun`)
-   * or terminates with `exhaustedReason` once MAX_IDLE_RETRIES is reached. When an assistant message
-   * is present it clears any pending idle-retry timer/attempts. Returns true when the caller should
-   * return early (retry scheduled or loop terminated).
-   */
-  async function handleIdleNoAssistantGate(
-    loopName: string,
-    currentState: LoopState,
-    lastMessageRole: string,
-    opts: { phaseLabel: string; exhaustedReason: TerminationReason; rerun: (loopName: string, state: LoopState) => Promise<void> },
-  ): Promise<boolean> {
-    if (lastMessageRole !== 'assistant') {
-      if (await shouldDeferNoAssistantIdle(loopName, currentState, opts.phaseLabel)) return true
-      const attempts = idleRetryAttempts.get(loopName) ?? 0
-      if (attempts >= MAX_IDLE_RETRIES) {
-        logger.error(`Loop: ${opts.phaseLabel} retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
-        idleRetryAttempts.delete(loopName)
-        await terminateLoop(loopName, currentState, opts.exhaustedReason)
-        return true
-      }
-      logger.log(`Loop: ${opts.phaseLabel} idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
-      idleRetryAttempts.set(loopName, attempts + 1)
-      const phase = currentState.phase
-      const t = setTimeout(() => {
-        void withStateLock(loopName, async () => {
-          const fresh = loopService.getActiveState(loopName)
-          if (!fresh?.active || fresh.phase !== phase) return
-          await opts.rerun(loopName, fresh)
-        })
-      }, IDLE_RETRY_DELAY_MS)
-      idleRetryTimeouts.set(loopName, t)
-      return true
-    }
-    const pending = idleRetryTimeouts.get(loopName)
-    if (pending) { clearTimeout(pending); idleRetryTimeouts.delete(loopName) }
-    if (idleRetryAttempts.has(loopName)) { idleRetryAttempts.delete(loopName) }
-    return false
-  }
 
   /**
    * Sends an audit prompt, handling workspace re-bind recovery and retry
@@ -2546,12 +2492,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Completes the post-action phase once its session is idle. Unless `confirmCompletion`
-   * is false (user abort), it first waits for every loop session, subagents included,
-   * to settle, then requires the completion marker in the final reply, re-prompting the
-   * session to finish its work up to MAX_POST_ACTION_CONTINUES times.
+   * Completes the post-action phase once its session is idle. Assistant errors complete
+   * best-effort. Otherwise it waits for every loop session, subagents included, to settle,
+   * then applies the pending `loop-complete` record and renders the post-action report. A
+   * turn without a record is nudged; past MAX_HANDOFF_NUDGES the loop completes best-effort.
    */
-  async function runPostActionPhase(loopName: string, _state: LoopState, confirmCompletion = true): Promise<void> {
+  async function runPostActionPhase(loopName: string, _state: LoopState): Promise<void> {
     const currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} no longer active, skipping post-action phase`)
@@ -2569,56 +2515,39 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    const { text: postActionText, lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
 
-    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'post-action phase', exhaustedReason: { kind: 'completed' }, rerun: runPostActionPhase })) return
-
-    if (confirmCompletion) {
-      if (await deferWhileChildSessionsBusy(currentState)) return
-      if (!postActionText?.includes(POST_ACTION_COMPLETE_MARKER)) {
-        const attempts = postActionContinueAttempts.get(loopName) ?? 0
-        if (attempts < MAX_POST_ACTION_CONTINUES) {
-          postActionContinueAttempts.set(loopName, attempts + 1)
-          logger.log(`Loop: post-action reply for ${loopName} has no completion marker; prompting the session to finish (attempt ${attempts + 1}/${MAX_POST_ACTION_CONTINUES})`)
-          const { error } = await sendPostActionPrompt(loopName, currentState.sessionId, buildPostActionContinuePromptText())
-          if (!error) {
-            watchdog.recordActivity(loopName, 'post-action-continue')
-            return
-          }
-          logger.error(`Loop: post-action continue prompt failed for ${loopName}, completing best-effort`, error)
-        } else {
-          logger.error(`Loop: post-action for ${loopName} never confirmed completion after ${MAX_POST_ACTION_CONTINUES} continue prompts, completing best-effort`)
-        }
-      }
+    if (assistantInfo.error) {
+      logger.error(`Loop: post-action assistant error for ${loopName}: ${assistantInfo.error}, completing best-effort`)
+      const applied = loopService.applyPendingHandoff(loopName, currentState.sessionId)
+      const record = applied?.role === 'post_action' ? applied : null
+      if (record) loopService.setPostActionReport(loopName, formatPostActionReport(record.payload))
+      await terminateLoop(
+        loopName,
+        currentState,
+        { kind: 'completed' },
+        record ? formatPostActionSummary(record.payload) : undefined,
+      )
+      return
     }
+
+    if (await deferWhileChildSessionsBusy(currentState)) return
+
+    const nudgeState = currentState
+    const applied = loopService.applyPendingHandoff(loopName, currentState.sessionId)
+    const record = applied?.role === 'post_action' ? applied : null
+    if (!record) {
+      const cfg = resolvePostActionConfig(getConfig())
+      await nudgeForMissingHandoff(loopName, nudgeState, () => loopService.buildPostActionPrompt(nudgeState, { skill: cfg.skill, prompt: cfg.prompt }))
+      return
+    }
+    handoffNudges.delete(loopName)
 
     logger.log(`Loop: post-action complete for ${loopName}, terminating`)
     const trans = nextTransition(currentState, { type: 'post-action-complete' })
-    if (trans.kind === 'terminate') {
-      // Persist the full assistant transcript of the post-action session before it is
-      // deleted on termination, so the run's details survive (loop-status/dashboard).
-      const report = await getAssistantTranscript(currentState.sessionId, currentState.worktreeDir)
-      if (report) {
-        loopService.setPostActionReport(loopName, report)
-      }
-      // Capture the raw post-action assistant message as the loop's completion summary so the
-      // outcome (alternate review verdict, CI result, etc.) is visible in loop-status/dashboard.
-      // The loop still terminates `completed` — the plan itself was already cleared by the audit.
-      await terminateLoop(loopName, currentState, trans.reason, postActionText?.replace(POST_ACTION_COMPLETE_MARKER, '').trim() || undefined)
-    }
-  }
-
-  /** Re-fetch the last message; run `onAssistant` if the assistant replied, otherwise `onNoAssistant`. */
-  async function resumeOrFallback(
-    loopName: string,
-    state: LoopState,
-    eventSessionId: string,
-    onAssistant: (loopName: string, state: LoopState) => Promise<void>,
-    onNoAssistant: (loopName: string, state: LoopState) => Promise<void>,
-  ): Promise<void> {
-    const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
-    if (lastMessageRole === 'assistant') { await onAssistant(loopName, state); return }
-    await onNoAssistant(loopName, state)
+    if (trans.kind !== 'terminate') return
+    loopService.setPostActionReport(loopName, formatPostActionReport(record.payload))
+    await terminateLoop(loopName, currentState, trans.reason, formatPostActionSummary(record.payload))
   }
 
   // Single source of truth for idle/watchdog dispatch. Every persisted phase maps to
@@ -2691,10 +2620,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             return
           }
           if (state.phase === 'post_action') {
-            await resumeOrFallback(loopName, state, eventSessionId,
-              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted after assistant response, processing result`); await runPostActionPhase(ln, s, false) },
-              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted without assistant response, terminating as completed (best-effort)`); await terminateLoop(ln, s, { kind: 'completed' }) },
-            )
+            if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+              logger.log(`Loop: post-action session ${eventSessionId} aborted with a pending handoff, processing it`)
+              await runPostActionPhase(loopName, state)
+            } else {
+              logger.log(`Loop: post-action session ${eventSessionId} aborted without a pending handoff, terminating as completed (best-effort)`)
+              await terminateLoop(loopName, state, { kind: 'completed' })
+            }
             return
           }
           // coding shares the default abort handling: a coding session aborted by
@@ -3074,10 +3006,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       clearTimeout(timeout)
       idleRetryTimeouts.delete(worktreeName)
     }
-    idleRetryAttempts.clear()
     handoffNudges.clear()
     coalescedLimitSessions.clear()
-    postActionContinueAttempts.clear()
     loopRetainedSessions.clear()
     sessionToLoop.clear()
     terminatingLoops.clear()
@@ -3131,10 +3061,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       clearTimeout(idleRetryTimeout)
       idleRetryTimeouts.delete(loopName)
     }
-    idleRetryAttempts.delete(loopName)
     handoffNudges.delete(loopName)
     coalescedLimitSessions.delete(loopName)
-    postActionContinueAttempts.delete(loopName)
 
     const stateForStandby = loopService.getAnyState(loopName)
     if (stateForStandby) {

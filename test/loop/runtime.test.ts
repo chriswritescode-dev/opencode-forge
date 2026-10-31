@@ -12,7 +12,6 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
-import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
@@ -24,8 +23,8 @@ import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
-import { recordAuditorHandoff, recordCoderHandoff } from '../helpers/loop-handoff'
-import { formatAuditHandoffResult } from '../../src/loop/handoff'
+import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
+import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
 
 const PROJECT_ID = 'test-project'
 
@@ -440,12 +439,16 @@ describe('post-action phase', () => {
     const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
     const promptText = lastCodePrompt?.parts?.[0]?.text ?? ''
     expect(promptText).toContain('pr-review')
+    expect(promptText).toContain('loop-complete')
 
-    // Simulate the post_action session completing: mock messages to return assistant response
+    // Simulate the post_action session completing through loop-complete.
     const postActionSessionId = afterState!.sessionId
-    ;(client.session.messages as any).mockImplementation(async () => [
-      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action complete.\n${POST_ACTION_COMPLETE_MARKER}` }] },
-    ])
+    const payload = {
+      outcome: 'completed' as const,
+      steps: [{ name: 'Post-action workflow', status: 'done' as const }],
+      followUps: [],
+    }
+    await recordPostActionComplete(loop, postActionSessionId)
 
     // Send busy to clear the idle-gate (prompt was marked as sent)
     await loop.tick({
@@ -465,13 +468,13 @@ describe('post-action phase', () => {
       },
     })
 
-    // Assert loop terminated with completed
+    // Assert loop terminated with completed and rendered the handoff payload.
     const finalState = loopService.getAnyState(state.loopName)
     expect(finalState).not.toBeNull()
     expect(finalState!.active).toBe(false)
     expect(finalState!.terminationReason).toBe('completed')
-    // The raw post-action assistant message is captured as the completion summary.
-    expect(finalState!.completionSummary).toBe('Action complete.')
+    expect(finalState!.completionSummary).toBe(formatPostActionSummary(payload))
+    expect(finalState!.postActionReport).toBe(formatPostActionReport(payload))
   })
 
   test('postAction disabled → terminates completed immediately (unchanged behavior)', async () => {
@@ -596,9 +599,7 @@ describe('post-action phase', () => {
       expect(rows.some(r => r.eventType === 'auditor-handoff' && r.toPhase === 'post_action')).toBe(true)
 
       const postActionSessionId = afterState!.sessionId
-      ;(client.session.messages as any).mockImplementation(async () => [
-        { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action done.\n${POST_ACTION_COMPLETE_MARKER}` }] },
-      ])
+      await recordPostActionComplete(loop, postActionSessionId)
       await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: postActionSessionId } })
       await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: postActionSessionId } })
       expect(loopService.getAnyState(loopName)!.terminationReason).toBe('completed')
@@ -821,11 +822,9 @@ describe('post-action phase', () => {
     expect(promptText).not.toContain('Load the')
     expect(promptText).not.toContain('Skill tool')
 
-    // Simulate the post_action session completing
+    // Simulate the post_action session completing through loop-complete.
     const postActionSessionId = afterState!.sessionId
-    ;(client.session.messages as any).mockImplementation(async () => [
-      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: `Action complete.\n${POST_ACTION_COMPLETE_MARKER}` }] },
-    ])
+    await recordPostActionComplete(loop, postActionSessionId)
 
     // Send busy to clear idle-gate
     await loop.tick({
@@ -928,12 +927,11 @@ describe('post-action phase', () => {
     expect(finalState!.terminationReason).toBe('missing_worktree_dir')
   })
 
-  test('post_action idle without completion marker → prompts the session to continue, then completes once confirmed', async () => {
-    let reply = 'When the reviewers report back I will merge everything.'
+  test('post_action idle without loop-complete → nudges, then completes once the handoff is recorded', async () => {
     const { client, calls } = createFakeForgeClient({
       session: {
         messages: async () => [
-          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: reply }] },
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'When the reviewers report back I will merge everything.' }] },
         ],
       },
     })
@@ -949,19 +947,25 @@ describe('post-action phase', () => {
     expect(continued.phase).toBe('post_action')
     const continuePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === state.sessionId)
     expect(continuePrompts).toHaveLength(1)
-    expect((continuePrompts[0]!.params as any).parts[0].text).toContain('did not confirm that the post-action workflow is complete')
+    expect((continuePrompts[0]!.params as any).parts[0].text).toContain('You ended your turn without calling `loop-complete`')
 
-    reply = `Merged reviewer findings and saved the record.\n${POST_ACTION_COMPLETE_MARKER}`
+    const payload = {
+      outcome: 'completed' as const,
+      steps: [{ name: 'merge reviewer findings', status: 'done' as const }],
+      followUps: [],
+    }
+    await recordPostActionComplete(loop, state.sessionId, payload)
     await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: state.sessionId } })
     await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
 
     const finalState = loopService.getAnyState(state.loopName)!
     expect(finalState.active).toBe(false)
     expect(finalState.terminationReason).toBe('completed')
-    expect(finalState.completionSummary).toBe('Merged reviewer findings and saved the record.')
+    expect(finalState.completionSummary).toBe(formatPostActionSummary(payload))
+    expect(finalState.postActionReport).toBe(formatPostActionReport(payload))
   })
 
-  test('post_action never confirming completion → stops prompting after the cap and completes best effort', async () => {
+  test('post_action without loop-complete → stops nudging after the cap and completes best effort', async () => {
     const { client, calls } = createFakeForgeClient({
       session: {
         messages: async () => [
@@ -979,10 +983,46 @@ describe('post-action phase', () => {
       await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
     }
 
-    expect(calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === state.sessionId)).toHaveLength(3)
+    const nudges = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === state.sessionId)
+    expect(nudges).toHaveLength(3)
+    for (const nudge of nudges) {
+      expect((nudge.params as any).parts[0].text).toContain('You ended your turn without calling `loop-complete`')
+    }
     const finalState = loopService.getAnyState(state.loopName)!
     expect(finalState.active).toBe(false)
     expect(finalState.terminationReason).toBe('completed')
+  })
+
+  test('post_action idle with an assistant error completes best-effort and keeps a pending loop-complete record', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          {
+            info: { role: 'assistant', finish: 'stop', error: { name: 'ProviderError', data: { message: 'provider failed' } } },
+            parts: [],
+          },
+        ],
+      },
+    })
+    const { loop } = createRuntime({ client })
+    const state = makeState({ phase: 'post_action' })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    const payload = {
+      outcome: 'completed_with_issues' as const,
+      steps: [{ name: 'merge reviewer findings', status: 'failed' as const, detail: 'provider failed' }],
+      followUps: ['retry the merge'],
+    }
+    await recordPostActionComplete(loop, state.sessionId, payload)
+
+    await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+    const finalState = loopService.getAnyState(state.loopName)!
+    expect(finalState.active).toBe(false)
+    expect(finalState.terminationReason).toBe('completed')
+    expect(finalState.completionSummary).toBe(formatPostActionSummary(payload))
+    expect(finalState.postActionReport).toBe(formatPostActionReport(payload))
   })
 
   test('post_action session error → terminates completed as best effort', async () => {
@@ -1012,7 +1052,7 @@ describe('post-action phase', () => {
     expect(finalState!.terminationReason).toBe('completed')
   })
 
-  test('post_action abort after assistant response → processes post-action completion', async () => {
+  test('post_action abort with a pending loop-complete → processes the handoff and completes', async () => {
     const { client } = createFakeForgeClient({
       session: {
         messages: async () => [
@@ -1028,6 +1068,13 @@ describe('post-action phase', () => {
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
 
+    const payload = {
+      outcome: 'completed' as const,
+      steps: [{ name: 'Post-action workflow', status: 'done' as const }],
+      followUps: [],
+    }
+    await recordPostActionComplete(loop, state.sessionId, payload)
+
     await loop.tick({
       type: 'session.error',
       properties: {
@@ -1042,6 +1089,8 @@ describe('post-action phase', () => {
     expect(finalState).not.toBeNull()
     expect(finalState!.active).toBe(false)
     expect(finalState!.terminationReason).toBe('completed')
+    expect(finalState!.completionSummary).toBe(formatPostActionSummary(payload))
+    expect(finalState!.postActionReport).toBe(formatPostActionReport(payload))
   })
 
   test('post_action abort without assistant response → terminates completed best effort', async () => {

@@ -1666,7 +1666,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     if (!result.ok) return
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
-    expect(promptCall.agent).toBe('auditor-loop')
+    expect(promptCall.agent).toBe('code')
     expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'newaud' })
     expect(promptCall.variant).toBe('max')
 
