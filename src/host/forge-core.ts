@@ -624,7 +624,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     }
   }
 
-  const loopsRepo = createLoopsRepo(db)
+  const loopsRepo = createLoopsRepo(db, logger)
   const sandboxPreferences = createSessionSandboxPreferencesRepo(db)
   const plansRepo = createPlansRepo(db)
   const reviewFindingsRepo = createReviewFindingsRepo(db)

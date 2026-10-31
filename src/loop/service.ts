@@ -28,6 +28,7 @@ import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './fi
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
+import type { LoopHandoffRecord, LoopHandoffWriteInput } from './handoff'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -166,6 +167,11 @@ export interface LoopService {
     sectionIndex: number | null
     eventType?: string
   }): void
+  recordPendingHandoff(input: LoopHandoffWriteInput): { record: LoopHandoffRecord; replaced: boolean }
+  getPendingHandoff(loopName: string): LoopHandoffRecord | null
+  applyPendingHandoff(loopName: string, sessionId: string): LoopHandoffRecord | null
+  discardPendingHandoff(loopName: string): void
+  listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[]
   adjustRemainingSections(name: string, args: {
     sections?: { title: string; content: string }[]
     currentSection?: { title: string; content: string }
@@ -801,6 +807,26 @@ export function createLoopService(
     }
   }
 
+  function recordPendingHandoff(input: LoopHandoffWriteInput): { record: LoopHandoffRecord; replaced: boolean } {
+    return loopsRepo.upsertPendingHandoff({ projectId, ...input })
+  }
+
+  function getPendingHandoff(loopName: string): LoopHandoffRecord | null {
+    return loopsRepo.getPendingHandoff(projectId, loopName)
+  }
+
+  function applyPendingHandoff(loopName: string, sessionId: string): LoopHandoffRecord | null {
+    return loopsRepo.applyPendingHandoff(projectId, loopName, sessionId)
+  }
+
+  function discardPendingHandoff(loopName: string): void {
+    loopsRepo.discardPendingHandoff(projectId, loopName)
+  }
+
+  function listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[] {
+    return loopsRepo.listHandoffs(projectId, loopName, limit)
+  }
+
   function recordTransition(name: string, entry: {
     eventType: string
     transitionKind: string
@@ -1115,6 +1141,11 @@ export function createLoopService(
     setTotalSections,
     recordTransition,
     recordTerminalTransition,
+    recordPendingHandoff,
+    getPendingHandoff,
+    applyPendingHandoff,
+    discardPendingHandoff,
+    listHandoffs,
     adjustRemainingSections,
   }
 }
