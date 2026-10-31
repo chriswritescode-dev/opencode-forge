@@ -1,10 +1,11 @@
 import { mkdir } from 'fs/promises'
-import { existsSync, readFileSync, appendFileSync } from 'fs'
+import { existsSync, readFileSync, appendFileSync, realpathSync } from 'fs'
 import type { Logger, LoopSandboxSettings } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { LOOP_SANDBOX_EXTRA_KEY, readLoopSandboxSettings } from '../sandbox/loop-settings'
-import { getForgeWorkspaceBaseRef } from './forge-worktree'
-import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot } from './forge-naming'
+import { getForgeWorkspaceBaseRef, getForgeWorkspaceBranch } from './forge-worktree'
+import { describeBranchInUse, describeBranchReuseConflict } from './loop-branch'
+import { forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot, resolveLoopBranchName } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
@@ -65,6 +66,41 @@ const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
   reasonLabel: 'removed',
   doCommit: true,
   doRemoveWorktree: true,
+}
+
+const BRANCH_IN_USE_PATTERNS = [
+  /is already checked out at ['"]([^'"]+)['"]/i,
+  /is already used by worktree at ['"]([^'"]+)['"]/i,
+]
+
+function parseBranchInUsePath(stderr: string): string | null {
+  for (const pattern of BRANCH_IN_USE_PATTERNS) {
+    const match = pattern.exec(stderr)
+    if (match) return match[1]
+  }
+  return null
+}
+
+function isSameDirectory(a: string, b: string): boolean {
+  if (a === b) return true
+  try {
+    return realpathSync(a) === realpathSync(b)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Builds the `worktree add` failure error. A branch already held by a different worktree maps to
+ * the wording `validateLoopBranchRequest` uses; every other failure, and a holder that is this
+ * workspace's own directory (handled by the orphan reuse/cleanup path), keeps the raw git stderr.
+ */
+function worktreeAddFailure(branch: string, directory: string, stderr: string): Error {
+  const holder = parseBranchInUsePath(stderr)
+  if (holder !== null && !isSameDirectory(holder, directory)) {
+    return new Error(`forge workspace adapter: ${describeBranchInUse(branch, holder)}`)
+  }
+  return new Error(`git worktree add failed: ${stderr}`)
 }
 
 export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorkspaceAdapter {
@@ -202,7 +238,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
       return {
         ...info,
         name: loopName,
-        branch: forgeBranchName(loopName),
+        branch: resolveLoopBranchName(loopName, getForgeWorkspaceBranch(info)),
         directory: forgeWorktreeDir(dataDir, loopName),
         extra: restampAttachTimestamps(info.extra),
       }
@@ -227,9 +263,20 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
 
       if (baseRef) {
         if (branchExists) {
-          throw new Error(`forge workspace adapter: branch ${info.branch} already exists; refusing to reuse it for a loop based on ${baseRef}`)
+          const conflict = describeBranchReuseConflict(git, projectDir, info.branch, baseRef)
+          if (conflict !== null) {
+            throw new Error(`forge workspace adapter: ${conflict}`)
+          }
+          const forceRes = git.branchForceUpdate(projectDir, info.branch, baseRef)
+          if (!forceRes.ok) {
+            const stderr = forceRes.stderr.trim() || 'unknown error'
+            logger.error(`forge-adapter: git branch -f failed: ${stderr}`)
+            throw new Error(`git branch -f failed: ${stderr}`)
+          }
         }
-        const res = git.worktreeAdd(projectDir, info.directory, info.branch, true, baseRef)
+        const res = branchExists
+          ? git.worktreeAdd(projectDir, info.directory, info.branch, false)
+          : git.worktreeAdd(projectDir, info.directory, info.branch, true, baseRef)
         if (!res.ok) {
           const stderr = res.stderr.trim() || 'unknown error'
           logger.error(`forge-adapter: git worktree add failed: ${stderr}`)
@@ -245,9 +292,9 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
             }
           }
           git.worktreePrune(projectDir)
-          throw new Error(`git worktree add failed: ${stderr}`)
+          throw worktreeAddFailure(info.branch, info.directory, stderr)
         }
-        logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch} (based on ${baseRef})`)
+        logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch} (based on ${baseRef})${branchExists ? ` (fast-forwarded existing branch to ${baseRef})` : ''}`)
       } else {
         let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
         let reusedOrphan = false
@@ -275,13 +322,13 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
               if (!res.ok) {
                 const retryStderr = res.stderr.trim() || 'unknown error'
                 logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
-                throw new Error(`git worktree add failed: ${retryStderr}`)
+                throw worktreeAddFailure(info.branch, info.directory, retryStderr)
               }
               reusedOrphan = true
             }
           } else {
             logger.error(`forge-adapter: git worktree add failed: ${stderr}`)
-            throw new Error(`git worktree add failed: ${stderr}`)
+            throw worktreeAddFailure(info.branch, info.directory, stderr)
           }
         }
         logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)

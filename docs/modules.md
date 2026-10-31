@@ -73,7 +73,7 @@ Host-neutral core plus the thin adapter that maps the OpenCode V2 plugin context
 | `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
 | `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
 | `v2-events.ts` | Normalizes V2 events into Forge's event shape; busy, idle, and retry derive only from `session.execution.*` and `session.retry.scheduled` |
-| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `loopDefaults`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `version`) and the `toast`/`sessionDelete`/`loopsChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
+| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `loopDefaults`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `version`); `executePlan` takes the optional `branch` and `baseRef` (validated before any side effect) and reports the loop's `branch` in its result, and `loops` reports each loop's `branch`; it also declares the `toast`/`sessionDelete`/`loopsChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
 | `v2-hooks.ts` | Registers the core handlers through V2's hook API |
 | `v2-tools.ts` | Registers the shared Forge tools on V2 |
 | `v2-config.ts` | Resolves and registers agents and commands on V2 |
@@ -294,7 +294,7 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 
 | File | Purpose |
 |------|---------|
-| `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`) |
+| `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`); validates and threads the caller-chosen `branch`/`baseRef` through start, restart, and workspace recovery |
 | `session-loop-resolver.ts` | Resolve which loop owns a given session |
 | `unified-sandbox-resolver.ts` | Loop-first sandbox resolution shared by the shell wrapper and tool hooks |
 | `deterministic-decomposer.ts` | Slice a plan into milestones (`section_plans` rows) deterministically — called once at loop start by `execution.ts`, not a runtime loop phase |
@@ -503,8 +503,9 @@ Creates and manages git worktrees for isolated loop execution, registered throug
 |------|---------|
 | `forge-adapter.ts` | `createForgeWorkspaceAdapter()` — the host-neutral worktree adapter |
 | `forge-worktree.ts` | `bindSessionToWorkspace()`, `createBuiltinWorktreeWorkspace()`, workspace permission rules |
-| `forge-naming.ts` | Worktree/branch naming and forge-worktree directory detection |
+| `forge-naming.ts` | Worktree/branch naming (`resolveLoopBranchName()`) and forge-worktree directory detection |
 | `forge-workspace-metadata.ts` | `<worktree>/.forge/workspace.json` read/write/list |
+| `loop-branch.ts` | `describeBranchInUse()`, `describeBranchReuseConflict()`, `validateLoopBranchRequest()` — branch reuse and `execute-plan` branch/base-ref validation |
 | `pending-teardown.ts` | Registry of pending teardown contexts for commit message building |
 | `worktree-commit.ts` | Teardown commit building |
 | `worktree-opencode-config.ts` | Writes `opencode.jsonc` into a fresh worktree |

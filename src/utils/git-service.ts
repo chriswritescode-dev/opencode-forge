@@ -29,6 +29,12 @@ export interface GitService {
   worktreeRemove(cwd: string, directory: string): GitResult
   worktreePrune(cwd: string): GitResult
   branchDelete(cwd: string, branch: string): GitResult
+  /** Runs `git check-ref-format --branch <name>`; stdout is the resolved branch name. */
+  checkRefFormatBranch(cwd: string, name: string): GitResult
+  /** True when `ancestor` is an ancestor of (or equal to) `descendant`. */
+  isAncestor(cwd: string, ancestor: string, descendant: string): boolean
+  /** Points `branch` at `startPoint`, moving it even when the move is not a fast-forward. */
+  branchForceUpdate(cwd: string, branch: string, startPoint: string): GitResult
 }
 
 /**
@@ -125,6 +131,18 @@ export function createGitService(): GitService {
 
     branchDelete(cwd: string, branch: string): GitResult {
       return runGit(['branch', '-D', branch], cwd)
+    },
+
+    checkRefFormatBranch(cwd: string, name: string): GitResult {
+      return runGit(['check-ref-format', '--branch', name], cwd)
+    },
+
+    isAncestor(cwd: string, ancestor: string, descendant: string): boolean {
+      return runGit(['merge-base', '--is-ancestor', ancestor, descendant], cwd).ok
+    },
+
+    branchForceUpdate(cwd: string, branch: string, startPoint: string): GitResult {
+      return runGit(['branch', '-f', branch, startPoint], cwd)
     },
   }
 }

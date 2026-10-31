@@ -72,6 +72,7 @@ function rowToLoopInfo(row: LoopRow): LoopInfo {
     executionVariant: row.executionVariant ?? undefined,
     auditorModel: row.auditorModel ?? undefined,
     auditorVariant: row.auditorVariant ?? undefined,
+    branch: row.worktreeBranch ?? undefined,
   }
 }
 

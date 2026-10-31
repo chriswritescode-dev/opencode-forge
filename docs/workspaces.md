@@ -14,7 +14,7 @@ All worktree-based execution paths require a git repository with at least one ro
 
 When a worktree loop starts, Forge:
 
-1. Creates the git worktree through its own adapter (`type: "forge"`, `branch: null`, `extra: { loopName, projectDirectory, workspaceCreatedAt }`), including orphaned-branch reuse, worktree config, and sandbox provisioning
+1. Creates the git worktree through its own adapter (`type: "forge"`, `branch: null`, `extra: { loopName, projectDirectory, workspaceCreatedAt }`, plus `baseRef` and `branch` when the loop carries them), including orphaned-branch reuse, worktree config, and sandbox provisioning
 2. Persists the worktree metadata in `<worktree>/.forge/workspace.json` — git-excluded and removed with the worktree
 3. Publishes the worktree into the V2 project inventory with `ctx.worktree.refresh`
 4. Creates the loop session directly at `location.directory = <worktree>`, so the session starts in the worktree location
@@ -28,7 +28,11 @@ Forge deliberately does not register a `worktree.transform` strategy: that would
 
 ## Based worktrees and goal planning checkouts
 
-When a loop carries an explicit base ref — as every goal chunk after the first does, stacked on the previous chunk's branch tip — the adapter branches the worktree from that exact commit (`git worktree add <dir> -b <branch> <baseRef>`) instead of the project `HEAD`. In this mode it **refuses to reuse an existing branch**: if `forge/<loop>` already exists it throws rather than basing the new chunk on the wrong commit. The base ref is carried on the workspace `extra.baseRef` field.
+When a loop carries an explicit base ref — as every goal chunk after the first does, stacked on the previous chunk's branch tip — the adapter branches the worktree from that exact commit instead of the project `HEAD` (`git worktree add <dir> -b <branch> <baseRef>`). Both fields travel on the workspace `extra` object: `baseRef` for the base commit, and `branch` for an explicit local branch.
+
+An explicit `branch` (`extra.branch`, for example `pm-61-export`) replaces the generated `forge/<loop>` name and is the branch the loop runs on. With a `baseRef` set, an existing branch is reused only when it equals the base ref or is behind it: the adapter fast-forwards it to `baseRef` and refuses with `Branch <branch> has commits that <baseRef> does not contain` when it carries commits the base ref lacks. Without a `baseRef`, an existing branch is continued as-is, which is the restart path. A start that fast-forwarded an existing branch and then fails moves the branch back to its previous tip, except a provider-limit stop, which keeps the loop restartable with its worktree.
+
+`execute-plan` validates the request before creating any workspace or session: `git check-ref-format --branch` for the branch name, the worktree inventory for a branch already checked out elsewhere, and `git rev-parse` for the base ref. A worktree registration whose directory was deleted without `git worktree prune` is marked prunable by git and does not count as holding the branch. Forge never fetches, so a `baseRef` must already resolve locally. Restart and workspace recovery re-create the worktree from the persisted `worktreeBranch` with no base ref, so a loop continues on the same branch at its tip; when another checkout holds that branch they fail with `Branch <branch> is checked out in worktree <path>; choose another branch or free it`.
 
 A goal's next-chunk planning runs in a plain detached checkout at `<dataDir>/worktrees/.goal-plan-<goalId>-<chunkIndex>` (`git worktree add --detach <dir> <commit>`), not a Forge workspace. The leading dot keeps it from colliding with a loop worktree slug, and a Forge workspace with no matching loop row would be reclaimed by the stale-workspace sweep after its 5-minute grace window. The checkout is removed once the plan is captured or the goal is paused or cancelled.
 

@@ -20,6 +20,16 @@ export function forgeBranchName(loopName: string): string {
   return `forge/${forgeWorktreeSlug(loopName)}`
 }
 
+/**
+ * Branch a loop's worktree lives on: the explicit branch when one was recorded,
+ * otherwise the canonical `forge/<slug>` derivation from the loop name.
+ */
+export function resolveLoopBranchName(loopName: string, explicitBranch?: string | null): string {
+  return typeof explicitBranch === 'string' && explicitBranch.length > 0
+    ? explicitBranch
+    : forgeBranchName(loopName)
+}
+
 export function forgeWorktreesRoot(dataDir: string): string {
   return join(dataDir, 'worktrees')
 }
@@ -90,8 +100,6 @@ export function loopBranchExists(
   git: GitService = defaultGitService,
 ): boolean {
   const repoDir = state.projectDir || fallbackDir
-  const branch = state.worktreeBranch && state.worktreeBranch.length > 0
-    ? state.worktreeBranch
-    : forgeBranchName(state.loopName)
+  const branch = resolveLoopBranchName(state.loopName, state.worktreeBranch)
   return gitBranchExists(repoDir, branch, git)
 }

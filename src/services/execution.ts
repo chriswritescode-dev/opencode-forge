@@ -35,6 +35,7 @@ import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists, forgeBranchName } from '../workspace/forge-naming'
+import { validateLoopBranchRequest } from '../workspace/loop-branch'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
@@ -185,6 +186,8 @@ export interface StartLoopCommand {
   sandbox?: LoopSandboxSettings
   /** Explicit base ref the loop worktree branches from; omitted branches from the project HEAD. */
   baseRef?: string
+  /** Explicit local branch the loop worktree checks out; omitted uses forge/<slug>. */
+  branch?: string
   lifecycle?: {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
@@ -210,6 +213,7 @@ export interface BuildStartLoopCommandInput {
   hostSessionId?: string
   sandbox?: LoopSandboxSettings
   baseRef?: string
+  branch?: string
   lifecycle?: StartLoopCommand['lifecycle']
 }
 
@@ -227,6 +231,7 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     hostSessionId: input.hostSessionId,
     sandbox: input.sandbox,
     baseRef: input.baseRef,
+    branch: input.branch,
     lifecycle: input.lifecycle,
   }
 }
@@ -969,6 +974,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return prior
     }
 
+    const branchValidation = validateLoopBranchRequest(git, ctx.directory, {
+      branch: command.branch,
+      baseRef: command.baseRef,
+    })
+    if (!branchValidation.ok) return fail('bad_request', 400, branchValidation.message)
+
     // Wrapped inner async to store/clean up in-flight promise
     async function doStart(): Promise<ForgeExecutionResponse<LoopStartedResult>> {
     // Resolve models
@@ -992,6 +1003,27 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let sandboxContainer: string | null = null
     let sandboxEnabledForLoop: boolean
     let loopStatePersisted = false
+    let previousBranchTip: string | null = null
+
+    /**
+     * The workspace adapter moves an existing local branch onto `baseRef` (`git branch -f`)
+     * before adding the worktree, so a failed start must put the caller's branch back where
+     * it was. Runs last in rollback because git refuses `branch -f` on a branch that a live
+     * worktree still has checked out.
+     */
+    const restoreBranchTip = (): void => {
+      const branch = command.branch
+      if (!previousBranchTip || !branch) return
+      const current = git.revParse(ctx.directory, `refs/heads/${branch}`)
+      if (current.ok && current.stdout.trim() === previousBranchTip) return
+      const restored = git.branchForceUpdate(ctx.directory, branch, previousBranchTip)
+      if (!restored.ok) {
+        deps.logger.error(
+          `handleStartLoop: failed to restore branch ${branch} to ${previousBranchTip}`,
+          restored.stderr.trim(),
+        )
+      }
+    }
 
     const rollbackLoopStart = async (): Promise<void> => {
       if (createdSessionId) {
@@ -1017,6 +1049,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           logger: deps.logger,
         })
       }
+      restoreBranchTip()
     }
     
     try {
@@ -1030,15 +1063,28 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       // Create builtin worktree workspace (single call — no separate worktree.create)
+      if (command.branch && command.baseRef && git.branchExists(ctx.directory, command.branch)) {
+        const tip = git.revParse(ctx.directory, `refs/heads/${command.branch}`)
+        if (tip.ok) {
+          previousBranchTip = tip.stdout.trim()
+        } else {
+          deps.logger.error(
+            `handleStartLoop: could not capture the pre-start tip of branch ${command.branch}; a failed start will not restore it`,
+            tip.stderr.trim(),
+          )
+        }
+      }
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
       const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
         baseRef: command.baseRef,
+        branch: command.branch || undefined,
         extra: loopSandboxWorkspaceExtra(command.sandbox),
       }, deps.logger)
       if (!wsResult.ok) {
         deps.logger.error(`handleStartLoop: failed to create builtin worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
+        await rollbackLoopStart()
         return fail('internal_error', 500, wsResult.error.message, { reason: wsResult.error.reason })
       }
       const ws = wsResult.workspace
@@ -1602,6 +1648,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
+          branch: stoppedState.worktreeBranch,
           extra: Object.keys(mergedExtra).length > 0 ? mergedExtra : undefined,
         }, deps.logger)
         if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }

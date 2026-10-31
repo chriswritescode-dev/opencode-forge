@@ -299,9 +299,36 @@ describe('cleanupForgeDb rollback', () => {
   })
 })
 
+describe('cleanupForgeDb branch reporting', () => {
+  test('returns distinct populated worktree branches from the rows it deletes', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'cleanup-loop-branches-'))
+    const dbPath = join(dataDir, 'forge.db')
+    const db = new Database(dbPath)
+    db.run('CREATE TABLE loops (project_id TEXT, loop_name TEXT, status TEXT, worktree_branch TEXT)')
+    const insert = db.prepare('INSERT INTO loops (project_id, loop_name, status, worktree_branch) VALUES (?, ?, ?, ?)')
+    insert.run('p1', 'foo_bar', 'completed', 'forge/a')
+    insert.run('p2', 'foo_bar', 'completed', 'forge/a')
+    insert.run('p3', 'foo_bar', 'running', null)
+    insert.run('p4', 'foo_bar', 'running', '')
+    insert.run('p5', 'other_loop', 'running', 'forge/other')
+    db.close()
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      await expect(cleanupForgeDb('foo_bar', false, dataDir)).resolves.toEqual(['forge/a'])
+    } finally {
+      logSpy.mockRestore()
+    }
+
+    const verify = new Database(dbPath)
+    expect(verify.prepare('SELECT project_id FROM loops').all()).toEqual([{ project_id: 'p5' }])
+    verify.close()
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+})
+
 describe('cleanup-loop git cleanup', () => {
-  test('prunes the worktree and deletes the forge branch in --project-dir', () => {
-    const xdg = join(homeDir, 'xdg-git')
+  function initProjectRepo(): string {
     const projectDir = mkdtempSync(join(tmpdir(), 'cleanup-proj-'))
     projectDirs.push(projectDir)
     expect(spawnSync('git', ['init', '-b', 'main', projectDir], { encoding: 'utf-8' }).status).toBe(0)
@@ -310,13 +337,44 @@ describe('cleanup-loop git cleanup', () => {
     writeFileSync(join(projectDir, 'README.md'), 'hi\n')
     expect(spawnSync('git', ['add', '-A'], { cwd: projectDir, encoding: 'utf-8' }).status).toBe(0)
     expect(spawnSync('git', ['commit', '-m', 'init'], { cwd: projectDir, encoding: 'utf-8' }).status).toBe(0)
+    return projectDir
+  }
+
+  function createForgeDb(xdg: string, loopName: string, branch: string | null): void {
+    mkdirSync(join(xdg, 'opencode', 'forge'), { recursive: true })
+    const db = new Database(join(xdg, 'opencode', 'forge', 'forge.db'))
+    db.run('CREATE TABLE loops (project_id TEXT, loop_name TEXT, status TEXT, worktree_branch TEXT)')
+    db.run('INSERT INTO loops (project_id, loop_name, status, worktree_branch) VALUES (?, ?, ?, ?)', [
+      'p1',
+      loopName,
+      'completed',
+      branch,
+    ])
+    db.close()
+  }
+
+  function createBranch(projectDir: string, branch: string): void {
+    expect(spawnSync('git', ['branch', branch], { cwd: projectDir, encoding: 'utf-8' }).status).toBe(0)
+  }
+
+  function branchExists(projectDir: string, branch: string): boolean {
+    return (
+      spawnSync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: projectDir, encoding: 'utf-8' })
+        .status === 0
+    )
+  }
+
+  test('prunes the worktree and deletes the persisted forge branch in --project-dir', () => {
+    const xdg = join(homeDir, 'xdg-git')
+    const projectDir = initProjectRepo()
 
     const worktreeDir = join(xdg, 'opencode', 'forge', 'worktrees', 'foo_bar')
     mkdirSync(worktreeDir, { recursive: true })
     expect(
-      spawnSync('git', ['worktree', 'add', '-b', 'forge/foo_bar', worktreeDir], { cwd: projectDir, encoding: 'utf-8' })
+      spawnSync('git', ['worktree', 'add', '-b', 'forge/custom-branch', worktreeDir], { cwd: projectDir, encoding: 'utf-8' })
         .status,
     ).toBe(0)
+    createForgeDb(xdg, 'foo_bar', 'forge/custom-branch')
 
     const run = runCleanup('foo_bar', {
       lsOut: '[]',
@@ -325,14 +383,63 @@ describe('cleanup-loop git cleanup', () => {
     })
     expect(run.status).toBe(0)
     expect(run.stdout).toContain('✓ git worktree prune')
-    expect(run.stdout).toContain('✓ git branch -D forge/foo_bar')
+    expect(run.stdout).toContain('✓ git branch -D forge/custom-branch')
+    expect(run.stdout).not.toContain('branch forge/foo_bar')
 
-    expect(
-      spawnSync('git', ['show-ref', '--verify', '--quiet', 'refs/heads/forge/foo_bar'], { cwd: projectDir, encoding: 'utf-8' })
-        .status,
-    ).not.toBe(0)
+    expect(branchExists(projectDir, 'forge/custom-branch')).toBe(false)
     const wtList = spawnSync('git', ['worktree', 'list'], { cwd: projectDir, encoding: 'utf-8' })
     expect(wtList.stdout).not.toContain(worktreeDir)
     expect(existsSync(worktreeDir)).toBe(false)
+  })
+
+  test('keeps a caller branch recorded in worktree_branch', () => {
+    const xdg = join(homeDir, 'xdg-git-caller')
+    const projectDir = initProjectRepo()
+    createBranch(projectDir, 'pm-61-export')
+    createForgeDb(xdg, 'foo_bar', 'pm-61-export')
+
+    const run = runCleanup('foo_bar', {
+      lsOut: '[]',
+      xdgDataHome: xdg,
+      args: [`--project-dir=${projectDir}`],
+    })
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('kept caller branch pm-61-export')
+    expect(run.stdout).not.toContain('git branch -D pm-61-export')
+    expect(branchExists(projectDir, 'pm-61-export')).toBe(true)
+  })
+
+  test('falls back to forge/<loopName> when no loops row exists', () => {
+    const xdg = join(homeDir, 'xdg-git-fallback')
+    const projectDir = initProjectRepo()
+    createBranch(projectDir, 'forge/foo_bar')
+    createForgeDb(xdg, 'other_loop', 'forge/other')
+
+    const run = runCleanup('foo_bar', {
+      lsOut: '[]',
+      xdgDataHome: xdg,
+      args: [`--project-dir=${projectDir}`],
+    })
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('no loops rows for foo_bar')
+    expect(run.stdout).toContain('✓ git branch -D forge/foo_bar')
+    expect(branchExists(projectDir, 'forge/foo_bar')).toBe(false)
+  })
+
+  test('--dry-run reports the branch deletion without deleting it', () => {
+    const xdg = join(homeDir, 'xdg-git-dry-run')
+    const projectDir = initProjectRepo()
+    createBranch(projectDir, 'forge/dry-run-branch')
+    createForgeDb(xdg, 'foo_bar', 'forge/dry-run-branch')
+
+    const run = runCleanup('foo_bar', {
+      lsOut: '[]',
+      xdgDataHome: xdg,
+      args: [`--project-dir=${projectDir}`, '--dry-run'],
+    })
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('Dry run complete.')
+    expect(run.stdout).toContain('would: git branch -D forge/dry-run-branch')
+    expect(branchExists(projectDir, 'forge/dry-run-branch')).toBe(true)
   })
 })

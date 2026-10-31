@@ -138,6 +138,17 @@ describe('createTuiRpcService', () => {
       expect(Object.hasOwn(wire.loops.find((loop) => loop.name === 'loop-sparse') ?? {}, 'auditorVariant')).toBe(false)
     })
 
+    test('carries the loop worktree branch through to the loop info', () => {
+      loopsRepo.insert(loopRow({ loopName: 'loop-branched', worktreeBranch: 'pm-61-export' }), { lastAuditResult: null })
+      loopsRepo.insert(loopRow({ loopName: 'loop-unbranched', worktreeBranch: null }), { lastAuditResult: null })
+
+      const result = createService().listLoops()
+      if ('error' in result) throw new Error(result.error)
+
+      expect(result.loops.find((loop) => loop.name === 'loop-branched')?.branch).toBe('pm-61-export')
+      expect(result.loops.find((loop) => loop.name === 'loop-unbranched')?.branch).toBeUndefined()
+    })
+
     test('reports an error when the repo throws', () => {
       const throwingRepo = { listAll: () => { throw new Error('database gone') } } as unknown as LoopsRepo
       const result = createService({ loopsRepo: throwingRepo }).listLoops()

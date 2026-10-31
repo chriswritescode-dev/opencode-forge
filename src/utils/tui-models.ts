@@ -56,6 +56,7 @@ export type LoopInfo = {
   executionVariant?: string
   auditorModel?: string
   auditorVariant?: string
+  branch?: string
 }
 
 /**

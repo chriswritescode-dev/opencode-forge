@@ -54,9 +54,19 @@ export function getWorktreeProjectPreconditionError(projectId: string | null): s
   return null
 }
 
+/**
+ * Reads a non-empty string value for `key` from a workspace opaque `extra` bag, or
+ * `undefined` when `extra` is not an object or the value is absent, non-string, or empty.
+ */
+function readForgeExtraString(entry: { extra?: unknown }, key: string): string | undefined {
+  const extra = entry.extra
+  if (typeof extra !== 'object' || extra === null) return undefined
+  const raw = (extra as Record<string, unknown>)[key]
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+}
+
 export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
-  const loopName = entry.extra?.loopName
-  return typeof loopName === 'string' && loopName.length > 0 ? loopName : undefined
+  return readForgeExtraString(entry, 'loopName')
 }
 
 /** Workspace `extra` key carrying the explicit base ref a loop worktree is branched from. */
@@ -64,10 +74,15 @@ const FORGE_BASE_REF_EXTRA_KEY = 'baseRef'
 
 /** Reads the optional explicit base ref a loop worktree is branched from, or undefined when absent. */
 export function getForgeWorkspaceBaseRef(entry: { extra?: unknown }): string | undefined {
-  const extra = entry.extra
-  if (typeof extra !== 'object' || extra === null) return undefined
-  const raw = (extra as Record<string, unknown>)[FORGE_BASE_REF_EXTRA_KEY]
-  return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+  return readForgeExtraString(entry, FORGE_BASE_REF_EXTRA_KEY)
+}
+
+/** Workspace `extra` key carrying the explicit local branch a loop worktree checks out. */
+const FORGE_BRANCH_EXTRA_KEY = 'branch'
+
+/** Reads the optional explicit local branch a loop worktree checks out, or undefined when absent. */
+export function getForgeWorkspaceBranch(entry: { extra?: unknown }): string | undefined {
+  return readForgeExtraString(entry, FORGE_BRANCH_EXTRA_KEY)
 }
 
 export function getForgeWorkspacePermissionRules(entry: Pick<ForgeWorkspaceEntry, 'extra'>): PermissionRule[] {
@@ -112,6 +127,8 @@ export async function createBuiltinWorktreeWorkspace(
     directory: string
     /** Explicit base ref the new loop worktree branches from; omitted for the project HEAD. */
     baseRef?: string
+    /** Explicit local branch the worktree checks out; omitted for forge/<slug>. */
+    branch?: string
     /** Caller-supplied extra fields preserved onto the new workspace (e.g. portable permission rules). */
     extra?: Record<string, unknown>
   },
@@ -126,6 +143,7 @@ export async function createBuiltinWorktreeWorkspace(
     ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)
     const callerExtra: Record<string, unknown> = { ...(options.extra ?? {}) }
     delete callerExtra[FORGE_BASE_REF_EXTRA_KEY]
+    delete callerExtra[FORGE_BRANCH_EXTRA_KEY]
     const createParams: { type: string; branch: string | null; extra: Record<string, unknown> } = {
       type: 'forge',
       branch: null,
@@ -135,6 +153,7 @@ export async function createBuiltinWorktreeWorkspace(
         projectDirectory: options.directory,
         workspaceCreatedAt: Date.now(),
         ...(options.baseRef ? { [FORGE_BASE_REF_EXTRA_KEY]: options.baseRef } : {}),
+        ...(options.branch ? { [FORGE_BRANCH_EXTRA_KEY]: options.branch } : {}),
       },
     }
     const workspaceData = await client.workspace.create(createParams)

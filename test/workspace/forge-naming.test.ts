@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest'
-import { gitBranchExists, loopBranchExists, isForgeWorktreeDir, isWithinDir } from '../../src/workspace/forge-naming'
+import { gitBranchExists, loopBranchExists, isForgeWorktreeDir, isWithinDir, resolveLoopBranchName } from '../../src/workspace/forge-naming'
 import { createFakeGitService } from '../helpers/fake-git'
 import type { GitService } from '../../src/utils/git-service'
 
@@ -78,6 +78,23 @@ describe('gitBranchExists', () => {
     const fake = createFakeGitService()
     expect(gitBranchExists('/repo', '', fake)).toBe(false)
     expect(fake.branchExists).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveLoopBranchName', () => {
+  test('returns the explicit branch when it is non-empty', () => {
+    expect(resolveLoopBranchName('my-loop', 'custom/b')).toBe('custom/b')
+  })
+
+  test('falls back to forgeBranchName when the explicit branch is absent or empty', () => {
+    expect(resolveLoopBranchName('my-loop')).toBe('forge/my-loop')
+    expect(resolveLoopBranchName('my-loop', null)).toBe('forge/my-loop')
+    expect(resolveLoopBranchName('my-loop', '')).toBe('forge/my-loop')
+  })
+
+  test('slugifies the loop name in the fallback', () => {
+    expect(resolveLoopBranchName('My Loop!')).toBe('forge/my-loop')
+    expect(resolveLoopBranchName('foo_bar')).toBe('forge/foo_bar')
   })
 })
 
