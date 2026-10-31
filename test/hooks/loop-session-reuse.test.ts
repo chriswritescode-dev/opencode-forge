@@ -17,7 +17,7 @@ import { createFakeForgeClient } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { SECTION_SUMMARY_START_MARKER } from '../../src/utils/section-summary'
 import type { ModelContextLimitParams } from '../../src/client/port'
-import { __resetIdleGate } from '../../src/loop/idle-gate'
+import { __resetIdleGate, hasSuppressedIdle, recordInboxEnqueued } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import { __resetLoopRuntimeSharedState } from '../../src/loop/runtime'
 
@@ -132,6 +132,8 @@ describe('Loop session reuse', () => {
     sections?: number
     config?: PluginConfig
     contextLimit?: (params: ModelContextLimitParams) => Promise<number | undefined>
+    compact?: (params: { sessionID: string }) => Promise<void>
+    status?: () => Promise<Record<string, { type: string }>>
   }) {
     const logs: string[] = []
     const logger: Logger = {
@@ -150,6 +152,8 @@ describe('Loop session reuse', () => {
           return { id: `created-session-${sessionCounter}` }
         },
         messages: async (params: any) => messagesBySession.get(params.sessionID) ?? [],
+        ...(options.compact ? { compact: options.compact } : {}),
+        ...(options.status ? { status: options.status } : {}),
       },
       model: options.contextLimit ? { contextLimit: options.contextLimit } : undefined,
     })
@@ -215,6 +219,14 @@ describe('Loop session reuse', () => {
 
   function createCalls(calls: Array<{ method: string }>) {
     return calls.filter((call) => call.method === 'session.create')
+  }
+
+  function compactCalls(calls: Array<{ method: string; params: any }>) {
+    return calls.filter((call) => call.method === 'session.compact').map((call) => call.params)
+  }
+
+  function callIndex(calls: Array<{ method: string; params: any }>, method: string, sessionId?: string) {
+    return calls.findIndex((call) => call.method === method && (sessionId === undefined || call.params?.sessionID === sessionId))
   }
 
   function deletedSessionIds(calls: Array<{ method: string; params: any }>) {
@@ -344,7 +356,7 @@ describe('Loop session reuse', () => {
       expect(after.standbySessionId).toBe('audit-1')
     })
 
-    test('a coder standby over its context percent falls back to a fresh session', async () => {
+    test('a coder standby over its context percent is compacted, then prompted in the same session', async () => {
       const state = makeState({ sessionId: 'audit-1', standbySessionId: 'fat-coder' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
@@ -369,10 +381,119 @@ describe('Loop session reuse', () => {
 
       await idle('audit-1')
 
-      expect(createCalls(calls)).toHaveLength(1)
+      expect(createCalls(calls)).toHaveLength(0)
+      expect(compactCalls(calls)).toEqual([{ sessionID: 'fat-coder', directory: state.worktreeDir }])
+      const compactIndex = callIndex(calls, 'session.compact', 'fat-coder')
+      const promptIndex = callIndex(calls, 'session.promptAsync', 'fat-coder')
+      expect(compactIndex).toBeGreaterThan(-1)
+      expect(promptIndex).toBeGreaterThan(compactIndex)
+
+      const coderPrompts = promptsTo(calls, 'fat-coder')
+      expect(coderPrompts).toHaveLength(1)
+      expect(coderPrompts[0]).toContain(FOLLOW_UP_MARKER)
+
+      const after = service.getActiveState(state.loopName)!
+      expect(after.sessionId).toBe('fat-coder')
+      expect(after.standbySessionId).toBe('audit-1')
+    })
+
+    test('a coder standby under its context percent is reused without compaction', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => 100_000,
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.' })],
+          'coder-1': [assistantMessage({ id: 'm-coder-1', tokens: 10_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('audit-1')
+
+      expect(compactCalls(calls)).toHaveLength(0)
+      expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
+      expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
+    })
+
+    test('a failed compaction falls back to a fresh coder session with the full prompt', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'fat-coder' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, logs, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => 100_000,
+        compact: async () => {
+          throw new Error('inbox unavailable')
+        },
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.' })],
+          'fat-coder': [assistantMessage({ id: 'm-coder-1', tokens: 60_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('audit-1')
+
+      expect(compactCalls(calls)).toEqual([{ sessionID: 'fat-coder', directory: state.worktreeDir }])
       expect(promptsTo(calls, 'fat-coder')).toHaveLength(0)
+      expect(createCalls(calls)).toHaveLength(1)
       expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
       expect(deletedSessionIds(calls)).toContain('fat-coder')
+      expect(logs.some((line) => line.includes('compaction of reused session fat-coder failed'))).toBe(true)
+
+      const after = service.getActiveState(state.loopName)!
+      expect(after.sessionId).toBe('created-session-1')
+      expect(after.standbySessionId).toBe('audit-1')
+    })
+
+    test('an audit session over its context percent is kept as the next standby', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'gone-coder' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => 100_000,
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.', tokens: 60_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('audit-1')
+
+      expect(createCalls(calls)).toHaveLength(1)
+      expect(deletedSessionIds(calls)).toContain('gone-coder')
+      expect(deletedSessionIds(calls)).not.toContain('audit-1')
       const after = service.getActiveState(state.loopName)!
       expect(after.sessionId).toBe('created-session-1')
       expect(after.standbySessionId).toBe('audit-1')
@@ -452,23 +573,25 @@ describe('Loop session reuse', () => {
 
       await idle('coder-1')
 
-      expect(createCalls(calls)).toHaveLength(1)
-      expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
-      expect(deletedSessionIds(calls)).toContain('audit-1')
+      expect(createCalls(calls)).toHaveLength(0)
+      expect(compactCalls(calls)).toEqual([{ sessionID: 'audit-1', directory: state.worktreeDir }])
+      expect(callIndex(calls, 'session.compact', 'audit-1')).toBeLessThan(callIndex(calls, 'session.promptAsync', 'audit-1'))
+      expect(promptsTo(calls, 'audit-1')[0]).toContain(AUDIT_FOLLOW_UP_MARKER)
       const afterAudit = service.getActiveState(state.loopName)!
       expect(afterAudit.phase).toBe('auditing')
-      expect(afterAudit.sessionId).toBe('created-session-1')
+      expect(afterAudit.sessionId).toBe('audit-1')
       expect(afterAudit.standbySessionId).toBe('coder-1')
 
-      messagesBySession.set('created-session-1', [
+      messagesBySession.set('audit-1', [
         assistantMessage({ id: 'm-audit-2', text: 'Still dirty.', providerID: 'test', modelID: 'model' }),
       ])
       await handler!.onEvent({
-        event: { type: 'session.status', properties: { sessionID: 'created-session-1', status: { type: 'busy' } } },
+        event: { type: 'session.status', properties: { sessionID: 'audit-1', status: { type: 'busy' } } },
       })
-      await idle('created-session-1')
+      await idle('audit-1')
 
-      expect(createCalls(calls)).toHaveLength(1)
+      expect(createCalls(calls)).toHaveLength(0)
+      expect(compactCalls(calls)).toHaveLength(1)
       const coderPrompts = promptsTo(calls, 'coder-1')
       expect(coderPrompts).toHaveLength(1)
       expect(coderPrompts[0]).toContain(FOLLOW_UP_MARKER)
@@ -504,6 +627,7 @@ describe('Loop session reuse', () => {
 
       expect(createCalls(calls)).toHaveLength(1)
       expect(promptsTo(calls, 'coder-1')).toHaveLength(0)
+      expect(compactCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
       expect(logs.some((line) => line.includes('disabled for the code role'))).toBe(true)
       const after = service.getActiveState(state.loopName)!
@@ -529,6 +653,7 @@ describe('Loop session reuse', () => {
 
       expect(createCalls(calls)).toHaveLength(1)
       expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
+      expect(compactCalls(calls)).toHaveLength(0)
       expect(deletedSessionIds(calls)).toContain('audit-1')
       expect(logs.some((line) => line.includes('disabled for the auditor role'))).toBe(true)
       const after = service.getActiveState(state.loopName)!
@@ -564,6 +689,7 @@ describe('Loop session reuse', () => {
 
       expect(createCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
+      expect(compactCalls(calls)).toHaveLength(0)
       expect(logs.some((line) => line.includes('unknown context window'))).toBe(true)
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
     })
@@ -597,8 +723,156 @@ describe('Loop session reuse', () => {
 
       expect(createCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
+      expect(compactCalls(calls)).toHaveLength(0)
       expect(logs.some((line) => line.includes('context-window lookup failed'))).toBe(true)
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
+    })
+  })
+
+  describe('compaction on reuse', () => {
+    test('an audit standby over its context percent is compacted, then audited in the same session', async () => {
+      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'fat-audit', auditCount: 0 })
+
+      const { calls, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => 100_000,
+        messages: {
+          'coder-1': [assistantMessage({ id: 'm-coder-1', tokens: 1_000, providerID: 'test', modelID: 'model' })],
+          'fat-audit': [assistantMessage({ id: 'm-audit-1', tokens: 70_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('coder-1')
+
+      expect(createCalls(calls)).toHaveLength(0)
+      expect(compactCalls(calls)).toEqual([{ sessionID: 'fat-audit', directory: state.worktreeDir }])
+      const compactIndex = callIndex(calls, 'session.compact', 'fat-audit')
+      const promptIndex = callIndex(calls, 'session.promptAsync', 'fat-audit')
+      expect(compactIndex).toBeGreaterThan(-1)
+      expect(promptIndex).toBeGreaterThan(compactIndex)
+      expect(promptsTo(calls, 'fat-audit')[0]).toContain(AUDIT_FOLLOW_UP_MARKER)
+
+      const after = service.getActiveState(state.loopName)!
+      expect(after.phase).toBe('auditing')
+      expect(after.sessionId).toBe('fat-audit')
+      expect(after.standbySessionId).toBe('coder-1')
+    })
+
+    test('a failed audit compaction falls back to a fresh audit session with the full audit prompt', async () => {
+      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'fat-audit', auditCount: 0 })
+
+      const { calls, logs, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => 100_000,
+        compact: async () => {
+          throw new Error('inbox unavailable')
+        },
+        messages: {
+          'coder-1': [assistantMessage({ id: 'm-coder-1', tokens: 1_000, providerID: 'test', modelID: 'model' })],
+          'fat-audit': [assistantMessage({ id: 'm-audit-1', tokens: 70_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('coder-1')
+
+      expect(compactCalls(calls)).toEqual([{ sessionID: 'fat-audit', directory: state.worktreeDir }])
+      expect(promptsTo(calls, 'fat-audit')).toHaveLength(0)
+      expect(createCalls(calls)).toHaveLength(1)
+      const freshAuditPrompts = promptsTo(calls, 'created-session-1')
+      expect(freshAuditPrompts).toHaveLength(1)
+      expect(freshAuditPrompts[0]).toContain('[Loop section audit 1/2]')
+      expect(freshAuditPrompts[0]).not.toContain('(follow-up)')
+      expect(deletedSessionIds(calls)).toContain('fat-audit')
+      expect(logs.some((line) => line.includes('compaction of reused session fat-audit failed'))).toBe(true)
+
+      const after = service.getActiveState(state.loopName)!
+      expect(after.phase).toBe('auditing')
+      expect(after.sessionId).toBe('created-session-1')
+      expect(after.standbySessionId).toBe('coder-1')
+    })
+
+    test('an idle while the follow-up prompt is still queued does not advance the phase', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'fat-coder' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, service } = createHarness({
+        state,
+        sections: 2,
+        config: configWithSessionReuse({ coderContextPercent: 50, auditorContextPercent: 50 }),
+        contextLimit: async () => 100_000,
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.' })],
+          'fat-coder': [assistantMessage({ id: 'm-coder-1', tokens: 60_000, providerID: 'test', modelID: 'model' })],
+        },
+      })
+
+      await idle('audit-1')
+      expect(compactCalls(calls)).toHaveLength(1)
+      const createsAfterReuse = createCalls(calls).length
+      const promptsAfterReuse = promptsTo(calls, 'fat-coder').length
+
+      recordInboxEnqueued('fat-coder', 'inbox-follow-up-1')
+      await idle('fat-coder')
+
+      expect(hasSuppressedIdle('fat-coder')).toBe(true)
+      expect(createCalls(calls)).toHaveLength(createsAfterReuse)
+      expect(promptsTo(calls, 'fat-coder')).toHaveLength(promptsAfterReuse)
+      const after = service.getActiveState(state.loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.sessionId).toBe('fat-coder')
+    })
+
+    test('a compaction record is never read as the reused session turn result', async () => {
+      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/broken.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Retry handler drops the second event',
+        sectionIndex: 0,
+      })
+
+      const { calls, logs, service } = createHarness({
+        state,
+        sections: 2,
+        status: async () => ({ 'coder-1': { type: 'busy' } }),
+        messages: {
+          'audit-1': [assistantMessage({ id: 'm-audit-1', text: 'Dirty.' })],
+          'coder-1': [
+            assistantMessage({ id: 'm-coder-1', text: 'Old reply' }),
+            { info: { id: 'm-compaction', role: 'compaction' }, parts: [] },
+          ] as any,
+        },
+      })
+
+      await idle('audit-1')
+      expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
+      const createsAfterReuse = createCalls(calls).length
+
+      await handler!.onEvent({
+        event: { type: 'session.status', properties: { sessionID: 'coder-1', status: { type: 'busy' } } },
+      })
+      await idle('coder-1')
+
+      expect(createCalls(calls)).toHaveLength(createsAfterReuse)
+      expect(logs.some((line) => line.includes('last message role: compaction'))).toBe(true)
+      const after = service.getActiveState(state.loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.sessionId).toBe('coder-1')
     })
   })
 

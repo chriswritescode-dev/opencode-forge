@@ -244,9 +244,9 @@ export function parseSessionReuseConfig(raw: unknown): ParsedSessionReuseConfig 
 }
 
 /**
- * Resolves the context-window percentage a loop session of `role` may use and
- * still be reused across a same-section phase switch. 0 means reuse is disabled
- * for that role.
+ * Resolves the context-window percentage a loop session of `role` may reach
+ * before it is compacted ahead of reuse across a same-section phase switch. 0
+ * means reuse is disabled for that role.
  */
 export function resolveSessionReuseContextPercent(
   config: PluginConfig | undefined,

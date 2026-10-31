@@ -22,6 +22,7 @@ type V2SessionInfo = Awaited<ReturnType<V2Session['get']>>
 type V2Message = Awaited<ReturnType<V2Session['context']>>[number]
 type V2UserMessage = Extract<V2Message, { type: 'user' }>
 type V2AssistantMessage = Extract<V2Message, { type: 'assistant' }>
+type V2VisibleMessage = V2UserMessage | V2AssistantMessage
 type V2AssistantContent = V2AssistantMessage['content'][number]
 type V2ToolState = Extract<V2AssistantContent, { type: 'tool' }>['state']
 type V2TokenUsage = NonNullable<V2AssistantMessage['tokens']>
@@ -202,11 +203,23 @@ function toAssistantMessageParts(message: V2AssistantMessage, sessionID: string)
   })
 }
 
+/**
+ * Whether a V2 session message is a conversation turn the port may expose.
+ * Control-only records — compaction (running/completed/failed), shell, skill,
+ * and the agent/model switch notices — carry no turn result, so exposing a
+ * compaction summary as an assistant reply would let a phase handler consume it
+ * as the coder's or auditor's answer. They stay out of `session.messages` here,
+ * which is the single point every reader goes through.
+ */
+function isVisibleV2Message(message: V2Message): message is V2VisibleMessage {
+  return message.type === 'user' || message.type === 'assistant'
+}
+
 function lastVisibleMessages(messages: V2Message[], limit: number): V2Message[] {
   const selected: V2Message[] = []
   for (let index = messages.length - 1; index >= 0 && selected.length < limit; index--) {
     const message = messages[index]
-    if (message.type === 'user' || message.type === 'assistant') selected.push(message)
+    if (isVisibleV2Message(message)) selected.push(message)
   }
   return selected.reverse()
 }
@@ -215,9 +228,10 @@ function toSessionMessages(messages: V2Message[], sessionID: string, limit?: num
   const visible = limit === undefined ? messages : lastVisibleMessages(messages, limit)
   const mapped: SessionMessages = []
   for (const message of visible) {
+    if (!isVisibleV2Message(message)) continue
     if (message.type === 'user') {
       mapped.push({ info: toSessionMessageInfo(message, sessionID), parts: toUserMessageParts(message, sessionID) })
-    } else if (message.type === 'assistant') {
+    } else {
       mapped.push({ info: toSessionMessageInfo(message, sessionID), parts: toAssistantMessageParts(message, sessionID) })
     }
   }
@@ -415,6 +429,9 @@ export function createForgeClientFromV2(ctx: V2ClientLike, options: V2ForgeClien
     }),
     abort: (params) => call('session.abort', async () => {
       await ctx.session.interrupt({ sessionID: params.sessionID, resume: false })
+    }),
+    compact: (params) => call('session.compact', async () => {
+      await ctx.session.compact({ sessionID: params.sessionID, delivery: 'queue' })
     }),
     delete: (params) => {
       const requestSessionDelete = options.requestSessionDelete

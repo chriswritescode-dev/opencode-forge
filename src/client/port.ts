@@ -51,6 +51,11 @@ export type SessionAbortParams = {
   directory?: string
 }
 
+export type SessionCompactParams = {
+  sessionID: string
+  directory?: string
+}
+
 export type SessionDeleteParams = {
   sessionID: string
   directory?: string
@@ -230,6 +235,12 @@ export interface ForgeClient {
     status(params?: SessionStatusParams): Promise<SessionStatus>
     promptAsync(params: SessionPromptAsyncParams): Promise<void>
     abort(params: SessionAbortParams): Promise<void>
+    /**
+     * Enqueues a compaction in the session inbox. The host runs it before any
+     * prompt queued after it, so the session keeps its identity and its history
+     * collapses into the compaction summary.
+     */
+    compact(params: SessionCompactParams): Promise<void>
     delete(params: SessionDeleteParams): Promise<void>
   }
   workspace: {

@@ -43,10 +43,12 @@ export interface PostActionConfig {
 
 /**
  * Session reuse on same-section retries: a retained standby session is resumed
- * only while its last assistant turn still fits in the model's context window.
+ * across a phase switch. When its last assistant turn reached the role's
+ * percentage of the model's context window, the session is compacted before its
+ * next turn instead of being replaced.
  */
 export interface LoopSessionReuseConfig {
-  /** Reuse the coder session only while its last turn used less than this percent of the model's context window. 0 disables coder reuse. Default 50. */
+  /** Compact the reused coder session before its next turn once its last turn used at least this percent of the model's context window. 0 disables coder reuse. Default 50. */
   coderContextPercent?: number
   /** Same for the audit session. 0 disables auditor reuse. Default 50. */
   auditorContextPercent?: number

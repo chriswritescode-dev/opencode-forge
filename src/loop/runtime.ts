@@ -563,16 +563,29 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
+   * A standby session that may carry over into the next phase. `needsCompaction`
+   * marks a session whose last turn reached the role's context-reuse threshold:
+   * it is still reused, but its context is compacted before the follow-up turn.
+   */
+  interface StandbyCandidate {
+    sessionId: string
+    latestAssistantMessageId?: string
+    needsCompaction: boolean
+  }
+
+  /**
    * Whether a session of `role` can carry over as the next standby: it must
-   * still exist and its last assistant turn must stay under that role's
-   * percentage of the model's context window. An unknown context window (no
-   * model on the message, a failed lookup, or no limit) allows reuse.
+   * still exist, and its role's reuse percentage must not be `0`. A last
+   * assistant turn at or above that percentage of the model's context window
+   * marks the candidate for compaction instead of rejecting it. An unknown
+   * context window (no model on the message, a failed lookup, or no limit)
+   * allows reuse without compaction.
    */
   async function inspectStandbyCandidate(
     sessionId: string,
     state: LoopState,
     role: LoopSessionReuseRole,
-  ): Promise<{ sessionId: string; latestAssistantMessageId?: string } | null> {
+  ): Promise<StandbyCandidate | null> {
     try {
       const messages = await client.session.messages({ sessionID: sessionId, directory: state.worktreeDir, limit: 4 })
       if (messages.length === 0) {
@@ -580,7 +593,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return null
       }
       const lastAssistant = [...messages].reverse().find((message) => message.info.role === 'assistant')
-      if (!lastAssistant) return { sessionId }
+      if (!lastAssistant) return { sessionId, needsCompaction: false }
 
       const maxPercent = resolveSessionReuseContextPercent(getConfig(), role)
       if (maxPercent === 0) {
@@ -604,17 +617,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       if (contextLimit === undefined) {
         logger.log(`Loop: reusing session ${sessionId} (${role}) for ${state.loopName}; used ${contextTokens} tokens with an unknown context window for ${providerID ?? 'unknown'}/${modelID ?? 'unknown'}`)
-        return { sessionId, latestAssistantMessageId: lastAssistant.info.id }
+        return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: false }
       }
 
       const contextPercent = (contextTokens / contextLimit) * 100
       if (contextPercent >= maxPercent) {
-        logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), at or above the ${maxPercent}% reuse threshold`)
-        return null
+        logger.log(`Loop: reusing session ${sessionId} (${role}) for ${state.loopName} with compaction; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), at or above the ${maxPercent}% reuse threshold`)
+        return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: true }
       }
 
       logger.log(`Loop: session ${sessionId} (${role}) is reusable for ${state.loopName}; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), below the ${maxPercent}% reuse threshold`)
-      return { sessionId, latestAssistantMessageId: lastAssistant.info.id }
+      return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: false }
     } catch (err) {
       logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; session lookup failed`, err)
       return null
@@ -622,14 +635,38 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * The single reusability predicate for the recorded standby: it must still
-   * exist, stay under its role's context-window percentage, and have no blocking
-   * bug finding at the recurrence escalation threshold. Standbys only ever hold
-   * the other role of the current section (every section change and loop end
-   * releases them), so same-section membership holds by construction rather
-   * than by a stored field.
+   * Compacts a reused standby session before its follow-up turn when its last
+   * turn reached the context threshold. Compaction and the follow-up prompt are
+   * both queued, so the host runs the compaction first and the prompt lands in
+   * the same session. Returns false when the compaction could not be enqueued,
+   * so the caller rotates to a fresh session instead of prompting a session
+   * whose context would overflow.
    */
-  async function inspectReusableStandby(state: LoopState): Promise<{ sessionId: string; latestAssistantMessageId?: string } | null> {
+  async function compactStandbySession(
+    loopName: string,
+    state: LoopState,
+    standby: StandbyCandidate,
+  ): Promise<boolean> {
+    if (!standby.needsCompaction) return true
+    try {
+      await client.session.compact({ sessionID: standby.sessionId, directory: state.worktreeDir })
+      logger.log(`Loop: compacting reused session ${standby.sessionId} for ${loopName} before its follow-up turn`)
+      return true
+    } catch (err) {
+      logger.log(`Loop: compaction of reused session ${standby.sessionId} failed for ${loopName}; rotating to a fresh session`, err)
+      return false
+    }
+  }
+
+  /**
+   * The single reusability predicate for the recorded standby: it must still
+   * exist, its role's reuse percentage must not be `0`, and it must have no
+   * blocking bug finding at the recurrence escalation threshold. Standbys only
+   * ever hold the other role of the current section (every section change and
+   * loop end releases them), so same-section membership holds by construction
+   * rather than by a stored field.
+   */
+  async function inspectReusableStandby(state: LoopState): Promise<StandbyCandidate | null> {
     const standbySessionId = state.standbySessionId
     if (!standbySessionId || standbySessionId === state.sessionId) return null
 
@@ -1073,7 +1110,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     /** Audit-error / audit-failure paths delete the failed audit session instead of retaining it. */
     discardAuditSession?: boolean
     /** Pre-resolved standby probe for a caller that already inspected it. */
-    standby?: { sessionId: string; latestAssistantMessageId?: string } | null
+    standby?: StandbyCandidate | null
     /** Overrides the default reset-on-successful-retry decision. */
     resetError?: boolean
     /** Marks the loop's model as failed after the phase commit (audit-failure recovery). */
@@ -1083,14 +1120,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * Shared dirty-audit → coding switch. Reuses the standby coder session when it
    * is still usable and sends only the findings follow-up; otherwise rotates to a
-   * fresh coder session with the full continuation prompt. The audit session
-   * becomes the next standby unless it failed (then it is deleted).
+   * fresh coder session with the full continuation prompt. A reused session that
+   * reached its context threshold is compacted first, and a failed compaction
+   * falls back to the fresh-session path. The audit session becomes the next
+   * standby unless it failed (then it is deleted).
    */
   async function switchToCodingPhase(input: CodingSwitchInput): Promise<void> {
     const { loopName, currentState, stateUpdates, followUpPrompt, fullPrompt, assistantErrorDetected, errorContext, transition } = input
     const auditSessionId = currentState.sessionId
-    const standby = input.standby === undefined ? await inspectReusableStandby(currentState) : input.standby
+    const candidate = input.standby === undefined ? await inspectReusableStandby(currentState) : input.standby
     const resetError = input.resetError ?? (!assistantErrorDetected && currentState.errorCount > 0)
+    let standby = candidate
+    if (standby && !await compactStandbySession(loopName, currentState, standby)) standby = null
 
     if (!standby) {
       await discardStandbySession(loopName, currentState, 'before coder rotation')
@@ -1969,14 +2010,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * coding → auditing switch onto a reused standby audit session. The coder
    * session becomes the standby, so the next dirty audit can return to it with
-   * its exploration intact.
+   * its exploration intact. A reused audit session that reached its context
+   * threshold is compacted before the audit follow-up; when that compaction
+   * cannot be enqueued the phase is left untouched and the caller rotates to a
+   * fresh audit session, so a session is never prompted past its context window.
+   * Returns whether the reused session was activated.
    */
   async function switchToAuditingPhase(
     loopName: string,
     currentState: LoopState,
-    standby: { sessionId: string; latestAssistantMessageId?: string },
+    standby: StandbyCandidate,
     idleTrans: Transition,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (!await compactStandbySession(loopName, currentState, standby)) return false
+
     const codeSessionId = currentState.sessionId
     const auditSessionId = standby.sessionId
 
@@ -2002,6 +2049,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       auditorChoice,
       'audit-reused',
     )
+    return true
   }
 
   async function runCodingPhase(loopName: string, _state: LoopState): Promise<void> {
@@ -2103,8 +2151,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     const standbyAuditSession = await inspectReusableStandby(currentState)
-    if (standbyAuditSession) {
-      await switchToAuditingPhase(loopName, currentState, standbyAuditSession, idleTrans)
+    if (standbyAuditSession && await switchToAuditingPhase(loopName, currentState, standbyAuditSession, idleTrans)) {
       return
     }
 

@@ -126,6 +126,11 @@ export function createFakeForgeClient(
         async (_p: Record<string, unknown>) => {},
         overrides?.session?.abort,
       ),
+      compact: makeMethod(
+        'session.compact',
+        async (_p: Record<string, unknown>) => {},
+        overrides?.session?.compact,
+      ),
       delete: makeMethod(
         'session.delete',
         async (_p: Record<string, unknown>) => {},
