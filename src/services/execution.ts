@@ -1624,6 +1624,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         )
       }
 
+      deps.loop.service.discardPendingHandoff(stoppedState.loopName)
+
       if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
         deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
         // Persist the terminal transition row so the disabled post-action

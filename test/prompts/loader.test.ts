@@ -48,8 +48,7 @@ describe('loadPrompt', () => {
     const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
     expect(prompt).toContain('loop-handoff')
     expect(prompt).toContain('never parses your response text')
-    expect(prompt).not.toContain('section-summary block')
-    expect(prompt).not.toContain('<!-- section-summary')
+    expect(prompt).not.toContain('<!-- section')
   })
 
   test('auditor-loop-addendum requires remediation guidance for blocking findings', () => {

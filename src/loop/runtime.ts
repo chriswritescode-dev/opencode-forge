@@ -1471,6 +1471,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       idleRetryTimeouts.delete(loopName)
     }
     handoffNudges.delete(loopName)
+    loopService.discardPendingHandoff(loopName)
     coalescedLimitSessions.delete(loopName)
     clearPromptPending(projectId, loopName, logger)
     clearPromptInFlight(projectId, loopName)

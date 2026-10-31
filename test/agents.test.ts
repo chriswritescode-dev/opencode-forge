@@ -148,9 +148,8 @@ describe('Agent definitions', () => {
       expect(prompt.toLowerCase()).toContain('deviation acceptance')
     })
 
-    test('auditor-loop system prompt does not duplicate the section-summary marker protocol', () => {
-      expect(auditorLoopAgent.systemPrompt).not.toContain('section-summary:start')
-      expect(auditorLoopAgent.systemPrompt).not.toContain('section-summary block')
+    test('auditor-loop system prompt does not hand-roll a section marker protocol', () => {
+      expect(auditorLoopAgent.systemPrompt).not.toContain('<!-- section')
     })
 
     test('auditor-loop prompt blocks a section on bugs at or before it, uniformly for every section', () => {
