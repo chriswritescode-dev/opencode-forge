@@ -6,15 +6,20 @@
  * Forge parses back on the host with `parseCodeGraphRunnerResult`.
  *
  * The library surface below is the subset of `@colbymchenry/codegraph` v1.6.2 (the exact
- * version pinned in `container/Dockerfile`) this runner calls.
+ * version pinned in `container/Dockerfile`) this runner calls. It must exist in the published
+ * release asset the image installs: source builds that also call themselves 1.6.2 add methods,
+ * such as `getUnresolvedReferenceSourcesNamed`, that the release lacks.
  */
 
-/** A codegraph index node, as returned by `CodeGraph.getNodesInFile`. */
+/** A codegraph index node, as returned by `CodeGraph.getNodesInFile` and `getNode`. */
 interface CodeGraphNodeRecord {
+  id: string
   name: string
   kind: string
   signature?: string
+  filePath: string
   startLine: number
+  endLine: number
 }
 
 /** `CodeGraph.indexAll` result fields this runner reads. */
@@ -30,6 +35,13 @@ interface CodeGraphHandle {
   sync(): Promise<unknown>
   getNodesInFile(filePath: string): CodeGraphNodeRecord[]
   getFileDependents(filePath: string): string[]
+  getCallers(nodeId: string, maxDepth?: number): Array<{ node: CodeGraphNodeRecord; edge: { line?: number } }>
+  getNode(id: string): CodeGraphNodeRecord | null
+  /** Which of `names` the index holds an unresolved reference to. */
+  getUnresolvedNamesAmong(names: Iterable<string>): Set<string>
+  getFiles(): Array<{ path: string }>
+  /** References from a file's symbols that never resolved to an indexed node, in line order. */
+  getUnresolvedReferencesInFile(filePath: string): Array<{ fromNodeId: string; referenceName: string; referenceKind: string; line: number }>
   destroy(): void
 }
 
@@ -83,6 +95,60 @@ export interface CodeGraphRunnerInput {
    * not reach it.
    */
   deadlineMs: number
+  /**
+   * Audit checkpoints only: also report the callers of changed symbols and the code that still
+   * refers to symbols the change removed or renamed. Absent at section start, where no code has
+   * changed yet.
+   */
+  impact?: CodeGraphImpactInput
+}
+
+/** A changed line range on the new side of a diff, 1-based and inclusive. */
+export interface CodeGraphLineRange {
+  start: number
+  end: number
+}
+
+export interface CodeGraphImpactInput {
+  /** New-side changed line ranges per repo-relative file in `files`. */
+  ranges: Record<string, CodeGraphLineRange[]>
+  /** Callers listed per changed symbol; the rest are only counted. */
+  callerLimit: number
+}
+
+/** One place in the code that refers to a symbol: the referring symbol and the line of the reference. */
+export interface CodeGraphReference {
+  name: string
+  kind: string
+  path: string
+  line: number
+}
+
+/** A symbol whose definition overlaps a changed range, with its callers outside the changed files. */
+export interface CodeGraphChangedSymbol {
+  name: string
+  kind: string
+  path: string
+  startLine: number
+  /** At most `callerLimit` callers, sorted by path and line. */
+  callers: CodeGraphReference[]
+  /** All callers outside the changed files, including those beyond `callerLimit`. */
+  callerCount: number
+}
+
+/** A symbol present in a changed file before the run's sync and gone after it, still referenced elsewhere. */
+export interface CodeGraphRemovedSymbol {
+  name: string
+  /** The file the symbol was defined in before the change. */
+  path: string
+  /** Unresolved references to the name, sorted by path and line. */
+  references: CodeGraphReference[]
+}
+
+export interface CodeGraphImpactReport {
+  changedSymbols: CodeGraphChangedSymbol[]
+  /** Only removed or renamed symbols that still have references. */
+  removedSymbols: CodeGraphRemovedSymbol[]
 }
 
 /** How the run brought the index up to date before querying it. */
@@ -111,13 +177,22 @@ export type CodeGraphRunnerStage = 'load' | 'locked' | 'index' | 'query' | 'dead
 const CODE_GRAPH_RUNNER_STAGES: readonly CodeGraphRunnerStage[] = ['load', 'locked', 'index', 'query', 'deadline']
 
 export type CodeGraphRunnerResult =
-  | { ok: true; index: CodeGraphIndexAction; files: CodeGraphFileReport[]; affectedTests: string[] }
+  | {
+      ok: true
+      index: CodeGraphIndexAction
+      files: CodeGraphFileReport[]
+      affectedTests: string[]
+      /** Present exactly when the input asked for `impact`. */
+      impact?: CodeGraphImpactReport
+    }
   | { ok: false; stage: CodeGraphRunnerStage; error: string }
 
 /**
  * Brings the index up to date and collects each file's symbols, direct dependents, and the test
  * files reachable through reverse imports (the same walk as `codegraph affected`: a changed test
- * file counts itself, and the walk stops at test files and at `maxDepth`).
+ * file counts itself, and the walk stops at test files and at `maxDepth`). With `impact`, it also
+ * reports the symbols overlapping the changed ranges with their callers, and the symbols the
+ * change removed or renamed that still have references.
  *
  * A missing index is created with a full index; an existing one is synced, and a failed sync is
  * replaced by a full rebuild. Creating and rebuilding hold `rebuild.pid`, like `codegraph index`.
@@ -144,6 +219,99 @@ export async function runCodeGraphSnapshot(
     if (!result.success) {
       throw new Error(`full index failed after ${result.filesIndexed} files with ${result.errors.length} errors`)
     }
+  }
+  const hiddenKinds = new Set(['file', 'import'])
+  const unresolvedReferenceKinds = [
+    'calls',
+    'imports',
+    'references',
+    'extends',
+    'implements',
+    'instantiates',
+    'type_of',
+    'returns',
+  ]
+  const byPathThenLine = (a: CodeGraphReference, b: CodeGraphReference): number =>
+    a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1
+  const visibleSymbols = (handle: CodeGraphHandle, filePath: string): CodeGraphNodeRecord[] =>
+    handle.getNodesInFile(filePath).filter((node) => !hiddenKinds.has(node.kind))
+
+  const collectImpact = (
+    handle: CodeGraphHandle,
+    request: CodeGraphImpactInput,
+    changedFiles: string[],
+    previous: Map<string, string[]> | null,
+  ): CodeGraphImpactReport => {
+    const changed = new Set(changedFiles)
+    const changedSymbols: CodeGraphChangedSymbol[] = []
+    for (const [path, ranges] of Object.entries(request.ranges)) {
+      for (const node of visibleSymbols(handle, path)) {
+        if (!ranges.some((range) => node.startLine <= range.end && node.endLine >= range.start)) continue
+        const seen = new Set([node.id])
+        const callers: CodeGraphReference[] = []
+        for (const caller of handle.getCallers(node.id)) {
+          if (!caller.node || hiddenKinds.has(caller.node.kind) || changed.has(caller.node.filePath) || seen.has(caller.node.id)) continue
+          seen.add(caller.node.id)
+          callers.push({
+            name: caller.node.name,
+            kind: caller.node.kind,
+            path: caller.node.filePath,
+            line: caller.edge?.line ?? caller.node.startLine,
+          })
+        }
+        callers.sort(byPathThenLine)
+        changedSymbols.push({
+          name: node.name,
+          kind: node.kind,
+          path,
+          startLine: node.startLine,
+          callers: callers.slice(0, request.callerLimit),
+          callerCount: callers.length,
+        })
+      }
+    }
+    changedSymbols.sort((a, b) => (a.path === b.path ? a.startLine - b.startLine : a.path < b.path ? -1 : 1))
+
+    const removedSymbols: CodeGraphRemovedSymbol[] = []
+    if (previous) {
+      const vanished = new Map<string, string[]>()
+      const vanishedNames = new Set<string>()
+      for (const [path, names] of previous) {
+        const current = new Set(visibleSymbols(handle, path).map((node) => node.name))
+        const gone = names.filter((name) => !current.has(name))
+        if (gone.length === 0) continue
+        vanished.set(path, gone)
+        for (const name of gone) vanishedNames.add(name)
+      }
+      const stillReferenced = vanishedNames.size === 0 ? new Set<string>() : handle.getUnresolvedNamesAmong(vanishedNames)
+      const referencesByName = new Map<string, CodeGraphReference[]>()
+      if (stillReferenced.size > 0) {
+        const kinds = new Set(unresolvedReferenceKinds)
+        const seen = new Set<string>()
+        for (const file of handle.getFiles()) {
+          for (const reference of handle.getUnresolvedReferencesInFile(file.path)) {
+            if (!stillReferenced.has(reference.referenceName) || !kinds.has(reference.referenceKind)) continue
+            const source = handle.getNode(reference.fromNodeId)
+            if (!source) continue
+            const key = JSON.stringify([reference.referenceName, source.name, source.kind, source.filePath, reference.line])
+            if (seen.has(key)) continue
+            seen.add(key)
+            const list = referencesByName.get(reference.referenceName) ?? []
+            list.push({ name: source.name, kind: source.kind, path: source.filePath, line: reference.line })
+            referencesByName.set(reference.referenceName, list)
+          }
+        }
+      }
+      const vanishedPaths = [...vanished.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      for (const [path, names] of vanishedPaths) {
+        for (const name of [...names].sort()) {
+          const references = referencesByName.get(name)
+          if (!references || references.length === 0) continue
+          removedSymbols.push({ name, path, references: [...references].sort(byPathThenLine) })
+        }
+      }
+    }
+    return { changedSymbols, removedSymbols }
   }
 
   let lib: CodeGraphLibrary
@@ -172,6 +340,10 @@ export async function runCodeGraphSnapshot(
 
   let graph: CodeGraphHandle | null = null
   let index: CodeGraphIndexAction
+  /** Symbol names each impact file had before this run's sync; null when there was no index to read. */
+  let baseline: Map<string, string[]> | null = null
+  /** A baseline read failure is reported with the other impact queries, after the index is up to date. */
+  let baselineError: unknown = null
   try {
     if (!lib.CodeGraph.isInitialized(input.projectRoot)) {
       if (!acquireRebuildLock()) return rebuildBusy
@@ -179,9 +351,21 @@ export async function runCodeGraphSnapshot(
       await fullIndex(graph)
       index = 'created'
     } else {
-      graph = await lib.CodeGraph.open(input.projectRoot)
+      const openedIndex = await lib.CodeGraph.open(input.projectRoot)
+      graph = openedIndex
+      if (input.impact) {
+        try {
+          const previous = new Map<string, string[]>()
+          for (const path of Object.keys(input.impact.ranges)) {
+            previous.set(path, visibleSymbols(openedIndex, path).map((node) => node.name))
+          }
+          baseline = previous
+        } catch (err) {
+          baselineError = err
+        }
+      }
       try {
-        await graph.sync()
+        await openedIndex.sync()
         index = 'synced'
       } catch (syncError) {
         close(graph)
@@ -208,13 +392,15 @@ export async function runCodeGraphSnapshot(
 
   const opened = graph
   try {
-    const hiddenKinds = new Set(['file', 'import'])
+    if (baselineError) throw baselineError
     const files: CodeGraphFileReport[] = input.files.map((path) => ({
       path,
-      symbols: opened
-        .getNodesInFile(path)
-        .filter((node) => !hiddenKinds.has(node.kind))
-        .map((node) => ({ name: node.name, kind: node.kind, signature: node.signature ?? null, startLine: node.startLine })),
+      symbols: visibleSymbols(opened, path).map((node) => ({
+        name: node.name,
+        kind: node.kind,
+        signature: node.signature ?? null,
+        startLine: node.startLine,
+      })),
       dependents: [...opened.getFileDependents(path)].sort(),
     }))
 
@@ -237,7 +423,11 @@ export async function runCodeGraphSnapshot(
         }
       }
     }
-    return { ok: true, index, files, affectedTests: [...affected].sort() }
+    const impact = input.impact ? collectImpact(opened, input.impact, input.files, baseline) : undefined
+    const affectedTests = [...affected].sort()
+    return impact
+      ? { ok: true, index, files, affectedTests, impact }
+      : { ok: true, index, files, affectedTests }
   } catch (err) {
     return { ok: false, stage: 'query', error: message(err) }
   } finally {
@@ -283,6 +473,53 @@ function isFileReport(value: unknown): value is CodeGraphFileReport {
   return typeof file.path === 'string' && Array.isArray(file.symbols) && file.symbols.every(isSymbol) && isStringArray(file.dependents)
 }
 
+function isReference(value: unknown): value is CodeGraphReference {
+  if (!value || typeof value !== 'object') return false
+  const reference = value as Record<string, unknown>
+  return (
+    typeof reference.name === 'string' &&
+    typeof reference.kind === 'string' &&
+    typeof reference.path === 'string' &&
+    typeof reference.line === 'number'
+  )
+}
+
+function isChangedSymbol(value: unknown): value is CodeGraphChangedSymbol {
+  if (!value || typeof value !== 'object') return false
+  const symbol = value as Record<string, unknown>
+  return (
+    typeof symbol.name === 'string' &&
+    typeof symbol.kind === 'string' &&
+    typeof symbol.path === 'string' &&
+    typeof symbol.startLine === 'number' &&
+    typeof symbol.callerCount === 'number' &&
+    Array.isArray(symbol.callers) &&
+    symbol.callers.every(isReference)
+  )
+}
+
+function isRemovedSymbol(value: unknown): value is CodeGraphRemovedSymbol {
+  if (!value || typeof value !== 'object') return false
+  const symbol = value as Record<string, unknown>
+  return (
+    typeof symbol.name === 'string' &&
+    typeof symbol.path === 'string' &&
+    Array.isArray(symbol.references) &&
+    symbol.references.every(isReference)
+  )
+}
+
+function isImpactReport(value: unknown): value is CodeGraphImpactReport {
+  if (!value || typeof value !== 'object') return false
+  const report = value as Record<string, unknown>
+  return (
+    Array.isArray(report.changedSymbols) &&
+    report.changedSymbols.every(isChangedSymbol) &&
+    Array.isArray(report.removedSymbols) &&
+    report.removedSymbols.every(isRemovedSymbol)
+  )
+}
+
 /**
  * Parses the runner's stdout: the last non-empty line must be a result matching
  * `CodeGraphRunnerResult`. Anything else (no output, a crash trace, a shape from another
@@ -302,7 +539,11 @@ export function parseCodeGraphRunnerResult(stdout: string): CodeGraphRunnerResul
   if (result.ok === true) {
     if (result.index !== 'created' && result.index !== 'synced' && result.index !== 'rebuilt') return null
     if (!Array.isArray(result.files) || !result.files.every(isFileReport) || !isStringArray(result.affectedTests)) return null
-    return { ok: true, index: result.index, files: result.files, affectedTests: result.affectedTests }
+    if (result.impact === undefined) {
+      return { ok: true, index: result.index, files: result.files, affectedTests: result.affectedTests }
+    }
+    if (!isImpactReport(result.impact)) return null
+    return { ok: true, index: result.index, files: result.files, affectedTests: result.affectedTests, impact: result.impact }
   }
   const stage = CODE_GRAPH_RUNNER_STAGES.find((candidate) => candidate === result.stage)
   if (result.ok === false && stage && typeof result.error === 'string') {

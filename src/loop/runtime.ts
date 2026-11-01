@@ -49,7 +49,7 @@ import {
   sectionCodeGraphReportPath,
   type CodeGraphTarget,
 } from './code-graph'
-import { listSnapshotChangedFiles } from '../utils/audit-snapshot'
+import { listSnapshotChangedRanges } from '../utils/audit-snapshot'
 import { extractSectionFiles } from '../utils/plan-structure'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
@@ -2039,7 +2039,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * Snapshot B: the code graph for the attempt that just ended, before the audit prompt is
    * built. Both a fresh audit session and a reused standby then point at the affected tests
-   * and dependents of exactly this attempt.
+   * and dependents of exactly this attempt, plus the callers of its changed symbols and the
+   * references still pointing at symbols it removed or renamed.
    */
   function planAttemptCodeGraph(state: LoopState): CodeGraphSnapshotPlan | null {
     const attempt = loopService.getLatestAttempt(state)
@@ -2050,11 +2051,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return {
       compute: async () => {
         const from = attempt.previousCommit ?? `${snapshotCommit}^`
-        const files = await listSnapshotChangedFiles(state.worktreeDir, from, snapshotCommit, logger)
+        const changedRanges = await listSnapshotChangedRanges(state.worktreeDir, from, snapshotCommit, logger)
+        const files = Object.keys(changedRanges)
         if (files.length === 0) return null
         const text = await codeGraphSnapshotter.snapshotFiles(target, {
           title: `audit attempt ${attempt.attemptNumber} (${attempt.scope})`,
           files,
+          changedRanges,
         })
         return writtenCodeGraphReport(target, attemptCodeGraphReportPath(attempt), text)
       },

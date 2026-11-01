@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
-import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot, listSnapshotChangedFiles } from '../../src/utils/audit-snapshot'
+import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot, listSnapshotChangedRanges } from '../../src/utils/audit-snapshot'
 import { SANDBOX_CACHE_DIR } from '../../src/sandbox/msb'
 import type { Logger } from '../../src/types'
 
@@ -517,7 +517,7 @@ describe('compareAuditSnapshots', () => {
   })
 })
 
-describe('listSnapshotChangedFiles', () => {
+describe('listSnapshotChangedRanges', () => {
   it('returns added and modified paths but not deleted ones between two snapshots', async () => {
     const repo = initRepo('audit-snapshot-changed-')
     const previous = await captureAuditSnapshot(repo, auditRef(), logger)
@@ -526,9 +526,81 @@ describe('listSnapshotChangedFiles', () => {
     rmSync(join(repo, 'gone.txt'))
     const current = await captureAuditSnapshot(repo, auditRef(), logger)
 
-    const files = await listSnapshotChangedFiles(repo, previous.commit, current.commit, logger)
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
 
-    expect(files.sort()).toEqual(['added.txt', 'base.txt'])
+    expect(Object.keys(ranges).sort()).toEqual(['added.txt', 'base.txt'])
+    expect(ranges['base.txt']).toEqual([{ start: 1, end: 1 }])
+    expect(ranges['added.txt']).toEqual([{ start: 1, end: 1 }])
+  })
+
+  it('does not mistake hunk lines that look like file headers for a new file', async () => {
+    const repo = initRepo('audit-snapshot-changed-lookalike-')
+    writeFileSync(join(repo, 'base.txt'), 'keep\n-- old\nkeep\n', 'utf-8')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), 'keep\n++ b/fake.txt\nkeep\nadded\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(Object.keys(ranges)).toEqual(['base.txt'])
+    expect(ranges['base.txt']).toEqual([
+      { start: 2, end: 2 },
+      { start: 4, end: 4 },
+    ])
+  })
+
+  it('reports the new-side range of every modified hunk', async () => {
+    const repo = initRepo('audit-snapshot-changed-hunks-')
+    const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+    writeFileSync(join(repo, 'base.txt'), `${lines.join('\n')}\n`, 'utf-8')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    lines[1] = 'changed 2'
+    lines[5] = 'changed 6'
+    lines[6] = 'new 7'
+    writeFileSync(join(repo, 'base.txt'), `${lines.join('\n')}\n`, 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges['base.txt']).toEqual([
+      { start: 2, end: 2 },
+      { start: 6, end: 7 },
+    ])
+  })
+
+  it('maps a pure deletion to the line the removed content collapsed onto', async () => {
+    const repo = initRepo('audit-snapshot-changed-deletion-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), '', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges['base.txt']).toEqual([{ start: 1, end: 1 }])
+  })
+
+  it('keeps a binary file as a changed path with no line ranges', async () => {
+    const repo = initRepo('audit-snapshot-changed-binary-')
+    writeFileSync(join(repo, 'image.bin'), Buffer.from([0, 1, 2]))
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'image.bin'), Buffer.from([0, 1, 3]))
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges['image.bin']).toEqual([])
+  })
+
+  it('keeps a path containing a space as it is', async () => {
+    const repo = initRepo('audit-snapshot-changed-space-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'with space.txt'), 'changed\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(Object.keys(ranges)).toEqual(['with space.txt'])
+    expect(ranges['with space.txt']).toEqual([{ start: 1, end: 1 }])
   })
 
   it('resolves a parent-relative from ref', async () => {
@@ -537,18 +609,18 @@ describe('listSnapshotChangedFiles', () => {
     writeFileSync(join(repo, 'base.txt'), 'changed\n', 'utf-8')
     const current = await captureAuditSnapshot(repo, auditRef(), logger)
 
-    const files = await listSnapshotChangedFiles(repo, `${current.commit}^`, current.commit, logger)
+    const ranges = await listSnapshotChangedRanges(repo, `${current.commit}^`, current.commit, logger)
 
-    expect(files).toEqual(['base.txt'])
+    expect(ranges).toEqual({ 'base.txt': [{ start: 1, end: 1 }] })
     expect(previous.commit).not.toBe(current.commit)
   })
 
   it('rejects invalid commit SHAs', async () => {
     const repo = initRepo('audit-snapshot-changed-bad-')
     const current = await captureAuditSnapshot(repo, auditRef(), logger)
-    await expect(listSnapshotChangedFiles(repo, 'not-a-sha', current.commit, logger)).rejects.toThrow(/invalid/)
-    await expect(listSnapshotChangedFiles(repo, `${'z'.repeat(40)}^`, current.commit, logger)).rejects.toThrow(/invalid/)
-    await expect(listSnapshotChangedFiles(repo, current.commit, 'nothex', logger)).rejects.toThrow(/invalid/)
+    await expect(listSnapshotChangedRanges(repo, 'not-a-sha', current.commit, logger)).rejects.toThrow(/invalid/)
+    await expect(listSnapshotChangedRanges(repo, `${'z'.repeat(40)}^`, current.commit, logger)).rejects.toThrow(/invalid/)
+    await expect(listSnapshotChangedRanges(repo, current.commit, 'nothex', logger)).rejects.toThrow(/invalid/)
   })
 })
 

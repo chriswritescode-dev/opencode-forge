@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import type { Logger } from '../types'
 import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
 import { isForgeCodeGraphLink } from '../loop/code-graph'
+import type { CodeGraphLineRange } from '../loop/code-graph-runner'
 import { runCommand } from '../sandbox/process'
 import { WORKTREE_OPENCODE_CONFIG_FILENAME } from '../workspace/worktree-opencode-config'
 
@@ -27,6 +28,10 @@ const SNAPSHOT_IDENTITY = {
 const SNAPSHOT_TIMEOUT_MS = 120000
 const TEMP_DIR_PREFIX = 'forge-audit-snapshot-'
 const DIFF_LINE_LIMIT = 200
+const DIFF_HEADER_PREFIX = 'diff --git '
+const OLD_FILE_PREFIX = '--- '
+const NEW_FILE_PREFIX = '+++ b/'
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 const SECRET_BASENAMES = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'])
 const SECRET_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.keystore'])
 
@@ -85,7 +90,8 @@ async function runGitCommand(cwd: string, args: string[], env: Record<string, st
     logLabel: `audit-snapshot:${label}`,
   })
   if (result.exitCode !== 0) {
-    throw new Error(`git ${args[0]} failed (exit ${result.exitCode}): ${result.stderr.trim().slice(0, 500)}`)
+    const subcommand = args.find((arg) => !arg.startsWith('-')) ?? args[0]
+    throw new Error(`git ${subcommand} failed (exit ${result.exitCode}): ${result.stderr.trim().slice(0, 500)}`)
   }
   return result.stdout
 }
@@ -316,8 +322,33 @@ export async function compareAuditSnapshots(cwd: string, previous: string, curre
   return [stat, nameStatus].filter((part) => part.length > 0).join('\n')
 }
 
-/** Repo-relative paths added or modified between two snapshots; deleted paths are excluded. */
-export async function listSnapshotChangedFiles(cwd: string, from: string, to: string, logger: Logger): Promise<string[]> {
+function parseDiffHeaderPath(line: string): string | null {
+  const rest = line.slice(DIFF_HEADER_PREFIX.length)
+  if (!rest.startsWith('a/')) return null
+  for (let index = rest.indexOf(' b/'); index >= 0; index = rest.indexOf(' b/', index + 1)) {
+    if (rest.slice(2, index) === rest.slice(index + 3)) return rest.slice(2, index)
+  }
+  const separator = rest.indexOf(' b/')
+  return separator < 0 ? null : rest.slice(separator + 3)
+}
+
+function parseHunkRange(line: string): CodeGraphLineRange | null {
+  const match = HUNK_HEADER_PATTERN.exec(line)
+  if (!match) return null
+  const start = Number(match[3])
+  const count = match[4] === undefined ? 1 : Number(match[4])
+  if (count === 0) {
+    const single = Math.max(start, 1)
+    return { start: single, end: single }
+  }
+  return { start, end: start + count - 1 }
+}
+
+/**
+ * New-side changed line ranges per repo-relative file between two snapshots; deleted paths are
+ * excluded, and a changed file with no text hunks (binary, or a pure rename) maps to no ranges.
+ */
+export async function listSnapshotChangedRanges(cwd: string, from: string, to: string, logger: Logger): Promise<Record<string, CodeGraphLineRange[]>> {
   const fromBase = from.endsWith('^') ? from.slice(0, -1) : from
   validateCommitSha(fromBase, 'from snapshot SHA')
   validateCommitSha(to, 'to snapshot SHA')
@@ -326,12 +357,36 @@ export async function listSnapshotChangedFiles(cwd: string, from: string, to: st
   validateCommitSha(resolvedFrom, 'resolved from snapshot SHA')
   const out = await runGitCommand(
     toplevel,
-    ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--diff-filter=d', resolvedFrom, to],
+    ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--diff-filter=d', '-U0', resolvedFrom, to],
     gitEnv({}),
     logger,
-    'diff-name-only',
+    'diff-unified',
   )
-  return out.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+  const ranges = new Map<string, CodeGraphLineRange[]>()
+  let current: CodeGraphLineRange[] | null = null
+  let inFileHeader = false
+  let previousLine = ''
+  for (const line of out.split('\n')) {
+    if (line.startsWith(DIFF_HEADER_PREFIX)) {
+      const path = parseDiffHeaderPath(line)
+      current = null
+      inFileHeader = true
+      if (path) {
+        if (!ranges.has(path)) ranges.set(path, [])
+        current = ranges.get(path)!
+      }
+    } else if (inFileHeader && line.startsWith(NEW_FILE_PREFIX) && previousLine.startsWith(OLD_FILE_PREFIX)) {
+      const path = line.slice(NEW_FILE_PREFIX.length).replace(/\t$/, '')
+      if (!ranges.has(path)) ranges.set(path, [])
+      current = ranges.get(path)!
+    } else if (current && line.startsWith('@@ ')) {
+      inFileHeader = false
+      const range = parseHunkRange(line)
+      if (range) current.push(range)
+    }
+    previousLine = line
+  }
+  return Object.fromEntries(ranges)
 }
 
 export async function deleteAuditSnapshot(cwd: string, ref: string, logger: Logger): Promise<void> {

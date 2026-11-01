@@ -2,7 +2,7 @@ import { execSync } from 'child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CODE_GRAPH_PROBE_COMMAND,
   codeGraphReportPath,
@@ -358,6 +358,136 @@ describe('createCodeGraphSnapshotter', () => {
     expect(await snapshotter.snapshotFiles(target, { title: 'boom', files: ['a.ts'] })).toBeNull()
   })
 
+  it('sends the changed ranges and the caller limit to the runner only when they are given', async () => {
+    const worktreeDir = createWorktree()
+    writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
+    writeFileSync(join(worktreeDir, 'b.ts'), 'export const b = 1\n')
+    const target = createTarget(worktreeDir)
+    const snapshotter = createCodeGraphSnapshotter({ logger: createLogger() })
+
+    await snapshotter.snapshotFiles(target, {
+      title: 'audit attempt 1 (section:0)',
+      files: ['a.ts', 'b.ts', 'gone.ts'],
+      changedRanges: { 'a.ts': [{ start: 2, end: 4 }], 'gone.ts': [{ start: 1, end: 1 }] },
+    })
+    await snapshotter.snapshotFiles(target, { title: 'section 1', files: ['a.ts'] })
+
+    expect(target.runnerInputs[0].impact).toEqual({ ranges: { 'a.ts': [{ start: 2, end: 4 }] }, callerLimit: 20 })
+    expect(target.runnerInputs[1].impact).toBeUndefined()
+  })
+
+  function scriptedTarget(worktreeDir: string, result: unknown): RecordingTarget {
+    return createTarget(worktreeDir, (command) => (isRunnerCommand(command) ? ok(`progress noise\n${JSON.stringify(result)}\n`) : undefined))
+  }
+
+  function bookReport(): Array<{ path: string; symbols: Array<Record<string, unknown>>; dependents: string[] }> {
+    return [{ path: 'src/lib.ts', symbols: [{ name: 'keepMe', kind: 'function', signature: null, startLine: 9 }], dependents: [] }]
+  }
+
+  function auditResult(impact: unknown): Record<string, unknown> {
+    return { ok: true, index: 'synced', files: bookReport(), affectedTests: [], impact }
+  }
+
+  async function formatAuditReport(worktreeDir: string, result: unknown): Promise<string | null> {
+    mkdirSync(join(worktreeDir, 'src'), { recursive: true })
+    writeFileSync(join(worktreeDir, 'src/lib.ts'), 'export function keepMe() {}\n')
+    return createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(scriptedTarget(worktreeDir, result), {
+      title: 'audit attempt 1 (section:0)',
+      files: ['src/lib.ts'],
+      changedRanges: { 'src/lib.ts': [{ start: 9, end: 9 }] },
+    })
+  }
+
+  it('formats the callers of changed symbols and the references to removed symbols', async () => {
+    const report = await formatAuditReport(
+      createWorktree(),
+      auditResult({
+        changedSymbols: [
+          {
+            name: 'keepMe',
+            kind: 'function',
+            path: 'src/lib.ts',
+            startLine: 9,
+            callers: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }],
+            callerCount: 13,
+          },
+          { name: 'quiet', kind: 'function', path: 'src/lib.ts', startLine: 20, callers: [], callerCount: 0 },
+        ],
+        removedSymbols: [
+          {
+            name: 'removeMe',
+            path: 'src/lib.ts',
+            references: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }],
+          },
+        ],
+      }),
+    )
+
+    expect(report).toContain(
+      [
+        '## Callers of changed symbols',
+        '',
+        'Callers outside the files changed in this attempt.',
+        '',
+        '### `keepMe` (function) — src/lib.ts:9',
+        '',
+        '- `run` (function) — src/app.ts:4',
+        '- … and 12 more: run `codegraph callers keepMe -f src/lib.ts`',
+        '',
+        '1 other changed symbol has no callers outside the changed files.',
+        '',
+        '## Removed or renamed symbols still referenced',
+        '',
+        'These names no longer exist in the index, but code still refers to them. Fix each reference or confirm it is intended.',
+        '',
+        '### `removeMe` (was in src/lib.ts)',
+        '',
+        '- `run` (function) — src/app.ts:4',
+      ].join('\n'),
+    )
+    expect(report!.indexOf('## Callers of changed symbols')).toBeLessThan(report!.indexOf('## src/lib.ts'))
+    expect(report).toContain('## src/lib.ts')
+  })
+
+  it('reports changed symbols without callers and omits the removed section when nothing was removed', async () => {
+    const report = await formatAuditReport(
+      createWorktree(),
+      auditResult({
+        changedSymbols: [
+          { name: 'one', kind: 'function', path: 'src/lib.ts', startLine: 1, callers: [], callerCount: 0 },
+          { name: 'two', kind: 'function', path: 'src/lib.ts', startLine: 2, callers: [], callerCount: 0 },
+        ],
+        removedSymbols: [],
+      }),
+    )
+
+    expect(report).toContain(
+      [
+        '## Callers of changed symbols',
+        '',
+        'Callers outside the files changed in this attempt.',
+        '',
+        '_No changed symbol has callers outside the changed files._',
+        '',
+        '2 other changed symbols have no callers outside the changed files.',
+      ].join('\n'),
+    )
+    expect(report).not.toContain('## Removed or renamed symbols still referenced')
+  })
+
+  it('adds no impact sections when the runner result carries no impact report', async () => {
+    const report = await formatAuditReport(createWorktree(), {
+      ok: true,
+      index: 'synced',
+      files: bookReport(),
+      affectedTests: [],
+    })
+
+    expect(report).toContain('# Code graph: audit attempt 1 (section:0)')
+    expect(report).not.toContain('## Callers of changed symbols')
+    expect(report).not.toContain('## Removed or renamed symbols still referenced')
+  })
+
   it('lists only the tests that import a changed file directly and drops empty file sections', async () => {
     const worktreeDir = createWorktree()
     mkdirSync(join(worktreeDir, 'test'))
@@ -518,6 +648,36 @@ describe('writeReport', () => {
     expect(readFileSync(join(worktreeDir, relPath), 'utf8')).toBe(text)
     expect(commands.length).toBeGreaterThan(1)
     for (const command of commands) expect(command.length).toBeLessThan(70 * 1024)
+  })
+
+  it('gives all chunks of one report a single time budget and stops once it is spent', async () => {
+    const worktreeDir = createWorktree()
+    const timeouts: number[] = []
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      const target: CodeGraphTarget = {
+        key: 'forge-test-container',
+        worktreeDir,
+        required: false,
+        async exec(_command, timeoutMs) {
+          timeouts.push(timeoutMs)
+          now += 20_000
+          return ok()
+        },
+      }
+
+      const written = await createCodeGraphSnapshotter({ logger: createLogger() }).writeReport(
+        target,
+        codeGraphReportPath('section 1'),
+        'x'.repeat(200_000),
+      )
+
+      expect(written).toBe(false)
+      expect(timeouts).toEqual([30_000, 10_000])
+    } finally {
+      clock.mockRestore()
+    }
   })
 
   it('reports a failed write without throwing', async () => {

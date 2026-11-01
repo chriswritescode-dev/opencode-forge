@@ -4811,10 +4811,19 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const worktreeDir = initAttemptWorktree('attempt-cg-')
       const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
       const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const runnerInputs: Array<{
+        files: string[]
+        impact?: { ranges: Record<string, Array<{ start: number; end: number }>>; callerLimit: number }
+      }> = []
+      const sandboxManager = fakeSandboxManager(async (command) => {
+        const runnerInput = /'([^']*)'$/.exec(command)
+        if (command.includes('/opt/codegraph/node') && runnerInput) runnerInputs.push(JSON.parse(runnerInput[1]))
+        return successfulExec(command)
+      })
       const { loop } = buildRuntime({
         client,
         loopAttemptsRepo,
-        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+        sandboxManager,
       })
 
       const loopName = 'codegraph-attempt'
@@ -4831,6 +4840,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(attempt.codeGraph).toContain('# Code graph: audit attempt 1 (section:0)')
       expect(attempt.codeGraph).toContain('src/a.ts')
       expect(attempt.codeGraph).toContain('test/a.test.ts')
+      expect(runnerInputs.find((entry) => entry.impact)?.impact).toEqual({
+        ranges: {
+          'src/a.ts': [{ start: 1, end: 1 }],
+          'src/b.ts': [{ start: 1, end: 1 }],
+        },
+        callerLimit: 20,
+      })
 
       const prompt = auditorPrompts(calls).at(-1) ?? ''
       expect(prompt).toContain('## Code graph')
