@@ -1,9 +1,11 @@
 import { Database } from 'bun:sqlite'
 import { vi } from 'vitest'
 import type { ForgeClient } from '../../src/client/port'
-import { createLoop, type OnTerminatedCallback } from '../../src/loop/runtime'
+import type { createLoopEventHandler } from '../../src/hooks'
+import { createLoop, type Loop, type OnTerminatedCallback } from '../../src/loop/runtime'
 import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
+import type { ForgeExecutionServiceDeps } from '../../src/services/execution'
 import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopsRepo, type LoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -11,8 +13,9 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { PluginConfig } from '../../src/types'
+import { createPendingTeardownRegistry } from '../../src/workspace/pending-teardown'
 import { createFakeForgeClient, type RecordedCall } from './fake-client'
-import { createCapturingLogger } from './logger'
+import { createCapturingLogger, createMockLogger } from './logger'
 
 /** Creates a LoopState with the standard test defaults; overrides replace any default. */
 export function makeLoopState(overrides: Partial<LoopState> = {}): LoopState {
@@ -163,4 +166,84 @@ export function buildLoopRuntime(
     loopTransitionsRepo,
     loopSessionUsageRepo,
   }
+}
+
+/** Overrides accepted by {@link buildExecutionDeps}; `loop` and `loopHandler` merge into the stubs. */
+export type ExecutionDepsOverrides = Omit<
+  Partial<ForgeExecutionServiceDeps>,
+  'loop' | 'loopHandler'
+> & {
+  loop?: Partial<Loop>
+  loopHandler?: Partial<ReturnType<typeof createLoopEventHandler>>
+}
+
+/**
+ * Builds `ForgeExecutionServiceDeps` against an already migrated test database.
+ *
+ * Defaults mirror the historical inline wiring in the execution service tests:
+ * repos on `db`, a loop stub delegating state lookups to the service, a
+ * passthrough `runExclusive`, a null sandbox manager and a real
+ * pending-teardown registry. `loop` and `loopHandler` overrides merge into the
+ * stubs, so a test passes only the members whose behaviour it changes.
+ */
+export function buildExecutionDeps(
+  db: Database,
+  overrides: ExecutionDepsOverrides = {},
+) {
+  const { loop: loopOverrides, loopHandler: loopHandlerOverrides, ...depsOverrides } = overrides
+  const loopsRepo = createLoopsRepo(db)
+  const plansRepo = createPlansRepo(db)
+  const reviewFindingsRepo = createReviewFindingsRepo(db)
+  const sectionPlansRepo = createSectionPlansRepo(db)
+  const loopTransitionsRepo = createLoopTransitionsRepo(db)
+  const logger = depsOverrides.logger ?? createMockLogger()
+  const projectId = depsOverrides.projectId ?? 'test-project'
+  const loopService = createLoopService(
+    loopsRepo,
+    plansRepo,
+    reviewFindingsRepo,
+    projectId,
+    logger,
+    undefined,
+    undefined,
+    sectionPlansRepo,
+    loopTransitionsRepo,
+  )
+  const delegatingService = loopOverrides?.service ?? loopService
+  const loop = {
+    service: loopService,
+    listActive: () => delegatingService.listActive(),
+    listRecent: () => delegatingService.listRecent(),
+    findMatchByName: (name: string) => delegatingService.findMatchByName(name),
+    setPhase: (name: string, phase: LoopState['phase']) => delegatingService.setPhase(name, phase),
+    registerSessionReverseIndex: () => {},
+    unregisterSessionReverseIndex: () => {},
+    handleAuditorProviderLimit: async () => false,
+    ...loopOverrides,
+  } as unknown as Loop
+  const loopHandler = {
+    runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
+    startWatchdog: vi.fn(),
+    clearLoopTimers: async () => {},
+    ...loopHandlerOverrides,
+  } as unknown as ReturnType<typeof createLoopEventHandler>
+  const deps: ForgeExecutionServiceDeps = {
+    projectId,
+    directory: '/tmp/test',
+    config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+    logger,
+    dataDir: '/tmp',
+    client: createFakeForgeClient().client,
+    plansRepo,
+    loopsRepo,
+    reviewFindingsRepo,
+    sectionPlansRepo,
+    loop,
+    loopHandler,
+    sandboxManager: null,
+    pendingTeardowns: createPendingTeardownRegistry(),
+    ...depsOverrides,
+  }
+
+  return { deps, loopService, loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo }
 }

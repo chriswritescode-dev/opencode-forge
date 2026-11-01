@@ -16,17 +16,13 @@ import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-rep
 import type { LoopService } from '../../src/loop/service'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import type { Database } from 'bun:sqlite'
 
 const mockLogger: Logger = {
   log: () => {},
   error: () => {},
   debug: () => {},
-}
-
-const mockPendingTeardowns = {
-  set: vi.fn(),
-  get: vi.fn().mockReturnValue(undefined),
-  clear: vi.fn(),
 }
 
 const MOCK_BASE_COMMIT = 'a'.repeat(40)
@@ -64,8 +60,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
   let reviewFindingsRepo: ReviewFindingsRepo
   let sectionPlansRepo: SectionPlansRepo
   let loopService: LoopService
-
-  const noopFn = () => {}
 
   beforeEach(() => {
     const testDb = createTestDb()
@@ -109,12 +103,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
     const mockSandboxManager = {
@@ -129,34 +117,17 @@ describe('handleStartLoop builtin worktree workspace', () => {
       provisionDependencies: vi.fn().mockResolvedValue(undefined),
     }
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo,
-      loopsRepo,
-      loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        gitService: mockGitService,
+        sandboxManager: mockSandboxManager as any,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      sandboxManager: mockSandboxManager as any,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -226,42 +197,18 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo,
-      loopsRepo,
-      loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        gitService: mockGitService,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      // No sandboxManager passed — simulates Docker not available
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -301,12 +248,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const mockSandboxManager = {
       docker: {} as any,
       start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
@@ -321,34 +262,17 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo,
-      loopsRepo,
-      loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        gitService: mockGitService,
+        sandboxManager: mockSandboxManager as any,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      sandboxManager: mockSandboxManager as any,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     for (const surface of ['tool', 'approval-hook'] as const) {
       (client.session.create as any).mockClear()
@@ -386,12 +310,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const mockSandboxManager = {
       docker: {} as any,
       start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
@@ -412,30 +330,18 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: configuredConfig,
-      logger: mockLogger,
-      dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo,
-      loopsRepo,
-      loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        config: configuredConfig,
+        gitService: mockGitService,
+        sandboxManager: mockSandboxManager as any,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      sandboxManager: mockSandboxManager as any,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     await service.dispatch(
       { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -470,12 +376,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const mockSandboxManager = {
       docker: {} as any,
       start: vi.fn().mockRejectedValue(new Error('Docker is not available. Please ensure Docker is running.')),
@@ -490,34 +390,17 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo,
-      loopsRepo,
-      loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        gitService: mockGitService,
+        sandboxManager: mockSandboxManager as any,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      sandboxManager: mockSandboxManager as any,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -549,41 +432,18 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo,
-      loopsRepo,
-      loop: {
-        service: loopService,
-        listActive: () => loopService.listActive(),
-        generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-        findMatchByName: (name: string) => loopService.findMatchByName(name),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-        handleAuditorProviderLimit: async () => false,
-      } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        gitService: mockGitService,
+        loop: {
+          service: loopService,
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -603,8 +463,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
 })
 
 describe('handleStartLoop concurrent-start dedupe', () => {
-  const noopFn = () => {}
-
   function buildDedupeMocks() {
     let sessionCounter = 0
     const { client } = createFakeForgeClient({
@@ -627,12 +485,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const mockSandboxManager = {
       docker: {} as any,
       start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
@@ -647,7 +499,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
 
     return {
       client,
-      mockLoopHandler,
       mockSandboxManager,
     }
   }
@@ -664,24 +515,17 @@ describe('handleStartLoop concurrent-start dedupe', () => {
 
     const mocks = buildDedupeMocks()
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger, dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo, loopsRepo, loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client: mocks.client,
+        gitService: mockGitService,
+        sandboxManager: mocks.mockSandboxManager as any,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mocks.mockLoopHandler as any,
-      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      client: mocks.client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
     const command = {
@@ -725,24 +569,17 @@ describe('handleStartLoop concurrent-start dedupe', () => {
 
     const mocks = buildDedupeMocks()
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger, dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo, loopsRepo, loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client: mocks.client,
+        gitService: mockGitService,
+        sandboxManager: mocks.mockSandboxManager as any,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mocks.mockLoopHandler as any,
-      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      client: mocks.client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
     const cmd1 = {
@@ -785,24 +622,17 @@ describe('handleStartLoop concurrent-start dedupe', () => {
 
     const mocks = buildDedupeMocks()
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger, dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo, loopsRepo, loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client: mocks.client,
+        gitService: mockGitService,
+        sandboxManager: mocks.mockSandboxManager as any,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mocks.mockLoopHandler as any,
-      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
-      client: mocks.client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
     const cmd = {
@@ -823,7 +653,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
 })
 
 describe('handleStartLoop variant config fallback', () => {
-  const noopFn = () => {}
   const PROJECT_ID = 'test-project'
 
   test('falls back to config variants when command has no variants', async () => {
@@ -849,37 +678,25 @@ describe('handleStartLoop variant config fallback', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn, clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-        executionVariant: 'high',
-        auditorVariant: 'audit-high',
-      },
-      logger: mockLogger, dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo, loopsRepo, loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        config: {
+          loop: { enabled: true },
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          executionVariant: 'high',
+          auditorVariant: 'audit-high',
+        },
+        gitService: mockGitService,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -921,37 +738,25 @@ describe('handleStartLoop variant config fallback', () => {
       },
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn, clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID, directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-        executionVariant: 'high',
-        auditorVariant: 'audit-high',
-      },
-      logger: mockLogger, dataDir: '/tmp',
-      gitService: mockGitService,
-      plansRepo, loopsRepo, loop: {
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        config: {
+          loop: { enabled: true },
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          executionVariant: 'high',
+          auditorVariant: 'audit-high',
+        },
+        gitService: mockGitService,
+        loop: {
           service: loopService,
-          listActive: () => loopService.listActive(),
-          generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (name: string) => loopService.findMatchByName(name),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-          handleAuditorProviderLimit: async () => false,
-        } as any, loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns,
-    })
+          generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(loopService, baseName, isTaken),
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -975,41 +780,22 @@ describe('handleStartLoop variant config fallback', () => {
 })
 
 describe('handleStartLoop base ref, branch, and base commit', () => {
-  const noopFn = () => {}
-
   function buildService(opts: {
+    db: Database
     gitService: any
-    workspaceCreate?: () => Promise<Record<string, unknown>>
-    loopsRepo: LoopsRepo
-    plansRepo: PlansRepo
-    sectionPlansRepo: SectionPlansRepo
     loopService: LoopService
     client: any
     logger?: Logger
   }) {
-    return {
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: opts.logger ?? mockLogger,
-      dataDir: '/tmp',
+    return buildExecutionDeps(opts.db, {
       gitService: opts.gitService,
-      plansRepo: opts.plansRepo,
-      loopsRepo: opts.loopsRepo,
+      logger: opts.logger ?? mockLogger,
+      client: opts.client,
       loop: {
         service: opts.loopService,
-        listActive: () => opts.loopService.listActive(),
-        generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(opts.loopService, baseName, isTaken),
-        findMatchByName: (name: string) => opts.loopService.findMatchByName(name),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-        handleAuditorProviderLimit: async () => false,
-      } as any,
-      loopHandler: { runExclusive: async <T>(_n: string, fn: () => Promise<T>) => fn(), startWatchdog: noopFn, clearLoopTimers: noopFn } as any,
-      sectionPlansRepo: opts.sectionPlansRepo,
-      client: opts.client,
-      pendingTeardowns: mockPendingTeardowns,
-    }
+        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(opts.loopService, baseName, isTaken),
+      },
+    }).deps
   }
 
   function buildHarness(workspaceCreate?: () => Promise<Record<string, unknown>>) {
@@ -1031,7 +817,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
         get: async () => ({}),
       },
     })
-    return { db, loopsRepo, plansRepo, sectionPlansRepo, loopService, client }
+    return { db, loopsRepo, loopService, client }
   }
 
   test('forwards baseRef to workspace creation and persists the resolved base commit', async () => {
@@ -1039,9 +825,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService: mockGitService,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1072,9 +856,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const h = buildHarness()
     const service = createForgeExecutionService(buildService({
       gitService: { ...mockGitService, ...gitOverrides },
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1102,9 +884,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const h = buildHarness(async () => ({ id: 'ws_custom', directory: '/tmp/wt/custom', branch: 'feature/loop' }))
     const service = createForgeExecutionService(buildService({
       gitService: mockGitService,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1134,9 +914,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const h = buildHarness()
     const service = createForgeExecutionService(buildService({
       gitService: mockGitService,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1203,9 +981,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService: failingGit,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1267,9 +1043,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService: git,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1299,9 +1073,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService: git,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1331,9 +1103,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService: git,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1362,9 +1132,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService: git,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
     }))
@@ -1424,9 +1192,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService(buildService({
       gitService,
-      loopsRepo: h.loopsRepo,
-      plansRepo: h.plansRepo,
-      sectionPlansRepo: h.sectionPlansRepo,
+      db: h.db,
       loopService: h.loopService,
       client: h.client,
       logger,
@@ -1461,8 +1227,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
 })
 
 describe('handleStartLoop goal attach', () => {
-  const noopFn = () => {}
-
   function buildHarness() {
     const testDb = createTestDb()
     openDbs.push(testDb)
@@ -1492,7 +1256,7 @@ describe('handleStartLoop goal attach', () => {
         get: async () => ({}),
       },
     })
-    return { db, loopsRepo, plansRepo, sectionPlansRepo, goalsRepo, loopService, client }
+    return { db, goalsRepo, loopService, client }
   }
 
   function buildDeps(
@@ -1500,9 +1264,7 @@ describe('handleStartLoop goal attach', () => {
     logger: Logger = mockLogger,
     goalsRepo: any = h.goalsRepo,
   ) {
-    return {
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
+    return buildExecutionDeps(h.db, {
       config: {
         loop: { enabled: true },
         executionModel: 'prov/exec',
@@ -1511,29 +1273,14 @@ describe('handleStartLoop goal attach', () => {
         auditorVariant: 'audit-high',
       },
       logger,
-      dataDir: '/tmp',
       gitService: mockGitService,
-      plansRepo: h.plansRepo,
-      loopsRepo: h.loopsRepo,
       goalsRepo,
+      client: h.client,
       loop: {
         service: h.loopService,
-        listActive: () => h.loopService.listActive(),
-        generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(h.loopService, baseName, isTaken),
-        findMatchByName: (name: string) => h.loopService.findMatchByName(name),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-        handleAuditorProviderLimit: async () => false,
-      } as any,
-      loopHandler: {
-        runExclusive: async <T>(_n: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: noopFn,
-        clearLoopTimers: noopFn,
-      } as any,
-      sectionPlansRepo: h.sectionPlansRepo,
-      client: h.client,
-      pendingTeardowns: mockPendingTeardowns,
-    }
+        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(h.loopService, baseName, isTaken),
+      },
+    }).deps
   }
 
   function saveDraft(h: ReturnType<typeof buildHarness>, hostSessionId: string) {

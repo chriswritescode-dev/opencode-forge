@@ -1,14 +1,6 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { buildExecutionDeps } from '../helpers/loop-fixtures'
 import { createTestDb } from '../helpers/test-db'
-import { createFakeForgeClient } from '../helpers/fake-client'
-
-const noopFn = () => {}
 
 const PROJECT_ID = 'test-project'
 
@@ -25,60 +17,8 @@ describe('attachLoopToSession', () => {
     testDb.cleanup()
   })
 
-  function buildDeps() {
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} } as Logger,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const { client } = createFakeForgeClient()
-
-    const deps = {
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
-      dataDir: '/tmp',
-      client,
-      plansRepo,
-      loopsRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      loop: {
-        service: loopService,
-        listActive: () => loopService.listActive(),
-        findMatchByName: (name: string) => loopService.findMatchByName(name),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-        handleAuditorProviderLimit: async () => false,
-      } as any,
-      loopHandler: {
-        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: vi.fn(),
-        clearLoopTimers: noopFn,
-      },
-      sandboxManager: null,
-    }
-
-    return { deps, loopsRepo, plansRepo, sectionPlansRepo, reviewFindingsRepo, loopService }
-  }
-
   test('attachLoopToSession purges orphaned per-loop rows even when no loops row exists', async () => {
-    const { deps, sectionPlansRepo, plansRepo, reviewFindingsRepo } = buildDeps()
+    const { deps, sectionPlansRepo, plansRepo, reviewFindingsRepo } = buildExecutionDeps(db)
 
     const LOOP_NAME = 'orphan-loop'
 

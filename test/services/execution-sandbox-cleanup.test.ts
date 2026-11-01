@@ -1,15 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { dirname } from 'path'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
+import type { SandboxManager } from '../../src/sandbox/manager'
+import { buildExecutionDeps } from '../helpers/loop-fixtures'
 import { createTestDb } from '../helpers/test-db'
-import { createFakeForgeClient } from '../helpers/fake-client'
-
-const noopFn = () => {}
 
 const PROJECT_ID = 'test-project'
 
@@ -33,58 +26,17 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
   })
 
   function buildDeps() {
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} } as Logger,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const { client } = createFakeForgeClient()
-
     const stop = vi.fn(async () => {})
-    const sandboxManager = { stop }
+    const sandboxManager = { stop } as unknown as SandboxManager
     const unregisterSessionReverseIndex = vi.fn()
     const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
 
-    const deps = {
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
+    const { deps, loopService } = buildExecutionDeps(db, {
       logger,
       dataDir: tempDir,
-      client,
-      plansRepo,
-      loopsRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      loop: {
-        service: loopService,
-        listActive: () => loopService.listActive(),
-        findMatchByName: (name: string) => loopService.findMatchByName(name),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex,
-        handleAuditorProviderLimit: async () => false,
-      } as any,
-      loopHandler: {
-        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: vi.fn(),
-        clearLoopTimers: noopFn,
-      },
       sandboxManager,
-    }
+      loop: { unregisterSessionReverseIndex },
+    })
 
     return { deps, loopService, sandboxManager, unregisterSessionReverseIndex, logger }
   }
