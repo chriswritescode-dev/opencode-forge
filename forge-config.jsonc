@@ -150,6 +150,15 @@
   //   ]
   // },
 
+  // codegraph integration. "install" (default true) puts codegraph in the sandbox template;
+  // rebuild the template after changing it. Unless "enabled" is false, loop sessions deny the
+  // codegraph_* MCP tools and sandboxed loops take code-graph snapshots when codegraph is in
+  // the sandbox.
+  "codeGraph": {
+    "install": true
+    // "enabled": false
+  },
+
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,

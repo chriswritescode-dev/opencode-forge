@@ -190,7 +190,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | File | Purpose |
 |------|---------|
 | `index.ts` | Public API barrel (all re-exports) |
-| `runtime.ts` | `createLoop()` factory, `Loop` interface, session rotation and standby-session reuse (`inspectReusableStandby`, `switchToCodingPhase`, `switchToAuditingPhase`) |
+| `runtime.ts` | `createLoop()` factory, `Loop` interface, session rotation and standby-session reuse (`inspectReusableStandby`, `switchToCodingPhase`, `switchToAuditingPhase`), and `continueAfterCodeGraphSnapshot`: code-graph snapshots run outside the state lock and the transition resumes under it only when the loop is still at the planned state |
 | `service.ts` | DB-backed `LoopService` (`createLoopService`) |
 | `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `post_action`), row↔state converters |
 | `transitions.ts` | Pure `nextTransition()` table — no side effects; includes `'post-action-complete'` event and `handlePostActionEvent` |
@@ -202,6 +202,8 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `post-action-config.ts` | `ResolvedPostActionConfig` interface and `resolvePostActionConfig()` resolver |
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
+| `code-graph.ts` | Sole owner of `codegraph` execution in loop sandboxes: `resolveLoopCodeGraphTarget()`, `createCodeGraphSnapshotter()` (installation probe, the `.codegraph` cache link, exactly one runner exec per snapshot, report formatting with tests that import each file directly and, at audit checkpoints, the callers of changed symbols plus the code still referencing removed or renamed symbols; no `codegraph` CLI call), report paths under `.forge/codegraph/` with the in-sandbox report write (the host never writes into the agent-writable worktree), and the `## Code graph` prompt pointer |
+| `code-graph-runner.ts` | The in-sandbox half of a snapshot: `runCodeGraphSnapshot()` runs under codegraph's bundled Node against the pinned codegraph library (creates a missing index, syncs an existing one and rebuilds it when the sync fails, holding codegraph's `rebuild.pid` while it creates or rebuilds; reports `locked` and leaves the index alone when another live process holds it; exits with a `deadline` result at `deadlineMs`; then per-file symbols and dependents, the `affected`-style reverse-import walk to test files) and must stay self-contained because `buildCodeGraphRunnerScript()` serializes it with `toString()`; `parseCodeGraphRunnerResult()` validates the typed JSON result on the host |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
 | `name-uniqueness.ts` | Reserve a unique loop identity before any side effects, refusing a name still referenced by a goal chunk or whose `forge/<slug>` branch exists |
@@ -440,7 +442,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–156; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–158; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -522,7 +524,7 @@ Creates and manages git worktrees for isolated loop execution, registered throug
 | `forge-workspace-metadata.ts` | `<worktree>/.forge/workspace.json` read/write/list |
 | `loop-branch.ts` | `describeBranchInUse()`, `describeBranchReuseConflict()`, `validateLoopBranchRequest()` — branch reuse and `execute-plan` branch/base-ref validation |
 | `pending-teardown.ts` | Registry of pending teardown contexts for commit message building |
-| `worktree-commit.ts` | Teardown commit building |
+| `worktree-commit.ts` | `commitWorktreeChanges`: the teardown and section checkpoint commits; strips the forge-written `opencode.jsonc`, unstages Forge's `.codegraph` cache link (`isForgeCodeGraphLink`), and commits only when something is staged |
 | `worktree-opencode-config.ts` | Writes `opencode.jsonc` into a fresh worktree |
 | `classify-stale.ts` | Decision function for stale forge workspace handling |
 | `remove-with-context.ts` | Workspace removal with teardown context |

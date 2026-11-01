@@ -246,7 +246,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       )
       expect(client.session.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          permission: buildLoopPermissionRuleset(),
+          permission: buildLoopPermissionRuleset(resolveLoopPermissionOptions(undefined)),
         }),
       )
     }

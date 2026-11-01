@@ -1947,6 +1947,40 @@ test('migration 156 applies to a database migrated through 155 and is idempotent
   db.close()
 })
 
+test('migration 158 adds nullable code_graph reports to section_plans and loop_attempts', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  for (const table of ['section_plans', 'loop_attempts']) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number }>
+    const col = cols.find((c) => c.name === 'code_graph')
+    expect(col).toBeDefined()
+    expect(col!.notnull).toBe(0)
+  }
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('158') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 158 is a no-op when applied twice and skips a missing section_plans table', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '156')
+
+  db.run('DROP TABLE section_plans')
+
+  applySingleMigration(db, '158')
+  expect(() => applySingleMigration(db, '158')).not.toThrow()
+
+  const attemptCols = db.prepare('PRAGMA table_info(loop_attempts)').all() as Array<{ name: string }>
+  expect(attemptCols.filter((c) => c.name === 'code_graph').length).toBe(1)
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all()).toHaveLength(0)
+
+  db.close()
+})
+
 test('deleting a loop cascades its handoff rows away', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)

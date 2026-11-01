@@ -31,6 +31,9 @@ export type { LoopRow, LoopTransitionRow }
 
 export type DashboardAmendment = Omit<PlanAmendmentRow, 'sectionsBefore' | 'sectionsAfter'> & { summary: AmendmentChangeSummary }
 
+/** Section-plan row shipped to the dashboard; the full code-graph report text stays in storage. */
+export type DashboardSectionPlan = Omit<SectionPlanRow, 'codeGraph'>
+
 export interface DashboardLoop {
   /** Stable identity for keyed store reconciliation (unique within a project's loop set). */
   id: string
@@ -40,7 +43,7 @@ export interface DashboardLoop {
   plan: string | null
   /** Whether a plan row exists. Always populated; `plan` content ships only for the scoped loop. */
   hasPlan: boolean
-  sections: SectionPlanRow[]
+  sections: DashboardSectionPlan[]
   /** Number of section-plan rows. Always populated; `sections` rows ship only for the scoped loop. */
   sectionCount: number
   /** Full findings rows; ship only for the scoped project. */
@@ -292,7 +295,9 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       const plan = isScopedLoop ? (plansRepo.getForLoop(projectId, loopName)?.content ?? null) : null
 
       const sectionCount = sectionCounts.get(loopName) ?? 0
-      const sections = isScopedLoop ? sectionPlansRepo.list(projectId, loopName) : []
+      const sections = isScopedLoop
+        ? sectionPlansRepo.list(projectId, loopName).map(({ codeGraph: _codeGraph, ...section }) => section)
+        : []
 
       const bugCount = bugCounts.get(loopName) ?? 0
       const findings = inScopedProject ? reviewFindingsRepo.listByLoopName(projectId, loopName) : []

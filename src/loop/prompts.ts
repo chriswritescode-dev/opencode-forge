@@ -26,6 +26,10 @@ export interface PromptContext {
   getFindingRecurrence(loopName?: string): Map<string, number>
   getAttemptHistory?(state: LoopState, limit?: number): LoopAttemptRow[]
   getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
+  /** Rendered `## Code graph` pointer for the current section, or `''` when no snapshot was stored. */
+  getSectionCodeGraphBlock?(state: LoopState): string
+  /** Rendered `## Code graph` pointer for the latest audit attempt, or `''` when no report was stored. */
+  getAttemptCodeGraphBlock?(state: LoopState): string
 }
 
 /**
@@ -235,6 +239,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, no
   prompt += buildAttemptHistoryBlock(ctx, state, 'coder')
   prompt += buildOutstandingFindingsCoderBlock(ctx.getOutstandingFindings(state.loopName))
   prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
+  prompt += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
 
   return prompt + CODER_HANDOFF_INSTRUCTION
 }
@@ -295,6 +300,11 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
   )
 
+  const attemptCodeGraphBlock = ctx.getAttemptCodeGraphBlock?.(state) ?? ''
+  if (attemptCodeGraphBlock) {
+    parts.push(attemptCodeGraphBlock)
+  }
+
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {
     parts.push('', recurringBlock)
@@ -316,6 +326,7 @@ export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState):
     maxIterations: state.maxIterations,
     sectionContent: section.content,
     completedSectionDigest: ctx.getCompletedSectionDigest(state),
+    codeGraphBlock: ctx.getSectionCodeGraphBlock?.(state) ?? '',
     attemptHistoryBlock: buildAttemptHistoryBlock(ctx, state, 'coder'),
   })
 }
@@ -327,6 +338,7 @@ export function buildSectionInitialPromptText(input: {
   maxIterations: number
   sectionContent: string
   completedSectionDigest?: SectionDigestEntry[]
+  codeGraphBlock?: string
   attemptHistoryBlock?: string
 }): string {
   const idx = input.currentSectionIndex
@@ -338,6 +350,10 @@ export function buildSectionInitialPromptText(input: {
   }
 
   header += `\n\n## Section plan\n${input.sectionContent}`
+
+  if (input.codeGraphBlock) {
+    header += input.codeGraphBlock
+  }
 
   if (input.attemptHistoryBlock) {
     header += input.attemptHistoryBlock
@@ -363,6 +379,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
 
   header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
   header += buildAttemptHistoryBlock(ctx, state, 'auditor')
+  header += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
 
   const hasNextSection = idx + 1 < total
   const proactiveCheck = hasNextSection
@@ -396,11 +413,13 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
 
   header += `\n\n## Section plan\n${section.content}`
 
+  header += ctx.getSectionCodeGraphBlock?.(state) ?? ''
   header += buildLoopNoticeBlock(notice)
   header += buildAttemptHistoryBlock(ctx, state, 'coder')
   const blockingBugs = outstandingBugs ? blockingBugFindings(outstandingBugs, state) : ctx.getBlockingBugFindings(state)
   header += buildOutstandingFindingsCoderBlock(blockingBugs)
   header += buildRecurringFindingsCoderBlock(ctx, state, blockingBugs)
+  header += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
 
   return header + CODER_HANDOFF_INSTRUCTION
 }
@@ -433,6 +452,7 @@ export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, o
   let prompt = `${header}${buildLoopNoticeBlock(notice)}\n\n${intro}`
   prompt += buildOutstandingFindingsCoderBlock(findings)
   prompt += buildRecurringFindingsCoderBlock(ctx, state, state.totalSections > 0 ? findings : outstandingBugs)
+  prompt += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
 
   return prompt + CODER_HANDOFF_INSTRUCTION
 }
@@ -452,6 +472,7 @@ export function buildAuditFollowUpPrompt(ctx: PromptContext, state: LoopState): 
 
   prompt += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
   prompt += buildAttemptHistoryBlock(ctx, state, 'auditor')
+  prompt += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
 
   prompt += `\n\n---\nAudit instructions:\n- Re-read the files that changed since your last turn (\`git status\` and \`git diff\` show what the coder touched).\n- Use review-read to load the findings in scope, verify every outstanding one against the current code, delete the resolved ones with review-delete, and keep the unresolved ones open.\n- Write severity: bug findings for unmet acceptance criteria or failed verification.\n- Verify with concrete source or contract evidence and the finding's own narrow verification rather than re-running unrelated work.`
 

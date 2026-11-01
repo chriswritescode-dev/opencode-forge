@@ -201,11 +201,12 @@ describe('resolveLoopPermissionOptions', () => {
     const config = { loop: { permissions: { deny: ['webfetch'] }, allowExternalDirectories: ['/vault'] } }
     expect(resolveLoopPermissionOptions(config)).toEqual({
       extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' }],
+      denyCodeGraphMcp: true,
     })
   })
 
-  it('yields empty options when config is undefined', () => {
-    expect(resolveLoopPermissionOptions(undefined)).toEqual({ extraRules: [] })
+  it('yields no extra rules and the default codegraph MCP deny when config is undefined', () => {
+    expect(resolveLoopPermissionOptions(undefined)).toEqual({ extraRules: [], denyCodeGraphMcp: true })
   })
 })
 

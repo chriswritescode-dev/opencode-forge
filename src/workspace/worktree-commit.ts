@@ -3,6 +3,8 @@ import { existsSync, rmSync } from 'fs'
 import type { Logger } from '../types'
 import type { GitService } from '../utils/git-service'
 import { WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
+import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
+import { isForgeCodeGraphLink } from '../loop/code-graph'
 
 export type WorktreeCommitOutcome = 'committed' | 'no-changes' | 'failed'
 
@@ -26,7 +28,8 @@ function removeForgeWrittenOpencodeConfig(git: GitService, logger: Logger, direc
 
 /**
  * Single point of truth for committing a forge worktree's pending changes:
- * strips the forge-written opencode config, stages everything, and commits.
+ * strips the forge-written opencode config, stages everything except Forge's
+ * `.codegraph` cache link, and commits.
  * Used by both the teardown commit (forge-adapter) and the per-section
  * checkpoint commits (loop runtime). Failures are logged, never thrown — a
  * missed commit degrades bookkeeping, it must not break the caller.
@@ -40,12 +43,21 @@ export function commitWorktreeChanges(git: GitService, logger: Logger, directory
     return 'failed'
   }
 
+  if (isForgeCodeGraphLink(directory)) {
+    const unstaged = git.removeFromIndex(directory, CODE_GRAPH_LINK_NAME)
+    if (!unstaged.ok) {
+      logger.log(`worktree-commit: could not keep ${CODE_GRAPH_LINK_NAME} out of the commit in ${directory}: ${unstaged.stderr.trim() || 'unknown error'}`)
+      return 'failed'
+    }
+  }
+
   const statusResult = git.statusPorcelain(directory)
   if (!statusResult.ok) {
     logger.log(`worktree-commit: git status failed in ${directory}: ${statusResult.stderr.trim() || 'unknown error'}`)
     return 'failed'
   }
-  if (!statusResult.stdout.trim()) {
+  const staged = statusResult.stdout.split('\n').filter((line) => line.trim() && !line.startsWith('??'))
+  if (staged.length === 0) {
     return 'no-changes'
   }
 

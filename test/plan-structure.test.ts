@@ -3,6 +3,7 @@ import {
   summarizePlanStructure,
   formatPlanStructureSummary,
   findSectionsForLineRange,
+  extractSectionFiles,
 } from '../src/utils/plan-structure'
 import { MAX_TOTAL_SECTIONS } from '../src/constants/loop'
 
@@ -406,5 +407,49 @@ describe('findSectionsForLineRange', () => {
     const last = summary.sections[2]
     const matched = findSectionsForLineRange(plan, first.startLine, last.endLine)
     expect(matched.map((s) => s.index)).toEqual([0, 1, 2])
+  })
+})
+
+describe('extractSectionFiles', () => {
+  test('returns repo-relative planned files and drops absolute paths, globs, and fenced examples', () => {
+    const section = [
+      '## Phase 1: Snapshot',
+      '### Files',
+      '- `src/loop/code-graph.ts`',
+      '- `src/loop/runtime.ts` (new)',
+      '- /etc/hosts',
+      '- src/**/*.ts',
+      '```text',
+      '- `src/fenced.ts`',
+      '```',
+      '- src/plain.ts (new)',
+      '### Edits',
+      '- `src/ignored.ts`',
+    ].join('\n')
+
+    expect(extractSectionFiles(section)).toEqual([
+      'src/loop/code-graph.ts',
+      'src/loop/runtime.ts',
+      'src/plain.ts',
+    ])
+  })
+
+  test('prefers backtick tokens over surrounding prose and de-duplicates in order', () => {
+    const section = [
+      '## Phase 1: Snapshot',
+      '### Files',
+      '- Add `src/a.ts` — the runner.',
+      '- `src/b.ts`',
+      '- src/a.ts',
+      '### Edits',
+      'No files here.',
+    ].join('\n')
+
+    expect(extractSectionFiles(section)).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+
+  test('returns an empty list without a Files heading', () => {
+    expect(extractSectionFiles('## Phase 1\n### Edits\n- Do the work.')).toEqual([])
+    expect(extractSectionFiles('')).toEqual([])
   })
 })

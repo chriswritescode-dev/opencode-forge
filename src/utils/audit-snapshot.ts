@@ -2,6 +2,9 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'fs'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import type { Logger } from '../types'
+import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
+import { isForgeCodeGraphLink } from '../loop/code-graph'
+import type { CodeGraphLineRange } from '../loop/code-graph-runner'
 import { runCommand } from '../sandbox/process'
 import { WORKTREE_OPENCODE_CONFIG_FILENAME } from '../workspace/worktree-opencode-config'
 
@@ -25,6 +28,10 @@ const SNAPSHOT_IDENTITY = {
 const SNAPSHOT_TIMEOUT_MS = 120000
 const TEMP_DIR_PREFIX = 'forge-audit-snapshot-'
 const DIFF_LINE_LIMIT = 200
+const DIFF_HEADER_PREFIX = 'diff --git '
+const OLD_FILE_PREFIX = '--- '
+const NEW_FILE_PREFIX = '+++ b/'
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 const SECRET_BASENAMES = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'])
 const SECRET_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.keystore'])
 
@@ -40,6 +47,10 @@ function isSecretLikePath(path: string): boolean {
 
 function isForgeTransientPath(path: string): boolean {
   return path === '.forge' || path.startsWith('.forge/')
+}
+
+function isCodeGraphPath(path: string): boolean {
+  return path === CODE_GRAPH_LINK_NAME || path.startsWith(`${CODE_GRAPH_LINK_NAME}/`)
 }
 
 function validateAuditRef(ref: string): string {
@@ -79,7 +90,8 @@ async function runGitCommand(cwd: string, args: string[], env: Record<string, st
     logLabel: `audit-snapshot:${label}`,
   })
   if (result.exitCode !== 0) {
-    throw new Error(`git ${args[0]} failed (exit ${result.exitCode}): ${result.stderr.trim().slice(0, 500)}`)
+    const subcommand = args.find((arg, index) => !arg.startsWith('-') && args[index - 1] !== '-c') ?? args[0]
+    throw new Error(`git ${subcommand} failed (exit ${result.exitCode}): ${result.stderr.trim().slice(0, 500)}`)
   }
   return result.stdout
 }
@@ -213,6 +225,8 @@ async function buildSnapshotTree(
   const indexEnv = gitEnv({ GIT_INDEX_FILE: altIndex })
   await assertNoUntrackedSecrets(toplevel, logger)
   const excludedPaths = ['.forge']
+  const excludeCodeGraph = isForgeCodeGraphLink(toplevel)
+  if (excludeCodeGraph) excludedPaths.push(CODE_GRAPH_LINK_NAME)
   if (!originalTracked.has(WORKTREE_OPENCODE_CONFIG_FILENAME)) excludedPaths.push(WORKTREE_OPENCODE_CONFIG_FILENAME)
   const pathspecs = ['.']
   for (const path of excludedPaths) {
@@ -237,7 +251,10 @@ async function buildSnapshotTree(
   }
   await assertSubmodulesClean(toplevel, stagedGitlinks, logger)
   const removals = entries.filter(
-    (entry) => isForgeTransientPath(entry) || (entry === WORKTREE_OPENCODE_CONFIG_FILENAME && !originalTracked.has(entry)),
+    (entry) =>
+      isForgeTransientPath(entry) ||
+      (excludeCodeGraph && isCodeGraphPath(entry)) ||
+      (entry === WORKTREE_OPENCODE_CONFIG_FILENAME && !originalTracked.has(entry)),
   )
   await removeIndexEntries(toplevel, removals, indexEnv, logger)
   const tree = (await runGitCommand(toplevel, ['write-tree'], indexEnv, logger, 'write-tree')).trim()
@@ -303,6 +320,73 @@ export async function compareAuditSnapshots(cwd: string, previous: string, curre
   const omitted = nameStatusLines.length - boundedNameStatusLines.length
   const nameStatus = omitted > 0 ? `${boundedNameStatusLines.join('\n')}\n... ${omitted} more changed paths` : boundedNameStatusLines.join('\n')
   return [stat, nameStatus].filter((part) => part.length > 0).join('\n')
+}
+
+function parseDiffHeaderPath(line: string): string | null {
+  const rest = line.slice(DIFF_HEADER_PREFIX.length)
+  if (!rest.startsWith('a/')) return null
+  for (let index = rest.indexOf(' b/'); index >= 0; index = rest.indexOf(' b/', index + 1)) {
+    if (rest.slice(2, index) === rest.slice(index + 3)) return rest.slice(2, index)
+  }
+  const separator = rest.indexOf(' b/')
+  return separator < 0 ? null : rest.slice(separator + 3)
+}
+
+function parseHunkRange(line: string): CodeGraphLineRange | null {
+  const match = HUNK_HEADER_PATTERN.exec(line)
+  if (!match) return null
+  const start = Number(match[3])
+  const count = match[4] === undefined ? 1 : Number(match[4])
+  if (count === 0) {
+    const single = Math.max(start, 1)
+    return { start: single, end: single }
+  }
+  return { start, end: start + count - 1 }
+}
+
+/**
+ * New-side changed line ranges per repo-relative file between two snapshots; deleted paths are
+ * excluded, and a changed file with no text hunks (binary, or a pure rename) maps to no ranges.
+ */
+export async function listSnapshotChangedRanges(cwd: string, from: string, to: string, logger: Logger): Promise<Record<string, CodeGraphLineRange[]>> {
+  const fromBase = from.endsWith('^') ? from.slice(0, -1) : from
+  validateCommitSha(fromBase, 'from snapshot SHA')
+  validateCommitSha(to, 'to snapshot SHA')
+  const toplevel = await resolveWorktreeRoot(cwd, logger)
+  const resolvedFrom = (await runGitCommand(toplevel, ['rev-parse', '--verify', from], gitEnv({}), logger, 'rev-parse-from')).trim()
+  validateCommitSha(resolvedFrom, 'resolved from snapshot SHA')
+  const out = await runGitCommand(
+    toplevel,
+    ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', '--diff-filter=d', '-U0', resolvedFrom, to],
+    gitEnv({}),
+    logger,
+    'diff-unified',
+  )
+  const ranges = new Map<string, CodeGraphLineRange[]>()
+  let current: CodeGraphLineRange[] | null = null
+  let inFileHeader = false
+  let previousLine = ''
+  for (const line of out.split('\n')) {
+    if (line.startsWith(DIFF_HEADER_PREFIX)) {
+      const path = parseDiffHeaderPath(line)
+      current = null
+      inFileHeader = true
+      if (path) {
+        if (!ranges.has(path)) ranges.set(path, [])
+        current = ranges.get(path)!
+      }
+    } else if (inFileHeader && line.startsWith(NEW_FILE_PREFIX) && previousLine.startsWith(OLD_FILE_PREFIX)) {
+      const path = line.slice(NEW_FILE_PREFIX.length).replace(/\t$/, '')
+      if (!ranges.has(path)) ranges.set(path, [])
+      current = ranges.get(path)!
+    } else if (current && line.startsWith('@@ ')) {
+      inFileHeader = false
+      const range = parseHunkRange(line)
+      if (range) current.push(range)
+    }
+    previousLine = line
+  }
+  return Object.fromEntries(ranges)
 }
 
 export async function deleteAuditSnapshot(cwd: string, ref: string, logger: Logger): Promise<void> {

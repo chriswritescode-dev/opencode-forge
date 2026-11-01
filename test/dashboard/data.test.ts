@@ -113,6 +113,7 @@ describe('collectDashboardData', () => {
     // Set section statuses explicitly (as per fixture conventions)
     sectionsRepo.setStatus(projectId, loopName, 0, 'completed')
     sectionsRepo.setStatus(projectId, loopName, 1, 'pending')
+    sectionsRepo.setCodeGraph(projectId, loopName, 0, '# Code graph\n\nchanged: src/a.ts')
 
     // Insert 1 finding
     findingsRepo.write({
@@ -154,6 +155,9 @@ describe('collectDashboardData', () => {
     expect(dashLoop.lastAuditResult).toBe('audit-result-1')
     expect(dashLoop.plan).toBe('plan-content-1')
     expect(dashLoop.sections).toHaveLength(2)
+    expect(sectionsRepo.get(projectId, loopName, 0)?.codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+    expect(dashLoop.sections[0]).not.toHaveProperty('codeGraph')
+    expect(dashLoop.sections[1]).not.toHaveProperty('codeGraph')
     expect(dashLoop.findings).toHaveLength(1)
     expect(dashLoop.usage).not.toBeNull()
     expect(dashLoop.usage!.totalCost).toBe(0.005)

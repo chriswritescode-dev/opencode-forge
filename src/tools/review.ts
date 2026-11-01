@@ -135,7 +135,10 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
             ? Math.min(...attempts.map((a) => a.id))
             : null
           logger.log(`review-read: attempts loop=${loopName} scope=${scope ?? 'all'} count=${String(attempts.length)} nextBeforeId=${String(nextBeforeId)}`)
-          return JSON.stringify({ attempts, nextBeforeId })
+          return JSON.stringify({
+            attempts: attempts.map(({ codeGraph: _codeGraph, ...attempt }) => attempt),
+            nextBeforeId,
+          })
         }
 
         const trimmedLoop = typeof args.loopName === 'string' ? args.loopName.trim() : ''

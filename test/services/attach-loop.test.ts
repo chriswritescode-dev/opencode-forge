@@ -524,4 +524,57 @@ describe('attachLoopToSession', () => {
     expect(row!.executionVariant).toBe('thinking-max')
     expect(row!.auditorVariant).toBe('audit-high')
   })
+
+  test('a loop cancelled during the code-graph snapshot sends no prompt and starts no watchdog', async () => {
+    const { deps, loopsRepo, promptAsyncMock } = setupAttach()
+    const loopName = 'cancelled-during-snapshot'
+
+    deps.loop.snapshotSectionCodeGraph = async () => {
+      loopsRepo.terminate(PROJECT_ID, loopName, {
+        status: 'cancelled',
+        reason: 'user',
+        completedAt: Date.now(),
+      })
+    }
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const planText = [
+      '<!-- forge-section -->',
+      '## Setup',
+      '### Files',
+      '- package.json',
+      'Install dependencies.',
+      '<!-- forge-section -->',
+      '## Build',
+      '### Files',
+      '- src/index.ts',
+      'Compile project.',
+    ].join('\n')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_cancelled_snapshot',
+        workspaceId: 'ws_cancelled_snapshot',
+        worktreeDir: '/tmp/wt/cancelled-snapshot',
+        loopName,
+        displayName: 'Cancelled Snapshot Loop',
+        executionName: loopName,
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText,
+        startWatchdog: true,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(promptAsyncMock).not.toHaveBeenCalled()
+    expect(deps.loopHandler!.startWatchdog).not.toHaveBeenCalled()
+
+    const row = loopsRepo.get(PROJECT_ID, loopName)
+    expect(row).not.toBeNull()
+    expect(row!.status).toBe('cancelled')
+  })
 })

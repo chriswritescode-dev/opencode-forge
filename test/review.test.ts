@@ -579,6 +579,19 @@ describe('review-read attempts mode', () => {
     expect(parsed.nextBeforeId).toBeNull()
   })
 
+  test('omits the stored code-graph report text from returned attempts', async () => {
+    const stored = attemptsRepo.list('test-project', 'scoped-loop', 'section:0')
+    attemptsRepo.setCodeGraph('test-project', 'scoped-loop', stored[0].id, '# Code graph\n\nchanged: src/a.ts')
+    expect(attemptsRepo.list('test-project', 'scoped-loop', 'section:0')[0].codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+
+    const result = await tools['review-read'].execute({ attempts: true }, makeToolContext('scoped-session'))
+    const parsed = JSON.parse(result) as { attempts: Array<Record<string, unknown>> }
+    expect(parsed.attempts).toHaveLength(2)
+    for (const attempt of parsed.attempts) {
+      expect(attempt).not.toHaveProperty('codeGraph')
+    }
+  })
+
   test('allSections returns attempts from all scopes', async () => {
     const result = await tools['review-read'].execute({ attempts: true, allSections: true }, makeToolContext('scoped-session'))
     const parsed = JSON.parse(result) as { attempts: LoopAttemptRow[] }

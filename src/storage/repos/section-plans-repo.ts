@@ -14,6 +14,7 @@ export interface SectionPlanRow {
   summaryDone: string | null
   summaryDeviations: string | null
   summaryFollowUps: string | null
+  codeGraph: string | null
   startedAt: number | null
   completedAt: number | null
   createdAt: number
@@ -28,6 +29,7 @@ export interface SectionPlansRepo {
   setStatus(projectId: string, loopName: string, index: number, status: SectionPlanRow['status']): void
   incrementAttempts(projectId: string, loopName: string, index: number): void
   setSummary(projectId: string, loopName: string, index: number, parts: { done?: string; deviations?: string; followUps?: string }): void
+  setCodeGraph(projectId: string, loopName: string, index: number, text: string | null): void
   resetForRewind(projectId: string, loopName: string, index: number): void
   setStartedAt(projectId: string, loopName: string, index: number, ms: number): void
   setCompletedAt(projectId: string, loopName: string, index: number, ms: number): void
@@ -66,7 +68,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtList = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           started_at, completed_at, created_at
+           code_graph, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ?
     ORDER BY section_index ASC
@@ -75,7 +77,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtListCompleted = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           started_at, completed_at, created_at
+           code_graph, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND status = 'completed'
     ORDER BY section_index ASC
@@ -84,7 +86,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtGet = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           started_at, completed_at, created_at
+           code_graph, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND section_index = ?
   `)
@@ -92,7 +94,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtGetNextIncomplete = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           started_at, completed_at, created_at
+           code_graph, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND status != 'completed'
     ORDER BY section_index ASC
@@ -114,7 +116,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
   const stmtResetForRewind = db.prepare(`
     UPDATE section_plans SET status = 'in_progress', attempts = 0, summary_done = NULL,
-    summary_deviations = NULL, summary_follow_ups = NULL, completed_at = NULL
+    summary_deviations = NULL, summary_follow_ups = NULL, code_graph = NULL, completed_at = NULL
     WHERE project_id = ? AND loop_name = ? AND section_index = ?
   `)
 
@@ -127,7 +129,13 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   `)
 
   const stmtUpdateContent = db.prepare(`
-    UPDATE section_plans SET title = ?, content = ? WHERE project_id = ? AND loop_name = ? AND section_index = ?
+    UPDATE section_plans
+    SET code_graph = CASE WHEN content = ? THEN code_graph ELSE NULL END, title = ?, content = ?
+    WHERE project_id = ? AND loop_name = ? AND section_index = ?
+  `)
+
+  const stmtSetCodeGraph = db.prepare(`
+    UPDATE section_plans SET code_graph = ? WHERE project_id = ? AND loop_name = ? AND section_index = ?
   `)
 
   const stmtCount = db.prepare(`
@@ -171,6 +179,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
       summaryDone: row.summary_done as string | null,
       summaryDeviations: row.summary_deviations as string | null,
       summaryFollowUps: row.summary_follow_ups as string | null,
+      codeGraph: row.code_graph as string | null,
       startedAt: row.started_at as number | null,
       completedAt: row.completed_at as number | null,
       createdAt: row.created_at as number,
@@ -191,7 +200,10 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     updateContent(projectId, loopName, sections) {
       let updated = 0
       for (const section of sections) {
-        const result = stmtUpdateContent.run(section.title, section.content, projectId, loopName, section.index) as unknown as { changes: number }
+        const result = stmtUpdateContent.run(
+          section.content, section.title, section.content,
+          projectId, loopName, section.index,
+        ) as unknown as { changes: number }
         if (result.changes > 0) updated++
       }
       return { updated }
@@ -240,6 +252,10 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
       stmtResetForRewind.run(projectId, loopName, index)
     },
 
+    setCodeGraph(projectId, loopName, index, text) {
+      stmtSetCodeGraph.run(text, projectId, loopName, index)
+    },
+
     setStartedAt(projectId, loopName, index, ms) {
       stmtSetStartedAt.run(ms, projectId, loopName, index)
     },
@@ -266,14 +282,14 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     restoreAll(rows: SectionPlanRow[]): void {
       const stmtRestore = db.prepare(`
         INSERT OR REPLACE INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts,
-          summary_done, summary_deviations, summary_follow_ups, started_at, completed_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          summary_done, summary_deviations, summary_follow_ups, code_graph, started_at, completed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const row of rows) {
         stmtRestore.run(
           row.projectId, row.loopName, row.sectionIndex, row.title, row.content,
           row.status, row.attempts, row.summaryDone, row.summaryDeviations,
-          row.summaryFollowUps, row.startedAt, row.completedAt, row.createdAt,
+          row.summaryFollowUps, row.codeGraph, row.startedAt, row.completedAt, row.createdAt,
         )
       }
     },

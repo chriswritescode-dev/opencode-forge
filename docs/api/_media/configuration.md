@@ -18,6 +18,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
 | `autoApprove` | unset | Deny rules applied while per-session auto-approve is on. See [Auto-Approve](#auto-approve). |
+| `codeGraph` | unset | `codegraph` installation in the sandbox template and its loop integration. See [Code Graph](#code-graph). |
 
 ## Logging
 
@@ -42,6 +43,26 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 |---|---:|---|
 | `messagesTransform.enabled` | `true` | Gate the interactive Architect system reminder (read-only filesystem mode plus finalize-the-plan instructions) appended to the last user message for the Architect agent. Loop sessions are unaffected. |
 | `messagesTransform.debug` | `false` | Accepted but currently unused. |
+
+## Code Graph
+
+| Option | Default | Description |
+|---|---:|---|
+| `codeGraph.install` | `true` | Install the pinned `codegraph` (v1.6.2) into the sandbox template image; `false` builds the image without it. The template is built once, so rebuild it ("Build sandbox template") after changing this. |
+| `codeGraph.enabled` | unset | Unset means on whenever `codegraph` is in the sandbox; `false` turns the integration off. `true` behaves like unset but logs an error when a sandbox has no `codegraph`. |
+
+While the integration is on, sandboxed loops index their worktree with the sandbox's `codegraph` and write snapshot reports to `.forge/codegraph/` from inside the sandbox, so the loop agents can see the structural impact of their edits. A sandbox without `codegraph` (`codeGraph.install: false`, or a template built before codegraph was added) skips the snapshots. Non-sandboxed loops never take them.
+
+The index lives on the sandbox cache disk, never in the repository. The worktree only gets a `.codegraph` symlink to it, which Forge does not add to any git ignore file: Forge's section checkpoint and teardown commits unstage it, and audit snapshots leave it out, so it never enters loop history or the pushed branch. `git status` in a loop worktree lists it as untracked. A `.codegraph` the repository tracks itself is committed and audited like any other path, and the loop takes no snapshots because it cannot place its link there.
+
+Loop, audit, and post-action sessions also deny every `codegraph_*` tool, which is how OpenCode names the tools of an MCP server called `codegraph`. A host-side MCP server cannot read a loop's index, which lives on the sandbox cache disk, so loop agents query it with the `codegraph` CLI in `bash` instead. The deny is removed from the model's tool list, not just refused at call time, and subagents inherit it. Other sessions, such as planning, keep the MCP tools. An MCP server registered under a different name is not matched; deny it with [`loop.permissions`](#loop-permissions).
+
+```jsonc
+"codeGraph": {
+  "install": false,
+  "enabled": false
+}
+```
 
 ## Loop
 

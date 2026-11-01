@@ -6,7 +6,7 @@ interface SandboxExecutionDeps {
   hostDir: string
 }
 
-function quoteShellArg(value: string): string {
+export function quoteShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
 

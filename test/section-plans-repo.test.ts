@@ -266,6 +266,33 @@ describe('SectionPlansRepo', () => {
     })
   })
 
+  describe('updateContent', () => {
+    test('keeps the stored code graph report when the content is unchanged', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      repo.setCodeGraph(projectId, loopName, 0, '# Code graph')
+
+      const result = repo.updateContent(projectId, loopName, [{ index: 0, title: 'S renamed', content: 'C' }])
+
+      expect(result.updated).toBe(1)
+      const row = repo.get(projectId, loopName, 0)
+      expect(row?.title).toBe('S renamed')
+      expect(row?.content).toBe('C')
+      expect(row?.codeGraph).toBe('# Code graph')
+    })
+
+    test('clears the stored code graph report when the content changes', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      repo.setCodeGraph(projectId, loopName, 0, '# Code graph')
+
+      const result = repo.updateContent(projectId, loopName, [{ index: 0, title: 'S', content: 'C changed' }])
+
+      expect(result.updated).toBe(1)
+      const row = repo.get(projectId, loopName, 0)
+      expect(row?.content).toBe('C changed')
+      expect(row?.codeGraph).toBeNull()
+    })
+  })
+
   describe('resetForRewind', () => {
     test('resets section to in_progress with cleared fields', () => {
       const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
@@ -285,6 +312,57 @@ describe('SectionPlansRepo', () => {
       expect(row?.summaryDeviations).toBeNull()
       expect(row?.summaryFollowUps).toBeNull()
       expect(row?.completedAt).toBeNull()
+    })
+
+    test('clears the stored code graph report so the section is snapshotted again', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCodeGraph(projectId, loopName, 0, '{"changed":["src/a.ts"]}')
+
+      repo.resetForRewind(projectId, loopName, 0)
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBeNull()
+    })
+  })
+
+  describe('setCodeGraph', () => {
+    test('round-trips the report through get and list', () => {
+      const sections: ParsedSection[] = [
+        { index: 0, title: 'A', content: 'A content' },
+        { index: 1, title: 'B', content: 'B content' },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections })
+
+      repo.setCodeGraph(projectId, loopName, 0, '# Code graph\n\nchanged: src/a.ts')
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+      expect(repo.list(projectId, loopName)[0].codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+      expect(repo.list(projectId, loopName)[1].codeGraph).toBeNull()
+      expect(repo.getNextIncomplete(projectId, loopName)?.codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+    })
+
+    test('clears a stored report when set to null', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCodeGraph(projectId, loopName, 0, 'report')
+
+      repo.setCodeGraph(projectId, loopName, 0, null)
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBeNull()
+    })
+  })
+
+  describe('restoreAll', () => {
+    test('preserves the stored code graph report', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCodeGraph(projectId, loopName, 0, '# report')
+      const saved = repo.list(projectId, loopName)
+
+      repo.deleteAll(projectId, loopName)
+      repo.restoreAll(saved)
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBe('# report')
     })
   })
 

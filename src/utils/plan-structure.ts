@@ -54,6 +54,7 @@ function collectHeadingBodies(
   text: string,
   level: 2 | 3,
   minimumIndex = 0,
+  options: { skipFencedContent?: boolean } = {},
 ): Map<string, string[]> {
   const bodies = new Map<string, string[]>()
   let currentHeading: string | null = null
@@ -61,6 +62,7 @@ function collectHeadingBodies(
   for (const line of scanLines(text)) {
     if (line.index < minimumIndex) continue
     if (line.isFenceBoundary) continue
+    if (options.skipFencedContent && line.inFence) continue
 
     const targetHeading = !line.inFence
       ? line.text.match(new RegExp(`^#{${level}}\\s+(.+?)\\s*$`))
@@ -88,6 +90,41 @@ function collectHeadingBodies(
 
 function findAbsolutePath(lines: string[]): string | null {
   return lines.join('\n').match(ABSOLUTE_PATH_REGEX)?.[1] ?? null
+}
+
+function isRepoRelativeNonGlobPath(file: string): boolean {
+  if (file.startsWith('/') || file.startsWith('~') || file.startsWith('\\\\')) return false
+  if (/^[a-z]:[\\/]/i.test(file)) return false
+  return !/[*?[\]]/.test(file)
+}
+
+/**
+ * The repo-relative files a section's `### Files` list plans to touch. Backtick
+ * tokens win over the bullet text, so ``- `src/a.ts` — add helper`` still
+ * resolves, and a trailing `(new)` annotation is dropped. Absolute paths, globs,
+ * and fenced examples are ignored: the code-graph snapshotter only queries
+ * repo-relative files that exist in the worktree.
+ */
+export function extractSectionFiles(sectionContent: string): string[] {
+  const body = collectHeadingBodies(sectionContent, 3, 0, { skipFencedContent: true }).get('Files') ?? []
+  const seen = new Set<string>()
+  const files: string[] = []
+
+  const add = (candidate: string): void => {
+    const file = candidate.replace(/\s*\(new\)\s*$/i, '').trim()
+    if (!file || seen.has(file) || !isRepoRelativeNonGlobPath(file)) return
+    seen.add(file)
+    files.push(file)
+  }
+
+  for (const line of body) {
+    const text = line.replace(/^(?:[-*+]|\d+\.)\s+/, '')
+    const tokens = [...text.matchAll(/`([^`]+)`/g)].map((match) => match[1])
+    if (tokens.length > 0) tokens.forEach(add)
+    else add(text)
+  }
+
+  return files
 }
 
 /**

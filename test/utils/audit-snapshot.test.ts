@@ -3,8 +3,9 @@ import { execSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
-import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot, listSnapshotChangedRanges } from '../../src/utils/audit-snapshot'
+import { SANDBOX_CACHE_DIR } from '../../src/sandbox/msb'
 import type { Logger } from '../../src/types'
 
 const runCommandState = vi.hoisted(() => ({
@@ -145,6 +146,55 @@ describe('captureAuditSnapshot', () => {
     expect(paths).toContain('base.txt')
     expect(paths.some((path) => path.startsWith('.forge/'))).toBe(false)
     expect(paths).not.toContain('opencode.jsonc')
+  })
+
+  it("excludes Forge's dangling .codegraph cache link when it is not git-ignored", async () => {
+    const repo = initRepo('audit-snapshot-codegraph-')
+    symlinkSync(join(SANDBOX_CACHE_DIR, 'codegraph'), join(repo, '.codegraph'))
+    writeFileSync(join(repo, 'changed.txt'), 'changed\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const paths = treePaths(repo, snapshot.commit)
+    expect(paths).toContain('changed.txt')
+    expect(paths).not.toContain('.codegraph')
+  })
+
+  it('keeps a .codegraph directory the repository tracks, including its changes', async () => {
+    const repo = initRepo('audit-snapshot-codegraph-tracked-')
+    mkdirSync(join(repo, '.codegraph'))
+    writeFileSync(join(repo, '.codegraph', 'config.json'), '{}\n', 'utf-8')
+    execSync('git add -A && git commit -m "track codegraph"', { cwd: repo, encoding: 'utf-8' })
+    writeFileSync(join(repo, '.codegraph', 'config.json'), '{"changed":true}\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    expect(treePaths(repo, snapshot.commit)).toContain('.codegraph/config.json')
+    expect(gitOut(repo, `show ${snapshot.commit}:.codegraph/config.json`)).toBe('{"changed":true}\n')
+  })
+
+  it('keeps a new, untracked .codegraph directory the repository adds', async () => {
+    const repo = initRepo('audit-snapshot-codegraph-new-')
+    mkdirSync(join(repo, '.codegraph'))
+    writeFileSync(join(repo, '.codegraph', 'config.json'), '{}\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    expect(treePaths(repo, snapshot.commit)).toContain('.codegraph/config.json')
+  })
+
+  it('captures a worktree whose info/exclude lists a dangling .codegraph symlink', async () => {
+    const repo = initRepo('audit-snapshot-codegraph-exclude-')
+    const excludePath = gitOut(repo, 'rev-parse --git-path info/exclude').trim()
+    appendFileSync(isAbsolute(excludePath) ? excludePath : join(repo, excludePath), '.codegraph\n', 'utf-8')
+    symlinkSync('/nonexistent', join(repo, '.codegraph'))
+    writeFileSync(join(repo, 'changed.txt'), 'changed\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const paths = treePaths(repo, snapshot.commit)
+    expect(paths).toContain('changed.txt')
+    expect(paths).not.toContain('.codegraph')
   })
 
   it('excludes an opencode.jsonc that escapes the initial untracked listing', async () => {
@@ -464,6 +514,132 @@ describe('compareAuditSnapshots', () => {
 
     expect(summary).toContain('base.txt')
     expect(summary).not.toContain('EXTERNAL_DIFF_RAN')
+  })
+})
+
+describe('listSnapshotChangedRanges', () => {
+  it('returns added and modified paths but not deleted ones between two snapshots', async () => {
+    const repo = initRepo('audit-snapshot-changed-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), 'changed\n', 'utf-8')
+    writeFileSync(join(repo, 'added.txt'), 'added\n', 'utf-8')
+    rmSync(join(repo, 'gone.txt'))
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(Object.keys(ranges).sort()).toEqual(['added.txt', 'base.txt'])
+    expect(ranges['base.txt']).toEqual([{ start: 1, end: 1 }])
+    expect(ranges['added.txt']).toEqual([{ start: 1, end: 1 }])
+  })
+
+  it('does not mistake hunk lines that look like file headers for a new file', async () => {
+    const repo = initRepo('audit-snapshot-changed-lookalike-')
+    writeFileSync(join(repo, 'base.txt'), 'keep\n-- old\nkeep\n', 'utf-8')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), 'keep\n++ b/fake.txt\nkeep\nadded\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(Object.keys(ranges)).toEqual(['base.txt'])
+    expect(ranges['base.txt']).toEqual([
+      { start: 2, end: 2 },
+      { start: 4, end: 4 },
+    ])
+  })
+
+  it('parses the diff the same way whatever prefix and color config the repository sets', async () => {
+    const repo = initRepo('audit-snapshot-changed-config-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    execSync('git config diff.noprefix true && git config diff.mnemonicPrefix true && git config color.ui always', { cwd: repo })
+    writeFileSync(join(repo, 'base.txt'), 'changed\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges).toEqual({ 'base.txt': [{ start: 1, end: 1 }] })
+  })
+
+  it('names the git subcommand, not a -c value, when the diff fails', async () => {
+    const repo = initRepo('audit-snapshot-changed-fail-')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    await expect(listSnapshotChangedRanges(repo, current.commit, 'f'.repeat(40), logger)).rejects.toThrow(/^git diff failed/)
+  })
+
+  it('reports the new-side range of every modified hunk', async () => {
+    const repo = initRepo('audit-snapshot-changed-hunks-')
+    const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
+    writeFileSync(join(repo, 'base.txt'), `${lines.join('\n')}\n`, 'utf-8')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    lines[1] = 'changed 2'
+    lines[5] = 'changed 6'
+    lines[6] = 'new 7'
+    writeFileSync(join(repo, 'base.txt'), `${lines.join('\n')}\n`, 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges['base.txt']).toEqual([
+      { start: 2, end: 2 },
+      { start: 6, end: 7 },
+    ])
+  })
+
+  it('maps a pure deletion to the line the removed content collapsed onto', async () => {
+    const repo = initRepo('audit-snapshot-changed-deletion-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), '', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges['base.txt']).toEqual([{ start: 1, end: 1 }])
+  })
+
+  it('keeps a binary file as a changed path with no line ranges', async () => {
+    const repo = initRepo('audit-snapshot-changed-binary-')
+    writeFileSync(join(repo, 'image.bin'), Buffer.from([0, 1, 2]))
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'image.bin'), Buffer.from([0, 1, 3]))
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges['image.bin']).toEqual([])
+  })
+
+  it('keeps a path containing a space as it is', async () => {
+    const repo = initRepo('audit-snapshot-changed-space-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'with space.txt'), 'changed\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(Object.keys(ranges)).toEqual(['with space.txt'])
+    expect(ranges['with space.txt']).toEqual([{ start: 1, end: 1 }])
+  })
+
+  it('resolves a parent-relative from ref', async () => {
+    const repo = initRepo('audit-snapshot-changed-parent-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), 'changed\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, `${current.commit}^`, current.commit, logger)
+
+    expect(ranges).toEqual({ 'base.txt': [{ start: 1, end: 1 }] })
+    expect(previous.commit).not.toBe(current.commit)
+  })
+
+  it('rejects invalid commit SHAs', async () => {
+    const repo = initRepo('audit-snapshot-changed-bad-')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+    await expect(listSnapshotChangedRanges(repo, 'not-a-sha', current.commit, logger)).rejects.toThrow(/invalid/)
+    await expect(listSnapshotChangedRanges(repo, `${'z'.repeat(40)}^`, current.commit, logger)).rejects.toThrow(/invalid/)
+    await expect(listSnapshotChangedRanges(repo, current.commit, 'nothex', logger)).rejects.toThrow(/invalid/)
   })
 })
 

@@ -1,9 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { execSync } from 'child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { LoopState } from '../../src/loop/state'
-import { __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { __resetLoopRuntimeSharedState, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
+import { createLoopService } from '../../src/loop/service'
+import { createLoopAttemptsRepo, type LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
@@ -14,11 +17,13 @@ import type { PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
+import { createMockLogger } from '../helpers/logger'
 import { makeLoopState, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
 import { buildHandoffNudgePrompt } from '../../src/loop/prompts'
 import { LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
+import { CODE_GRAPH_PROBE_COMMAND } from '../../src/loop/code-graph'
 
 const PROJECT_ID = 'test-project'
 
@@ -75,6 +80,8 @@ describe('Loop Runtime', () => {
       stallConfig?: LoopConfig
       withUsageRepo?: boolean
       getParentSessionId?: (sessionId: string) => Promise<string | null>
+      sandboxManager?: LoopRuntimeDeps['sandboxManager']
+      loopAttemptsRepo?: LoopAttemptsRepo
     } = {},
   ) => {
     const runtime = buildLoopRuntime(db, {
@@ -85,6 +92,8 @@ describe('Loop Runtime', () => {
       dataDir: tempDir,
       withUsageRepo: overrides.withUsageRepo,
       getParentSessionId: overrides.getParentSessionId,
+      sandboxManager: overrides.sandboxManager,
+      loopAttemptsRepo: overrides.loopAttemptsRepo,
     })
 
     loopService = runtime.loopService
@@ -4571,6 +4580,540 @@ describe('stall handling terminates with stall timeout when configured cap is re
       } finally {
         vi.useRealTimers()
       }
+    })
+  })
+
+  describe('code-graph snapshots', () => {
+    type ExecResult = { exitCode: number; stdout: string; stderr: string }
+
+    function fakeSandboxManager(exec: (command: string) => Promise<ExecResult>): LoopRuntimeDeps['sandboxManager'] {
+      return {
+        getActive: () => ({ containerName: 'codegraph-container' }),
+        runtime: {
+          exec: (_container: string, command: string, opts?: { cwd?: string }) =>
+            command.includes('| base64 -d ') && opts?.cwd
+              ? Promise.resolve({ exitCode: 0, stdout: execSync(command, { cwd: opts.cwd, encoding: 'utf-8', shell: '/bin/sh' }), stderr: '' })
+              : exec(command),
+        },
+      } as unknown as LoopRuntimeDeps['sandboxManager']
+    }
+
+    function successfulExec(command: string): ExecResult {
+      if (command === CODE_GRAPH_PROBE_COMMAND) return { exitCode: 0, stdout: 'present\n', stderr: '' }
+      const runnerInput = /'([^']*)'$/.exec(command)
+      if (command.includes('/opt/codegraph/node') && runnerInput) {
+        const { files } = JSON.parse(runnerInput[1]) as { files: string[] }
+        const result = {
+          ok: true,
+          index: 'synced',
+          files: files.map((path) => ({
+            path,
+            symbols: [{ name: 'fromSectionFile', kind: 'function', signature: null, startLine: 1 }],
+            dependents: [],
+          })),
+          affectedTests: ['test/a.test.ts'],
+        }
+        return { exitCode: 0, stdout: `${JSON.stringify(result)}\n`, stderr: '' }
+      }
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    function seedSectionedAudit(loopName: string, sessionId: string, worktreeDir: string, phase: LoopState['phase'] = 'auditing'): void {
+      mkdirSync(join(worktreeDir, 'src'), { recursive: true })
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 1\n')
+      writeFileSync(join(worktreeDir, 'src/b.ts'), 'export const b = 1\n')
+      const state = makeLoopState({
+        loopName,
+        sessionId,
+        phase,
+        totalSections: 2,
+        currentSectionIndex: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        sandbox: true,
+        worktreeDir,
+        workspaceId: `ws-${loopName}`,
+      })
+      loopService.setState(loopName, state)
+      loopService.registerLoopSession(sessionId, loopName)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [
+          { index: 0, title: 'Section 1', content: '## Phase 1\n### Files\n- `src/a.ts`' },
+          { index: 1, title: 'Section 2', content: '## Phase 2\n### Files\n- `src/a.ts` (new)\n- `src/b.ts`' },
+        ],
+      })
+      sectionPlansRepo.setStatus(PROJECT_ID, loopName, 0, 'in_progress')
+    }
+
+    function codePrompts(calls: RecordedCall[]): string[] {
+      return calls
+        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+        .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
+    }
+
+    function advanceToSectionTwo(loop: Loop, sessionId: string): Promise<void> {
+      return (async () => {
+        await recordAuditorHandoff(loop, sessionId, { summary: { done: ['Did it'], deviations: [], followUps: [] } })
+        await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+      })()
+    }
+
+    test('clean section advance snapshots section 2 and points its first prompt at the report', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop } = buildRuntime({
+        client,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-section'
+      seedSectionedAudit(loopName, 'codegraph-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-audit')
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
+
+      const after = loopService.getActiveState(loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.currentSectionIndex).toBe(1)
+
+      const prompt = codePrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('## Code graph')
+      expect(prompt).toContain('.forge/codegraph/section-2.md')
+
+      const row = sectionPlansRepo.get(PROJECT_ID, loopName, 1)!
+      expect(row.codeGraph).toContain('# Code graph: section 2: Section 2')
+      const report = readFileSync(join(worktreeDir, '.forge/codegraph/section-2.md'), 'utf8')
+      expect(report).toBe(row.codeGraph)
+      expect(report).toContain('test/a.test.ts')
+    })
+
+    test('disabled codeGraph leaves the prompt without a pointer and still advances', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-off-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop } = buildRuntime({
+        client,
+        loopConfig: { codeGraph: { enabled: false } },
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-disabled'
+      seedSectionedAudit(loopName, 'codegraph-off-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-off-audit')
+
+      expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
+      expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
+    })
+
+    test('a failing sandbox exec leaves the prompt without a pointer and still advances', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-fail-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop } = buildRuntime({
+        client,
+        sandboxManager: fakeSandboxManager(async () => {
+          throw new Error('sandbox unavailable')
+        }),
+      })
+
+      const loopName = 'codegraph-failing'
+      seedSectionedAudit(loopName, 'codegraph-fail-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-fail-audit')
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
+
+      expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
+      expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
+    })
+
+    test('a report the sandbox cannot write stores nothing and leaves the prompt without a pointer', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-nowrite-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const sandboxManager = {
+        getActive: () => ({ containerName: 'codegraph-container' }),
+        runtime: {
+          exec: async (_container: string, command: string) =>
+            command.includes('| base64 -d ')
+              ? { exitCode: 1, stdout: '', stderr: 'read-only file system' }
+              : successfulExec(command),
+        },
+      } as unknown as LoopRuntimeDeps['sandboxManager']
+      const { loop } = buildRuntime({ client, sandboxManager })
+
+      const loopName = 'codegraph-nowrite'
+      seedSectionedAudit(loopName, 'codegraph-nowrite-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-nowrite-audit')
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
+
+      expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
+    })
+
+    test('a throwing section report write still advances the section without a pointer', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-throw-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop, logs } = buildRuntime({
+        client,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-section-throws'
+      seedSectionedAudit(loopName, 'codegraph-throw-audit', worktreeDir)
+      const originalSetCodeGraph = sectionPlansRepo.setCodeGraph
+      sectionPlansRepo.setCodeGraph = () => { throw new Error('database is locked') }
+      try {
+        await advanceToSectionTwo(loop, 'codegraph-throw-audit')
+        await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
+      } finally {
+        sectionPlansRepo.setCodeGraph = originalSetCodeGraph
+      }
+
+      const after = loopService.getActiveState(loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.currentSectionIndex).toBe(1)
+
+      const prompt = codePrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('[Loop section 2/2')
+      expect(prompt).not.toContain('## Code graph')
+      expect(logs.some(entry => entry.level === 'error' && entry.message.includes('[code-graph]'))).toBe(true)
+    })
+
+    function initAttemptWorktree(prefix: string): string {
+      const dir = mkdtempSync(join(tempDir, prefix))
+      execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, encoding: 'utf-8' })
+      writeFileSync(join(dir, 'base.txt'), 'base\n')
+      execSync('git add -A && git commit -qm init', { cwd: dir, encoding: 'utf-8' })
+      return dir
+    }
+
+    function auditorPrompts(calls: RecordedCall[]): string[] {
+      return calls
+        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+        .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
+    }
+
+    function assistantIdleMessages(): Array<{ info: { role: string; finish: string }; parts: Array<{ type: string; text: string }> }> {
+      return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }]
+    }
+
+    test('snapshot B stores the attempt report and points the audit prompt at it', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const runnerInputs: Array<{
+        files: string[]
+        impact?: { ranges: Record<string, Array<{ start: number; end: number }>>; callerLimit: number }
+      }> = []
+      const sandboxManager = fakeSandboxManager(async (command) => {
+        const runnerInput = /'([^']*)'$/.exec(command)
+        if (command.includes('/opt/codegraph/node') && runnerInput) runnerInputs.push(JSON.parse(runnerInput[1]))
+        return successfulExec(command)
+      })
+      const { loop } = buildRuntime({
+        client,
+        loopAttemptsRepo,
+        sandboxManager,
+      })
+
+      const loopName = 'codegraph-attempt'
+      const sessionId = 'codegraph-attempt-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
+      const attempt = loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!
+      expect(attempt.codeGraph).toContain('# Code graph: audit attempt 1 (section:0)')
+      expect(attempt.codeGraph).toContain('src/a.ts')
+      expect(attempt.codeGraph).toContain('test/a.test.ts')
+      expect(runnerInputs.find((entry) => entry.impact)?.impact).toEqual({
+        ranges: {
+          'src/a.ts': [{ start: 1, end: 1 }],
+          'src/b.ts': [{ start: 1, end: 1 }],
+        },
+        callerLimit: 20,
+      })
+
+      const prompt = auditorPrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('## Code graph')
+      expect(prompt).toContain('.forge/codegraph/audit-section-0-attempt-1.md')
+      expect(readFileSync(join(worktreeDir, '.forge/codegraph/audit-section-0-attempt-1.md'), 'utf8')).toBe(attempt.codeGraph)
+    })
+
+    test('a dirty audit sends a coder follow-up that still points at the report', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-dirty-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const { loop } = buildRuntime({
+        client,
+        loopAttemptsRepo,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-attempt-dirty'
+      const coderSessionId = 'codegraph-dirty-coder'
+      seedSectionedAudit(loopName, coderSessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, coderSessionId)
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: coderSessionId } })
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
+
+      const auditSessionId = loopService.getActiveState(loopName)!.sessionId
+      expect(auditSessionId).not.toBe(coderSessionId)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'still broken',
+        sectionIndex: 0,
+      })
+      await recordAuditorHandoff(loop, auditSessionId, { notes: 'bug remains' })
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: auditSessionId } })
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: auditSessionId } })
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('coding')
+      const prompt = codePrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('## Code graph')
+      expect(prompt).toContain('.forge/codegraph/audit-section-0-attempt-1.md')
+    })
+
+    test('a failing sandbox exec still rotates to audit without a pointer', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-fail-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const { loop } = buildRuntime({
+        client,
+        loopAttemptsRepo,
+        sandboxManager: fakeSandboxManager(async () => {
+          throw new Error('sandbox unavailable')
+        }),
+      })
+
+      const loopName = 'codegraph-attempt-failing'
+      const sessionId = 'codegraph-attempt-fail-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
+      expect(loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!.codeGraph).toBeNull()
+      expect(auditorPrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+    })
+
+    function gatedSandboxManager() {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      let markStarted!: () => void
+      const started = new Promise<void>((resolve) => { markStarted = resolve })
+      const manager = fakeSandboxManager(async (command) => {
+        if (command.includes('/opt/codegraph/node')) {
+          markStarted()
+          await gate
+        }
+        return successfulExec(command)
+      })
+      return { manager, release, started }
+    }
+
+    function idleEvent(sessionID: string) {
+      return { type: 'session.status', properties: { status: { type: 'idle' }, sessionID } } as const
+    }
+
+    function promptCount(calls: RecordedCall[]): number {
+      return calls.filter(c => c.method === 'session.promptAsync').length
+    }
+
+    test('a cancel during snapshot B does not wait for the snapshot, which then starts no audit', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-cancel-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const gated = gatedSandboxManager()
+      const { loop, logs } = buildRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-cancel'
+      const sessionId = 'codegraph-cancel-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick(idleEvent(sessionId))
+      await gated.started
+
+      expect(await loop.cancelBySessionId(sessionId)).toBe(true)
+      expect(loopService.getActiveState(loopName)?.active ?? false).toBe(false)
+
+      gated.release()
+      await vi.waitFor(() => expect(logs.some(entry => entry.message.includes('moved on during the snapshot'))).toBe(true))
+      expect(auditorPrompts(calls)).toEqual([])
+      expect(loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!.codeGraph).toBeNull()
+    })
+
+    test('an idle event during snapshot B is ignored, and the audit starts exactly once afterwards', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-idle-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const gated = gatedSandboxManager()
+      const { loop } = buildRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-idle-gap'
+      const sessionId = 'codegraph-idle-gap-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick(idleEvent(sessionId))
+      await gated.started
+      const promptsBefore = promptCount(calls)
+
+      await loop.tick(idleEvent(sessionId))
+
+      expect(promptCount(calls)).toBe(promptsBefore)
+      expect(loopService.getActiveState(loopName)!.phase).toBe('coding')
+
+      gated.release()
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
+      expect(auditorPrompts(calls)).toHaveLength(1)
+      expect(auditorPrompts(calls)[0]).toContain('## Code graph')
+    })
+
+    test('an idle event from the finished audit session during snapshot A is ignored', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-gap-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const gated = gatedSandboxManager()
+      const { loop } = buildRuntime({ client, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-section-gap'
+      const auditSessionId = 'codegraph-section-gap-audit'
+      seedSectionedAudit(loopName, auditSessionId, worktreeDir)
+      await advanceToSectionTwo(loop, auditSessionId)
+      await gated.started
+      expect(loopService.getActiveState(loopName)!.phase).toBe('coding')
+      const promptsBefore = promptCount(calls)
+
+      await loop.tick(idleEvent(auditSessionId))
+      expect(promptCount(calls)).toBe(promptsBefore)
+
+      gated.release()
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
+      expect(codePrompts(calls).filter(prompt => prompt.includes('[Loop section 2/2'))).toHaveLength(1)
+      expect(codePrompts(calls).at(-1)).toContain('.forge/codegraph/section-2.md')
+    })
+
+    function createServiceWithConfig(codeGraphEnabled: boolean, attemptsRepo?: LoopAttemptsRepo) {
+      const runtime = buildRuntime()
+      return createLoopService(
+        runtime.loopsRepo,
+        runtime.plansRepo,
+        runtime.reviewFindingsRepo,
+        PROJECT_ID,
+        createMockLogger(),
+        undefined,
+        undefined,
+        runtime.sectionPlansRepo,
+        undefined,
+        undefined,
+        undefined,
+        attemptsRepo,
+        codeGraphEnabled,
+      )
+    }
+
+    function seedStoredReports(loopName: string, sessionId: string, worktreeDir: string, attemptsRepo: LoopAttemptsRepo): void {
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [
+          { index: 0, title: 'Section 1', content: '## Phase 1\n### Files\n- `src/a.ts`' },
+          { index: 1, title: 'Section 2', content: '## Phase 2\n### Files\n- `src/b.ts`' },
+        ],
+      })
+      sectionPlansRepo.setCodeGraph(PROJECT_ID, loopName, 0, '# Code graph: section 1')
+      const attempt = attemptsRepo.record({
+        projectId: PROJECT_ID,
+        loopName,
+        scope: 'section:0',
+        sourceSessionId: sessionId,
+        completionKey: 'stored-report',
+        iteration: 1,
+        worktreeDir,
+        planHash: 'plan-hash',
+        coderDecisions: null,
+        snapshotCommit: null,
+        snapshotRef: null,
+        previousCommit: null,
+        diffSummary: null,
+        fallbackReason: null,
+        findingsBefore: [],
+      })!
+      attemptsRepo.setCodeGraph(PROJECT_ID, loopName, attempt.id, '# Code graph: audit attempt 1')
+    }
+
+    test('stored reports are not pointed at when codeGraph is disabled', () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'cg-gate-off-'))
+      const attemptsRepo = createLoopAttemptsRepo(db)
+      const loopName = 'codegraph-gate-disabled'
+      const service = createServiceWithConfig(false, attemptsRepo)
+      const state = makeLoopState({
+        loopName,
+        sessionId: 'gate-off-session',
+        phase: 'coding',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        sandbox: true,
+        worktreeDir,
+      })
+      service.setState(loopName, state)
+      seedStoredReports(loopName, state.sessionId, worktreeDir, attemptsRepo)
+
+      expect(service.buildSectionInitialPrompt(state)).not.toContain('## Code graph')
+      expect(service.buildSectionAuditPrompt(state)).not.toContain('## Code graph')
+    })
+
+    test('stored reports are only pointed at for a sandboxed loop', () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'cg-gate-sandbox-'))
+      const attemptsRepo = createLoopAttemptsRepo(db)
+      const loopName = 'codegraph-gate-sandbox'
+      const service = createServiceWithConfig(true, attemptsRepo)
+      const state = makeLoopState({
+        loopName,
+        sessionId: 'gate-sandbox-session',
+        phase: 'coding',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        sandbox: false,
+        worktreeDir,
+      })
+      service.setState(loopName, state)
+      seedStoredReports(loopName, state.sessionId, worktreeDir, attemptsRepo)
+
+      const sandboxed = { ...state, sandbox: true }
+      expect(service.buildSectionInitialPrompt(sandboxed)).toContain('.forge/codegraph/section-1.md')
+      expect(service.buildSectionAuditPrompt(sandboxed)).toContain('.forge/codegraph/audit-section-0-attempt-1.md')
+
+      expect(service.buildSectionInitialPrompt(state)).not.toContain('## Code graph')
+      expect(service.buildSectionAuditPrompt(state)).not.toContain('## Code graph')
     })
   })
 })

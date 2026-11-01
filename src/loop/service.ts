@@ -28,6 +28,7 @@ import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './fi
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
+import { attemptCodeGraphReportPath, buildCodeGraphPromptBlock, sectionCodeGraphReportPath } from './code-graph'
 import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
 
 export const MAX_RETRIES = 3
@@ -129,6 +130,12 @@ export interface LoopService {
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getSectionPlans(state: LoopState): SectionPlanRow[]
+  /** Persist a section's code-graph report and write it into the loop worktree. */
+  recordSectionCodeGraph(state: LoopState, index: number, text: string): void
+  /** Persist an audit attempt's code-graph report and write it into the loop worktree. */
+  recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void
+  /** The newest attempt row for the state's current audit scope, or null when attempts are not stored. */
+  getLatestAttempt(state: LoopState): LoopAttemptRow | null
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
 
@@ -194,6 +201,7 @@ export function createLoopService(
   planAmendmentsRepo?: PlanAmendmentsRepo,
   runExclusive?: <T>(loopName: string, fn: () => Promise<T>) => Promise<T>,
   loopAttemptsRepo?: LoopAttemptsRepo,
+  codeGraphEnabled = true,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
   const coderDecisionsByLoop = new Map<string, string>()
@@ -354,7 +362,7 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionCodeGraphBlock, getAttemptCodeGraphBlock }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
@@ -477,6 +485,11 @@ export function createLoopService(
 
   function getAttemptHistory(name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[] {
     return loopAttemptsRepo?.list(projectId, name, scope, limit, beforeId) ?? []
+  }
+
+  function getLatestAttempt(state: LoopState): LoopAttemptRow | null {
+    if (!loopAttemptsRepo) return null
+    return loopAttemptsRepo.latest(projectId, state.loopName, auditScope(state))
   }
 
   function attemptPlanHash(state: LoopState): string {
@@ -700,6 +713,41 @@ export function createLoopService(
   function getSectionPlans(state: LoopState): SectionPlanRow[] {
     if (!sectionPlansRepo) return []
     return sectionPlansRepo.list(projectId, state.loopName)
+  }
+
+  function recordSectionCodeGraph(state: LoopState, index: number, text: string): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.setCodeGraph(projectId, state.loopName, index, text)
+  }
+
+  /**
+   * The `## Code graph` pointer rendered into this section's coder prompts. The
+   * snapshot wrote the report inside the sandbox before the row was stored; the
+   * host never writes it into the agent-writable worktree. A non-sandboxed loop
+   * or a disabled `codeGraph.enabled` setting drops the pointer entirely.
+   */
+  function getSectionCodeGraphBlock(state: LoopState): string {
+    if (!state.sandbox || !codeGraphEnabled) return ''
+    const index = state.currentSectionIndex
+    if (!getSectionPlan(state, index)?.codeGraph) return ''
+    return buildCodeGraphPromptBlock(sectionCodeGraphReportPath(index), 'section start')
+  }
+
+  function recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void {
+    if (!loopAttemptsRepo) return
+    loopAttemptsRepo.setCodeGraph(projectId, state.loopName, attempt.id, text)
+  }
+
+  /**
+   * The `## Code graph` pointer rendered into this scope's audit and coder
+   * prompts, for the report snapshot B wrote inside the sandbox. A non-sandboxed
+   * loop or a disabled `codeGraph.enabled` setting drops the pointer entirely.
+   */
+  function getAttemptCodeGraphBlock(state: LoopState): string {
+    if (!state.sandbox || !codeGraphEnabled) return ''
+    const attempt = getLatestAttempt(state)
+    if (!attempt?.codeGraph) return ''
+    return buildCodeGraphPromptBlock(attemptCodeGraphReportPath(attempt), 'audit checkpoint')
   }
 
   function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {
@@ -1128,6 +1176,9 @@ export function createLoopService(
     replaceSession,
     getSectionPlan,
     getSectionPlans,
+    recordSectionCodeGraph,
+    recordAttemptCodeGraph,
+    getLatestAttempt,
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
 

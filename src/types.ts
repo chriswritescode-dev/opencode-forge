@@ -41,6 +41,17 @@ export interface PostActionConfig {
   model?: string
 }
 
+/** Forge code-graph integration (`codegraph`). */
+export interface CodeGraphConfig {
+  /** Install `codegraph` into the sandbox template image when it is built. Default: true. */
+  install?: boolean
+  /**
+   * Run code-graph snapshots in sandboxed loops and deny the `codegraph_*` MCP tools in loop
+   * sessions. Unset means on whenever `codegraph` is available in the sandbox; `false` turns both off.
+   */
+  enabled?: boolean
+}
+
 /**
  * Session reuse on same-section retries: a retained standby session is resumed
  * across a phase switch. When its last assistant turn reached the role's
@@ -334,6 +345,8 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
+  /** Code-graph (`codegraph`) installation and loop integration. */
+  codeGraph?: CodeGraphConfig
   /** Policy applied while auto-approve is on for a session. */
   autoApprove?: AutoApproveConfig
 }
