@@ -4628,6 +4628,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         maxIterations: 5,
         sandbox: true,
         worktreeDir,
+        workspaceId: `ws-${loopName}`,
       })
       loopService.setState(loopName, state)
       loopService.registerLoopSession(sessionId, loopName)

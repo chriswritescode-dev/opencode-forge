@@ -1,4 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, unlinkSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -482,5 +494,29 @@ describe('ensureCodeGraphReportFile', () => {
     unlinkSync(absolute)
     expect(ensureCodeGraphReportFile(worktreeDir, relPath, '# report\n')).toBe(true)
     expect(existsSync(absolute)).toBe(true)
+  })
+
+  it('replaces a symlink planted at the report path instead of writing through it', () => {
+    const worktreeDir = createWorktree()
+    const outside = createWorktree()
+    const victim = join(outside, 'victim.txt')
+    writeFileSync(victim, 'original\n')
+    const relPath = codeGraphReportPath('section 1')
+    mkdirSync(join(worktreeDir, '.forge/codegraph'), { recursive: true })
+    symlinkSync(victim, join(worktreeDir, relPath))
+
+    expect(ensureCodeGraphReportFile(worktreeDir, relPath, '# report\n')).toBe(true)
+    expect(readFileSync(victim, 'utf8')).toBe('original\n')
+    expect(lstatSync(join(worktreeDir, relPath)).isSymbolicLink()).toBe(false)
+    expect(readFileSync(join(worktreeDir, relPath), 'utf8')).toBe('# report\n')
+  })
+
+  it('refuses a report directory that is a symlink out of the worktree', () => {
+    const worktreeDir = createWorktree()
+    const outside = createWorktree()
+    symlinkSync(outside, join(worktreeDir, '.forge'))
+
+    expect(ensureCodeGraphReportFile(worktreeDir, codeGraphReportPath('section 1'), '# report\n')).toBe(false)
+    expect(readdirSync(outside)).toEqual([])
   })
 })

@@ -3,6 +3,7 @@ import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import type { Logger } from '../types'
 import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
+import { isForgeCodeGraphLink } from '../loop/code-graph'
 import { runCommand } from '../sandbox/process'
 import { WORKTREE_OPENCODE_CONFIG_FILENAME } from '../workspace/worktree-opencode-config'
 
@@ -218,8 +219,8 @@ async function buildSnapshotTree(
   const indexEnv = gitEnv({ GIT_INDEX_FILE: altIndex })
   await assertNoUntrackedSecrets(toplevel, logger)
   const excludedPaths = ['.forge']
-  const codeGraphTracked = [...originalTracked].some(isCodeGraphPath)
-  if (!codeGraphTracked) excludedPaths.push(CODE_GRAPH_LINK_NAME)
+  const excludeCodeGraph = isForgeCodeGraphLink(toplevel)
+  if (excludeCodeGraph) excludedPaths.push(CODE_GRAPH_LINK_NAME)
   if (!originalTracked.has(WORKTREE_OPENCODE_CONFIG_FILENAME)) excludedPaths.push(WORKTREE_OPENCODE_CONFIG_FILENAME)
   const pathspecs = ['.']
   for (const path of excludedPaths) {
@@ -246,7 +247,7 @@ async function buildSnapshotTree(
   const removals = entries.filter(
     (entry) =>
       isForgeTransientPath(entry) ||
-      (!codeGraphTracked && isCodeGraphPath(entry)) ||
+      (excludeCodeGraph && isCodeGraphPath(entry)) ||
       (entry === WORKTREE_OPENCODE_CONFIG_FILENAME && !originalTracked.has(entry)),
   )
   await removeIndexEntries(toplevel, removals, indexEnv, logger)

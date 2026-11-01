@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot, listSnapshotChangedFiles } from '../../src/utils/audit-snapshot'
+import { SANDBOX_CACHE_DIR } from '../../src/sandbox/msb'
 import type { Logger } from '../../src/types'
 
 const runCommandState = vi.hoisted(() => ({
@@ -147,9 +148,9 @@ describe('captureAuditSnapshot', () => {
     expect(paths).not.toContain('opencode.jsonc')
   })
 
-  it('excludes a dangling .codegraph symlink that is not git-ignored', async () => {
+  it("excludes Forge's dangling .codegraph cache link when it is not git-ignored", async () => {
     const repo = initRepo('audit-snapshot-codegraph-')
-    symlinkSync('/nonexistent', join(repo, '.codegraph'))
+    symlinkSync(join(SANDBOX_CACHE_DIR, 'codegraph'), join(repo, '.codegraph'))
     writeFileSync(join(repo, 'changed.txt'), 'changed\n', 'utf-8')
 
     const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
@@ -170,6 +171,16 @@ describe('captureAuditSnapshot', () => {
 
     expect(treePaths(repo, snapshot.commit)).toContain('.codegraph/config.json')
     expect(gitOut(repo, `show ${snapshot.commit}:.codegraph/config.json`)).toBe('{"changed":true}\n')
+  })
+
+  it('keeps a new, untracked .codegraph directory the repository adds', async () => {
+    const repo = initRepo('audit-snapshot-codegraph-new-')
+    mkdirSync(join(repo, '.codegraph'))
+    writeFileSync(join(repo, '.codegraph', 'config.json'), '{}\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    expect(treePaths(repo, snapshot.commit)).toContain('.codegraph/config.json')
   })
 
   it('captures a worktree whose info/exclude lists a dangling .codegraph symlink', async () => {

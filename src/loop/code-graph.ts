@@ -1,5 +1,18 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from 'fs'
+import { randomUUID } from 'crypto'
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
+import { canonicalizeExistingPath, isSameOrDescendantPath } from '../sandbox/path'
 import { CODE_GRAPH_LINK_NAME, isCodeGraphEnabled } from '../constants/loop'
 import { SANDBOX_CACHE_DIR } from '../sandbox/msb'
 import { quoteShellArg } from '../sandbox/exec-fs'
@@ -80,12 +93,29 @@ export function codeGraphReportPath(name: string): string {
   return `.forge/codegraph/${sanitized || 'snapshot'}.md`
 }
 
+/**
+ * Writes a report into the worktree from the host. The sandboxed agent can write the same tree,
+ * so a symlinked parent that resolves outside the worktree is refused, and the report is written
+ * to a fresh temp file and renamed over the target so a symlink planted at the target is
+ * replaced, never followed.
+ */
 export function ensureCodeGraphReportFile(worktreeDir: string, relPath: string, text: string): boolean {
   const absolute = join(worktreeDir, relPath)
+  const parent = dirname(absolute)
   try {
-    if (existsSync(absolute) && readFileSync(absolute, 'utf8') === text) return true
-    mkdirSync(dirname(absolute), { recursive: true })
-    writeFileSync(absolute, text, 'utf8')
+    const root = realpathSync(worktreeDir)
+    if (!isSameOrDescendantPath(canonicalizeExistingPath(parent), root)) return false
+    mkdirSync(parent, { recursive: true })
+    if (!isSameOrDescendantPath(realpathSync(parent), root)) return false
+    if (lstatSync(absolute, { throwIfNoEntry: false })?.isFile() && readFileSync(absolute, 'utf8') === text) return true
+    const temp = `${absolute}.${randomUUID()}.tmp`
+    writeFileSync(temp, text, { encoding: 'utf8', flag: 'wx' })
+    try {
+      renameSync(temp, absolute)
+    } catch (err) {
+      rmSync(temp, { force: true })
+      throw err
+    }
     return true
   } catch {
     return false
