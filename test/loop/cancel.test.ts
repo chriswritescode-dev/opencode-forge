@@ -10,6 +10,7 @@ import { __resetIdleGate } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
+import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 
@@ -48,16 +49,6 @@ function createMockForgeClient(): ForgeClient {
   }
 }
 
-function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string; message: string }> } {
-  const logs: Array<{ level: string; message: string }> = []
-  const logger: Logger = {
-    log: (msg: string) => logs.push({ level: 'log', message: msg }),
-    error: (msg: string) => logs.push({ level: 'error', message: msg }),
-    debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-  }
-  return { logger, logs }
-}
-
 describe('Loop Runtime cancel()', () => {
   let db: ReturnType<typeof createTestDb>['db']
   let testDb: ReturnType<typeof createTestDb>
@@ -81,7 +72,7 @@ describe('Loop Runtime cancel()', () => {
       plansRepo,
       reviewFindingsRepo,
       PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} },
+      createMockLogger(),
       undefined,
       undefined,
       sectionPlansRepo,

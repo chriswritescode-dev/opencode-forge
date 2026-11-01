@@ -4,7 +4,8 @@ import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { execSync } from 'child_process'
 import { createSandboxManager, buildSandboxWorkspaces } from '../src/sandbox/manager'
-import { createMockSandboxRuntime, createMockLogger } from './helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from './helpers/sandbox-mocks'
+import { createMockLogger } from './helpers/logger'
 
 describe('SandboxManager', () => {
   describe('cleanupOrphans', () => {
@@ -190,7 +191,7 @@ describe('SandboxManager', () => {
         logger
       )
 
-      const result = await manager.start('test', '/path')
+      await manager.start('test', '/path')
 
       expect(mockRuntime.getCreateSandboxCalls().length).toBe(1)
       expect(manager.isActive('test')).toBe(true)

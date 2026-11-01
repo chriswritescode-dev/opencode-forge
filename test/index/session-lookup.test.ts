@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { Logger } from '../../src/types'
+import { describe, it, expect, vi } from 'vitest'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { createMockLogger } from '../helpers/logger'
 import { ForgeClientError } from '../../src/client/port'
 
 vi.mock('bun:sqlite', () => ({
@@ -19,14 +19,6 @@ vi.mock('../../src/storage', () => ({
 
 const { createParentSessionLookup, createSessionDirectoryLookup } = await import('../../src/index')
 const { ParentLookupUndeterminedError } = await import('../../src/utils/session-ancestry')
-
-function createMockLogger() {
-  return {
-    log: vi.fn(),
-    debug: vi.fn(),
-    error: vi.fn(),
-  }
-}
 
 function createMockLoop(activeLoops: Array<{ loopName: string; worktreeDir: string; workspaceId?: string }>) {
   return {

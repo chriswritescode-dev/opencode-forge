@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { buildSandboxWorkspaces } from '../../src/sandbox/manager'
 import { buildMsbCreateArgs } from '../../src/sandbox/msb'
-import { createMockLogger } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 describe('buildSandboxWorkspaces host-path canonicalization', () => {
   const tempDirs: string[] = []

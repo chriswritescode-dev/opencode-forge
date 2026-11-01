@@ -7,16 +7,8 @@ import { createLoopService } from '../src/loop/service'
 import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
 import { createToolExecuteBeforeHook } from '../src/hooks/plan-approval'
 import type { ToolContext } from '../src/tools/types'
-import type { Logger } from '../src/types'
 import { createTestDb } from './helpers/test-db'
-
-function createMockLogger(): Logger {
-  return {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-}
+import { createMockLogger } from './helpers/logger'
 
 describe('Tool Blocking Logic', () => {
   let db: Database

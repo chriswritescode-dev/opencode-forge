@@ -11,16 +11,9 @@ import type { ToolContext } from '../src/tools/types'
 import type { Logger } from '../src/types'
 import type { PluginConfig } from '../src/types'
 import { createTestDb } from './helpers/test-db'
+import { createMockLogger } from './helpers/logger'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-approval-test-' + Date.now()
-
-function createMockLogger(): Logger {
-  return {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-}
 
 describe('Plan Approval Tool Interception', () => {
   let db: any

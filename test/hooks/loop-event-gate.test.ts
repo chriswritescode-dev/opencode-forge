@@ -10,9 +10,10 @@ import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { markPromptSent, isAwaitingBusy, AWAITING_BUSY_TIMEOUT_MS, __resetIdleGate } from '../../src/loop/idle-gate'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
+import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 
@@ -51,7 +52,7 @@ describe('Loop Event Idle Gate', () => {
       plansRepo,
       reviewFindingsRepo,
       PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} },
+      createMockLogger(),
       undefined,
       undefined,
       sectionPlansRepo,
@@ -95,16 +96,6 @@ describe('Loop Event Idle Gate', () => {
     }
   }
 
-  function createCapturingLogger() {
-    const logs: Array<{ level: string; message: string }> = []
-    const logger: Logger = {
-      log: (msg: string) => logs.push({ level: 'log', message: msg }),
-      error: (msg: string) => logs.push({ level: 'error', message: msg }),
-      debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-    }
-    return { logger, logs }
-  }
-
   function createHandler() {
     const { logger } = createCapturingLogger()
     const { client: forgeClient } = createFakeForgeClient()
@@ -129,7 +120,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeState({ sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', { log: vi.fn(), error: vi.fn(), debug: vi.fn() })
+      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
       expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(true)
 
       await handler.onEvent({
@@ -150,7 +141,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeState({ sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', { log: vi.fn(), error: vi.fn(), debug: vi.fn() })
+      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {
@@ -172,7 +163,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeState({ sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', { log: vi.fn(), error: vi.fn(), debug: vi.fn() })
+      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {
@@ -192,7 +183,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeState({ sessionId: 'S1', phase: 'coding' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', { log: vi.fn(), error: vi.fn(), debug: vi.fn() })
+      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {
@@ -226,7 +217,7 @@ describe('Loop Event Idle Gate', () => {
         const state = makeState({ sessionId: 'S2', phase: 'coding' })
         loopService.setState(state.loopName, state)
 
-        markPromptSent(PROJECT_ID, state.loopName, 'S2', { log: vi.fn(), error: vi.fn(), debug: vi.fn() })
+        markPromptSent(PROJECT_ID, state.loopName, 'S2', createMockLogger())
 
         vi.setSystemTime(Date.now() + AWAITING_BUSY_TIMEOUT_MS + 1)
 
@@ -253,7 +244,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeState({ sessionId: 'S1', phase: 'coding' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', { log: vi.fn(), error: vi.fn(), debug: vi.fn() })
+      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {

@@ -6,15 +6,12 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
+import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 const PROJECT_ID = 'test-project'
 
@@ -76,18 +73,6 @@ describe('Loop Section Audit Retry', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       ...overrides,
-    }
-  }
-
-  function createCapturingLogger() {
-    const logs: Array<{ level: string; message: string }> = []
-    return {
-      logger: {
-        log: (msg: string) => logs.push({ level: 'log', message: msg }),
-        error: (msg: string) => logs.push({ level: 'error', message: msg }),
-        debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-      } as Logger,
-      logs,
     }
   }
 

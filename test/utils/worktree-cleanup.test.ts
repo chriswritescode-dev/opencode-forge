@@ -1,20 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cleanupLoopWorktree } from '../../src/utils/worktree-cleanup'
 import { createFakeGitService } from '../helpers/fake-git'
-import type { GitService, GitResult } from '../../src/utils/git-service'
+import { createMockLogger } from '../helpers/logger'
+import type { GitResult } from '../../src/utils/git-service'
 
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   rmSync: vi.fn(),
 }))
-
-function createMockLogger() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
-}
 
 describe('cleanupLoopWorktree', () => {
   let mockLogger: ReturnType<typeof createMockLogger>
@@ -79,10 +72,10 @@ describe('cleanupLoopWorktree', () => {
       .mockReturnValueOnce(false) // worktreeDir gone after remove attempt
 
     const fake = createFakeGitService({
-      revParseGitCommonDir: vi.fn<[string], GitResult>().mockReturnValue({
+      revParseGitCommonDir: vi.fn<(a: string) => GitResult>().mockReturnValue({
         ok: true, status: 0, stdout: '/tmp/.git', stderr: '',
       }),
-      worktreeRemove: vi.fn<[string, string], GitResult>().mockReturnValue({
+      worktreeRemove: vi.fn<(a: string, b: string) => GitResult>().mockReturnValue({
         ok: false, status: 1, stdout: '', stderr: 'Permission denied',
       }),
     })
@@ -106,10 +99,10 @@ describe('cleanupLoopWorktree', () => {
     mockExistsSync.mockReturnValue(true)
 
     const fake = createFakeGitService({
-      revParseGitCommonDir: vi.fn<[string], GitResult>().mockReturnValue({
+      revParseGitCommonDir: vi.fn<(a: string) => GitResult>().mockReturnValue({
         ok: true, status: 0, stdout: '/tmp/.git', stderr: '',
       }),
-      worktreeRemove: vi.fn<[string, string], GitResult>().mockReturnValue({
+      worktreeRemove: vi.fn<(a: string, b: string) => GitResult>().mockReturnValue({
         ok: false, status: 1, stdout: '', stderr: 'git worktree remove failed',
       }),
     })
@@ -132,7 +125,7 @@ describe('cleanupLoopWorktree', () => {
       .mockReturnValueOnce(true)  // .git exists
 
     const fake = createFakeGitService({
-      revParseGitCommonDir: vi.fn<[string], GitResult>().mockReturnValue({
+      revParseGitCommonDir: vi.fn<(a: string) => GitResult>().mockReturnValue({
         ok: false, status: 128, stdout: '', stderr: 'fatal: not a git repository /tmp/wt',
       }),
     })

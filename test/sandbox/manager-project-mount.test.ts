@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest'
 import { realpathSync } from 'fs'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 describe('SandboxManager project mount', () => {
   test('adds project mount when sourceProjectDir differs from worktreeDir', async () => {
@@ -138,7 +139,7 @@ describe('SandboxManager project mount', () => {
       expect(runtime.getCreateSandboxCalls().length).toBe(1)
 
       // Simulate reconnect: sandbox already running
-      const result = await manager.start('test', '/home/user/worktrees/feature')
+      await manager.start('test', '/home/user/worktrees/feature')
 
       // Should not have created a new sandbox
       expect(runtime.getCreateSandboxCalls().length).toBe(1)

@@ -1,19 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { createForgeWorkspaceAdapter, type ForgeAdapterDeps } from '../../src/workspace/forge-adapter'
+import { createForgeWorkspaceAdapter } from '../../src/workspace/forge-adapter'
 import { createSandboxManager } from '../../src/sandbox/manager'
 import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 import { join, isAbsolute } from 'path'
 import { mkdtempSync, existsSync, rmSync, readFileSync, writeFileSync, realpathSync } from 'fs'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
-
-function createMockLogger() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
-}
 
 describe('createForgeWorkspaceAdapter', () => {
   let logger: ReturnType<typeof createMockLogger>
@@ -37,7 +30,7 @@ describe('createForgeWorkspaceAdapter', () => {
       name: '',
       branch: null,
       directory: null,
-      extra: projectDirectory ? { loopName, projectDirectory } : { loopName },
+      extra: (projectDirectory ? { loopName, projectDirectory } : { loopName }) as Record<string, unknown>,
       projectID: 'p1',
     }
   }
@@ -117,10 +110,10 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('test-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
-      const branch = execSync(`git -C ${configured.directory} rev-parse --abbrev-ref HEAD`, {
+      expect(existsSync(configured.directory!)).toBe(true)
+      const branch = execSync(`git -C ${configured.directory!} rev-parse --abbrev-ref HEAD`, {
         encoding: 'utf-8',
       }).trim()
       expect(branch).toBe('forge/test-loop')
@@ -139,15 +132,15 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('exclude-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      let excludePath = execSync(`git -C "${configured.directory}" rev-parse --git-path info/exclude`, {
+      let excludePath = execSync(`git -C "${configured.directory!}" rev-parse --git-path info/exclude`, {
         encoding: 'utf-8',
       }).trim()
       // git rev-parse --git-path returns an absolute path for linked worktrees
       // and a relative path (e.g. .git/info/exclude) for standalone repos.
       if (!isAbsolute(excludePath)) {
-        excludePath = join(configured.directory, excludePath)
+        excludePath = join(configured.directory!, excludePath)
       }
       const content = readFileSync(excludePath, 'utf-8')
       expect(content).toContain('.forge/')
@@ -171,9 +164,9 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, baseRef }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      const wtHead = execSync(`git -C "${configured.directory!}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtHead).toBe(baseRef)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -219,10 +212,10 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, branch: branchName, baseRef }
       const configured = adapter.configure(info)
 
-      await expect(adapter.create(configured, {})).rejects.toThrow(
+      await expect(adapter.create(configured)).rejects.toThrow(
         /forge workspace adapter: Branch .* has commits that .* does not contain; refusing to reuse it for a loop based on/,
       )
-      expect(existsSync(configured.directory)).toBe(false)
+      expect(existsSync(configured.directory!)).toBe(false)
       const branchTipAfter = execSync(`git rev-parse ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' }).trim()
       expect(branchTipAfter).toBe(branchTipBefore)
     } finally {
@@ -243,12 +236,12 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, branch: branchName, baseRef }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
-      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(existsSync(configured.directory!)).toBe(true)
+      const wtHead = execSync(`git -C "${configured.directory!}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtHead).toBe(baseRef)
-      const wtBranch = execSync(`git -C "${configured.directory}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
+      const wtBranch = execSync(`git -C "${configured.directory!}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtBranch).toBe(branchName)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -270,9 +263,9 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, branch: branchName, baseRef }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      const wtHead = execSync(`git -C "${configured.directory!}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtHead).toBe(baseRef)
       const branchTip = execSync(`git rev-parse ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' }).trim()
       expect(branchTip).toBe(baseRef)
@@ -296,12 +289,12 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, branch: branchName }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
-      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(existsSync(configured.directory!)).toBe(true)
+      const wtHead = execSync(`git -C "${configured.directory!}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtHead).toBe(repoHead)
-      const wtBranch = execSync(`git -C "${configured.directory}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
+      const wtBranch = execSync(`git -C "${configured.directory!}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtBranch).toBe(branchName)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -325,12 +318,12 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, branch: branchName }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
-      const wtHead = execSync(`git -C "${configured.directory}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
+      expect(existsSync(configured.directory!)).toBe(true)
+      const wtHead = execSync(`git -C "${configured.directory!}" rev-parse HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtHead).toBe(branchTip)
-      const wtBranch = execSync(`git -C "${configured.directory}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
+      const wtBranch = execSync(`git -C "${configured.directory!}" rev-parse --abbrev-ref HEAD`, { encoding: 'utf-8' }).trim()
       expect(wtBranch).toBe(branchName)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -349,7 +342,7 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, branch: branchName }
       const configured = adapter.configure(info)
 
-      const error = await adapter.create(configured, {}).then(
+      const error = await adapter.create(configured).then(
         () => null,
         (err: unknown) => err as Error,
       )
@@ -359,7 +352,7 @@ describe('createForgeWorkspaceAdapter', () => {
       expect(error?.message).toBe(
         `forge workspace adapter: Branch ${branchName} is checked out in worktree ${realpathSync(tmpRepo)}; choose another branch or free it`,
       )
-      expect(existsSync(configured.directory)).toBe(false)
+      expect(existsSync(configured.directory!)).toBe(false)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }
@@ -373,8 +366,8 @@ describe('createForgeWorkspaceAdapter', () => {
         id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
         extra: { loopName: 'proj-loop', projectDirectory: realRepo }, projectID: 'p1',
       })
-      await adapter.create(configured, {})
-      expect(existsSync(configured.directory)).toBe(true)
+      await adapter.create(configured)
+      expect(existsSync(configured.directory!)).toBe(true)
     } finally {
       rmSync(realRepo, { recursive: true, force: true })
     }
@@ -388,7 +381,7 @@ describe('createForgeWorkspaceAdapter', () => {
         id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
         extra: { loopName: 'notrepo-loop', projectDirectory: notARepo }, projectID: 'p1',
       })
-      await expect(adapter.create(configured, {})).rejects.toThrow(
+      await expect(adapter.create(configured)).rejects.toThrow(
         /forge workspace adapter: projectDirectory .* is not a git work tree/,
       )
     } finally {
@@ -402,7 +395,7 @@ describe('createForgeWorkspaceAdapter', () => {
       id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
       extra: { loopName: 'no-proj-loop' }, projectID: 'p1',
     })
-    await expect(adapter.create(configured, {})).rejects.toThrow(
+    await expect(adapter.create(configured)).rejects.toThrow(
       /forge workspace adapter: extra\.projectDirectory is required/,
     )
   })
@@ -411,7 +404,7 @@ describe('createForgeWorkspaceAdapter', () => {
     const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
     const configured = adapter.configure(makeInfo('fail-loop', '/nonexistent-dir'))
 
-    await expect(adapter.create(configured, {})).rejects.toThrow(
+    await expect(adapter.create(configured)).rejects.toThrow(
       /projectDirectory .* is not a git work tree/,
     )
   })
@@ -427,9 +420,9 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('deep-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
+      expect(existsSync(configured.directory!)).toBe(true)
       expect(logger.log).toHaveBeenCalledWith(
         expect.stringContaining('created worktree'),
       )
@@ -453,9 +446,9 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('sandbox-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
+      expect(existsSync(configured.directory!)).toBe(true)
       expect(sandboxManager.start).toHaveBeenCalledWith('sandbox-loop', configured.directory, expect.any(String), undefined)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -479,9 +472,9 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, forgeLoop: { sandboxEnabled: false } }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
+      expect(existsSync(configured.directory!)).toBe(true)
       expect(sandboxManager.start).not.toHaveBeenCalled()
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -505,9 +498,9 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, loopSandbox: { enabled: false } }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
+      expect(existsSync(configured.directory!)).toBe(true)
       expect(sandboxManager.start).not.toHaveBeenCalled()
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -531,7 +524,7 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, loopSandbox: { resources: { memory: '4g', cpus: '2' }, allowLan: true } }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
       expect(sandboxManager.start).toHaveBeenCalledWith(
         'loop-sandbox-resources',
@@ -559,10 +552,10 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('sandbox-fail-loop', tmpRepo))
 
-      await expect(adapter.create(configured, {})).rejects.toThrow('docker unavailable')
+      await expect(adapter.create(configured)).rejects.toThrow('docker unavailable')
 
       expect(sandboxManager.stop).toHaveBeenCalledWith('sandbox-fail-loop')
-      expect(existsSync(configured.directory)).toBe(false)
+      expect(existsSync(configured.directory!)).toBe(false)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }
@@ -582,7 +575,7 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('sandbox-unknown-loop', tmpRepo))
 
-      await expect(adapter.create(configured, {})).rejects.toThrow(/state query failed/)
+      await expect(adapter.create(configured)).rejects.toThrow(/state query failed/)
 
       // The rollback path calls stop(), which must also fail closed: `unknown` says nothing about
       // the sandbox, so `msb rm` is never issued and a possibly-live sandbox is never destroyed.
@@ -601,13 +594,13 @@ describe('createForgeWorkspaceAdapter', () => {
         logger,
       })
       const configured = adapter.configure(makeInfo('removal-loop', tmpRepo))
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(configured.directory)).toBe(true)
+      expect(existsSync(configured.directory!)).toBe(true)
 
       await adapter.remove(configured)
 
-      expect(existsSync(configured.directory)).toBe(false)
+      expect(existsSync(configured.directory!)).toBe(false)
       expect(logger.log).toHaveBeenCalledWith(
         expect.stringContaining('removed worktree'),
       )
@@ -644,19 +637,19 @@ describe('createForgeWorkspaceAdapter', () => {
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
-        getTeardownContext: () => ({ iteration: 3, reasonLabel: 'completed', doCommit: true }),
+        getTeardownContext: () => ({ iteration: 3, reasonLabel: 'completed', doCommit: true, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('commit-loop', tmpRepo))
-      await adapter.create(configured, {})
-      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
+      await adapter.create(configured)
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory!, encoding: 'utf-8' })
 
       // Rename the branch so it falls outside `forge/` — that way the commit
       // step preserves the commit history we can assert on after teardown.
-      execSync('git branch -m forge/commit-loop custom/work', { cwd: configured.directory, encoding: 'utf-8' })
+      execSync('git branch -m forge/commit-loop custom/work', { cwd: configured.directory!, encoding: 'utf-8' })
       configured.branch = 'custom/work'
 
       // Create a pending change inside the worktree.
-      execSync('echo hello > pending.txt', { cwd: configured.directory, encoding: 'utf-8' })
+      execSync('echo hello > pending.txt', { cwd: configured.directory!, encoding: 'utf-8' })
 
       await adapter.remove(configured)
 
@@ -680,11 +673,11 @@ describe('createForgeWorkspaceAdapter', () => {
         logger,
       })
       const configured = adapter.configure(makeInfo('default-ctx-loop', tmpRepo))
-      await adapter.create(configured, {})
-      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
-      execSync('git branch -m forge/default-ctx-loop custom/default', { cwd: configured.directory, encoding: 'utf-8' })
+      await adapter.create(configured)
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory!, encoding: 'utf-8' })
+      execSync('git branch -m forge/default-ctx-loop custom/default', { cwd: configured.directory!, encoding: 'utf-8' })
       configured.branch = 'custom/default'
-      execSync('echo hi > a.txt', { cwd: configured.directory, encoding: 'utf-8' })
+      execSync('echo hi > a.txt', { cwd: configured.directory!, encoding: 'utf-8' })
 
       await adapter.remove(configured)
 
@@ -702,12 +695,12 @@ describe('createForgeWorkspaceAdapter', () => {
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
-        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'cancelled', doCommit: false }),
+        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'cancelled', doCommit: false, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('no-commit-loop', tmpRepo))
-      await adapter.create(configured, {})
-      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
-      execSync('echo hi > a.txt', { cwd: configured.directory, encoding: 'utf-8' })
+      await adapter.create(configured)
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory!, encoding: 'utf-8' })
+      execSync('echo hi > a.txt', { cwd: configured.directory!, encoding: 'utf-8' })
 
       await adapter.remove(configured)
 
@@ -733,7 +726,7 @@ describe('createForgeWorkspaceAdapter', () => {
         sandboxManager,
       })
       const configured = adapter.configure(makeInfo('sandbox-stop-loop', tmpRepo))
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
       await adapter.remove(configured)
 
@@ -755,17 +748,17 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('opencode-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      const configPath = join(configured.directory, 'opencode.jsonc')
+      const configPath = join(configured.directory!, 'opencode.jsonc')
       expect(existsSync(configPath)).toBe(true)
       expect(JSON.parse(readFileSync(configPath, 'utf-8'))).toEqual(config)
 
-      let excludePath = execSync(`git -C "${configured.directory}" rev-parse --git-path info/exclude`, {
+      let excludePath = execSync(`git -C "${configured.directory!}" rev-parse --git-path info/exclude`, {
         encoding: 'utf-8',
       }).trim()
       if (!isAbsolute(excludePath)) {
-        excludePath = join(configured.directory, excludePath)
+        excludePath = join(configured.directory!, excludePath)
       }
       const excludeContent = readFileSync(excludePath, 'utf-8')
       expect(excludeContent).toContain('opencode.jsonc')
@@ -798,9 +791,9 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('placeholder-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      const written = JSON.parse(readFileSync(join(configured.directory, 'opencode.jsonc'), 'utf-8'))
+      const written = JSON.parse(readFileSync(join(configured.directory!, 'opencode.jsonc'), 'utf-8'))
       expect(written.mcp['chrome-devtools'].command).toEqual([
         'docker', 'exec', '-i', 'forge-placeholder-loop', 'chrome-devtools-mcp',
       ])
@@ -835,10 +828,10 @@ describe('createForgeWorkspaceAdapter', () => {
       info.extra = { ...info.extra, forgeLoop: { sandboxEnabled: false } }
       const configured = adapter.configure(info)
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
       expect(sandboxManager.start).not.toHaveBeenCalled()
-      expect(existsSync(join(configured.directory, 'opencode.jsonc'))).toBe(false)
+      expect(existsSync(join(configured.directory!, 'opencode.jsonc'))).toBe(false)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }
@@ -859,17 +852,17 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('committed-opencode-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      const configPath = join(configured.directory, 'opencode.jsonc')
+      const configPath = join(configured.directory!, 'opencode.jsonc')
       expect(JSON.parse(readFileSync(configPath, 'utf-8'))).toEqual(sentinel)
 
       // Also verify the committed config was not added to exclude.
-      let excludePath = execSync(`git -C "${configured.directory}" rev-parse --git-path info/exclude`, {
+      let excludePath = execSync(`git -C "${configured.directory!}" rev-parse --git-path info/exclude`, {
         encoding: 'utf-8',
       }).trim()
       if (!isAbsolute(excludePath)) {
-        excludePath = join(configured.directory, excludePath)
+        excludePath = join(configured.directory!, excludePath)
       }
       const excludeContent = readFileSync(excludePath, 'utf-8')
       expect(excludeContent).not.toContain('opencode.jsonc')
@@ -888,9 +881,9 @@ describe('createForgeWorkspaceAdapter', () => {
       })
       const configured = adapter.configure(makeInfo('no-opencode-loop', tmpRepo))
 
-      await adapter.create(configured, {})
+      await adapter.create(configured)
 
-      expect(existsSync(join(configured.directory, 'opencode.jsonc'))).toBe(false)
+      expect(existsSync(join(configured.directory!, 'opencode.jsonc'))).toBe(false)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }
@@ -904,25 +897,25 @@ describe('createForgeWorkspaceAdapter', () => {
         dataDir: tmpDataDir,
         logger,
         worktreeOpencodeConfig: { mcp: { demo: { type: 'local', command: ['x'], enabled: true } } },
-        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'completed', doCommit: true }),
+        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'completed', doCommit: true, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('opencode-teardown-loop', tmpRepo))
-      await adapter.create(configured, {})
-      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
-      execSync('git branch -m forge/opencode-teardown-loop custom/work', { cwd: configured.directory, encoding: 'utf-8' })
+      await adapter.create(configured)
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory!, encoding: 'utf-8' })
+      execSync('git branch -m forge/opencode-teardown-loop custom/work', { cwd: configured.directory!, encoding: 'utf-8' })
       configured.branch = 'custom/work'
 
-      const configPath = join(configured.directory, 'opencode.jsonc')
+      const configPath = join(configured.directory!, 'opencode.jsonc')
       expect(existsSync(configPath)).toBe(true)
 
       // Simulate the git-exclude having failed, so opencode.jsonc would otherwise
       // be staged by `git add -A`. The teardown deletion must still keep it out.
-      let excludePath = execSync(`git -C "${configured.directory}" rev-parse --git-path info/exclude`, { encoding: 'utf-8' }).trim()
-      if (!isAbsolute(excludePath)) excludePath = join(configured.directory, excludePath)
+      let excludePath = execSync(`git -C "${configured.directory!}" rev-parse --git-path info/exclude`, { encoding: 'utf-8' }).trim()
+      if (!isAbsolute(excludePath)) excludePath = join(configured.directory!, excludePath)
       writeFileSync(excludePath, '', 'utf-8')
 
       // A real pending change so the teardown commit has content to record.
-      writeFileSync(join(configured.directory, 'pending.txt'), 'hello', 'utf-8')
+      writeFileSync(join(configured.directory!, 'pending.txt'), 'hello', 'utf-8')
 
       await adapter.remove(configured)
 
@@ -946,16 +939,16 @@ describe('createForgeWorkspaceAdapter', () => {
         dataDir: tmpDataDir,
         logger,
         worktreeOpencodeConfig: { mcp: { other: {} } },
-        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'completed', doCommit: true }),
+        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'completed', doCommit: true, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('opencode-tracked-loop', tmpRepo))
-      await adapter.create(configured, {})
-      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
-      execSync('git branch -m forge/opencode-tracked-loop custom/tracked', { cwd: configured.directory, encoding: 'utf-8' })
+      await adapter.create(configured)
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory!, encoding: 'utf-8' })
+      execSync('git branch -m forge/opencode-tracked-loop custom/tracked', { cwd: configured.directory!, encoding: 'utf-8' })
       configured.branch = 'custom/tracked'
 
       // Loop edits the tracked config; the edit must survive and be committed.
-      const configPath = join(configured.directory, 'opencode.jsonc')
+      const configPath = join(configured.directory!, 'opencode.jsonc')
       writeFileSync(configPath, JSON.stringify({ committed: true, edited: true }) + '\n')
 
       await adapter.remove(configured)

@@ -10,19 +10,9 @@ import {
   ConcurrentPromptError,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
-import type { Logger } from '../../src/types'
+import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
-
-function createMockLogger(): { logger: Logger; errorCalls: unknown[][] } {
-  const errorCalls: unknown[][] = []
-  const logger: Logger = {
-    log: () => {},
-    error: (...args: unknown[]) => errorCalls.push(args),
-    debug: () => {},
-  }
-  return { logger, errorCalls }
-}
 
 describe('in-flight guard', () => {
   beforeEach(() => {
@@ -31,24 +21,24 @@ describe('in-flight guard', () => {
 
   test('rejects concurrent prompt for same loop with different session/agent', () => {
     markPromptInFlight(PROJECT_ID, 'loopA', 'sess-1', 'code')
-    const { logger, errorCalls } = createMockLogger()
+    const logger = createMockLogger()
 
     expect(() =>
       assertNoPromptInFlight(PROJECT_ID, 'loopA', 'sess-2', 'auditor-loop', logger)
     ).toThrow(ConcurrentPromptError)
 
-    expect(errorCalls.length).toBe(1)
-    expect(errorCalls[0][0]).toContain('concurrent prompt rejected')
-    expect(errorCalls[0][0]).toContain('loopA')
-    expect(errorCalls[0][0]).toContain('sess-1')
-    expect(errorCalls[0][0]).toContain('sess-2')
+    expect(logger.error.mock.calls.length).toBe(1)
+    expect(logger.error.mock.calls[0][0]).toContain('concurrent prompt rejected')
+    expect(logger.error.mock.calls[0][0]).toContain('loopA')
+    expect(logger.error.mock.calls[0][0]).toContain('sess-1')
+    expect(logger.error.mock.calls[0][0]).toContain('sess-2')
   })
 
   test('assertNoPromptInFlight returns without throwing after clear', () => {
     markPromptInFlight(PROJECT_ID, 'loopA', 'sess-1', 'code')
     clearPromptInFlight(PROJECT_ID, 'loopA')
 
-    const { logger } = createMockLogger()
+    const logger = createMockLogger()
     expect(() =>
       assertNoPromptInFlight(PROJECT_ID, 'loopA', 'sess-2', 'auditor-loop', logger)
     ).not.toThrow()
@@ -57,7 +47,7 @@ describe('in-flight guard', () => {
   test('guards are per-loop (different loops are independent)', () => {
     markPromptInFlight(PROJECT_ID, 'loopB', 'sess-3', 'code')
 
-    const { logger } = createMockLogger()
+    const logger = createMockLogger()
     expect(() =>
       assertNoPromptInFlight(PROJECT_ID, 'loopA', 'sess-4', 'auditor-loop', logger)
     ).not.toThrow()
@@ -65,14 +55,14 @@ describe('in-flight guard', () => {
 
   test('rejects concurrent prompt for same loop with same session and agent', () => {
     markPromptInFlight(PROJECT_ID, 'loopD', 'sess-7', 'auditor-loop')
-    const { logger, errorCalls } = createMockLogger()
+    const logger = createMockLogger()
 
     expect(() =>
       assertNoPromptInFlight(PROJECT_ID, 'loopD', 'sess-7', 'auditor-loop', logger)
     ).toThrow(ConcurrentPromptError)
 
-    expect(errorCalls.length).toBe(1)
-    const msg = errorCalls[0][0] as string
+    expect(logger.error.mock.calls.length).toBe(1)
+    const msg = logger.error.mock.calls[0][0] as string
     expect(msg).toContain('[in-flight-guard]')
     expect(msg).toContain('loop=loopD')
     expect(msg).toContain('prior=auditor-loop: sess-7')
@@ -81,7 +71,7 @@ describe('in-flight guard', () => {
 
   test('logger.error is called exactly once with correct details before throwing', () => {
     markPromptInFlight(PROJECT_ID, 'loopC', 'sess-5', 'auditor-loop')
-    const { logger, errorCalls } = createMockLogger()
+    const logger = createMockLogger()
 
     try {
       assertNoPromptInFlight(PROJECT_ID, 'loopC', 'sess-6', 'code', logger)
@@ -90,8 +80,8 @@ describe('in-flight guard', () => {
       // expected
     }
 
-    expect(errorCalls.length).toBe(1)
-    const msg = errorCalls[0][0] as string
+    expect(logger.error.mock.calls.length).toBe(1)
+    const msg = logger.error.mock.calls[0][0] as string
     expect(msg).toContain('[in-flight-guard]')
     expect(msg).toContain('loop=loopC')
     expect(msg).toContain('prior=auditor-loop: sess-5')
@@ -147,14 +137,14 @@ describe('withInFlightGuard', () => {
   })
 
   test('passes through return value when no concurrent prompt is in-flight', async () => {
-    const { logger } = createMockLogger()
+    const logger = createMockLogger()
     const result = await withInFlightGuard(PROJECT_ID, 'loopA', 'sess-1', 'code', logger, async () => 'ok')
     expect(result).toEqual('ok')
     expect(getPromptInFlight(PROJECT_ID, 'loopA')).toBeUndefined()
   })
 
   test('marks in-flight while fn runs, clears after', async () => {
-    const { logger } = createMockLogger()
+    const logger = createMockLogger()
     let duringEntry: ReturnType<typeof getPromptInFlight> = undefined
     await withInFlightGuard(PROJECT_ID, 'loopB', 'sess-2', 'auditor-loop', logger, async () => {
       duringEntry = getPromptInFlight(PROJECT_ID, 'loopB')
@@ -168,7 +158,7 @@ describe('withInFlightGuard', () => {
 
   test('throws ConcurrentPromptError when a prior entry exists', async () => {
     markPromptInFlight(PROJECT_ID, 'loopC', 'sess-prior', 'code')
-    const { logger } = createMockLogger()
+    const logger = createMockLogger()
     await expect(
       withInFlightGuard(PROJECT_ID, 'loopC', 'sess-new', 'auditor-loop', logger, async () => 'value')
     ).rejects.toBeInstanceOf(ConcurrentPromptError)
@@ -179,7 +169,7 @@ describe('withInFlightGuard', () => {
   })
 
   test('clears in-flight when fn throws', async () => {
-    const { logger } = createMockLogger()
+    const logger = createMockLogger()
     await expect(
       withInFlightGuard(PROJECT_ID, 'loopD', 'sess-3', 'auditor-loop', logger, async () => {
         throw new Error('boom')
@@ -189,7 +179,7 @@ describe('withInFlightGuard', () => {
   })
 
   test('does not clear in-flight if a different owner replaced it mid-flight', async () => {
-    const { logger } = createMockLogger()
+    const logger = createMockLogger()
     await withInFlightGuard(PROJECT_ID, 'loopE', 'sess-4', 'code', logger, async () => {
       markPromptInFlight(PROJECT_ID, 'loopE', 'other-sess', 'auditor-loop')
     })

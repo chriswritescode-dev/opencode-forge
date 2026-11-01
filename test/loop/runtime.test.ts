@@ -22,6 +22,7 @@ import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
+import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 
@@ -32,16 +33,6 @@ const mockConfig: PluginConfig = {
     enabled: true,
     defaultMaxIterations: 5,
   },
-}
-
-function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string; message: string }> } {
-  const logs: Array<{ level: string; message: string }> = []
-  const logger: Logger = {
-    log: (msg: string) => logs.push({ level: 'log', message: msg }),
-    error: (msg: string) => logs.push({ level: 'error', message: msg }),
-    debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-  }
-  return { logger, logs }
 }
 
 describe('Loop Runtime', () => {
@@ -74,7 +65,7 @@ describe('Loop Runtime', () => {
       plansRepo,
       reviewFindingsRepo,
       PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} },
+      createMockLogger(),
       undefined,
       undefined,
       sectionPlansRepo,
@@ -1086,7 +1077,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         plansRepo,
         reviewFindingsRepo,
         PROJECT_ID,
-        { log: () => {}, error: () => {}, debug: () => {} },
+        createMockLogger(),
         stallConfig,
         undefined,
         sectionPlansRepo,
@@ -1142,19 +1133,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       config: PluginConfig,
       client: ForgeClient,
       loopCfg: LoopConfig,
-      logs: Array<{ level: string; message: string }>,
+      logger: Logger,
     ): Loop {
-      const logger: Logger = {
-        log: (msg: string) => logs.push({ level: 'log', message: msg }),
-        error: (msg: string) => logs.push({ level: 'error', message: msg }),
-        debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-      }
       loopService = createLoopService(
         loopsRepo,
         plansRepo,
         reviewFindingsRepo,
         PROJECT_ID,
-        { log: () => {}, error: () => {}, debug: () => {} },
+        createMockLogger(),
         loopCfg,
         undefined,
         sectionPlansRepo,
@@ -1196,12 +1182,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const logs: Array<{ level: string; message: string }> = []
+      const { logger } = createCapturingLogger()
       const loop = createWatchdogLoop(
         { ...mockConfig, auditorFallbackModels: ['fb/auditor-2'] },
         client,
         { stallTimeoutMs: 10_000, busyStallTimeoutMs: 30, maxConsecutiveStalls: 100 },
-        logs,
+        logger,
       )
 
       const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
@@ -1232,12 +1218,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: 'busy' } }),
         },
       })
-      const logs: Array<{ level: string; message: string }> = []
+      const { logger } = createCapturingLogger()
       const loop = createWatchdogLoop(
         { ...mockConfig },
         client,
         { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
-        logs,
+        logger,
       )
 
       const state = makeState({ phase: 'coding', totalSections: 0 })
@@ -1263,12 +1249,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: 'busy' } }),
         },
       })
-      const logs: Array<{ level: string; message: string }> = []
+      const { logger } = createCapturingLogger()
       const loop = createWatchdogLoop(
         { ...mockConfig },
         client,
         { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
-        logs,
+        logger,
       )
 
       const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })

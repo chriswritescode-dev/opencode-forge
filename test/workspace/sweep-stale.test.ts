@@ -1,6 +1,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { sweepStaleForgeWorkspaces } from '../../src/workspace/sweep-stale'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { createMockLogger } from '../helpers/logger'
 import type { ForgeClient } from '../../src/client/port'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PendingTeardownRegistry } from '../../src/workspace/pending-teardown'
@@ -34,7 +35,7 @@ function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     setCurrentSectionIndex: vi.fn(),
     setTotalSections: vi.fn(),
     ...overrides,
-  }
+  } as LoopsRepo
 }
 
 function createMockPendingTeardowns(): PendingTeardownRegistry & { set: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn> } {
@@ -44,14 +45,6 @@ function createMockPendingTeardowns(): PendingTeardownRegistry & { set: ReturnTy
     set: setFn,
     get: vi.fn(),
     clear: clearFn,
-  }
-}
-
-function createMockLogger(): { log: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; debug: ReturnType<typeof vi.fn> } {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
   }
 }
 

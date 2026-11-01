@@ -12,7 +12,7 @@ import {
 } from '../../src/sandbox/context'
 import { resolveCustomMounts } from '../../src/sandbox/manager'
 import { SANDBOX_CACHE_DIR } from '../../src/sandbox/msb'
-import { createMockLogger } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 import type { SandboxMount } from '../../src/sandbox/path'
 
 describe('SANDBOX_CONTEXT_NOTE', () => {
@@ -76,11 +76,11 @@ describe('shared workspace artifacts', () => {
 
 describe('isSandboxEnabled', () => {
   it('returns true when sandboxManager is provided regardless of legacy mode value', () => {
-    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const } }, {} as unknown)).toBe(true)
+    expect(isSandboxEnabled({ sandbox: { mode: 'msb' as const } }, {} as unknown)).toBe(true)
   })
 
   it('returns false when sandboxManager is missing', () => {
-    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const } }, undefined)).toBe(false)
+    expect(isSandboxEnabled({ sandbox: { mode: 'msb' as const } }, undefined)).toBe(false)
   })
 
   it('returns false when sandbox config is absent', () => {
@@ -88,11 +88,11 @@ describe('isSandboxEnabled', () => {
   })
 
   it('returns false when sandbox is explicitly disabled even if a manager is present', () => {
-    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const, enabled: false } }, {} as unknown)).toBe(false)
+    expect(isSandboxEnabled({ sandbox: { mode: 'msb' as const, enabled: false } }, {} as unknown)).toBe(false)
   })
 
   it('returns true when sandbox is explicitly enabled and a manager is present', () => {
-    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const, enabled: true } }, {} as unknown)).toBe(true)
+    expect(isSandboxEnabled({ sandbox: { mode: 'msb' as const, enabled: true } }, {} as unknown)).toBe(true)
   })
 
   it('tolerates an undefined config', () => {
@@ -105,12 +105,12 @@ describe('isSandboxConfigEnabled', () => {
   it('is true by default (config absent or enabled not set)', () => {
     expect(isSandboxConfigEnabled(undefined)).toBe(true)
     expect(isSandboxConfigEnabled({})).toBe(true)
-    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const } })).toBe(true)
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'msb' as const } })).toBe(true)
   })
 
   it('is false only when explicitly disabled', () => {
-    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: false } })).toBe(false)
-    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: true } })).toBe(true)
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'msb' as const, enabled: false } })).toBe(false)
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'msb' as const, enabled: true } })).toBe(true)
   })
 })
 
@@ -188,7 +188,7 @@ describe('resolveSandboxContextForLoop', () => {
   })
 
   it('returns null after ensureRunning failure unless configured to throw', async () => {
-    const logger = { log: vi.fn(), error: vi.fn() }
+    const logger = createMockLogger()
     const manager = {
       runtime: {} as never,
       restore: vi.fn(),

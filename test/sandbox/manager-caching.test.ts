@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import type { MsbAvailability } from '../../src/sandbox/msb'
-import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 const available: MsbAvailability = { available: true }
 const hostUnsupported: MsbAvailability = { available: false, reason: 'host-unsupported', detail: 'mock daemon down' }

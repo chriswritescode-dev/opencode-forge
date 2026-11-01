@@ -17,16 +17,9 @@ import {
   __resetIdleGate,
 } from '../../src/loop/idle-gate'
 import type { Logger } from '../../src/types'
+import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
-
-function createMockLogger(): Logger {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
-}
 
 describe('loop-idle-gate primitives', () => {
   let logger: Logger

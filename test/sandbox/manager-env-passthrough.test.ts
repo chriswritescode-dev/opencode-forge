@@ -1,6 +1,7 @@
 import { describe, test, expect, afterEach, vi } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 describe('SandboxManager create-time env and secrets', () => {
   const savedEnv: Record<string, string | undefined> = {}

@@ -4,6 +4,7 @@ import { createArchitectAutoPlanner, ARCHITECT_AUTO_AGENT } from '../../src/serv
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
+import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 
@@ -37,16 +38,6 @@ const INCOMPLETE_PLAN = [
   '## Phase 1: Implement behavior',
 ].join('\n\n')
 
-function createCapturingLogger(): { logger: Logger; logs: string[] } {
-  const logs: string[] = []
-  const logger: Logger = {
-    log: (message: string) => logs.push(message),
-    error: () => {},
-    debug: () => {},
-  }
-  return { logger, logs }
-}
-
 describe('createArchitectAutoPlanner', () => {
   let db: ReturnType<typeof createTestDb>['db']
   let testDb: ReturnType<typeof createTestDb>
@@ -57,7 +48,7 @@ describe('createArchitectAutoPlanner', () => {
     testDb = createTestDb()
     db = testDb.db
     plansRepo = createPlansRepo(db)
-    logger = createCapturingLogger().logger
+    logger = createMockLogger()
   })
 
   afterEach(() => {

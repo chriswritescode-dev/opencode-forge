@@ -4,7 +4,7 @@ import { join, resolve, relative } from 'path'
 import { tmpdir } from 'os'
 import { resolveCustomMounts } from '../../src/sandbox/manager'
 import type { SandboxMountConfig } from '../../src/types'
-import { createMockLogger } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 describe('resolveCustomMounts', () => {
   let tmpDir: string | undefined

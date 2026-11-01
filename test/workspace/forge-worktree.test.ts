@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import {
   bindSessionToWorkspace,
   createBuiltinWorktreeWorkspace,
@@ -6,16 +6,9 @@ import {
   getForgeWorkspacePermissionRules,
 } from '../../src/workspace/forge-worktree'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { createMockLogger } from '../helpers/logger'
 import type { ForgeClient } from '../../src/client/port'
 import { resolveLoopPermissionOptionsForWorkspace } from '../../src/utils/loop-permission-options'
-
-function createMockLogger() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
-}
 
 describe('createBuiltinWorktreeWorkspace', () => {
   let logger: ReturnType<typeof createMockLogger>

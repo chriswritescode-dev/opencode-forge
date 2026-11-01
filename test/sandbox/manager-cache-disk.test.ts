@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createSandboxManager } from '../../src/sandbox/manager'
-import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 import { SANDBOX_CACHE_DIR } from '../../src/sandbox/msb'
 
 const CACHE_PREPARE_COMMAND = `sudo sh -c 'chown agent:agent ${SANDBOX_CACHE_DIR} && chmod 0777 ${SANDBOX_CACHE_DIR}'`
