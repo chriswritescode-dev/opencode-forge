@@ -13,8 +13,9 @@ See also: [Tools](tools.md), [Configuration](configuration.md), [Loop System](lo
 | `auditor` | `subagent` | Read-only code review agent for convention-aware reviews. |
 | `auditor-loop` | `primary`, hidden | Internal auditor used by loop audit sessions. |
 | `architect-auto` | `primary`, hidden | Non-interactive planning agent that authors a stored plan from a single prompt, without `question` or execution tools, following route decisions recorded in its brief. Used by the goal orchestrator to plan each subsequent goal chunk. |
+| `minion` | `subagent` | Fast implementation subagent for exactly one explicitly scoped change with detailed instructions. Runs on `executionModel` and `executionVariant`, or OpenCode's default model when `executionModel` is unset, never the caller's model. A user-defined `minion` agent overrides its prompt, model, and description; the tool restrictions below still apply. |
 
-Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.ts`](../src/agents/architect.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts).
+Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.ts`](../src/agents/architect.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts), [`src/agents/minion.ts`](../src/agents/minion.ts).
 
 ## Architect restrictions
 
@@ -42,6 +43,12 @@ Excluded tools:
 The `auditor` subagent also excludes `loop-handoff`. Only `auditor-loop`, the primary agent of a loop audit session, may record the auditor handoff.
 
 Source: [`AUDITOR_TOOL_EXCLUDES` and `AUDITOR_SUBAGENT_TOOL_EXCLUDES`](../src/agents/auditor.ts).
+
+## Minion restrictions
+
+The `minion` subagent implements exactly one scoped change and never delegates. It excludes the shared structural tools (`plan-write`, `plan-edit`, `goal-write`, `execute-plan`, `question`, `loop-cancel`, `loop-status`, `goal-cancel`, `goal-status`), the loop-only review tools (`review-write`, `review-delete`), the loop phase tools (`loop-handoff`, `loop-complete`), and the nested-subagent tool.
+
+Source: [`buildMinionAgent()`](../src/agents/minion.ts).
 
 ## Slash Commands
 

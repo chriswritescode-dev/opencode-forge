@@ -1,6 +1,6 @@
 import type { Plugin } from '@opencode/plugin'
 import type { AgentConfig } from '../agents'
-import { DEFAULT_AGENT, type PluginCommand } from '../config'
+import { DEFAULT_AGENT, USER_REPLACEABLE_AGENTS, type PluginCommand } from '../config'
 import { toV2PermissionMap } from '../client/v2-adapter'
 import { parseModelString } from '../utils/model-fallback'
 import type { ForgeCore } from './forge-core'
@@ -44,12 +44,22 @@ function applyV2AgentConfig(agent: V2AgentInfo, cfg: AgentConfig): void {
   agent.permissions.push(...toV2PermissionMap(cfg.permission))
 }
 
+/**
+ * Registers Forge's agents on the V2 agent editor. A replaceable agent keeps the user's prompt,
+ * model, and description and gains Forge's permission rules whichever order the transforms run
+ * in: OpenCode's config plugin overrides Forge's fields when it runs later, and Forge adds only
+ * its permission rules when it runs later.
+ */
 export function registerForgeAgentsV2(
   ctx: Pick<Plugin.Context, 'agent'>,
   cfgAgent: Record<string, AgentConfig>,
 ) {
   return ctx.agent.transform((editor) => {
     for (const [id, cfg] of Object.entries(cfgAgent)) {
+      if (USER_REPLACEABLE_AGENTS.includes(id) && editor.get(id) !== undefined) {
+        editor.update(id, (agent) => agent.permissions.push(...toV2PermissionMap(cfg.permission)))
+        continue
+      }
       editor.update(id, (agent) => applyV2AgentConfig(agent, cfg))
     }
     editor.default(DEFAULT_AGENT)

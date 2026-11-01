@@ -78,7 +78,7 @@ The codebase is organized into these module groups under `src/`:
 |--------|-----------|-----------|
 | `host/` | Host-neutral core plus the V2 adapter | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts`, `forge-rpc.ts` |
 | `client/` | `ForgeClient` port and the V2 adapter | `port.ts`, `v2-adapter.ts`, `v2-workspaces.ts`, `errors.ts` |
-| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant, architect-auto) | `index.ts`, `types.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `architect-auto.ts` |
+| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant, architect-auto, minion) | `index.ts`, `types.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `architect-auto.ts`, `minion.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects, goal orchestrator) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `goal-orchestrator.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `architect-auto-planner.ts`, `goal-orchestrator.ts`, `tui-rpc-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |

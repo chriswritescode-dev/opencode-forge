@@ -123,13 +123,14 @@ Defines roles and system prompts for each AI agent used in the forge pipeline.
 | `architect.ts` | Read-only planning/design agent |
 | `auditor.ts` | Code review agent + auditor-loop variant |
 | `architect-auto.ts` | Non-interactive planning agent |
+| `minion.ts` | Scoped implementation subagent |
 
 ### Public API
 
 ```typescript
 buildAgents(): Record<AgentRole, AgentDefinition>
 
-type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'architect-auto'
+type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'architect-auto' | 'minion'
 ```
 
 Source: [src/agents/index.ts](../src/agents/index.ts)

@@ -93,6 +93,16 @@ describe('registerForgeAgentsV2', () => {
     )
   })
 
+  test('leaves the code agent without a system prompt so OpenCode builds its default', async () => {
+    const cfg = await configMaps()
+    const { ctx, agents } = createFakeV2Context()
+
+    await registerForgeAgentsV2(ctx, cfg.agent)
+
+    expect(agents.find((agent) => agent.id === 'code')?.info.system).toBeUndefined()
+    expect(agents.find((agent) => agent.id === 'auditor')?.info.system).toBeDefined()
+  })
+
   test('keeps the replaced built-in agents hidden and defaults to code', async () => {
     const cfg = await configMaps()
     const { ctx, agents, defaultAgent } = createFakeV2Context()
@@ -105,6 +115,76 @@ describe('registerForgeAgentsV2', () => {
       expect(agent?.info.hidden).toBe(true)
     }
     expect(defaultAgent.id).toBe('code')
+  })
+})
+
+describe('registerForgeAgentsV2 replaceable agents', () => {
+  const replaceableCfg = {
+    minion: {
+      description: 'forge minion',
+      prompt: 'forge minion prompt',
+      mode: 'subagent' as const,
+      model: '',
+      permission: { task: 'deny' },
+    },
+    code: { description: 'forge code', prompt: 'forge code prompt', mode: 'primary' as const, model: '' },
+  }
+
+  function userAgentInfo(id: string, system: string) {
+    return {
+      id,
+      name: id,
+      mode: 'subagent',
+      hidden: false,
+      system,
+      model: { id: 'user-model', providerID: 'user-provider' },
+      request: { settings: {}, headers: {}, body: {} },
+      permissions: [],
+    }
+  }
+
+  test('registers the minion when no user agent exists', async () => {
+    const { ctx, agents } = createFakeV2Context()
+
+    await registerForgeAgentsV2(ctx, replaceableCfg)
+
+    expect(agents.find((agent) => agent.id === 'minion')?.info.system).toBe('forge minion prompt')
+  })
+
+  test('keeps a user-defined minion and adds only the Forge permission rules', async () => {
+    const { ctx, agents } = createFakeV2Context()
+    agents.push({ id: 'minion', info: userAgentInfo('minion', 'user minion prompt') })
+
+    await registerForgeAgentsV2(ctx, replaceableCfg)
+
+    const minion = agents.find((agent) => agent.id === 'minion')
+    expect(minion?.info.system).toBe('user minion prompt')
+    expect(minion?.info.model).toEqual({ id: 'user-model', providerID: 'user-provider' })
+    expect(minion?.info.description).toBeUndefined()
+    expect(minion?.info.permissions).toContainEqual({ action: 'subagent', resource: '*', effect: 'deny' })
+  })
+
+  test('always updates a non-replaceable agent that already exists', async () => {
+    const { ctx, agents } = createFakeV2Context()
+    agents.push({ id: 'code', info: userAgentInfo('code', 'user code prompt') })
+
+    await registerForgeAgentsV2(ctx, replaceableCfg)
+
+    expect(agents.find((agent) => agent.id === 'code')?.info.system).toBe('forge code prompt')
+  })
+
+  test('maps a minion model and variant like any other agent', async () => {
+    const { ctx, agents } = createFakeV2Context()
+
+    await registerForgeAgentsV2(ctx, {
+      minion: { model: 'anthropic/claude-sonnet-4-5', variant: 'fast', mode: 'subagent' },
+    })
+
+    expect(agents.find((agent) => agent.id === 'minion')?.info.model).toEqual({
+      id: 'claude-sonnet-4-5',
+      providerID: 'anthropic',
+      variant: 'fast',
+    })
   })
 })
 
