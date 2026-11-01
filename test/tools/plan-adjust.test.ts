@@ -11,7 +11,7 @@ import { createPlanAmendmentsRepo } from '../../src/storage/repos/plan-amendment
 import { createLoopService } from '../../src/loop/service'
 import { createPlanAdjustTool } from '../../src/tools/plan-adjust'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -21,7 +21,7 @@ const mockLogger: Logger = {
 
 describe('plan-adjust tool', () => {
   let db: Database
-  let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
@@ -33,10 +33,8 @@ describe('plan-adjust tool', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'plan-adjust-test-'))
-    dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -47,7 +45,7 @@ describe('plan-adjust tool', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 

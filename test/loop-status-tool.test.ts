@@ -10,41 +10,30 @@ import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
 import { buildLoopPermissionRuleset } from '../src/constants/loop'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
 import { Database } from 'bun:sqlite'
-import { setupLoopsTestDb } from './helpers/test-db'
+import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()
 
-function createTestDb(): { db: Database; path: string } {
-  const path = join(tmpdir(), `forge-test-${randomUUID()}.db`)
-  const db = new Database(path)
-
-  setupLoopsTestDb(db)
-
-  return { db, path }
-}
-
 describe('loop-status tool restart path', () => {
   let db: Database
   let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
   const projectId = 'test-project'
   const loopName = 'test-loop'
   const workspaceId = 'mock-workspace-123'
   const hostSessionId = 'host-session-456'
 
   beforeEach(() => {
-    const result = createTestDb()
-    db = result.db
-    dbPath = result.path
+    testDb = createTestDb()
+    db = testDb.db
+    dbPath = testDb.path
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   function makeState(active: boolean, status?: LoopState['status']): Partial<LoopState> & Pick<LoopState, 'sessionId' | 'loopName' | 'worktreeDir' | 'projectDir'> {
@@ -480,17 +469,18 @@ describe('loop-status tool restart path', () => {
 describe('loop-status cumulative usage', () => {
   let db: Database
   let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
   const projectId = 'test-project'
   const loopName = 'test-loop-usage'
 
   beforeEach(() => {
-    const result = createTestDb()
-    db = result.db
-    dbPath = result.path
+    testDb = createTestDb()
+    db = testDb.db
+    dbPath = testDb.path
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   // (createMockV2ClientWithMessages removed - use createFakeForgeClient with session overrides instead)
@@ -1479,17 +1469,18 @@ describe('loop-status cumulative usage', () => {
 describe('loop-status restartability display', () => {
   let db: Database
   let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
   const projectId = 'test-project'
   const loopName = 'test-loop-restart'
 
   beforeEach(() => {
-    const result = createTestDb()
-    db = result.db
-    dbPath = result.path
+    testDb = createTestDb()
+    db = testDb.db
+    dbPath = testDb.path
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   // (createMockV2ClientWithWorktreeCheck removed - use createFakeForgeClient instead)

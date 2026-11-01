@@ -11,7 +11,7 @@ import { createLoopService } from '../../src/loop/service'
 import { createReviewTools } from '../../src/tools/review'
 import { createSessionLoopResolver } from '../../src/services/session-loop-resolver'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -21,7 +21,7 @@ const mockLogger: Logger = {
 
 describe('review section scoping', () => {
   let db: Database
-  let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
   let tempDir: string
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
@@ -35,10 +35,9 @@ describe('review section scoping', () => {
   beforeEach(() => {
     parentSessions = {}
     tempDir = mkdtempSync(join(tmpdir(), 'review-section-scope-test-'))
-    dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
+    testDb = createTestDb()
+    db = testDb.db
 
-    setupLoopsTestDb(db)
     db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
 
     loopsRepo = createLoopsRepo(db)
@@ -66,7 +65,7 @@ describe('review section scoping', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 

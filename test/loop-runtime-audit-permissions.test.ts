@@ -12,7 +12,7 @@ import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
 import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../src/constants/loop'
 import type { Logger, PluginConfig } from '../src/types'
-import { setupLoopsTestDb } from './helpers/test-db'
+import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 
 const PROJECT_ID = 'test-project'
@@ -20,6 +20,7 @@ const PROJECT_ID = 'test-project'
 describe('Audit session permissions', () => {
   let db: DB
   let tempDir: string
+  let testDb: ReturnType<typeof createTestDb>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
@@ -27,8 +28,8 @@ describe('Audit session permissions', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-audit-perm-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -37,7 +38,7 @@ describe('Audit session permissions', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {}

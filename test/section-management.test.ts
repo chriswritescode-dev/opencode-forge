@@ -3,14 +3,13 @@ import type { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { randomUUID } from 'crypto'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../src/loop/service'
-import { openForgeDatabase } from '../src/storage/database'
 import type { Logger } from '../src/types'
+import { createTestDb } from './helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -20,6 +19,7 @@ const mockLogger: Logger = {
 
 describe('LoopService section management', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
@@ -30,8 +30,8 @@ describe('LoopService section management', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'section-management-test-'))
-    const dbPath = join(tempDir, 'test.db')
-    db = openForgeDatabase(dbPath)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -41,7 +41,7 @@ describe('LoopService section management', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
@@ -73,6 +73,10 @@ describe('LoopService section management', () => {
       hostSessionId: null,
       currentSectionIndex: 0,
       totalSections: 2,
+      executionVariant: null,
+      auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
   }
 
@@ -217,6 +221,10 @@ describe('LoopService section management', () => {
         hostSessionId: null,
         currentSectionIndex: 0,
         totalSections: 0,
+        executionVariant: null,
+        auditorVariant: null,
+        baseCommit: null,
+        standbySessionId: null,
       }, { lastAuditResult: null })
 
       const state = loopService.getActiveState('no-sections')!
@@ -408,7 +416,8 @@ describe('LoopService section management', () => {
 
 describe('section-read tool contract', () => {
   test('returns structured JSON output', async () => {
-    const db = openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
+    const testDb = createTestDb()
+    const db = testDb.db
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -444,6 +453,10 @@ describe('section-read tool contract', () => {
       hostSessionId: null,
       currentSectionIndex: 0,
       totalSections: 2,
+      executionVariant: null,
+      auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
 
     sectionPlansRepo.bulkInsert({
@@ -462,6 +475,6 @@ describe('section-read tool contract', () => {
     expect(section!.title).toBe('Setup')
     expect(section!.status).toBe('pending')
 
-    db.close()
+    testDb.cleanup()
   })
 })

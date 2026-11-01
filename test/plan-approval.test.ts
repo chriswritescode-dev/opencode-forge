@@ -1,15 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-// Database is resolved via vitest alias to better-sqlite3 at runtime
-import { existsSync, mkdirSync, rmSync, writeFileSync, statSync } from 'fs'
-import { execSync, spawnSync } from 'child_process'
-import { join } from 'path'
-
-// Mock ForgeRpcError for error handling
-class MockForgeRpcError extends Error {
-  constructor(public code: string | undefined, message: string) {
-    super(message)
-  }
-}
 
 import { createLoopService } from '../src/loop/service'
 import { generateUniqueName } from '../src/loop/name-uniqueness'
@@ -17,19 +6,13 @@ import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 
-import { openForgeDatabase } from '../src/storage/database'
-import type { Logger } from '../src/types'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/hooks/plan-approval'
 import type { ToolContext } from '../src/tools/types'
+import type { Logger } from '../src/types'
 import type { PluginConfig } from '../src/types'
-import { tmpdir } from 'os'
-import { randomUUID } from 'crypto'
+import { createTestDb } from './helpers/test-db'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-approval-test-' + Date.now()
-
-function createTestDb(): any {
-  return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
-}
 
 function createMockLogger(): Logger {
   return {
@@ -41,6 +24,7 @@ function createMockLogger(): Logger {
 
 describe('Plan Approval Tool Interception', () => {
   let db: any
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let plansRepo: ReturnType<typeof createPlansRepo>
   const projectId = 'test-project'
@@ -60,7 +44,8 @@ describe('Plan Approval Tool Interception', () => {
   }
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -68,7 +53,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   function simulateToolExecuteAfter(
@@ -866,7 +851,7 @@ describe('Plan Approval Tool Interception', () => {
 
     const executionModule = await import('../src/services/execution')
     let capturedCommand: any = null
-    vi.spyOn(executionModule, 'createForgeExecutionService').mockImplementation((deps: any) => ({
+    vi.spyOn(executionModule, 'createForgeExecutionService').mockImplementation((_deps: any) => ({
       dispatch: async (_execCtx: any, command: any) => {
         capturedCommand = command
         return { ok: true, data: {} as any }
@@ -1007,14 +992,14 @@ describe('Execute here bypass', () => {
   const projectId = 'test-project'
   const sessionID = 'test-session-456'
   const testDir = '/test/dir'
-  const openDbs: any[] = []
+  const openDbs: ReturnType<typeof createTestDb>[] = []
 
   afterEach(() => {
-    for (const db of openDbs) db.close()
+    for (const testDb of openDbs) testDb.cleanup()
     openDbs.length = 0
   })
 
-  function createMockContext(overrides?: Partial<ToolContext>): ToolContext {
+  function createMockContext(overrides?: any): ToolContext {
     const mockClient = {
       session: {
         abort: async () => {},
@@ -1040,8 +1025,9 @@ describe('Execute here bypass', () => {
 
     const mockLogger = createMockLogger()
 
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -1174,7 +1160,7 @@ describe('Execute here bypass', () => {
     })
 
     expect(promptSpy).toHaveBeenCalled()
-    const callArgs = (promptSpy.mock.calls[0]?.[0] as any)
+    const callArgs = (promptSpy.mock.calls[0] as any)?.[0] as any
     expect(callArgs?.sessionID).toBe(sessionID)
     expect(callArgs?.agent).toBe('code')
     expect(callArgs?.parts[0].text).toContain('The architect agent has created an implementation plan')
@@ -1308,8 +1294,9 @@ describe('Execute here bypass', () => {
   })
 
   test('New session path reads plan from session-scoped repo and plan persists after dispatch', async () => {
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const testSessionID = 'test-session-abc'
     
     const plansRepo = createPlansRepo(db)
@@ -1401,8 +1388,9 @@ describe('Execute here bypass', () => {
   })
 
   test('Execute here path reads plan from session-scoped repo and plan persists after dispatch', async () => {
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const testSessionID = 'test-session-execute-here'
 
     const plansRepo = createPlansRepo(db)
@@ -1475,8 +1463,9 @@ describe('Execute here bypass', () => {
   })
 
   test('Loop defers to agent (no dispatch, no abort, plan preserved)', async () => {
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const testSessionID = 'test-session-loop'
 
     const plansRepo = createPlansRepo(db)
@@ -1560,8 +1549,9 @@ describe('Execute here bypass', () => {
   })
 
   test('Loop defers to agent even when session create would fail (no dispatch)', async () => {
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const testSessionID = 'test-session-loop-fail'
 
     const plansRepo = createPlansRepo(db)
@@ -1648,8 +1638,9 @@ describe('Execute here bypass', () => {
   })
 
   test('Two different sessions can store plans independently without collision', async () => {
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const plansRepo = createPlansRepo(db)
     
     const session1 = 'session-1'
@@ -1689,16 +1680,15 @@ describe('generateUniqueName for plan approval', () => {
 describe('Fire-and-forget dispatch behavior', () => {
   const projectId = 'test-project-fire-forget'
   const sessionID = 'test-session-fire-forget'
-  const testDir = '/test/dir'
-  const openDbs: any[] = []
+  const openDbs: ReturnType<typeof createTestDb>[] = []
   let nextTestId = 0
 
   afterEach(() => {
-    for (const db of openDbs) db.close()
+    for (const testDb of openDbs) testDb.cleanup()
     openDbs.length = 0
   })
 
-  function createMockContext(overrides?: Partial<ToolContext>): ToolContext {
+  function createMockContext(overrides?: any): ToolContext {
     const mockClient = {
       session: {
         abort: async () => {},
@@ -1726,8 +1716,9 @@ describe('Fire-and-forget dispatch behavior', () => {
     const mockLogger = createMockLogger()
     const uid = nextTestId++
 
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -1758,7 +1749,7 @@ describe('Fire-and-forget dispatch behavior', () => {
 
   test('New session approval returns before promptAsync resolves', async () => {
     const sid = 'fire-new-session-' + (++nextTestId)
-    let resolvePrompt: () => void
+    let resolvePrompt!: (value: any) => void
     const pendingPromise = new Promise<any>((resolve) => {
       resolvePrompt = resolve
     })
@@ -1834,11 +1825,11 @@ describe('Fire-and-forget dispatch behavior', () => {
     expect(abortSpy).toHaveBeenCalled()
     
     // Clean up pending promise
-    resolvePrompt!()
+    resolvePrompt!(undefined)
   })
 
   test('Loop approval returns before promptAsync resolves (defers to loop tool)', async () => {
-    let resolvePrompt: () => void
+    let resolvePrompt!: (value: any) => void
     const pendingPromise = new Promise<any>((resolve) => {
       resolvePrompt = resolve
     })
@@ -1915,7 +1906,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     expect(abortSpy).not.toHaveBeenCalled()
     
     // Clean up pending promise
-    resolvePrompt!()
+    resolvePrompt!(undefined)
   })
 
   test('Duplicate New session approval schedules one dispatch', async () => {
@@ -2086,7 +2077,7 @@ describe('Fire-and-forget dispatch behavior', () => {
   })
 
   test('Dispatch IIFE survives slow source-session abort', async () => {
-    let resolveAbort: () => void
+    let resolveAbort!: () => void
     const abortSpy = vi.fn(() => new Promise<void>((resolve) => {
       resolveAbort = resolve
     }))
@@ -2149,8 +2140,9 @@ describe('Fire-and-forget dispatch behavior', () => {
   })
 
   test('Port abort is called on session.abort', async () => {
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const testPlansRepo = createPlansRepo(db)
     const testLoopsRepo = createLoopsRepo(db)
     const testReviewFindingsRepo = createReviewFindingsRepo(db)
@@ -2224,8 +2216,9 @@ describe('Fire-and-forget dispatch behavior', () => {
   })
 
   test('Treats port abort throwing as a failure (logs error)', async () => {
-    const db = createTestDb()
-    openDbs.push(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const testPlansRepo = createPlansRepo(db)
     const testLoopsRepo = createLoopsRepo(db)
     const testReviewFindingsRepo = createReviewFindingsRepo(db)

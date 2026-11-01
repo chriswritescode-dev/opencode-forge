@@ -1,15 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import {
   createSessionSandboxPreferencesRepo,
   SESSION_SANDBOX_DESIRED_KEY,
   SESSION_SANDBOX_APPLIED_KEY,
   SESSION_SANDBOX_CONTROLLER_KEY,
 } from '../src/storage'
-import { setupLoopsTestDb } from './helpers/test-db'
+import { createTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
 const PROJECT_B = 'project-b'
@@ -25,23 +22,16 @@ function makeApplied(overrides: Partial<import('../src/storage').SessionSandboxA
 describe('SessionSandboxPreferencesRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createSessionSandboxPreferencesRepo>
-  let tempDir: string
+  let testDb: ReturnType<typeof createTestDb>
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'session-sandbox-preferences-repo-test-'))
-    const dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     repo = createSessionSandboxPreferencesRepo(db)
   })
 
   afterEach(() => {
-    db.close()
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    testDb.cleanup()
   })
 
   describe('desired round-trip', () => {

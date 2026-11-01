@@ -6,38 +6,29 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
 import { mkdirSync } from 'fs'
 import { Database } from 'bun:sqlite'
-import { setupLoopsTestDb } from './helpers/test-db'
+import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
 
 const TEST_DIR = '/tmp/opencode-loop-new-session-test-' + Date.now()
 
-function createTestDb(): { db: Database; path: string } {
-  const path = join(tmpdir(), `forge-test-${randomUUID()}.db`)
-  mkdirSync(TEST_DIR, { recursive: true })
-  const db = new Database(path)
-  setupLoopsTestDb(db)
-  return { db, path }
-}
-
 describe('loop tool mode=new-session', () => {
   let db: Database
   let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
   const projectId = 'test-project'
 
   beforeEach(() => {
-    const result = createTestDb()
-    db = result.db
-    dbPath = result.path
+    testDb = createTestDb()
+    mkdirSync(TEST_DIR, { recursive: true })
+    db = testDb.db
+    dbPath = testDb.path
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   function setupTools() {

@@ -12,10 +12,11 @@ import { createLoopService } from '../src/loop/service'
 import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
 import type { Logger } from '../src/types'
-import { setupLoopsTestDb } from './helpers/test-db'
+import { createTestDb } from './helpers/test-db'
 
 describe('Loop', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let loop: ReturnType<typeof createLoop>
   let tempDir: string
   const projectId = 'test-project'
@@ -28,10 +29,8 @@ describe('Loop', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-service-test-'))
-    const dbPath = join(tempDir, 'loop-service-test.db')
-    db = new Database(dbPath)
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -49,7 +48,7 @@ describe('Loop', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {
@@ -1205,8 +1204,8 @@ describe('Loop', () => {
     })
 
     test('concurrency: suffix-deletion clamps setCurrentSectionIndex when index exceeds totalSections', () => {
-      const db = new Database(':memory:')
-      setupLoopsTestDb(db)
+      const testDb = createTestDb()
+      const db = testDb.db
       const loopsRepo = createLoopsRepo(db)
       const plansRepo = createPlansRepo(db)
       const rfr = createReviewFindingsRepo(db)
@@ -1231,12 +1230,12 @@ describe('Loop', () => {
 
       service.setCurrentSectionIndex('adj', 2)
       expect(loopsRepo.get('p', 'adj')?.currentSectionIndex).toBe(1)
-      db.close()
+      testDb.cleanup()
     })
 
     test('concurrency: setTotalSections clamps currentSectionIndex when total is reduced', () => {
-      const db = new Database(':memory:')
-      setupLoopsTestDb(db)
+      const testDb = createTestDb()
+      const db = testDb.db
       const loopsRepo = createLoopsRepo(db)
       const plansRepo = createPlansRepo(db)
       const rfr = createReviewFindingsRepo(db)
@@ -1258,15 +1257,15 @@ describe('Loop', () => {
 
       service.setTotalSections('adj', 3)
       expect(loopsRepo.get('p', 'adj')?.currentSectionIndex).toBe(2)
-      db.close()
+      testDb.cleanup()
     })
 
     test('adjacent runExclusive calls serialise: two concurrent adjustRemainingSections never interleave', async () => {
       // When runExclusive is wired, two concurrent adjustRemainingSections calls
       // must be serialised — the second must see the updated state (after the first
       // committed) rather than the stale pre-first-snapshot state.
-      const dbLocal = new Database(':memory:')
-      setupLoopsTestDb(dbLocal)
+      const testDb = createTestDb()
+      const dbLocal = testDb.db
       const loopsRepo = createLoopsRepo(dbLocal)
       const plansRepo = createPlansRepo(dbLocal)
       const rfr = createReviewFindingsRepo(dbLocal)
@@ -1334,7 +1333,7 @@ describe('Loop', () => {
       expect(rows).toHaveLength(2)
       expect(rows[1].title).toBe('B') // B was second
 
-      dbLocal.close()
+      testDb.cleanup()
     })
 
     test('adjacent: adjustRemainingSections rejects when loop falls out of auditing phase', async () => {
@@ -1342,8 +1341,8 @@ describe('Loop', () => {
       // causes setCurrentSectionIndex to clamp, but the loop stays in auditing.
       // A subsequent adjustment still validates against the (now-authoritative)
       // phase and totalSections.
-      const dbLocal = new Database(':memory:')
-      setupLoopsTestDb(dbLocal)
+      const testDb = createTestDb()
+      const dbLocal = testDb.db
       const loopsRepo = createLoopsRepo(dbLocal)
       const plansRepo = createPlansRepo(dbLocal)
       const rfr = createReviewFindingsRepo(dbLocal)
@@ -1393,7 +1392,7 @@ describe('Loop', () => {
         expect(result.error).toMatch(/auditing/)
       }
 
-      dbLocal.close()
+      testDb.cleanup()
     })
   })
 })

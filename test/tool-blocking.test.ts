@@ -4,18 +4,11 @@ import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createLoopService } from '../src/loop/service'
-import { openForgeDatabase } from '../src/storage/database'
 import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
 import { createToolExecuteBeforeHook } from '../src/hooks/plan-approval'
 import type { ToolContext } from '../src/tools/types'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
 import type { Logger } from '../src/types'
-
-function createTestDb(): Database {
-  return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
-}
+import { createTestDb } from './helpers/test-db'
 
 function createMockLogger(): Logger {
   return {
@@ -27,12 +20,14 @@ function createMockLogger(): Logger {
 
 describe('Tool Blocking Logic', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   const projectId = 'test-project'
   const sessionID = 'test-session-123'
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -40,7 +35,7 @@ describe('Tool Blocking Logic', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   describe('Loop state lookup', () => {
@@ -183,7 +178,6 @@ describe('Tool Blocking Logic', () => {
       const resolver = createSessionLoopResolver({
         loop: {
           service: loopService,
-          listActive: () => [],
         },
         getParentSessionId: async () => null,
         logger: createMockLogger(),
@@ -206,7 +200,6 @@ describe('Tool Blocking Logic', () => {
       const resolver = createSessionLoopResolver({
         loop: {
           service: loopService,
-          listActive: () => [],
         },
         getParentSessionId: async () => null,
         logger: createMockLogger(),
@@ -226,7 +219,6 @@ describe('Tool Blocking Logic', () => {
       const resolver = createSessionLoopResolver({
         loop: {
           service: loopService,
-          listActive: () => [],
         },
         getParentSessionId: async () => null,
         logger: createMockLogger(),

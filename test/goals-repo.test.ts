@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { createGoalsRepo } from '../src/storage/repos/goals-repo'
 import type { GoalLaunchSnapshot, GoalTask } from '../src/storage/repos/goals-repo'
-import { setupLoopsTestDb } from './helpers/test-db'
+import { createTestDb } from './helpers/test-db'
 
 const PROJECT = 'test-project'
 const SESSION_A = 'sess-a'
@@ -30,15 +30,16 @@ const TASKS: GoalTask[] = [
 describe('GoalsRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createGoalsRepo>
+  let testDb: ReturnType<typeof createTestDb>
 
   beforeEach(() => {
-    db = new Database(':memory:')
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     repo = createGoalsRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   function saveDraft(overrides: Partial<Parameters<typeof repo.saveDraft>[0]> = {}) {

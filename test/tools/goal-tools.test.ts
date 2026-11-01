@@ -3,13 +3,10 @@ import type { Database } from 'bun:sqlite'
 import { createGoalTools } from '../../src/tools/goal'
 import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import type { GoalLaunchSnapshot } from '../../src/storage/repos/goals-repo'
-import { openForgeDatabase } from '../../src/storage/database'
 import { DEFAULT_GOAL_MAX_CHUNKS, MAX_GOAL_MAX_CHUNKS } from '../../src/constants/goal'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
 import type { Logger } from '../../src/types'
 import type { ToolContext } from '../../src/tools/types'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'test-project'
 const SESSION = 'sess-goal'
@@ -18,10 +15,6 @@ const mockLogger: Logger = {
   log: () => {},
   error: () => {},
   debug: () => {},
-}
-
-function createTestDb(): Database {
-  return openForgeDatabase(join(tmpdir(), `forge-goal-tools-${randomUUID()}.db`))
 }
 
 function snapshot() {
@@ -38,18 +31,20 @@ function snapshot() {
 
 describe('goal-write', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let goalsRepo: ReturnType<typeof createGoalsRepo>
   let tools: ReturnType<typeof createGoalTools>
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     goalsRepo = createGoalsRepo(db)
     const ctx = { projectId: PROJECT, logger: mockLogger, goalsRepo } as unknown as ToolContext
     tools = createGoalTools(ctx)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   const call = (args: Record<string, unknown>, sessionID = SESSION) =>
@@ -178,6 +173,7 @@ describe('goal-write', () => {
 
 describe('goal-status and goal-cancel', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let goalsRepo: ReturnType<typeof createGoalsRepo>
   let orchestrator: {
     restart: ReturnType<typeof vi.fn>
@@ -189,7 +185,8 @@ describe('goal-status and goal-cancel', () => {
   let loopInspect: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     goalsRepo = createGoalsRepo(db)
     orchestrator = {
       restart: vi.fn(async () => 'restart result'),
@@ -209,7 +206,7 @@ describe('goal-status and goal-cancel', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   const status = (args: Record<string, unknown>) =>

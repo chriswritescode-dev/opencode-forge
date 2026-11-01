@@ -1,15 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import {
   createSessionAutoApproveRepo,
   SESSION_AUTO_APPROVE_KEY_PREFIX,
   SESSION_AUTO_APPROVE_TTL_MS,
   SESSION_SANDBOX_DESIRED_KEY,
 } from '../src/storage'
-import { setupLoopsTestDb } from './helpers/test-db'
+import { createTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
 const PROJECT_B = 'project-b'
@@ -21,23 +18,16 @@ const TTL = SESSION_AUTO_APPROVE_TTL_MS
 describe('SessionAutoApproveRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createSessionAutoApproveRepo>
-  let tempDir: string
+  let testDb: ReturnType<typeof createTestDb>
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'session-auto-approve-repo-test-'))
-    const dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     repo = createSessionAutoApproveRepo(db)
   })
 
   afterEach(() => {
-    db.close()
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    testDb.cleanup()
   })
 
   function insertRaw(projectId: string, key: string, expiresAt: number | null, data = '{}'): void {
