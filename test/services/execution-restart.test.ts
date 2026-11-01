@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync } from 'fs'
 import { execFileSync } from 'child_process'
-import { createHash } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -21,7 +20,7 @@ import type { LoopTransitionsRepo } from '../../src/storage/repos/loop-transitio
 import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import type { LoopService } from '../../src/loop/service'
 const Database = require('better-sqlite3')
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 type Database = ReturnType<typeof Database>
 
@@ -255,7 +254,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -370,7 +369,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -536,7 +535,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -660,7 +659,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -761,7 +760,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -859,7 +858,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -960,7 +959,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -1067,7 +1066,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -1171,7 +1170,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -1279,7 +1278,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     let capturedPhase: string | null | undefined
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => {
         const result = await fn()
         // Capture loop service state at the exact moment the lock release completes,
         // BEFORE the outer restart body sends prompts and persists to DB.
@@ -1370,7 +1369,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     let capturedPhase: string | null | undefined
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => {
         const result = await fn()
         capturedResolvedNew = loopService.resolveLoopName('new-code-session')
         capturedResolvedOld = loopService.resolveLoopName('session-old')
@@ -1506,7 +1505,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -1604,7 +1603,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -1774,6 +1773,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: 0,
       totalSections: 0,
       auditorFallbackIndex: 1,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
 
     const { service } = await createRestartOverrideService(() => Promise.reject(new Error('prompt delivery failed')))
@@ -2052,6 +2053,8 @@ describe('handleLoopRestart restartability rules', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       sandboxSettings: opts.sandboxSettings,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
   }
 
@@ -2096,7 +2099,7 @@ describe('handleLoopRestart restartability rules', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: opts?.runExclusive ?? (async <T>(name: string, fn: () => Promise<T>) => fn()),
+      runExclusive: opts?.runExclusive ?? (async <T>(_name: string, fn: () => Promise<T>) => fn()),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -2974,7 +2977,7 @@ describe('handleLoopRestart restartability rules', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>): Promise<T> => {
         await mutex.acquire()
         try { return await fn() } finally { mutex.release() }
       },

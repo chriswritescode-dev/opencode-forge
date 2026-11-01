@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { createGoalsRepo } from '../src/storage/repos/goals-repo'
 import type { GoalLaunchSnapshot, GoalTask } from '../src/storage/repos/goals-repo'
-import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { setupLoopsTestDb } from './helpers/test-db'
 
 const PROJECT = 'test-project'
 const SESSION_A = 'sess-a'

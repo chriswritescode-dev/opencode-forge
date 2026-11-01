@@ -16,7 +16,7 @@ import { processShared } from '../../src/utils/process-shared'
 import type { LoopState } from '../../src/loop/state'
 import type { Logger } from '../../src/types'
 import { createFakeGitService } from '../helpers/fake-git'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const PROJECT = 'test-project'
 const HOST = 'host-session'
@@ -79,7 +79,7 @@ function createHarness(overrides: Partial<GoalOrchestratorDeps> = {}) {
       spawnCounter += 1
       return { sessionId: `planner-session-${spawnCounter}` }
     }),
-    capturePlan: vi.fn(async () => ({ ready: true })),
+    capturePlan: vi.fn(async () => ({ ready: true as const })),
     latestAssistantText: vi.fn(async () => null),
   }
 

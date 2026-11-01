@@ -10,7 +10,9 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
+
+type PromptCallArgs = { agent?: string; sessionID?: string; parts: Array<{ text: string }> }
 
 const noopFn = () => {}
 
@@ -45,11 +47,10 @@ describe('attachLoopToSession', () => {
       { log: () => {}, error: () => {}, debug: () => {} } as Logger,
       undefined,
       undefined,
-      undefined,
       sectionPlansRepo,
     )
 
-    const promptAsyncMock = vi.fn(async () => {})
+    const promptAsyncMock = vi.fn(async (_args: PromptCallArgs) => {})
 
     const fakeClient = createFakeForgeClient({
       session: {
@@ -75,13 +76,13 @@ describe('attachLoopToSession', () => {
       sectionPlansRepo,
       loop: {
         service: loopService,
-        listActive: (...args: any[]) => loopService.listActive(...args),
-        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+        listActive: () => loopService.listActive(),
+        findMatchByName: (name: string) => loopService.findMatchByName(name),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
       } as any,
       loopHandler: {
-        runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
         startWatchdog: vi.fn(() => {}),
         clearLoopTimers: noopFn,
       },
@@ -92,7 +93,7 @@ describe('attachLoopToSession', () => {
   }
 
   test('disabled mode persists state and sends code-agent prompt', async () => {
-    const { deps, loopsRepo, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -129,7 +130,7 @@ describe('attachLoopToSession', () => {
 
     // Verify code-agent prompt was sent
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.sessionID).toBe('sess_abc')
 
@@ -174,7 +175,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('prompt failure returns ok:false and cleans up state', async () => {
-    const { deps, loopsRepo, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = buildDeps()
 
     // Make promptAsync throw an error (port contract: throws on failure)
     promptAsyncMock.mockImplementationOnce(async () => { throw new Error('network timeout') })
@@ -215,7 +216,7 @@ describe('attachLoopToSession', () => {
     const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)
     deps.loop.service.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
 
-    ;(deps.loop.service as any).setState = vi.fn((...args: any[]) => {
+    ;(deps.loop.service as any).setState = vi.fn((..._args: any[]) => {
       throw new Error('setState: loop "my-feature" already exists')
     })
 
@@ -361,7 +362,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('attach extracts sections via forge-section markers', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -404,12 +405,12 @@ describe('attachLoopToSession', () => {
     expect(state!.totalSections).toBe(2)
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
   })
 
   test('attach falls back to single-prompt mode when no forge-section markers present', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -444,12 +445,12 @@ describe('attachLoopToSession', () => {
     expect(state).not.toBeNull()
     expect(state!.totalSections).toBe(0)
     // The prompt sent to the code agent equals the raw plan text (legacy single-prompt mode)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.parts[0].text).toBe(planText)
   })
 
   test('attach falls back to single raw-plan dispatch when no markers and no phase headings', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -479,13 +480,13 @@ describe('attachLoopToSession', () => {
     expect(state!.totalSections).toBe(0)
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.parts[0].text).toContain(planText)
   })
 
   test('attach no longer creates a decomposer session', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -509,7 +510,7 @@ describe('attachLoopToSession', () => {
     expect(result.ok).toBe(true)
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.sessionID).toBe('sess_nodecomp')
 

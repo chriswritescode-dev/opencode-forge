@@ -6,14 +6,13 @@ import { tmpdir } from 'os'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import type { ReviewFindingRow } from '../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import { createPlanAmendmentsRepo } from '../src/storage/repos/plan-amendments-repo'
 import { createLoopService } from '../src/loop/service'
 import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
 import type { Logger } from '../src/types'
-import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { setupLoopsTestDb } from './helpers/test-db'
 
 describe('Loop', () => {
   let db: Database
@@ -1274,7 +1273,6 @@ describe('Loop', () => {
       const sectionPlansRepo = createSectionPlansRepo(dbLocal)
       const amendmentsRepo = createPlanAmendmentsRepo(dbLocal)
 
-      let callOrder: number[] = []
       // A simple promise-chain lock simulating runExclusive.
       let pendingPromise: Promise<unknown> = Promise.resolve()
       const mockRunExclusive = async <T>(_loopName: string, fn: () => Promise<T>) => {

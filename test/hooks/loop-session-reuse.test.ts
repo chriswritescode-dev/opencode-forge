@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -14,7 +14,7 @@ import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler, type LoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 import { SECTION_SUMMARY_START_MARKER } from '../../src/utils/section-summary'
 import type { ModelContextLimitParams } from '../../src/client/port'
 import { __resetIdleGate, hasSuppressedIdle, recordInboxEnqueued } from '../../src/loop/idle-gate'
@@ -317,7 +317,7 @@ describe('Loop session reuse', () => {
       await idle('coder-1')
 
       const update = calls.find((call) => call.method === 'session.update')
-      expect(update?.params.title).toBe('Loop: reuse-loop 1/2 #1')
+      expect((update?.params as { title: string }).title).toBe('Loop: reuse-loop 1/2 #1')
     })
   })
 

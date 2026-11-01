@@ -9,7 +9,7 @@ import {
   SESSION_AUTO_APPROVE_TTL_MS,
   SESSION_SANDBOX_DESIRED_KEY,
 } from '../src/storage'
-import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { setupLoopsTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
 const PROJECT_B = 'project-b'
@@ -43,11 +43,7 @@ describe('SessionAutoApproveRepo', () => {
   function insertRaw(projectId: string, key: string, expiresAt: number | null, data = '{}'): void {
     db.run(
       'INSERT OR REPLACE INTO tui_preferences (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      projectId,
-      key,
-      data,
-      expiresAt,
-      Date.now(),
+      [projectId, key, data, expiresAt, Date.now()],
     )
   }
 

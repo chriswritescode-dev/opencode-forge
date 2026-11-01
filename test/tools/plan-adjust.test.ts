@@ -11,7 +11,7 @@ import { createPlanAmendmentsRepo } from '../../src/storage/repos/plan-amendment
 import { createLoopService } from '../../src/loop/service'
 import { createPlanAdjustTool } from '../../src/tools/plan-adjust'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -86,6 +86,8 @@ describe('plan-adjust tool', () => {
       totalSections: opts?.totalSections ?? 0,
       executionVariant: null,
       auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
   }
 
@@ -103,7 +105,7 @@ describe('plan-adjust tool', () => {
   ): Promise<string> {
     const tool = createPlanAdjustTool({ loop: { service: loopService } } as any)
     const result = await tool.execute(args, makeToolContext(sessionID ?? ''))
-    return typeof result === 'string' ? result : JSON.stringify(result.output)
+    return typeof result === 'string' ? result : JSON.stringify((result as unknown as { output: string }).output)
   }
 
   function seedSections(loopName: string, sections: Array<{ title: string; content: string }>) {
@@ -162,9 +164,9 @@ describe('plan-adjust tool', () => {
           sections: [{ title: 'New A', content: 'X' }],
           rationale: 'revised plan after audit',
         },
-        { sessionID: 'audit-sess-1' },
+        makeToolContext('audit-sess-1'),
       )
-      const parsed = typeof result === 'string' ? JSON.parse(result) : JSON.parse((result as any).output)
+      const parsed = typeof result === 'string' ? JSON.parse(result) : JSON.parse((result as unknown as { output: string }).output)
 
       expect(parsed.ok).toBe(true)
       expect(parsed.total_sections).toBe(2)
@@ -190,9 +192,9 @@ describe('plan-adjust tool', () => {
       const tool = createPlanAdjustTool({ loop: { service: stubService } } as any)
       const result = await tool.execute(
         { sections: [{ title: 'Trimmed', content: 'Y' }], rationale: 'trim section' },
-        { sessionID: 'audit-sess-2' },
+        makeToolContext('audit-sess-2'),
       )
-      const parsed = typeof result === 'string' ? JSON.parse(result) : JSON.parse((result as any).output)
+      const parsed = typeof result === 'string' ? JSON.parse(result) : JSON.parse((result as unknown as { output: string }).output)
 
       expect(parsed.error).toBe('plan objective is immutable; cannot remove verification step')
     })
@@ -212,11 +214,11 @@ describe('plan-adjust tool', () => {
       const tool = createPlanAdjustTool({ loop: { service: stubService } } as any)
       const resultStr = await tool.execute(
         { sections: [{ title: 'Revised', content: 'Z' }], rationale: 'should be blocked' },
-        { sessionID: 'wrong-audit-session' },
+        makeToolContext('wrong-audit-session'),
       )
       const result = typeof resultStr === 'string'
         ? JSON.parse(resultStr)
-        : JSON.parse((resultStr as any).output)
+        : JSON.parse((resultStr as unknown as { output: string }).output)
 
       expect(result.error).toContain('session mismatch')
       expect(result.error).toContain('test-loop')

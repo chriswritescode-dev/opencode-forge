@@ -13,7 +13,7 @@ import { createLoopService } from '../../src/loop/service'
 import { createLoop } from '../../src/loop/runtime'
 import type { LoopState } from '../../src/loop/state'
 import type { Logger, PluginConfig } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const mockLogger: Logger = {

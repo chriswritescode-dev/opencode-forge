@@ -1,39 +1,22 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { createPlansRepo, type PlanRow } from '../src/storage'
-
-const TEST_DIR = '/tmp/opencode-plans-repo-test-' + Date.now()
-
-function createTestDb(): Database {
-  const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS plans (
-      project_id   TEXT NOT NULL,
-      loop_name    TEXT,
-      session_id   TEXT,
-      content      TEXT NOT NULL,
-      updated_at   INTEGER NOT NULL,
-      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-      UNIQUE (project_id, loop_name),
-      UNIQUE (project_id, session_id)
-    )
-  `)
-  return db
-}
+import type { Database } from 'bun:sqlite'
+import { createPlansRepo } from '../src/storage'
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('PlansRepo', () => {
   let db: Database
+  let testDb: TestDb
   let repo: ReturnType<typeof createPlansRepo>
   const projectId = 'test-project'
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     repo = createPlansRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   describe('writeForSession', () => {
@@ -366,11 +349,12 @@ describe('PlansRepo', () => {
 
   describe('listUnexecuted', () => {
     test('prepares the loops join lazily, so a plans-only database still constructs', () => {
+      db.run('PRAGMA foreign_keys=OFF')
+      db.run('DROP TABLE loops')
       expect(() => repo.listUnexecuted(projectId)).toThrow(/no such table: loops/)
     })
 
     test('lists session plans whose session launched no loop at or after the write', () => {
-      db.run('CREATE TABLE loops (project_id TEXT NOT NULL, host_session_id TEXT, started_at INTEGER)')
       repo.writeForSession(projectId, 'executed-session', 'Executed plan')
       repo.writeForSession(projectId, 'unexecuted-session', 'Unexecuted plan')
       repo.writeForLoop(projectId, 'loop-a', 'Loop plan')
@@ -379,8 +363,9 @@ describe('PlansRepo', () => {
         [1000, projectId, 'executed-session']
       )
       db.run(
-        'INSERT INTO loops (project_id, host_session_id, started_at) VALUES (?, ?, ?)',
-        [projectId, 'executed-session', 2000]
+        `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, host_session_id)
+         VALUES (?, ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?, ?)`,
+        [projectId, 'executed-loop', 'executed-session', 2000, 'executed-session']
       )
 
       const rows = repo.listUnexecuted(projectId)

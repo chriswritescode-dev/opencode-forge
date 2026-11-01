@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { mkdirSync, rmSync, writeFileSync } from 'fs'
-import { waitForSandboxReady, type WaitForSandboxOptions } from '../../src/utils/sandbox-ready'
+import { waitForSandboxReady } from '../../src/utils/sandbox-ready'
 import type { LoopRow } from '../../src/storage'
+import { createTestDb, type TestDb } from '../helpers/test-db'
 
 describe('waitForSandboxReady', () => {
   let testDir: string
   let dbPath: string
   let db: Database | null = null
+  let testDb: TestDb | null = null
   let projectId: string
 
   beforeEach(() => {
@@ -21,56 +23,16 @@ describe('waitForSandboxReady', () => {
 
   afterEach(() => {
     try {
-      db?.close()
+      testDb?.cleanup()
+      testDb = null
       db = null
       rmSync(testDir, { recursive: true, force: true })
     } catch {}
   })
 
-  function createTestDb(): void {
-    db = new Database(dbPath)
-    // Create the loops table (not project_kv)
-    db.run(`
-      CREATE TABLE IF NOT EXISTS loops (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL,
-        status TEXT NOT NULL,
-        current_session_id TEXT NOT NULL,
-        worktree INTEGER NOT NULL,
-        worktree_dir TEXT NOT NULL,
-        worktree_branch TEXT,
-        project_dir TEXT NOT NULL,
-        max_iterations INTEGER NOT NULL,
-        iteration INTEGER NOT NULL,
-        audit_count INTEGER NOT NULL,
-        error_count INTEGER NOT NULL,
-        phase TEXT NOT NULL,
-        execution_model TEXT,
-        auditor_model TEXT,
-        model_failed INTEGER NOT NULL,
-        sandbox INTEGER NOT NULL,
-        sandbox_container TEXT,
-        started_at INTEGER NOT NULL,
-        completed_at INTEGER,
-        termination_reason TEXT,
-        completion_summary TEXT,
-        workspace_id         TEXT,
-        host_session_id      TEXT,
-        audit_session_id     TEXT,
-        session_directory    TEXT,
-        PRIMARY KEY (project_id, loop_name)
-      )
-    `)
-    // Also need loop_large_fields for FK
-    db.run(`
-      CREATE TABLE IF NOT EXISTS loop_large_fields (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL,
-        last_audit_result TEXT,
-        PRIMARY KEY (project_id, loop_name),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
+  function openTestDb(): void {
+    testDb = createTestDb({ path: dbPath })
+    db = testDb.db
   }
 
   function insertLoopRow(loopName: string, overrides?: Partial<LoopRow>): void {
@@ -95,6 +57,12 @@ describe('waitForSandboxReady', () => {
       completionSummary: null,
       workspaceId: null,
       hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      executionVariant: null,
+      auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
       executionModel: null,
       auditorModel: null,
       modelFailed: false,
@@ -150,7 +118,7 @@ describe('waitForSandboxReady', () => {
   })
 
   it('not_sandbox_enabled - returns immediately when sandbox is false', async () => {
-    createTestDb()
+    openTestDb()
     insertLoopRow('test-loop', {
       sandbox: false,
       worktree: true,
@@ -168,7 +136,7 @@ describe('waitForSandboxReady', () => {
   })
 
   it('state_missing - polls until timeout when state does not exist', async () => {
-    createTestDb()
+    openTestDb()
     // Don't set any loop state
 
     const result = await waitForSandboxReady({
@@ -183,7 +151,7 @@ describe('waitForSandboxReady', () => {
   })
 
   it('ready - returns immediately when container name is set', async () => {
-    createTestDb()
+    openTestDb()
     insertLoopRow('test-loop', {
       sandbox: true,
       worktree: true,
@@ -202,7 +170,7 @@ describe('waitForSandboxReady', () => {
   })
 
   it('eventual ready - returns when container name is set after delay', async () => {
-    createTestDb()
+    openTestDb()
     insertLoopRow('test-loop', {
       sandbox: true,
       worktree: true,
@@ -247,7 +215,7 @@ describe('waitForSandboxReady', () => {
   })
 
   it('timeout - returns timeout when container name never appears', async () => {
-    createTestDb()
+    openTestDb()
     insertLoopRow('test-loop', {
       sandbox: true,
       worktree: true,

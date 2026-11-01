@@ -9,11 +9,10 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
-import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},

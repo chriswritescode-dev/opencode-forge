@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -10,10 +10,10 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
-import { markPromptSent, clearPromptPending, isAwaitingBusy, isAwaitingBusyExpired, AWAITING_BUSY_TIMEOUT_MS, __resetIdleGate } from '../../src/loop/idle-gate'
+import { markPromptSent, isAwaitingBusy, AWAITING_BUSY_TIMEOUT_MS, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 

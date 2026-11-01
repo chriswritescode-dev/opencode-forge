@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { Database } from 'bun:sqlite'
 type DB = InstanceType<typeof Database>
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -12,7 +12,7 @@ import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
 import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../src/constants/loop'
 import type { Logger, PluginConfig } from '../src/types'
-import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { setupLoopsTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 
 const PROJECT_ID = 'test-project'
@@ -109,7 +109,7 @@ describe('Audit session permissions', () => {
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5 },
+      loop: { enabled: true, defaultMaxIterations: 5 },
     }
 
     const loopService = (
@@ -120,7 +120,6 @@ describe('Audit session permissions', () => {
       reviewFindingsRepo,
       PROJECT_ID,
       logger,
-      undefined,
       undefined,
       undefined,
       sectionPlansRepo,
@@ -206,7 +205,7 @@ describe('Audit session permissions', () => {
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5, permissions: { deny: ['webfetch'] } },
+      loop: { enabled: true, defaultMaxIterations: 5, permissions: { deny: ['webfetch'] } },
     }
 
     const loopService = (
@@ -217,7 +216,6 @@ describe('Audit session permissions', () => {
       reviewFindingsRepo,
       PROJECT_ID,
       logger,
-      undefined,
       undefined,
       undefined,
       sectionPlansRepo,
@@ -316,7 +314,7 @@ describe('Audit session permissions', () => {
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5 },
+      loop: { enabled: true, defaultMaxIterations: 5 },
     }
 
     const loopService = (
@@ -327,7 +325,6 @@ describe('Audit session permissions', () => {
       reviewFindingsRepo,
       PROJECT_ID,
       logger,
-      undefined,
       undefined,
       undefined,
       sectionPlansRepo,

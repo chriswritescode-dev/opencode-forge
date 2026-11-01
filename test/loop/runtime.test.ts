@@ -16,14 +16,13 @@ import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
-  clearPromptInFlight,
   getPromptInFlight,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -32,7 +31,6 @@ const mockConfig: PluginConfig = {
   auditorModel: 'test/auditor',
   loop: {
     enabled: true,
-    model: 'test/loop',
     defaultMaxIterations: 5,
   },
 }
@@ -164,7 +162,7 @@ describe('Loop Runtime', () => {
 
   describe('idle coding session advances to auditing', () => {
     test('idle event on a coding phase transitions to auditing phase', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
@@ -233,7 +231,7 @@ describe('Loop Runtime', () => {
 
   describe('clean non-sectioned audit terminates completed', () => {
     test('audit session returning clean assistant message terminates with completed', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
@@ -1022,7 +1020,7 @@ describe('post-action phase', () => {
 
 describe('runtime re-provisioning updates state.workspaceId', () => {
   test('ensureWorkspaceForLoop provisions workspace and sets workspaceId', async () => {
-    const { client, calls } = createFakeForgeClient({
+    const { client } = createFakeForgeClient({
       session: {
         messages: async () => [
           { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
@@ -1094,8 +1092,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
         sectionPlansRepo,
       )
 
-      const { client, calls } = createFakeForgeClient()
-      const { logger, logs } = createCapturingLogger()
+      const { client } = createFakeForgeClient()
+      const { logger } = createCapturingLogger()
       const config: PluginConfig = { ...mockConfig }
 
       const loop = createLoop({
@@ -1298,14 +1296,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('rejects audit prompt while code prompt in-flight', async () => {
       markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
 
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
           ],
         },
       })
-      const { loop, logger, logs } = createRuntime({ client })
+      const { loop, logs } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
@@ -1415,7 +1413,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight when promptAsync throws a transient error', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
@@ -1427,7 +1425,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
@@ -1448,7 +1446,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight on prompt completion', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
@@ -1478,14 +1476,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
       markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
 
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
           ],
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
@@ -1545,7 +1543,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('tolerates delete failure without crashing', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
@@ -1553,7 +1551,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           delete: async () => { throw new Error('delete failed') },
         },
       })
-      const { loop, logger, logs } = createRuntime({ client })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
@@ -1568,9 +1566,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // No unhandled rejection from delete failure
-      const hasDeleteError = logs.some(
-        (l) => l.level === 'error' && l.message.includes('failed to delete'),
-      )
       // Even if no trim happened (queue <= 2), we verify no crash occurred
     })
 
@@ -1625,12 +1620,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     }
 
     test('code session retention captures usage with state.executionModel', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 })],
         },
       })
-      const { loop, logs } = createRuntime({ client, withUsageRepo: true })
+      const { loop } = createRuntime({ client, withUsageRepo: true })
 
       const state = makeState({
         phase: 'coding',
@@ -1656,7 +1651,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('audit termination captures usage with state.auditorModel', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })],
         },
@@ -1688,7 +1683,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('state models take precedence over current config', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })],
         },
@@ -1717,7 +1712,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('capture failure logs error but does not block termination', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => { throw new Error('messages fetch failed') },
         },
@@ -1742,7 +1737,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       messagesBySession.set('coding-session-1', [
         mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 }),
       ])
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async (params: any) => messagesBySession.get(params.sessionID) ?? [],
         },
@@ -1793,7 +1788,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('retained audit session cleaned up on termination with correct attribution', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })],
         },
@@ -1832,7 +1827,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('retained sessions cleaned up on clearLoopTimers with correct attribution', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })],
         },
@@ -2025,7 +2020,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
           ],
-          promptAsync: async (params: any) => {
+          promptAsync: async () => {
             if (failCount > 0) {
               failCount--
               throw Object.assign(new Error('simulated model failure'), { name: 'TestError', data: { message: 'simulated model failure' } })
@@ -2599,7 +2594,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('persisted assistant ProviderAuthError terminates as provider_limit', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             {
@@ -2638,7 +2633,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('persisted assistant error with 403 status terminates as provider_limit', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             {
@@ -2677,7 +2672,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('persisted assistant error with 429 does not terminate as provider_limit', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             {
@@ -2807,7 +2802,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('audit prompt send failure with no configured fallback terminates', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => makeCodingIdleMessages(),
           promptAsync: async (params: any) => auditLimitPromptAsync(params),
@@ -2857,7 +2852,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('coding phase provider limit still terminates immediately and leaves auditorFallbackIndex at 0', async () => {
-      const { client, calls } = createFakeForgeClient()
+      const { client } = createFakeForgeClient()
       const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
       const state = makeState({ phase: 'coding' })

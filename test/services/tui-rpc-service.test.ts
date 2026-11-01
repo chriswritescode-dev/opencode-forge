@@ -10,7 +10,7 @@ import type { Logger } from '../../src/types'
 import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const PROJECT = 'project-a'
 const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
@@ -45,6 +45,8 @@ function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
     totalSections: 1,
     executionVariant: 'high',
     auditorVariant: 'low',
+    baseCommit: null,
+    standbySessionId: null,
     ...overrides,
   }
 }
@@ -113,7 +115,7 @@ describe('createTuiRpcService', () => {
 
       const running = result.loops.find((loop) => loop.name === 'loop-running')
       expect(running).toMatchObject({ restartable: true, restartRequiresForce: true })
-      expect(running?.sections).toBeUndefined()
+      expect((running as Record<string, unknown> | undefined)?.sections).toBeUndefined()
     })
 
     test('a loop with unset optional fields is JSON-clean after toForgeRpcJson', () => {

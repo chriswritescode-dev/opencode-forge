@@ -17,7 +17,7 @@ import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 
 vi.mock('../../src/utils/audit-snapshot', () => ({
@@ -38,7 +38,6 @@ const mockConfig: PluginConfig = {
   auditorModel: 'test/auditor',
   loop: {
     enabled: true,
-    model: 'test/loop',
     defaultMaxIterations: 5,
   },
 }
@@ -92,10 +91,6 @@ function queueSnapshotCommits(commits: string[]): void {
     if (!commit) throw new Error('snapshot queue exhausted')
     return { commit, ref }
   })
-}
-
-function snapshotRefs(): string[] {
-  return vi.mocked(captureAuditSnapshot).mock.calls.map(call => (call as unknown as [string, string])[1])
 }
 
 async function idleTick(loop: Loop, sessionId: string): Promise<void> {
@@ -314,7 +309,7 @@ describe('durable attempt handoff', () => {
       expect(finalized.length).toBe(1)
       expect(finalized[0].outcome).toBe('dirty')
       expect(finalized[0].auditedAt).not.toBeNull()
-      expect(finalized[0].findingsAfter.map(f => f.file)).toEqual(['src/ledger.ts'])
+      expect(finalized[0].findingsAfter!.map(f => f.file)).toEqual(['src/ledger.ts'])
 
       const afterAudit = harness.service.getActiveState(loopName)!
       expect(afterAudit.phase).toBe('coding')

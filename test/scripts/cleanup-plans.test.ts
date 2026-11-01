@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
 import { Database } from 'bun:sqlite'
 import { parseDurationMs } from '../../scripts/cleanup-plans'
+import { createTestDb } from '../helpers/test-db'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -32,24 +33,17 @@ function createForgeDb(plans: PlanSeed[], loops: Array<{ projectId: string; loop
   dataHomes.push(xdg)
   const dbPath = join(xdg, 'opencode', 'forge', 'forge.db')
   mkdirSync(dirname(dbPath), { recursive: true })
-  const db = new Database(dbPath)
-  db.run(`
-    CREATE TABLE plans (
-      project_id TEXT NOT NULL,
-      loop_name  TEXT,
-      session_id TEXT,
-      content    TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-  db.run('CREATE TABLE loops (project_id TEXT NOT NULL, loop_name TEXT NOT NULL)')
-  const insertPlan = db.prepare('INSERT INTO plans (project_id, loop_name, session_id, content, updated_at) VALUES (?, ?, ?, ?, ?)')
+  const testDb = createTestDb({ path: dbPath })
+  const insertPlan = testDb.db.prepare('INSERT INTO plans (project_id, loop_name, session_id, content, updated_at) VALUES (?, ?, ?, ?, ?)')
   for (const plan of plans) {
     insertPlan.run(plan.projectId, plan.loopName ?? null, plan.sessionId ?? null, plan.content ?? 'plan body', plan.updatedAt)
   }
-  const insertLoop = db.prepare('INSERT INTO loops (project_id, loop_name) VALUES (?, ?)')
-  for (const loop of loops) insertLoop.run(loop.projectId, loop.loopName)
-  db.close()
+  const insertLoop = testDb.db.prepare(
+    `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+     VALUES (?, ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
+  )
+  for (const loop of loops) insertLoop.run(loop.projectId, loop.loopName, `${loop.projectId}-${loop.loopName}-session`, Date.now())
+  testDb.db.close()
   return xdg
 }
 

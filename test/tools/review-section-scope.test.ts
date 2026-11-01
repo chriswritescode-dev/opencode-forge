@@ -11,7 +11,7 @@ import { createLoopService } from '../../src/loop/service'
 import { createReviewTools } from '../../src/tools/review'
 import { createSessionLoopResolver } from '../../src/services/session-loop-resolver'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -47,7 +47,7 @@ describe('review section scoping', () => {
     sectionPlansRepo = createSectionPlansRepo(db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
     const sessionLoopResolver = createSessionLoopResolver({
-      loop: { service: loopService, listActive: () => loopService.listActive() },
+      loop: { service: loopService },
       getParentSessionId: async (sessionId: string) => parentSessions[sessionId] ?? null,
       getSessionDirectory: async () => tempDir,
       logger: mockLogger,
@@ -100,6 +100,8 @@ describe('review section scoping', () => {
       totalSections: opts?.totalSections ?? 0,
       executionVariant: null,
       auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
   }
 

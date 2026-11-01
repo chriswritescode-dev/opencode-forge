@@ -7,7 +7,7 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createArchitectAutoPlanner, ARCHITECT_AUTO_AGENT } from '../../src/services/architect-auto-planner'
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 

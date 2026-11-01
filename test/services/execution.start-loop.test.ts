@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
@@ -18,7 +18,7 @@ import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopService } from '../../src/loop/service'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const mockLogger: Logger = {
@@ -108,7 +108,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -142,9 +142,9 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopsRepo,
       loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -225,7 +225,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -247,9 +247,9 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopsRepo,
       loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -300,7 +300,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -334,9 +334,9 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopsRepo,
       loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -385,7 +385,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -421,9 +421,9 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopsRepo,
       loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -469,7 +469,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -503,9 +503,9 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopsRepo,
       loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -548,7 +548,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -570,9 +570,9 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopsRepo,
       loop: {
         service: loopService,
-        listActive: (...args: any[]) => loopService.listActive(...args),
+        listActive: () => loopService.listActive(),
         generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+        findMatchByName: (name: string) => loopService.findMatchByName(name),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
         handleAuditorProviderLimit: async () => false,
@@ -626,7 +626,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
     }
@@ -669,9 +669,9 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -732,9 +732,9 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -794,9 +794,9 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -873,9 +873,9 @@ describe('handleStartLoop variant config fallback', () => {
       gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -947,9 +947,9 @@ describe('handleStartLoop variant config fallback', () => {
       gitService: mockGitService,
       plansRepo, loopsRepo, loop: {
           service: loopService,
-          listActive: (...args: any[]) => loopService.listActive(...args),
+          listActive: () => loopService.listActive(),
           generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(loopService, baseName, isTaken),
-          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -1006,9 +1006,9 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
       loopsRepo: opts.loopsRepo,
       loop: {
         service: opts.loopService,
-        listActive: (...args: any[]) => opts.loopService.listActive(...args),
+        listActive: () => opts.loopService.listActive(),
         generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(opts.loopService, baseName, isTaken),
-        findMatchByName: (...args: any[]) => opts.loopService.findMatchByName(...args),
+        findMatchByName: (name: string) => opts.loopService.findMatchByName(name),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
         handleAuditorProviderLimit: async () => false,
@@ -1403,7 +1403,7 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(git.revParse.mock.calls.map((call) => call[1])).not.toContain(`refs/heads/${branch}`)
+    expect(git.revParse.mock.calls.map((call: [string, string]) => call[1])).not.toContain(`refs/heads/${branch}`)
     expect(git.branchForceUpdate).not.toHaveBeenCalled()
 
     h.db.close()
@@ -1545,9 +1545,9 @@ describe('handleStartLoop goal attach', () => {
       goalsRepo,
       loop: {
         service: h.loopService,
-        listActive: (...args: any[]) => h.loopService.listActive(...args),
+        listActive: () => h.loopService.listActive(),
         generateUniqueLoopName: (baseName: string, isTaken?: (name: string) => boolean) => uniqueLoopNameFor(h.loopService, baseName, isTaken),
-        findMatchByName: (...args: any[]) => h.loopService.findMatchByName(...args),
+        findMatchByName: (name: string) => h.loopService.findMatchByName(name),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex: () => {},
         handleAuditorProviderLimit: async () => false,

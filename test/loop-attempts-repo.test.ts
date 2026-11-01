@@ -1,63 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
+import type { Database } from 'bun:sqlite'
 import { openForgeDatabase } from '../src/storage/database'
 import { createLoopAttemptsRepo } from '../src/storage/repos/loop-attempts-repo'
-import type { LoopAttemptRow, LoopAttemptRecordInput } from '../src/storage/repos/loop-attempts-repo'
+import type { LoopAttemptRecordInput } from '../src/storage/repos/loop-attempts-repo'
 import type { ReviewFindingRow } from '../src/storage/repos/review-findings-repo'
-
-const TEST_DIR = `/tmp/opencode-loop-attempts-test-${Date.now()}`
-
-const LOOP_ATTEMPTS_DDL = `
-  CREATE TABLE IF NOT EXISTS loop_attempts (
-    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id         TEXT NOT NULL,
-    loop_name          TEXT NOT NULL,
-    scope              TEXT NOT NULL,
-    attempt_number     INTEGER NOT NULL,
-    source_session_id  TEXT NOT NULL,
-    completion_key     TEXT NOT NULL,
-    auditor_session_id TEXT,
-    iteration          INTEGER NOT NULL,
-    worktree_dir       TEXT NOT NULL,
-    plan_hash          TEXT NOT NULL,
-    coder_decisions    TEXT,
-    snapshot_commit    TEXT,
-    snapshot_ref       TEXT,
-    previous_commit    TEXT,
-    diff_summary       TEXT,
-    fallback_reason    TEXT,
-    findings_before    TEXT NOT NULL,
-    findings_after     TEXT,
-    outcome            TEXT CHECK(outcome IN ('clean','dirty')),
-    created_at         INTEGER NOT NULL,
-    audited_at         INTEGER,
-    UNIQUE (project_id, loop_name, scope, completion_key),
-    FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-  )
-`
-
-function createTestDb(path: string): Database {
-  const db = new Database(path)
-  db.run('PRAGMA foreign_keys = ON')
-  db.run(`
-    CREATE TABLE loops (
-      project_id         TEXT NOT NULL,
-      loop_name          TEXT NOT NULL,
-      status             TEXT NOT NULL DEFAULT 'running',
-      current_session_id TEXT NOT NULL DEFAULT '',
-      iteration          INTEGER NOT NULL DEFAULT 0,
-      phase              TEXT NOT NULL DEFAULT 'coding',
-      PRIMARY KEY (project_id, loop_name)
-    )
-  `)
-  db.run(`CREATE UNIQUE INDEX idx_loops_project_name ON loops(project_id, loop_name)`)
-  db.run(LOOP_ATTEMPTS_DDL)
-  db.run(`CREATE INDEX idx_loop_attempts_loop ON loop_attempts (project_id, loop_name, scope, id)`)
-  return db
-}
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 function finding(file: string, line: number, severity: 'bug' | 'warning' = 'bug'): ReviewFindingRow {
   return {
@@ -76,20 +23,29 @@ function finding(file: string, line: number, severity: 'bug' | 'warning' = 'bug'
 describe('LoopAttemptsRepo', () => {
   let db: Database
   let dbPath: string
+  let testDb: TestDb
   let repo: ReturnType<typeof createLoopAttemptsRepo>
   const projectId = 'test-project'
   const loopName = 'test-loop'
   const sessionA = 'sess-a'
 
+  function insertLoop(name: string, sessionId: string): void {
+    db.prepare(
+      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+       VALUES (?, ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
+    ).run(projectId, name, sessionId, Date.now())
+  }
+
   beforeEach(() => {
-    dbPath = `${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`
-    db = createTestDb(dbPath)
-    db.run(`INSERT INTO loops (project_id, loop_name, status, current_session_id) VALUES (?, ?, 'running', ?)`, [projectId, loopName, sessionA])
+    testDb = createTestDb()
+    db = testDb.db
+    dbPath = testDb.path
+    insertLoop(loopName, sessionA)
     repo = createLoopAttemptsRepo(db)
   })
 
   afterEach(() => {
-    if (db.open) db.close()
+    testDb.cleanup()
   })
 
   function baseRecord(overrides: Partial<LoopAttemptRecordInput> = {}): LoopAttemptRecordInput {
@@ -189,10 +145,10 @@ describe('LoopAttemptsRepo', () => {
 
     test('attempt numbers are isolated per loop', () => {
       const otherLoop = 'other-loop'
-      db.run(`INSERT INTO loops (project_id, loop_name, status, current_session_id) VALUES (?, ?, 'running', ?)`, [projectId, otherLoop, sessionA])
+      insertLoop(otherLoop, 'sess-other-loop')
 
       repo.record(baseRecord())
-      const other = repo.record(baseRecord({ loopName: otherLoop, completionKey: 'key-other' }))
+      const other = repo.record(baseRecord({ loopName: otherLoop, completionKey: 'key-other', sourceSessionId: 'sess-other-loop' }))
 
       expect(other!.attemptNumber).toBe(1)
     })
@@ -498,8 +454,7 @@ describe('LoopAttemptsRepo', () => {
       repo.record(baseRecord({ completionKey: 'k1' }))
       db.close()
 
-      const reopened = new Database(dbPath)
-      reopened.run('PRAGMA foreign_keys = ON')
+      const reopened = openForgeDatabase(dbPath)
       const repo2 = createLoopAttemptsRepo(reopened)
       const rows = repo2.list(projectId, loopName)
       expect(rows).toHaveLength(1)
@@ -523,8 +478,8 @@ describe('LoopAttemptsRepo', () => {
 
 describe('LoopAttemptsRepo on the real migrated schema', () => {
   test('migration 145 creates loop_attempts and the repo operates on the real schema', () => {
-    const dbPath = join(tmpdir(), `forge-loop-attempts-${randomUUID()}.db`)
-    const db = openForgeDatabase(dbPath)
+    const testDb = createTestDb()
+    const db = testDb.db
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
     expect(tables.map(t => t.name)).toContain('loop_attempts')
@@ -562,6 +517,6 @@ describe('LoopAttemptsRepo on the real migrated schema', () => {
     db.prepare('DELETE FROM loops WHERE project_id = ? AND loop_name = ?').run('proj-real', 'loop-real')
     expect(repo.list('proj-real', 'loop-real')).toHaveLength(0)
 
-    db.close()
+    testDb.cleanup()
   })
 })

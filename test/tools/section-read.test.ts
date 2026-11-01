@@ -10,7 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import { createSectionReadTool } from '../../src/tools/section-read'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -78,6 +78,8 @@ describe('section-read tool', () => {
       totalSections: opts?.totalSections ?? 0,
       executionVariant: null,
       auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
   }
 
@@ -98,7 +100,7 @@ describe('section-read tool', () => {
   async function executeSectionRead(args?: { section_index?: number; pending_suffix?: boolean }, sessionID?: string): Promise<string> {
     const tool = createSectionReadTool({ loop: { service: loopService } } as any)
     const result = await tool.execute(args ?? {}, makeToolContext(sessionID ?? ''))
-    return typeof result === 'string' ? result : result.output
+    return typeof result === 'string' ? result : (result as unknown as { output: string }).output
   }
 
   function parseJson(result: string) {

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -7,10 +7,10 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService, type LoopService } from '../../src/loop/service'
+import { createLoopService } from '../../src/loop/service'
 import { parseSectionSummary, SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -22,10 +22,10 @@ const PROJECT_ID = 'test-project'
 
 describe('parseSectionSummary', () => {
   let db: Database
-  let loopService: LoopService
+  let tempDir: string
 
   beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'parse-section-summary-test-'))
+    tempDir = mkdtempSync(join(tmpdir(), 'parse-section-summary-test-'))
     db = new Database(join(tempDir, 'test.db'))
 
     setupLoopsTestDb(db)
@@ -34,13 +34,12 @@ describe('parseSectionSummary', () => {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(
+    createLoopService(
       loopsRepo,
       plansRepo,
       reviewFindingsRepo,
       PROJECT_ID,
       mockLogger,
-      undefined,
       undefined,
       undefined,
       sectionPlansRepo,
@@ -49,7 +48,7 @@ describe('parseSectionSummary', () => {
 
   afterEach(() => {
     db.close()
-    rmSync(db.name.replace('/test.db', ''), { recursive: true, force: true })
+    rmSync(tempDir, { recursive: true, force: true })
   })
 
   test('extracts Done, Deviations, and Follow-ups sections', () => {

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -9,7 +9,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
@@ -54,7 +54,6 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
       { log: () => {}, error: () => {}, debug: () => {} } as Logger,
       undefined,
       undefined,
-      undefined,
       sectionPlansRepo,
     )
 
@@ -82,14 +81,14 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
       sectionPlansRepo,
       loop: {
         service: loopService,
-        listActive: (...a: any[]) => loopService.listActive(...a as any),
-        findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+        listActive: () => loopService.listActive(),
+        findMatchByName: (name: string) => loopService.findMatchByName(name),
         registerSessionReverseIndex: () => {},
         unregisterSessionReverseIndex,
         handleAuditorProviderLimit: async () => false,
       } as any,
       loopHandler: {
-        runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
         startWatchdog: vi.fn(),
         clearLoopTimers: noopFn,
       },

@@ -9,7 +9,7 @@ import {
   SESSION_SANDBOX_APPLIED_KEY,
   SESSION_SANDBOX_CONTROLLER_KEY,
 } from '../src/storage'
-import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { setupLoopsTestDb } from './helpers/test-db'
 
 const PROJECT_A = 'project-a'
 const PROJECT_B = 'project-b'
@@ -166,10 +166,7 @@ describe('SessionSandboxPreferencesRepo', () => {
     function writeRaw(projectId: string, key: string, data: string): void {
       db.run(
         'INSERT OR REPLACE INTO tui_preferences (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, NULL, ?)',
-        projectId,
-        key,
-        data,
-        Date.now(),
+        [projectId, key, data, Date.now()],
       )
     }
 

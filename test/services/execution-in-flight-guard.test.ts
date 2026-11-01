@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -18,8 +18,7 @@ import {
   getPromptInFlight,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
-import type { PromptAgent } from '../../src/loop/in-flight-guard'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { setupLoopsTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
@@ -95,6 +94,10 @@ describe('execution in-flight guard', () => {
         hostSessionId: null,
         currentSectionIndex: 0,
         totalSections: 5,
+        executionVariant: null,
+        auditorVariant: null,
+        baseCommit: null,
+        standbySessionId: null,
       }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
@@ -114,11 +117,11 @@ describe('execution in-flight guard', () => {
 
       const loopService = createLoopService(
         loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
-        undefined, undefined, undefined, sectionPlansRepo,
+        undefined, undefined, sectionPlansRepo,
       )
 
       const mockLoopHandler = {
-        runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
         startWatchdog: noopFn,
         clearLoopTimers: noopFn,
       }
@@ -134,9 +137,9 @@ describe('execution in-flight guard', () => {
         loopsRepo,
         loop: {
           service: loopService,
-          listActive: (...a: any[]) => loopService.listActive(...a as any),
-          listRecent: (...a: any[]) => loopService.listRecent(...a as any),
-          findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+          listActive: () => loopService.listActive(),
+          listRecent: () => loopService.listRecent(),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -205,6 +208,10 @@ describe('execution in-flight guard', () => {
         hostSessionId: null,
         currentSectionIndex: 2,
         totalSections: 5,
+        executionVariant: null,
+        auditorVariant: null,
+        baseCommit: null,
+        standbySessionId: null,
       }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
@@ -233,11 +240,11 @@ describe('execution in-flight guard', () => {
 
       const loopService = createLoopService(
         loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
-        undefined, undefined, undefined, sectionPlansRepo,
+        undefined, undefined, sectionPlansRepo,
       )
 
       const mockLoopHandler = {
-        runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
         startWatchdog: noopFn,
         clearLoopTimers: noopFn,
       }
@@ -253,9 +260,9 @@ describe('execution in-flight guard', () => {
         loopsRepo,
         loop: {
           service: loopService,
-          listActive: (...a: any[]) => loopService.listActive(...a as any),
-          listRecent: (...a: any[]) => loopService.listRecent(...a as any),
-          findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+          listActive: () => loopService.listActive(),
+          listRecent: () => loopService.listRecent(),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
@@ -309,6 +316,10 @@ describe('execution in-flight guard', () => {
         hostSessionId: null,
         currentSectionIndex: 1,
         totalSections: 4,
+        executionVariant: null,
+        auditorVariant: null,
+        baseCommit: null,
+        standbySessionId: null,
       }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
@@ -336,11 +347,11 @@ describe('execution in-flight guard', () => {
 
       const loopService = createLoopService(
         loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
-        undefined, undefined, undefined, sectionPlansRepo,
+        undefined, undefined, sectionPlansRepo,
       )
 
       const mockLoopHandler = {
-        runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+        runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
         startWatchdog: noopFn,
         clearLoopTimers: noopFn,
       }
@@ -356,9 +367,9 @@ describe('execution in-flight guard', () => {
         loopsRepo,
         loop: {
           service: loopService,
-          listActive: (...a: any[]) => loopService.listActive(...a as any),
-          listRecent: (...a: any[]) => loopService.listRecent(...a as any),
-          findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+          listActive: () => loopService.listActive(),
+          listRecent: () => loopService.listRecent(),
+          findMatchByName: (name: string) => loopService.findMatchByName(name),
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           handleAuditorProviderLimit: async () => false,
