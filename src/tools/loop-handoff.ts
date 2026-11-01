@@ -10,7 +10,7 @@ export function createLoopHandoffTools(ctx: ToolContext): Record<string, ToolDef
   const loop = ctx.loop
 
   async function record(toolName: LoopPhaseToolName, args: unknown, toolCtx: ToolCallContext): Promise<string> {
-    const result = await loop.recordHandoff({ sessionId: toolCtx.sessionID, tool: toolName, args })
+    const result = await loop.recordHandoff({ sessionId: toolCtx.sessionID, tool: toolName, args, signal: toolCtx.signal })
     if (!result.ok) return JSON.stringify({ error: result.error })
     const replaced = result.replaced ? ' It replaced your earlier handoff from this turn.' : ''
     return JSON.stringify({ ok: true, message: `Handoff recorded — end your turn now; make no further changes.${replaced}` })

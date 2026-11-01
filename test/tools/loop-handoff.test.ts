@@ -44,6 +44,7 @@ describe('loop handoff tools', () => {
   let tools: Record<string, ToolDefinition>
   let statuses: Record<string, { type?: string }>
   let statusError: Error | null
+  let statusHook: (() => void) | null
   let parentMap: Record<string, string | null>
 
   beforeEach(() => {
@@ -60,11 +61,13 @@ describe('loop handoff tools', () => {
 
     statuses = {}
     statusError = null
+    statusHook = null
     parentMap = {}
 
     const { client } = createFakeForgeClient({
       session: {
         status: (async () => {
+          statusHook?.()
           if (statusError) throw statusError
           return statuses
         }) as never,
@@ -126,7 +129,12 @@ describe('loop handoff tools', () => {
     return state
   }
 
-  async function execute(toolName: string, args: Record<string, unknown>, sessionID: string) {
+  async function execute(
+    toolName: string,
+    args: Record<string, unknown>,
+    sessionID: string,
+    signal = new AbortController().signal,
+  ) {
     const definition = tools[toolName]
     if (!definition) throw new Error(`missing tool ${toolName}`)
     const parsed = z.object(definition.args).safeParse(args)
@@ -138,7 +146,7 @@ describe('loop handoff tools', () => {
       sessionID,
       messageID: 'message-1',
       agent: 'code',
-      signal: new AbortController().signal,
+      signal,
     })
     return JSON.parse(result)
   }
@@ -394,6 +402,17 @@ describe('loop handoff tools', () => {
       expect(record.phase).toBe('post_action')
       expect(record.sectionIndex).toBeNull()
       expect(record.payload).toEqual({ ...args, followUps: [] })
+    })
+
+    test('writes no handoff when the tool call is aborted while the subagent check is in flight', async () => {
+      startLoop()
+      const controller = new AbortController()
+      statusHook = () => controller.abort()
+
+      const result = await execute(LOOP_HANDOFF_TOOL_NAME, coderPayload(), CODER_SESSION, controller.signal)
+
+      expect(result.error).toContain('aborted')
+      expect(handoffs()).toHaveLength(0)
     })
   })
 })

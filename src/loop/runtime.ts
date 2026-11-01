@@ -111,6 +111,8 @@ export interface HandoffRecordingInput {
   sessionId: string
   tool: LoopPhaseToolName
   args: unknown
+  /** The tool call's abort signal; an aborted call never records a handoff. */
+  signal?: AbortSignal
 }
 
 export interface Loop {
@@ -535,7 +537,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * Records the current session's handoff under the per-loop state lock. Every check runs
    * before the write so a rejected call leaves no pending row: session ownership, tool/phase
-   * pairing, subagent quiescence, the role's strict schema, and the audit summary rules.
+   * pairing, subagent quiescence, the role's strict schema, the audit summary rules, and the
+   * tool call's abort signal, which is re-checked right before the write.
    */
   async function recordHandoff(input: HandoffRecordingInput): Promise<HandoffRecordingResult> {
     const active = loopService.resolveActiveLoopForSession(input.sessionId)
@@ -587,6 +590,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         } else if (payload.summary) {
           return { ok: false, error: 'summary applies only to section audits; omit it.' }
         }
+      }
+
+      if (input.signal?.aborted) {
+        return { ok: false, error: 'The tool call was aborted; no handoff was recorded.' }
       }
 
       const record = loopService.recordPendingHandoff(parsed.input)

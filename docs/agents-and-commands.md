@@ -39,7 +39,9 @@ Excluded tools:
 - `goal-status`
 - `loop-complete`
 
-Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
+The `auditor` subagent also excludes `loop-handoff`. Only `auditor-loop`, the primary agent of a loop audit session, may record the auditor handoff.
+
+Source: [`AUDITOR_TOOL_EXCLUDES` and `AUDITOR_SUBAGENT_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 
 ## Slash Commands
 
