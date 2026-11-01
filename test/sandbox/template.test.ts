@@ -99,6 +99,21 @@ test('forge-cache-prune keeps uv tool installs and bin symlinks while wiping exp
   }
 })
 
+test('the image installs a pinned codegraph outside the shadowed cache disk with telemetry, daemon, and watcher off', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+  const installStart = dockerfile.indexOf('ARG CODEGRAPH_VERSION=v1.6.2')
+
+  expect(installStart).toBeGreaterThan(-1)
+  expect(dockerfile).toContain('/opt/codegraph')
+  expect(dockerfile).toContain('/usr/local/bin/codegraph')
+  expect(dockerfile).toContain('CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1')
+  expect(installStart).toBeLessThan(dockerfile.lastIndexOf('USER agent'))
+
+  const pruneStart = dockerfile.indexOf('cat > /usr/local/bin/forge-cache-prune')
+  const prune = dockerfile.slice(pruneStart, dockerfile.indexOf('\nEOF', pruneStart))
+  expect(prune).not.toContain('codegraph')
+})
+
 test('globally installed CLIs are built against a store the cache-disk mount cannot shadow', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
   const globalInstalls = dockerfile.split('\n').filter((line) => line.includes('pnpm add -g'))

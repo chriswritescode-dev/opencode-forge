@@ -250,6 +250,33 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# codegraph — the code index Forge queries for symbols, callers and affected
+# tests. It is installed under /opt/codegraph, off /opt/forge/cache, because the
+# runtime cache-disk mount shadows everything the build writes under that path.
+# The release tarball is downloaded directly instead of piping install.sh from
+# main, so no part of the install is an unpinned input, and the version is pinned
+# exactly because Forge parses codegraph's `--json` output. Release targets are
+# named x64/arm64; any other architecture fails the build. The symlink lands in
+# /usr/local/bin so the binary is on PATH for any exec UID, the trailing chmod
+# keeps the tree readable by one, and `--version` is a build-time smoke check.
+#
+# The env block is image-wide so both Forge's own calls and agent shell commands
+# run with telemetry, the background daemon, and the file watcher disabled.
+ARG CODEGRAPH_VERSION=v1.6.2
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) codegraph_arch=x64 ;; \
+        arm64) codegraph_arch=arm64 ;; \
+        *) echo "unsupported architecture for codegraph: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/codegraph.tar.gz "https://github.com/colbymchenry/codegraph/releases/download/${CODEGRAPH_VERSION}/codegraph-linux-${codegraph_arch}.tar.gz" \
+    && mkdir -p /opt/codegraph \
+    && tar -xzf /tmp/codegraph.tar.gz -C /opt/codegraph --strip-components=1 \
+    && rm -f /tmp/codegraph.tar.gz \
+    && ln -sf /opt/codegraph/bin/codegraph /usr/local/bin/codegraph \
+    && chmod -R a+rX /opt/codegraph \
+    && codegraph --version
+ENV CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1
+
 # Docker Engine from Docker's official apt repository. The microVM boots a real
 # kernel, so the daemon runs natively — no privileged-container or nested-
 # virtualization tricks. `/var/lib/docker` is mounted as a dedicated msb block
