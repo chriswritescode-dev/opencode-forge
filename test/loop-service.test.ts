@@ -10,8 +10,8 @@ import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import { createPlanAmendmentsRepo } from '../src/storage/repos/plan-amendments-repo'
 import { createLoopService } from '../src/loop/service'
 import { createLoop } from '../src/loop/runtime'
-import type { Logger } from '../src/types'
 import { createTestDb } from './helpers/test-db'
+import { createMockLogger } from './helpers/logger'
 import { makeLoopState } from './helpers/loop-fixtures'
 
 describe('Loop', () => {
@@ -21,11 +21,7 @@ describe('Loop', () => {
   let tempDir: string
   const projectId = 'test-project'
 
-  const mockLogger: Logger = {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
+  const mockLogger = createMockLogger()
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-service-test-'))

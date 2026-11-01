@@ -3,16 +3,12 @@ import type { Database } from 'bun:sqlite'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlanTools } from '../src/tools/plan-kv'
-import type { Logger } from '../src/types'
+import { createMockLogger } from './helpers/logger'
 import { createTestDb } from './helpers/test-db'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-kv-test-' + Date.now()
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('plan-read', () => {
   let db: Database

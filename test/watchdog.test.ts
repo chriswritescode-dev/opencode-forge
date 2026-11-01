@@ -3,21 +3,12 @@ import { createLoopWatchdog } from '../src/hooks/watchdog'
 import type { LoopState } from '../src/loop/state'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { makeLoopState } from './helpers/loop-fixtures'
+import { createCapturingLogger } from './helpers/logger'
 
 const WATCHDOG_STATE_DEFAULTS = {
   sessionId: 'coding-session',
   worktreeDir: '/tmp/test-worktree',
   maxIterations: 0,
-}
-
-function createLogger() {
-  const logs: { level: 'log' | 'error' | 'debug'; message: string; args: unknown[] }[] = []
-  return {
-    log: (message: string, ...args: unknown[]) => logs.push({ level: 'log', message, args }),
-    error: (message: string, ...args: unknown[]) => logs.push({ level: 'error', message, args }),
-    debug: (message: string, ...args: unknown[]) => logs.push({ level: 'debug', message, args }),
-    logs,
-  }
 }
 
 function wait(ms: number): Promise<void> {
@@ -50,7 +41,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -85,7 +76,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -124,7 +115,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -164,7 +155,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -200,7 +191,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -241,7 +232,7 @@ describe('createLoopWatchdog', () => {
     const terminateCalls: unknown[] = []
     const terminateStates: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -284,7 +275,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -325,7 +316,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -361,7 +352,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger, logs } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -396,7 +387,7 @@ describe('createLoopWatchdog', () => {
     expect(lastRecovery.reason).toBe('status_error')
     expect((lastRecovery.error as Error).message).toBe('status api down')
 
-    const errorLogs = logger.logs.filter((l) => l.level === 'error' && l.message.includes('failed to check session status after retries'))
+    const errorLogs = logs.filter((l) => l.level === 'error' && l.message.includes('failed to check session status after retries'))
     expect(errorLogs.length).toBeGreaterThan(0)
 
     watchdog.stop(loopName)
@@ -407,7 +398,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -444,7 +435,7 @@ describe('createLoopWatchdog', () => {
     const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -478,7 +469,7 @@ describe('createLoopWatchdog', () => {
     const terminateCalls: unknown[] = []
     const fallbackCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -519,7 +510,7 @@ describe('createLoopWatchdog', () => {
     const terminateCalls: unknown[] = []
     const fallbackCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -560,7 +551,7 @@ describe('createLoopWatchdog', () => {
     const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, phase: 'auditing', sessionId: 'audit-session' }) }
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -597,7 +588,7 @@ describe('createLoopWatchdog', () => {
     const terminateCalls: unknown[] = []
     let fallbackCalls = 0
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -638,7 +629,7 @@ describe('createLoopWatchdog', () => {
     const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -686,7 +677,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -727,7 +718,7 @@ describe('createLoopWatchdog', () => {
     const nudgeCalls: unknown[] = []
     const recoverCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -762,7 +753,7 @@ describe('createLoopWatchdog', () => {
     const nudgeCalls: unknown[] = []
     let recording = true
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -802,7 +793,7 @@ describe('createLoopWatchdog', () => {
     const nudgeCalls: unknown[] = []
     let streaming = true
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -842,7 +833,7 @@ describe('createLoopWatchdog', () => {
     const nudgeCalls: unknown[] = []
     let streaming = true
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -883,7 +874,7 @@ describe('createLoopWatchdog', () => {
     const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -918,7 +909,7 @@ describe('createLoopWatchdog', () => {
     const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -954,7 +945,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -994,7 +985,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -1034,7 +1025,7 @@ describe('createLoopWatchdog', () => {
     const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -1066,7 +1057,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     let queued = false
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({
@@ -1112,7 +1103,7 @@ describe('createLoopWatchdog', () => {
     const recoverCalls: unknown[] = []
     let queued = true
 
-    const logger = createLogger()
+    const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
         ...createMockLoopService({

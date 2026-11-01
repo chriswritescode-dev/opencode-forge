@@ -3,6 +3,7 @@ import { performTerminationSideEffects } from '../../src/hooks/host-side-effects
 import type { TerminationReason } from '../../src/loop'
 import type { PluginConfig } from '../../src/types'
 import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 
 const HOST_SIDE_EFFECTS_STATE_DEFAULTS = {
   active: false,
@@ -141,7 +142,7 @@ describe('performTerminationSideEffects', () => {
 
     const ctx = {
       client,
-      logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
+      logger: createMockLogger(),
       getConfig: () => ({}) as PluginConfig,
       pendingTeardowns: pendingTeardowns as never,
       loopsRepo: { get: loopsRepoGet } as never,
@@ -187,7 +188,7 @@ describe('performTerminationSideEffects', () => {
         },
         toast,
       } as never,
-      logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
+      logger: createMockLogger(),
       getConfig: () => ({}) as PluginConfig,
       // No loopsRepo, projectId, or pendingTeardowns
     }

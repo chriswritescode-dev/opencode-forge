@@ -1,6 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
 import { createToolExecuteAfterHook } from '../../src/hooks/plan-approval'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createTestDb, type TestDb } from '../helpers/test-db'
 import { buildToolContext, planApprovalQuestionArgs } from '../helpers/tool-context'
 
@@ -15,10 +14,9 @@ describe('plan-approval afterHook dedupes by plan content regardless of updatedA
   function createPlanContext(projectId: string, directory: string, sessionID: string, planContent: string) {
     const testDb = createTestDb()
     openDbs.push(testDb)
-    const plansRepo = createPlansRepo(testDb.db)
-    plansRepo.writeForSession(projectId, sessionID, planContent)
-    const ctx = buildToolContext({ db: testDb.db, projectId, directory, plansRepo })
-    return { ctx, plansRepo }
+    const ctx = buildToolContext({ db: testDb.db, projectId, directory })
+    ctx.plansRepo.writeForSession(projectId, sessionID, planContent)
+    return { ctx, plansRepo: ctx.plansRepo }
   }
 
   test('two "Execute here" answers with same content but bumped updatedAt: second is duplicate', async () => {

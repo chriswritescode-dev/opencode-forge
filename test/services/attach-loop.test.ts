@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { buildExecutionDeps, makeLoopState } from '../helpers/loop-fixtures'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
 
@@ -255,24 +255,13 @@ describe('attachLoopToSession', () => {
   test('attachLoopToSession returns already_attached when existing row is running', async () => {
     const { deps, loopService } = setupAttach()
 
-    loopService.setState('live-loop', {
-      active: true,
+    loopService.setState('live-loop', makeLoopState({
       sessionId: 'sess_existing',
       loopName: 'live-loop',
       worktreeDir: '/tmp/wt/live',
       projectDir: '/tmp/test',
-      iteration: 1,
       maxIterations: 50,
-      startedAt: new Date().toISOString(),
-      phase: 'coding',
-      status: 'running' as const,
-      worktree: true,
-      auditCount: 0,
-      errorCount: 0,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      sandbox: false,
-    } as any)
+    }))
 
     let deleteStateCalled = false
     const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)

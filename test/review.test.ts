@@ -1,60 +1,25 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createReviewTools } from '../src/tools/review'
-import { createLoopService } from '../src/loop/service'
-import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createLoopAttemptsRepo, type LoopAttemptRow } from '../src/storage/repos/loop-attempts-repo'
-import type { Logger } from '../src/types'
+import { buildToolContext } from './helpers/tool-context'
 import { createTestDb } from './helpers/test-db'
 
 const TEST_DIR = '/tmp/opencode-manager-review-test-' + Date.now()
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
-
-function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>, loopService: ReturnType<typeof createLoopService>) {
-  const plansRepo = createPlansRepo(db)
-  const loopsRepo = createLoopsRepo(db)
-  const sessionLoopResolver = createSessionLoopResolver({
-    loop: { service: loopService },
-    getParentSessionId: async () => null,
-    getSessionDirectory: async () => TEST_DIR,
-    logger: mockLogger,
-  })
-  return {
-    reviewFindingsRepo,
-    plansRepo,
-    loopsRepo,
-    projectId: 'test-project',
-    logger: mockLogger,
-    loop: { service: loopService },
-    directory: TEST_DIR,
-    resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
-  } as any
-}
-
 describe('review-write', () => {
   let db: Database
   let testDb: ReturnType<typeof createTestDb>
-  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createReviewTools>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
 
   beforeEach(() => {
     testDb = createTestDb()
     db = testDb.db
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const ctx = createToolContext(db, reviewFindingsRepo, loopService)
-    tools = createReviewTools(ctx)
+    tools = createReviewTools(buildToolContext({ db, directory: TEST_DIR }))
   })
 
   afterEach(() => {
@@ -226,19 +191,14 @@ describe('review-write', () => {
 describe('review-read', () => {
   let db: Database
   let testDb: ReturnType<typeof createTestDb>
-  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createReviewTools>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
 
   beforeEach(() => {
     testDb = createTestDb()
     db = testDb.db
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const ctx = createToolContext(db, reviewFindingsRepo, loopService)
-    tools = createReviewTools(ctx)
+    tools = createReviewTools(buildToolContext({ db, directory: TEST_DIR }))
 
     // Seed with test data for different loops
     reviewFindingsRepo.write({
@@ -388,7 +348,6 @@ describe('review-read', () => {
 describe('review-delete', () => {
   let db: Database
   let testDb: ReturnType<typeof createTestDb>
-  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createReviewTools>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
@@ -397,11 +356,8 @@ describe('review-delete', () => {
     testDb = createTestDb()
     db = testDb.db
     loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const ctx = createToolContext(db, reviewFindingsRepo, loopService)
-    tools = createReviewTools(ctx)
+    tools = createReviewTools(buildToolContext({ db, directory: TEST_DIR }))
 
     // Seed with test data
     reviewFindingsRepo.write({
@@ -504,7 +460,6 @@ describe('review-delete', () => {
 describe('review-read attempts mode', () => {
   let db: Database
   let testDb: ReturnType<typeof createTestDb>
-  let loopService: ReturnType<typeof createLoopService>
   let attemptsRepo: ReturnType<typeof createLoopAttemptsRepo>
   let tools: ReturnType<typeof createReviewTools>
   let realServiceTools: ReturnType<typeof createReviewTools>
@@ -513,22 +468,19 @@ describe('review-read attempts mode', () => {
     testDb = createTestDb()
     db = testDb.db
     const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
     attemptsRepo = createLoopAttemptsRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const baseCtx = createToolContext(db, reviewFindingsRepo, loopService) as Record<string, unknown>
+    const baseCtx = buildToolContext({ db, directory: TEST_DIR })
     tools = createReviewTools({
       ...baseCtx,
       loop: {
         service: {
-          ...loopService,
+          ...baseCtx.loop.service,
           getAttemptHistory: (name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[] =>
             attemptsRepo.list('test-project', name, scope, limit, beforeId),
         },
       },
     } as any)
-    realServiceTools = createReviewTools(baseCtx as any)
+    realServiceTools = createReviewTools(baseCtx)
 
     loopsRepo.insert({
       projectId: 'test-project',

@@ -157,6 +157,39 @@ describe('Plan approval hooks', () => {
       expect(runtime.plansRepo.getForSession(TEST_PROJECT, loopSessionID)?.content).toBe(plan)
     })
 
+    test('Loop (worktree) answer is handled like Loop without toasts or dispatch', async () => {
+      const abortSpy = vi.fn(async () => {})
+      const createSpy = vi.fn(async () => ({ id: 'should-not-exist' }))
+      const promptAsync = vi.fn(async (_params: { sessionID: string }) => new Promise<void>(() => {}))
+      const { client, calls } = createFakeForgeClient({
+        session: { abort: abortSpy, create: createSpy, promptAsync },
+      })
+      const worktreeSessionID = 'loop-worktree-approval-session'
+      const plan = '# Loop Worktree Plan\n\nBody.'
+      runtime.plansRepo.writeForSession(TEST_PROJECT, worktreeSessionID, plan)
+      const hook = createToolExecuteAfterHook(createContext({ client }))
+      const output = {
+        title: 'Asked 1 question',
+        output: 'Loop (worktree)',
+        metadata: { answers: [['Loop (worktree)']] },
+      }
+
+      await hook(
+        { tool: 'question', sessionID: worktreeSessionID, callID: 'loop-worktree-call', args: planApprovalQuestionArgs() },
+        output,
+      )
+
+      expect(abortSpy).not.toHaveBeenCalled()
+      expect(promptAsync).not.toHaveBeenCalled()
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(calls.some((call) => call.method === 'toast')).toBe(false)
+      expect(calls.some((call) => call.method === 'session.create')).toBe(false)
+      expect(output.metadata).toMatchObject({ forgePlanApprovalHandled: true })
+      expect(output.output).toContain('<system-reminder>')
+      expect(output.output).toContain('execute-plan')
+      expect(runtime.plansRepo.getForSession(TEST_PROJECT, worktreeSessionID)?.content).toBe(plan)
+    })
+
     test('custom answers append the custom-response system reminder', async () => {
       const abortSpy = vi.fn(async () => {})
       const { client } = createFakeForgeClient({ session: { abort: abortSpy } })
@@ -456,7 +489,7 @@ describe('Plan approval hooks', () => {
 
     test('blocks question for active loop session', async () => {
       const hook = createToolExecuteBeforeHook(
-        createContextForLoopState({ active: true, sessionId: loopSessionID, phase: 'auditing' }),
+        createContextForLoopState({ active: true, sessionId: loopSessionID, phase: 'coding' }),
       )
 
       await expect(

@@ -1,14 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
-import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
-import type { PlansRepo } from '../../src/storage/repos/plans-repo'
-import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import {
   markPromptInFlight,
   getPromptInFlight,
@@ -23,26 +13,11 @@ const PROJECT_ID = 'test-project'
 describe('execution in-flight guard', () => {
   let testDb: ReturnType<typeof createTestDb>
   let db: ReturnType<typeof createTestDb>['db']
-  let loopsRepo: LoopsRepo
-  let plansRepo: PlansRepo
-  let reviewFindingsRepo: ReviewFindingsRepo
-  let sectionPlansRepo: SectionPlansRepo
-
-  const mockLogger: Logger = {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
 
   beforeEach(() => {
     __resetInFlightGuard()
     testDb = createTestDb()
     db = testDb.db
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
   })
 
   afterEach(() => {
@@ -52,6 +27,13 @@ describe('execution in-flight guard', () => {
 
   describe('restart prompt path', () => {
     test('rejects restart prompt when another prompt is in-flight', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          create: async () => ({ id: 'new-sess-999' }),
+        },
+      })
+      const { deps, loopService, loopsRepo, sectionPlansRepo } = buildExecutionDeps(db, { client })
+
       loopsRepo.insert({
         projectId: PROJECT_ID,
         loopName: 'guard-loop',
@@ -94,21 +76,8 @@ describe('execution in-flight guard', () => {
         ],
       })
 
-      const { client } = createFakeForgeClient({
-        session: {
-          create: async () => ({ id: 'new-sess-999' }),
-        },
-      })
-
-      const loopService = createLoopService(
-        loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
-        undefined, undefined, sectionPlansRepo,
-      )
-
       const { createForgeExecutionService } = await import('../../src/services/execution')
-      const service = createForgeExecutionService(
-        buildExecutionDeps(db, { client, loop: { service: loopService } }).deps,
-      )
+      const service = createForgeExecutionService(deps)
 
       markPromptInFlight(PROJECT_ID, 'guard-loop', 'other-prompt-sess', 'code')
 
@@ -140,6 +109,19 @@ describe('execution in-flight guard', () => {
 
     test('configured-model restart prompt failure falls back without ConcurrentPromptError', async () => {
       let promptCallCount = 0
+
+      const { client } = createFakeForgeClient({
+        session: {
+          create: async () => ({ id: 'new-sess-888' }),
+          promptAsync: async () => {
+            promptCallCount++
+            if (promptCallCount <= 2) {
+              throw new Error('model unavailable')
+            }
+          },
+        },
+      })
+      const { deps, loopsRepo, sectionPlansRepo } = buildExecutionDeps(db, { client })
 
       loopsRepo.insert({
         projectId: PROJECT_ID,
@@ -186,27 +168,8 @@ describe('execution in-flight guard', () => {
         ],
       })
 
-      const { client } = createFakeForgeClient({
-        session: {
-          create: async () => ({ id: 'new-sess-888' }),
-          promptAsync: async () => {
-            promptCallCount++
-            if (promptCallCount <= 2) {
-              throw new Error('model unavailable')
-            }
-          },
-        },
-      })
-
-      const loopService = createLoopService(
-        loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
-        undefined, undefined, sectionPlansRepo,
-      )
-
       const { createForgeExecutionService } = await import('../../src/services/execution')
-      const service = createForgeExecutionService(
-        buildExecutionDeps(db, { client, loop: { service: loopService } }).deps,
-      )
+      const service = createForgeExecutionService(deps)
 
       const result = await service.dispatch(
         { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -223,6 +186,19 @@ describe('execution in-flight guard', () => {
 
     test('configured-model restart prompt failure clears guard after each attempt', async () => {
       let promptCallCount = 0
+
+      const { client } = createFakeForgeClient({
+        session: {
+          create: async () => ({ id: 'new-sess-777' }),
+          promptAsync: async () => {
+            promptCallCount++
+            if (promptCallCount === 1) {
+              throw new Error('model unavailable')
+            }
+          },
+        },
+      })
+      const { deps, loopsRepo, sectionPlansRepo } = buildExecutionDeps(db, { client })
 
       loopsRepo.insert({
         projectId: PROJECT_ID,
@@ -268,27 +244,8 @@ describe('execution in-flight guard', () => {
         ],
       })
 
-      const { client } = createFakeForgeClient({
-        session: {
-          create: async () => ({ id: 'new-sess-777' }),
-          promptAsync: async () => {
-            promptCallCount++
-            if (promptCallCount === 1) {
-              throw new Error('model unavailable')
-            }
-          },
-        },
-      })
-
-      const loopService = createLoopService(
-        loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
-        undefined, undefined, sectionPlansRepo,
-      )
-
       const { createForgeExecutionService } = await import('../../src/services/execution')
-      const service = createForgeExecutionService(
-        buildExecutionDeps(db, { client, loop: { service: loopService } }).deps,
-      )
+      const service = createForgeExecutionService(deps)
 
       const result = await service.dispatch(
         { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },

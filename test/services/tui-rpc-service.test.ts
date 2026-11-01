@@ -5,14 +5,14 @@ import { tmpdir } from 'os'
 import { createLoopsRepo, createPlansRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { LoopsRepo, LoopRow } from '../../src/storage/repos/loops-repo'
 import type { SessionSandboxDesiredState } from '../../src/storage'
-import type { Logger } from '../../src/types'
 import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'project-a'
-const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+const logger = createMockLogger()
 
 function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
   return {

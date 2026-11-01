@@ -12,7 +12,7 @@ import { createLoopsRepo, type LoopsRepo } from '../../src/storage/repos/loops-r
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import type { PluginConfig } from '../../src/types'
+import type { LoopConfig, PluginConfig } from '../../src/types'
 import { createPendingTeardownRegistry } from '../../src/workspace/pending-teardown'
 import { createFakeForgeClient, type RecordedCall } from './fake-client'
 import { createCapturingLogger, createMockLogger } from './logger'
@@ -101,6 +101,7 @@ export function buildLoopRuntime(
     projectId?: string
     client?: ForgeClient
     config?: Partial<PluginConfig>
+    loopConfig?: LoopConfig
     dataDir?: string
     directory?: string
     notify?: LoopChangeNotifier
@@ -122,18 +123,6 @@ export function buildLoopRuntime(
     : createFakeForgeClient()
   const config = options.config ?? {}
 
-  const loopService = createLoopService(
-    loopsRepo,
-    plansRepo,
-    reviewFindingsRepo,
-    projectId,
-    logger,
-    undefined,
-    undefined,
-    sectionPlansRepo,
-    loopTransitionsRepo,
-  )
-
   const loop = createLoop({
     loopsRepo,
     plansRepo,
@@ -145,6 +134,7 @@ export function buildLoopRuntime(
     logger,
     getConfig: () => config,
     sandboxManager: undefined,
+    loopConfig: options.loopConfig,
     dataDir: options.dataDir,
     directory: options.directory,
     notify: options.notify,
@@ -155,11 +145,9 @@ export function buildLoopRuntime(
 
   return {
     loop,
-    logger,
     logs,
     calls: forge.calls,
-    loopService,
-    loopsRepo,
+    loopService: loop.service,
     plansRepo,
     reviewFindingsRepo,
     sectionPlansRepo,
@@ -169,7 +157,7 @@ export function buildLoopRuntime(
 }
 
 /** Overrides accepted by {@link buildExecutionDeps}; `loop` and `loopHandler` merge into the stubs. */
-export type ExecutionDepsOverrides = Omit<
+type ExecutionDepsOverrides = Omit<
   Partial<ForgeExecutionServiceDeps>,
   'loop' | 'loopHandler'
 > & {

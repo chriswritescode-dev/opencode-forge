@@ -6,9 +6,10 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createLoopService } from '../../src/loop/service'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
 /**
@@ -44,11 +45,7 @@ describe('audit→code rotation ordering', () => {
   let tempDir: string
   const projectId = 'test-project'
 
-  const mockLogger: Logger = {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
+  const mockLogger = createMockLogger()
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'audit-rotate-ordering-test-'))

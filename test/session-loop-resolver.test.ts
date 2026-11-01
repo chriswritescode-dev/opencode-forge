@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createSessionLoopResolver, type SessionLoopResolverDeps } from '../src/services/session-loop-resolver'
 import { ParentLookupUndeterminedError } from '../src/utils/session-ancestry'
+import { createMockLogger } from './helpers/logger'
 
 type PartialLoopService = {
   resolveLoopName: (sessionId: string) => string | null
@@ -18,11 +19,7 @@ function mockLoop(loop: { service: PartialLoopService; listActive?: () => unknow
 }
 
 describe('createSessionLoopResolver', () => {
-  const mockLogger = {
-    log: () => {},
-    debug: () => {},
-    error: () => {},
-  }
+  const mockLogger = createMockLogger()
 
   describe('undetermined ancestry', () => {
     it('stays unresolved instead of rejecting, so loop bookkeeping never breaks a tool call', async () => {
@@ -63,7 +60,7 @@ describe('createSessionLoopResolver', () => {
   describe('logging', () => {
     it('logs a session outcome only when it changes', async () => {
       let active = false
-      const logger = { log: vi.fn(), debug: vi.fn(), error: vi.fn() }
+      const logger = createMockLogger()
       const resolver = createSessionLoopResolver({
         loop: mockLoop({
           service: {

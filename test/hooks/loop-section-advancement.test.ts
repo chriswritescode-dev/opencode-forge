@@ -9,15 +9,12 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
 import { createLoopEventHandler } from '../../src/hooks/loop'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
+import { createMockLogger } from '../helpers/logger'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 const mockConfig: PluginConfig = {
   executionModel: 'test/model',
@@ -266,9 +263,9 @@ describe('Loop Section Advancement', () => {
 
     test('a runtime max-iterations termination records exactly one terminate row', async () => {
       // iteration=1, maxIterations=1 → the very next iteration cap fires.
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, iteration: 1, max_iterations: 1 })
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+      insertLoop({ phase: 'auditing', current_section_index: 1, total_sections: 2, iteration: 1, max_iterations: 1 })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'in_progress')
       // An outstanding bug finding makes the audit genuinely dirty (a summary-less
       // audit with zero findings would take the summary re-prompt path instead).
       reviewFindingsRepo.write({
@@ -278,7 +275,7 @@ describe('Loop Section Advancement', () => {
         severity: 'bug',
         description: 'Found an issue',
         loopName: 'test-loop',
-        sectionIndex: 0,
+        sectionIndex: 1,
       })
 
       // Dirty audit text (no section-summary) routes through the section-dirty
@@ -322,7 +319,7 @@ describe('Loop Section Advancement', () => {
       expect(rows[0].status).toBe('errored')
       expect(rows[0].reason).toBe('max_iterations')
       expect(rows[0].iteration).toBe(1)
-      expect(rows[0].sectionIndex).toBe(0)
+      expect(rows[0].sectionIndex).toBe(1)
 
       // The loop is persisted as terminated.
       const after = loopService.getAnyState('test-loop')!

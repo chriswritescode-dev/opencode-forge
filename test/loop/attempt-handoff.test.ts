@@ -10,10 +10,11 @@ import { createLoop, type Loop } from '../../src/loop/runtime'
 import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
 import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 
 vi.mock('../../src/utils/audit-snapshot', () => ({
@@ -38,7 +39,7 @@ const mockConfig: PluginConfig = {
   },
 }
 
-const silentLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+const silentLogger = createMockLogger()
 
 interface FakeMessage {
   info: { id?: string; role: string; finish?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
@@ -102,7 +103,7 @@ describe('durable attempt handoff', () => {
   let attemptsRepo: ReturnType<typeof createLoopAttemptsRepo>
   let currentLoop: Loop | null = null
 
-  const harnessLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+  const harnessLogger = createMockLogger()
 
   interface RuntimeHarness {
     loop: Loop

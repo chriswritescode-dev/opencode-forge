@@ -10,14 +10,10 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import { createReviewTools } from '../../src/tools/review'
 import { createSessionLoopResolver } from '../../src/services/session-loop-resolver'
-import type { Logger } from '../../src/types'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('review section scoping', () => {
   let db: Database

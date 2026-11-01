@@ -1,15 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
+import type { LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import type { PluginConfig } from '../../src/types'
 import { createTestDb } from '../helpers/test-db'
 import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
-import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 const CANCEL_STATE_DEFAULTS = {
@@ -35,31 +30,11 @@ const mockConfig: PluginConfig = {
 describe('Loop Runtime cancel()', () => {
   let db: ReturnType<typeof createTestDb>['db']
   let testDb: ReturnType<typeof createTestDb>
-  let loopService: ReturnType<typeof createLoopService>
-  let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let plansRepo: ReturnType<typeof createPlansRepo>
-  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  let loopService: ReturnType<typeof buildLoopRuntime>['loopService']
 
   beforeEach(() => {
     testDb = createTestDb()
     db = testDb.db
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
-
-    loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      createMockLogger(),
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
 
     __resetIdleGate()
   })
@@ -69,9 +44,15 @@ describe('Loop Runtime cancel()', () => {
     __resetIdleGate()
   })
 
+  const buildRuntime = (options: Parameters<typeof buildLoopRuntime>[1] = {}) => {
+    const runtime = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, ...options })
+    loopService = runtime.loopService
+    return runtime
+  }
+
   describe('cancel terminates with cancelled reason', () => {
     test('cancel marks the loop as inactive with user_aborted termination', async () => {
-      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
+      const { loop } = buildRuntime()
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -90,9 +71,7 @@ describe('Loop Runtime cancel()', () => {
       let callbackInvoked = false
       let receivedState: LoopState | null = null
 
-      const { loop } = buildLoopRuntime(db, {
-        projectId: PROJECT_ID,
-        config: mockConfig,
+      const { loop } = buildRuntime({
         onTerminated: async (state, _reason) => {
           callbackInvoked = true
           receivedState = state
@@ -117,9 +96,7 @@ describe('Loop Runtime cancel()', () => {
         events.push(`notify:${reason}`)
         if (reason === 'settled') settledHints.push(hint)
       }
-      const { loop } = buildLoopRuntime(db, {
-        projectId: PROJECT_ID,
-        config: mockConfig,
+      const { loop } = buildRuntime({
         notify,
         onTerminated: async () => {
           events.push('onTerminated:start')
@@ -148,9 +125,7 @@ describe('Loop Runtime cancel()', () => {
       const notify: LoopChangeNotifier = (reason) => {
         if (reason === 'settled') settled.push(reason)
       }
-      const { loop } = buildLoopRuntime(db, {
-        projectId: PROJECT_ID,
-        config: mockConfig,
+      const { loop } = buildRuntime({
         notify,
         onTerminated: async () => {
           throw new Error('teardown failed')
@@ -169,9 +144,7 @@ describe('Loop Runtime cancel()', () => {
       const notify: LoopChangeNotifier = (reason) => {
         if (reason === 'settled') settledCount += 1
       }
-      const { loop } = buildLoopRuntime(db, {
-        projectId: PROJECT_ID,
-        config: mockConfig,
+      const { loop } = buildRuntime({
         notify,
         onTerminated: async () => {
           await new Promise((resolve) => setTimeout(resolve, 5))
@@ -194,7 +167,7 @@ describe('Loop Runtime cancel()', () => {
       const notify: LoopChangeNotifier = (reason) => {
         if (reason === 'settled') settled.push(reason)
       }
-      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, notify })
+      const { loop } = buildRuntime({ notify })
 
       const result = await loop.terminate('ghost-loop', { kind: 'user_aborted' })
 
@@ -205,7 +178,7 @@ describe('Loop Runtime cancel()', () => {
 
   describe('cancel clears timers', () => {
     test('after cancel, the loop is no longer active', async () => {
-      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
+      const { loop } = buildRuntime()
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -216,7 +189,7 @@ describe('Loop Runtime cancel()', () => {
     })
 
     test('calling cancel on already cancelled loop does not throw', async () => {
-      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
+      const { loop } = buildRuntime()
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -227,7 +200,7 @@ describe('Loop Runtime cancel()', () => {
 
   describe('cancelBySessionId works for sessions registered via start', () => {
     test('cancels by session ID when loop is started via start()', async () => {
-      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
+      const { loop } = buildRuntime()
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -239,7 +212,7 @@ describe('Loop Runtime cancel()', () => {
     })
 
     test('returns false for unknown session ID', async () => {
-      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
+      const { loop } = buildRuntime()
       const result = await loop.cancelBySessionId('unknown-session-id')
       expect(result).toBe(false)
     })

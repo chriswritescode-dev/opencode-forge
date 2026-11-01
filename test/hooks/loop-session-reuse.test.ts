@@ -11,10 +11,11 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler, type LoopEventHandler } from '../../src/hooks/loop'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { makeLoopState } from '../helpers/loop-fixtures'
 import { createTestDb } from '../helpers/test-db'
+import { createCapturingLogger } from '../helpers/logger'
 import { SECTION_SUMMARY_START_MARKER } from '../../src/utils/section-summary'
 import type { ModelContextLimitParams } from '../../src/client/port'
 import { __resetIdleGate, hasSuppressedIdle, recordInboxEnqueued } from '../../src/loop/idle-gate'
@@ -118,12 +119,7 @@ describe('Loop session reuse', () => {
     compact?: (params: { sessionID: string }) => Promise<void>
     status?: () => Promise<Record<string, { type: string }>>
   }) {
-    const logs: string[] = []
-    const logger: Logger = {
-      log: (message: string) => logs.push(message),
-      error: (message: string) => logs.push(`error: ${message}`),
-      debug: (message: string) => logs.push(message),
-    }
+    const { logger, logs } = createCapturingLogger()
 
     const messagesBySession = new Map(Object.entries(options.messages))
     let sessionCounter = 0
@@ -443,7 +439,7 @@ describe('Loop session reuse', () => {
       expect(createCalls(calls)).toHaveLength(1)
       expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
       expect(deletedSessionIds(calls)).toContain('fat-coder')
-      expect(logs.some((line) => line.includes('compaction of reused session fat-coder failed'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('compaction of reused session fat-coder failed'))).toBe(true)
 
       const after = service.getActiveState(state.loopName)!
       expect(after.sessionId).toBe('created-session-1')
@@ -612,7 +608,7 @@ describe('Loop session reuse', () => {
       expect(promptsTo(calls, 'coder-1')).toHaveLength(0)
       expect(compactCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
-      expect(logs.some((line) => line.includes('disabled for the code role'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('disabled for the code role'))).toBe(true)
       const after = service.getActiveState(state.loopName)!
       expect(after.sessionId).toBe('created-session-1')
       expect(after.standbySessionId).toBe('audit-1')
@@ -638,7 +634,7 @@ describe('Loop session reuse', () => {
       expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
       expect(compactCalls(calls)).toHaveLength(0)
       expect(deletedSessionIds(calls)).toContain('audit-1')
-      expect(logs.some((line) => line.includes('disabled for the auditor role'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('disabled for the auditor role'))).toBe(true)
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('auditing')
       expect(after.sessionId).toBe('created-session-1')
@@ -673,7 +669,7 @@ describe('Loop session reuse', () => {
       expect(createCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
       expect(compactCalls(calls)).toHaveLength(0)
-      expect(logs.some((line) => line.includes('unknown context window'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('unknown context window'))).toBe(true)
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
     })
 
@@ -707,7 +703,7 @@ describe('Loop session reuse', () => {
       expect(createCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
       expect(compactCalls(calls)).toHaveLength(0)
-      expect(logs.some((line) => line.includes('context-window lookup failed'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('context-window lookup failed'))).toBe(true)
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
     })
   })
@@ -770,7 +766,7 @@ describe('Loop session reuse', () => {
       expect(freshAuditPrompts[0]).toContain('[Loop section audit 1/2]')
       expect(freshAuditPrompts[0]).not.toContain('(follow-up)')
       expect(deletedSessionIds(calls)).toContain('fat-audit')
-      expect(logs.some((line) => line.includes('compaction of reused session fat-audit failed'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('compaction of reused session fat-audit failed'))).toBe(true)
 
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('auditing')
@@ -852,7 +848,7 @@ describe('Loop session reuse', () => {
       await idle('coder-1')
 
       expect(createCalls(calls)).toHaveLength(createsAfterReuse)
-      expect(logs.some((line) => line.includes('last message role: compaction'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('last message role: compaction'))).toBe(true)
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('coding')
       expect(after.sessionId).toBe('coder-1')
@@ -1053,7 +1049,7 @@ describe('Loop session reuse', () => {
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('coding')
       expect(after.sessionId).toBe('coder-1')
-      expect(logs.some((line) => line.includes('still holds its previous reply'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('still holds its previous reply'))).toBe(true)
     })
   })
 })

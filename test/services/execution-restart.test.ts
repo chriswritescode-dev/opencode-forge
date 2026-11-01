@@ -11,7 +11,6 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
 import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -23,12 +22,9 @@ import type { Database } from 'bun:sqlite'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 const PROJECT_ID = 'test-project'
 

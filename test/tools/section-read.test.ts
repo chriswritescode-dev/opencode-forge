@@ -9,14 +9,10 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import { createSectionReadTool } from '../../src/tools/section-read'
-import type { Logger } from '../../src/types'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('section-read tool', () => {
   let db: Database

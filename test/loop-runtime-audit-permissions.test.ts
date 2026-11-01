@@ -4,17 +4,12 @@ type DB = InstanceType<typeof Database>
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { createLoopsRepo } from '../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import type { LoopState } from '../src/loop/state'
-import { createLoop } from '../src/loop/runtime'
 import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../src/constants/loop'
-import type { Logger, PluginConfig } from '../src/types'
+import type { PluginConfig } from '../src/types'
 import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
-import { makeLoopState } from './helpers/loop-fixtures'
+import { buildLoopRuntime, makeLoopState } from './helpers/loop-fixtures'
 
 const PROJECT_ID = 'test-project'
 const AUDIT_PERMISSION_STATE_DEFAULTS = {
@@ -28,20 +23,11 @@ describe('Audit session permissions', () => {
   let db: DB
   let tempDir: string
   let testDb: ReturnType<typeof createTestDb>
-  let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let plansRepo: ReturnType<typeof createPlansRepo>
-  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-audit-perm-test-'))
     testDb = createTestDb()
     db = testDb.db
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
   })
 
   afterEach(() => {
@@ -81,41 +67,16 @@ describe('Audit session permissions', () => {
       toast: async () => {},
     })
 
-    const logger: Logger = {
-      log: () => {},
-      error: () => {},
-      debug: () => {},
-    }
-
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
       loop: { enabled: true, defaultMaxIterations: 5 },
     }
 
-    const loopService = (
-      await import('../src/loop/service')
-    ).createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      logger,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
+    const { loop, loopService } = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
       client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
+      config,
       dataDir: tempDir,
     })
 
@@ -178,41 +139,16 @@ describe('Audit session permissions', () => {
       toast: async () => {},
     })
 
-    const logger: Logger = {
-      log: () => {},
-      error: () => {},
-      debug: () => {},
-    }
-
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
       loop: { enabled: true, defaultMaxIterations: 5, permissions: { deny: ['webfetch'] } },
     }
 
-    const loopService = (
-      await import('../src/loop/service')
-    ).createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      logger,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
+    const { loop, loopService } = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
       client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
+      config,
       dataDir: tempDir,
     })
 
@@ -288,41 +224,16 @@ describe('Audit session permissions', () => {
       toast: async () => {},
     })
 
-    const logger: Logger = {
-      log: () => {},
-      error: () => {},
-      debug: () => {},
-    }
-
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
       loop: { enabled: true, defaultMaxIterations: 5 },
     }
 
-    const loopService = (
-      await import('../src/loop/service')
-    ).createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      logger,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
+    const { loop, loopService } = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
       client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
+      config,
       dataDir: tempDir,
     })
 

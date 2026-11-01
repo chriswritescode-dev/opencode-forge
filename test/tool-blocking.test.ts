@@ -8,6 +8,7 @@ import { createSessionLoopResolver } from '../src/services/session-loop-resolver
 import { createToolExecuteBeforeHook } from '../src/hooks/plan-approval'
 import type { ToolContext } from '../src/tools/types'
 import { createTestDb } from './helpers/test-db'
+import { makeLoopState } from './helpers/loop-fixtures'
 import { createMockLogger } from './helpers/logger'
 
 describe('Tool Blocking Logic', () => {
@@ -129,32 +130,19 @@ describe('Tool Blocking Logic', () => {
     const unrelatedSessionId = 'unrelated-session-toolblock'
 
     function setStateAuditing(loopService: ReturnType<typeof createLoopService>): void {
-      loopService.setState(hostLoopName, {
-        active: true,
-        sessionId: auditorSessionId,
-        loopName: hostLoopName,
-        worktreeDir: '/test/worktree',
-        worktreeBranch: 'opencode/loop-auditing',
-        projectDir: '/test/project',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        prompt: '',
-        phase: 'auditing',
-        status: 'running',
-        errorCount: 0,
-        auditCount: 0,
-        worktree: true,
-        modelFailed: false,
-        sandbox: false,
-        executionModel: 'test/model',
-        auditorModel: 'test/auditor',
-        executionVariant: undefined,
-        auditorVariant: undefined,
-        currentSectionIndex: 0,
-        totalSections: 0,
-        hostSessionId: 'host-toolblock',
-      })
+      loopService.setState(
+        hostLoopName,
+        makeLoopState({
+          sessionId: auditorSessionId,
+          loopName: hostLoopName,
+          worktreeDir: '/test/worktree',
+          worktreeBranch: 'opencode/loop-auditing',
+          projectDir: '/test/project',
+          prompt: '',
+          phase: 'auditing',
+          hostSessionId: 'host-toolblock',
+        }),
+      )
       loopService.registerLoopSession(auditorSessionId, hostLoopName)
     }
 

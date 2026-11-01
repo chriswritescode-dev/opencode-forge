@@ -1,15 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { isWorkspaceNotFoundError } from '../src/hooks/loop'
 import { createWorkspaceLifecycle } from '../src/loop/runtime-workspace'
-import type { Logger } from '../src/types'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { makeLoopState } from './helpers/loop-fixtures'
+import { createMockLogger } from './helpers/logger'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 const STATE_DEFAULTS = {
   sessionId: 'sess-1',

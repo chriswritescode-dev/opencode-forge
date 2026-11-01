@@ -4,18 +4,14 @@ import { createGoalTools } from '../../src/tools/goal'
 import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import type { GoalLaunchSnapshot } from '../../src/storage/repos/goals-repo'
 import { DEFAULT_GOAL_MAX_CHUNKS, MAX_GOAL_MAX_CHUNKS } from '../../src/constants/goal'
-import type { Logger } from '../../src/types'
 import type { ToolContext } from '../../src/tools/types'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'test-project'
 const SESSION = 'sess-goal'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 function snapshot() {
   return {

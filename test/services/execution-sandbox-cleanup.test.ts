@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { dirname } from 'path'
 import type { SandboxManager } from '../../src/sandbox/manager'
 import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
@@ -29,7 +30,7 @@ describe('attachLoopToSession sandbox-not-ready cleanup', () => {
     const stop = vi.fn(async () => {})
     const sandboxManager = { stop } as unknown as SandboxManager
     const unregisterSessionReverseIndex = vi.fn()
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
+    const logger = createMockLogger()
 
     const { deps, loopService } = buildExecutionDeps(db, {
       logger,

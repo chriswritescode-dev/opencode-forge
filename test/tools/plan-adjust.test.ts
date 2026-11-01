@@ -10,14 +10,10 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createPlanAmendmentsRepo } from '../../src/storage/repos/plan-amendments-repo'
 import { createLoopService } from '../../src/loop/service'
 import { createPlanAdjustTool } from '../../src/tools/plan-adjust'
-import type { Logger } from '../../src/types'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('plan-adjust tool', () => {
   let db: Database

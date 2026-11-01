@@ -4,14 +4,10 @@ import { createLoopService } from '../src/loop/service'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import type { Logger } from '../src/types'
 import { createTestDb } from './helpers/test-db'
+import { createMockLogger } from './helpers/logger'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('Loop findings gate', () => {
   let db: Database

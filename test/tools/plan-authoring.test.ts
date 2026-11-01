@@ -2,21 +2,12 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createPlanAuthoringTools } from '../../src/tools/plan-authoring'
 import { createPlanTools } from '../../src/tools/plan-kv'
-import { createLoopService } from '../../src/loop/service'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import type { Logger } from '../../src/types'
-import type { ToolContext } from '../../src/tools/types'
+import { buildToolContext } from '../helpers/tool-context'
 import { createTestDb } from '../helpers/test-db'
 
 const TEST_DIR = '/tmp/opencode-plan-write-test-' + Date.now()
-
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
 
 function insertRunningLoop(
   loopsRepo: ReturnType<typeof createLoopsRepo>,
@@ -61,22 +52,11 @@ function insertRunningLoop(
 }
 
 function createToolContext(db: Database) {
-  const loopsRepo = createLoopsRepo(db)
-  const plansRepo = createPlansRepo(db)
-  const reviewFindingsRepo = createReviewFindingsRepo(db)
-  const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
+  const ctx = buildToolContext({ db, directory: TEST_DIR })
   return {
-    ctx: {
-      plansRepo,
-      loopsRepo,
-      reviewFindingsRepo,
-      projectId: 'test-project',
-      logger: mockLogger,
-      loop: { service: loopService },
-      directory: TEST_DIR,
-    } as unknown as ToolContext,
-    plansRepo,
-    loopsRepo,
+    ctx,
+    plansRepo: ctx.plansRepo,
+    loopsRepo: ctx.loopsRepo,
   }
 }
 

@@ -4,7 +4,7 @@ import type { LoopChangeNotifier } from '../src/loop/service'
 import type { LoopsRepo } from '../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import type { Logger } from '../src/types'
+import { createMockLogger } from './helpers/logger'
 
 // Mock repos
 function createMockRepos() {
@@ -44,7 +44,7 @@ function createMockRepos() {
     searchRecent: () => [],
   } as unknown as PlansRepo
   const mockReviewFindingsRepo = {} as ReviewFindingsRepo
-  const mockLogger = { log: () => {}, error: () => {}, debug: () => {} } as Logger
+  const mockLogger = createMockLogger()
 
   return { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger }
 }
@@ -162,7 +162,7 @@ describe('LoopChangeNotifier', () => {
         plansRepo: mockPlansRepo,
         reviewFindingsRepo: {} as ReviewFindingsRepo,
         projectId: 'proj-test',
-        logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
+        logger: createMockLogger(),
         client: {} as any,
         getConfig: () => ({} as any),
         notify: () => {},

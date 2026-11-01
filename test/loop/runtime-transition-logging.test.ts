@@ -1,22 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
-import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
-import { createLoopService } from '../../src/loop/service'
 import { createLoop } from '../../src/loop/runtime'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { makeLoopState } from '../helpers/loop-fixtures'
-
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
 
 const assistantMessage = (text: string) => [
   {
@@ -39,9 +27,6 @@ describe('Runtime transition logging', () => {
   let db: ReturnType<typeof createTestDb>['db']
   let testDb: ReturnType<typeof createTestDb>
   let loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo>
-  let loopSessionUsageRepo: ReturnType<typeof createLoopSessionUsageRepo>
-  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   const projectId = 'test-project'
   const loopName = 'logged-loop'
 
@@ -55,31 +40,13 @@ describe('Runtime transition logging', () => {
     clientTweaks?: Parameters<typeof createFakeForgeClient>[0]
     getConfig?: () => PluginConfig
   }): ReturnType<typeof createLoop> {
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      projectId,
-      mockLogger,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-      loopTransitionsRepo,
-    )
     const { client } = createFakeForgeClient(opts.clientTweaks)
-    return createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
+    return buildLoopRuntime(db, {
       projectId,
       client,
-      logger: mockLogger,
-      getConfig: opts.getConfig ?? (() => ({}) as PluginConfig),
-      loopService,
-      loopSessionUsageRepo,
-    })
+      config: opts.getConfig?.() ?? {},
+      withUsageRepo: true,
+    }).loop
   }
 
   const STATE_DEFAULTS = {
@@ -100,10 +67,7 @@ describe('Runtime transition logging', () => {
     testDb = createTestDb()
     db = testDb.db
 
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
     loopTransitionsRepo = createLoopTransitionsRepo(db)
-    loopSessionUsageRepo = createLoopSessionUsageRepo(db)
   })
 
   afterEach(() => {

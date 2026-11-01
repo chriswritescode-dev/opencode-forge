@@ -13,9 +13,9 @@ import type { ArchitectAutoPlanner, ArchitectAutoSpawnInput } from '../../src/se
 import { GOAL_CHUNK_SUMMARY_MAX_CHARS, GOAL_COMPLETE_MARKER, goalPlanningDir } from '../../src/constants/goal'
 import { processShared } from '../../src/utils/process-shared'
 import type { LoopState } from '../../src/loop/state'
-import type { Logger } from '../../src/types'
 import { createFakeGitService } from '../helpers/fake-git'
 import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'test-project'
@@ -39,7 +39,7 @@ const SNAPSHOT: GoalLaunchSnapshot = {
   maxIterations: 7,
 }
 
-const silentLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+const silentLogger = createMockLogger()
 
 const GOAL_LOOP_STATE_DEFAULTS = {
   active: false,

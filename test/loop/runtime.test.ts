@@ -2,15 +2,8 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopSessionUsageRepo, type LoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
-import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
-import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
 import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
@@ -18,12 +11,11 @@ import {
   getPromptInFlight,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
-import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
+import type { PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
 import { makeLoopState, buildLoopRuntime } from '../helpers/loop-fixtures'
-import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 
@@ -39,38 +31,19 @@ const mockConfig: PluginConfig = {
 describe('Loop Runtime', () => {
   let db: ReturnType<typeof createTestDb>['db']
   let testDb: ReturnType<typeof createTestDb>
-  let loopService: ReturnType<typeof createLoopService>
+  type Runtime = ReturnType<typeof buildLoopRuntime>
+  let loopService: Runtime['loopService']
   let tempDir: string
-  let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let plansRepo: ReturnType<typeof createPlansRepo>
-  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
-  let loopSessionUsageRepo: LoopSessionUsageRepo
-  let loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo>
+  let reviewFindingsRepo: Runtime['reviewFindingsRepo']
+  let sectionPlansRepo: Runtime['sectionPlansRepo']
+  let loopSessionUsageRepo: Runtime['loopSessionUsageRepo']
+  let loopTransitionsRepo: Runtime['loopTransitionsRepo']
   let currentLoop: Loop | null = null
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-runtime-test-'))
     testDb = createTestDb({ path: join(tempDir, 'forge.db') })
     db = testDb.db
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
-    loopSessionUsageRepo = createLoopSessionUsageRepo(db)
-    loopTransitionsRepo = createLoopTransitionsRepo(db)
-
-    loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      createMockLogger(),
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
 
     __resetIdleGate()
     __resetInFlightGuard()
@@ -96,6 +69,7 @@ describe('Loop Runtime', () => {
     overrides: {
       client?: ForgeClient
       loopConfig?: Partial<PluginConfig>
+      stallConfig?: LoopConfig
       withUsageRepo?: boolean
       getParentSessionId?: (sessionId: string) => Promise<string | null>
     } = {},
@@ -104,11 +78,17 @@ describe('Loop Runtime', () => {
       projectId: PROJECT_ID,
       client: overrides.client,
       config: { ...mockConfig, ...(overrides.loopConfig ?? {}) },
+      loopConfig: overrides.stallConfig,
       dataDir: tempDir,
       withUsageRepo: overrides.withUsageRepo,
       getParentSessionId: overrides.getParentSessionId,
     })
 
+    loopService = runtime.loopService
+    reviewFindingsRepo = runtime.reviewFindingsRepo
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loopSessionUsageRepo = runtime.loopSessionUsageRepo
+    loopTransitionsRepo = runtime.loopTransitionsRepo
     currentLoop = runtime.loop
     return runtime
   }
@@ -984,22 +964,7 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
       },
     })
 
-    const { logger } = createCapturingLogger()
-    const config: PluginConfig = { ...mockConfig }
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      projectId: PROJECT_ID,
-      client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
-      dataDir: tempDir,
-    })
-    currentLoop = loop
+    const { loop } = buildRuntime({ client })
 
     const state = makeLoopState({
       phase: 'coding',
@@ -1034,35 +999,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
         maxConsecutiveStalls: 2,
       }
 
-      loopService = createLoopService(
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        PROJECT_ID,
-        createMockLogger(),
-        stallConfig,
-        undefined,
-        sectionPlansRepo,
-      )
-
       const { client } = createFakeForgeClient()
-      const { logger } = createCapturingLogger()
-      const config: PluginConfig = { ...mockConfig }
 
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
-        projectId: PROJECT_ID,
-        client,
-        logger,
-        getConfig: () => config,
-        sandboxManager: undefined,
-        dataDir: tempDir,
-        loopConfig: stallConfig,
-      })
-      currentLoop = loop
+      const { loop } = buildRuntime({ client, stallConfig })
 
       const state = makeLoopState({
         phase: 'coding',
@@ -1095,33 +1034,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       config: PluginConfig,
       client: ForgeClient,
       loopCfg: LoopConfig,
-      logger: Logger,
     ): Loop {
-      loopService = createLoopService(
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        PROJECT_ID,
-        createMockLogger(),
-        loopCfg,
-        undefined,
-        sectionPlansRepo,
-      )
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
-        projectId: PROJECT_ID,
-        client,
-        logger,
-        getConfig: () => config,
-        sandboxManager: undefined,
-        dataDir: tempDir,
-        loopConfig: loopCfg,
-      })
-      currentLoop = loop
-      return loop
+      return buildRuntime({ client, loopConfig: config, stallConfig: loopCfg }).loop
     }
 
     async function stopWatchdogAndDrain(loop: Loop, loopName: string): Promise<void> {
@@ -1144,12 +1058,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { logger } = createCapturingLogger()
       const loop = createWatchdogLoop(
         { ...mockConfig, auditorFallbackModels: ['fb/auditor-2'] },
         client,
         { stallTimeoutMs: 10_000, busyStallTimeoutMs: 30, maxConsecutiveStalls: 100 },
-        logger,
       )
 
       const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
@@ -1180,12 +1092,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: 'busy' } }),
         },
       })
-      const { logger } = createCapturingLogger()
       const loop = createWatchdogLoop(
         { ...mockConfig },
         client,
         { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
-        logger,
       )
 
       const state = makeLoopState({ phase: 'coding', totalSections: 0 })
@@ -1211,12 +1121,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: 'busy' } }),
         },
       })
-      const { logger } = createCapturingLogger()
       const loop = createWatchdogLoop(
         { ...mockConfig },
         client,
         { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
-        logger,
       )
 
       const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
@@ -1976,22 +1884,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { logger } = createCapturingLogger()
-      const config: PluginConfig = { ...mockConfig, executionModel: 'test/model' }
-
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
-        projectId: PROJECT_ID,
-        client,
-        logger,
-        getConfig: () => config,
-        sandboxManager: undefined,
-        dataDir: tempDir,
-      })
-      currentLoop = loop
+      const { loop } = buildRuntime({ client, loopConfig: { executionModel: 'test/model' } })
 
       const state = makeLoopState({
         phase: 'auditing',

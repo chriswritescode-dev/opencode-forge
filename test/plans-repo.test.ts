@@ -364,7 +364,11 @@ describe('PlansRepo', () => {
     test('prepares the loops join lazily, so a plans-only database still constructs', () => {
       db.run('PRAGMA foreign_keys=OFF')
       db.run('DROP TABLE loops')
-      expect(() => repo.listUnexecuted(projectId)).toThrow(/no such table: loops/)
+      let plansOnlyRepo: ReturnType<typeof createPlansRepo> | undefined
+      expect(() => {
+        plansOnlyRepo = createPlansRepo(db)
+      }).not.toThrow()
+      expect(() => plansOnlyRepo!.listUnexecuted(projectId)).toThrow(/no such table: loops/)
     })
 
     test('lists session plans whose session launched no loop at or after the write', () => {

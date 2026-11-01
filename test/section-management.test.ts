@@ -8,14 +8,10 @@ import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../src/loop/service'
-import type { Logger } from '../src/types'
+import { createMockLogger } from './helpers/logger'
 import { createTestDb } from './helpers/test-db'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('LoopService section management', () => {
   let db: Database
@@ -141,6 +137,24 @@ describe('LoopService section management', () => {
 
       expect(sectionPlansRepo.get(projectId, 'test-loop', 0)!.status).toBe('pending')
       expect(sectionPlansRepo.get(projectId, 'test-loop', 1)!.status).toBe('pending')
+    })
+
+    test('includes prior section summaries in the next section prompt', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+
+      loopService.completeSection('test-loop', 0, {
+        done: 'Implemented the storage layer',
+        deviations: null,
+        followUps: null,
+      })
+      loopService.setCurrentSectionIndex('test-loop', 1)
+
+      const state = loopService.getActiveState('test-loop')!
+      const prompt = loopService.buildSectionInitialPrompt(state)
+
+      expect(prompt).toContain("Prior Sections' Summaries")
+      expect(prompt).toContain('Implemented the storage layer')
     })
   })
 

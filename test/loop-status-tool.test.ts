@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { mkdirSync } from 'fs'
 import { createLoopService } from '../src/loop/service'
-import type { LoopState } from '../src/loop/state'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
@@ -13,6 +12,7 @@ import { buildLoopPermissionRuleset } from '../src/constants/loop'
 import { Database } from 'bun:sqlite'
 import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
+import { makeLoopState } from './helpers/loop-fixtures'
 import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()
@@ -36,33 +36,6 @@ describe('loop-status tool restart path', () => {
     testDb.cleanup()
   })
 
-  function makeState(active: boolean, status?: LoopState['status']): Partial<LoopState> & Pick<LoopState, 'sessionId' | 'loopName' | 'worktreeDir' | 'projectDir'> {
-    return {
-      active,
-      sessionId: active ? 'old-session-active' : 'old-session-done',
-      loopName,
-      worktreeDir: `${TEST_DIR}/worktree`,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-loop',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: active ? 'auditing' : ('coding' as const),
-      errorCount: 0,
-      auditCount: active ? 1 : 0,
-      status: status ?? (active ? 'running' : 'completed'),
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId,
-      hostSessionId,
-      currentSectionIndex: 0,
-      totalSections: 0,
-    }
-  }
-
   test('force-restart preserves workspaceId and hostSessionId', async () => {
     const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
@@ -77,10 +50,23 @@ describe('loop-status tool restart path', () => {
     const worktreeDir = `${TEST_DIR}/worktree`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      ...makeState(true),
-      sessionId: oldSessionId,
-    } as LoopState)
+    loopService.setState(
+      loopName,
+      makeLoopState({
+        sessionId: oldSessionId,
+        loopName,
+        worktreeDir: `${TEST_DIR}/worktree`,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-loop',
+        iteration: 2,
+        phase: 'auditing',
+        auditCount: 1,
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId,
+        hostSessionId,
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -144,17 +130,23 @@ describe('loop-status tool restart path', () => {
     const worktreeDir = `${TEST_DIR}/worktree2`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      ...makeState(true),
-      sessionId: oldSessionId,
-      iteration: 1,
-      maxIterations: 3,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt 2',
-      phase: 'auditing',
-      auditCount: 0,
-      worktreeBranch: 'opencode/loop-test-loop2',
-    } as LoopState)
+    loopService.setState(
+      loopName,
+      makeLoopState({
+        sessionId: oldSessionId,
+        loopName,
+        worktreeDir: `${TEST_DIR}/worktree`,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-loop2',
+        maxIterations: 3,
+        prompt: 'Test prompt 2',
+        phase: 'auditing',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId,
+        hostSessionId,
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -216,12 +208,23 @@ describe('loop-status tool restart path', () => {
     const worktreeDir = `${TEST_DIR}/worktree-bindfail`
     mkdirSync(worktreeDir, { recursive: true })
 
-    loopService.setState(loopName, {
-      ...makeState(true),
-      sessionId: oldSessionId,
-      worktreeBranch: 'opencode/loop-test-bindfail',
-      worktreeDir,
-    } as LoopState)
+    loopService.setState(
+      loopName,
+      makeLoopState({
+        sessionId: oldSessionId,
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-bindfail',
+        iteration: 2,
+        phase: 'auditing',
+        auditCount: 1,
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId,
+        hostSessionId,
+      }),
+    )
 
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -280,12 +283,25 @@ describe('loop-status tool restart path', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Create an inactive loop
-    loopService.setState(loopName, {
-      ...makeState(false, 'cancelled'),
-      sessionId: oldSessionId,
-      completedAt: new Date().toISOString(),
-      terminationReason: 'cancelled',
-    } as LoopState)
+    loopService.setState(
+      loopName,
+      makeLoopState({
+        active: false,
+        sessionId: oldSessionId,
+        loopName,
+        worktreeDir: `${TEST_DIR}/worktree`,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-loop',
+        iteration: 2,
+        status: 'cancelled',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId,
+        hostSessionId,
+        completedAt: new Date().toISOString(),
+        terminationReason: 'cancelled',
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -341,32 +357,26 @@ describe('loop-status tool restart path', () => {
     const worktreeDir = `${TEST_DIR}/worktree-errored-loop`
     mkdirSync(worktreeDir, { recursive: true })
 
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: oldSessionId,
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-errored-loop',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt for errored loop restart without workspace',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'errored',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: undefined,
-      hostSessionId,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'error_max_retries: test error',
-      completedAt: new Date().toISOString(),
-    } as LoopState)
+      makeLoopState({
+        active: false,
+        sessionId: oldSessionId,
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-errored-loop',
+        iteration: 2,
+        prompt: 'Test prompt for errored loop restart without workspace',
+        status: 'errored',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: undefined,
+        hostSessionId,
+        terminationReason: 'error_max_retries: test error',
+        completedAt: new Date().toISOString(),
+      }),
+    )
 
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -413,33 +423,29 @@ describe('loop-status tool restart path', () => {
     const worktreeDir = `${TEST_DIR}/worktree-clamped-index`
     mkdirSync(worktreeDir, { recursive: true })
 
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-clamped-index',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-clamped-index',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt clamped index',
-      phase: 'auditing',
-      errorCount: 0,
-      auditCount: 1,
-      status: 'completed',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'prov/primary',
-      auditorFallbackIndex: 3,
-      workspaceId: 'ws-clamped',
-      hostSessionId: 'host-clamped',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'completed',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-clamped-index',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-clamped-index',
+        iteration: 2,
+        prompt: 'Test prompt clamped index',
+        phase: 'auditing',
+        auditCount: 1,
+        status: 'completed',
+        executionModel: 'test-model',
+        auditorModel: 'prov/primary',
+        auditorFallbackIndex: 3,
+        workspaceId: 'ws-clamped',
+        hostSessionId: 'host-clamped',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
 
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -499,32 +505,25 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Create inactive loop
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-done',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-usage',
-      iteration: 3,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'completed',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-123',
-      hostSessionId: 'host-456',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'completed',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-done',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-usage',
+        iteration: 3,
+        status: 'completed',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-123',
+        hostSessionId: 'host-456',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     // Insert usage data
     loopSessionUsageRepo.upsertSessionUsage({
@@ -584,30 +583,24 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Create active loop
-    loopService.setState(loopName, {
-      active: true,
-      status: 'running',
-      sessionId: 'session-active',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-usage-active',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt active',
-      phase: 'auditing',
-      errorCount: 0,
-      auditCount: 1,
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-789',
-      hostSessionId: 'host-012',
-      currentSectionIndex: 0,
-      totalSections: 0,
-    } as any)
+      makeLoopState({
+        sessionId: 'session-active',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-usage-active',
+        iteration: 2,
+        prompt: 'Test prompt active',
+        phase: 'auditing',
+        auditCount: 1,
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-789',
+        hostSessionId: 'host-012',
+      }),
+    )
     
     // Insert usage data from previous session
     loopSessionUsageRepo.upsertSessionUsage({
@@ -665,32 +658,26 @@ describe('loop-status cumulative usage', () => {
     const worktreeDir = `${TEST_DIR}/worktree-usage-multi`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-multi',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-multi',
-      iteration: 1,
-      maxIterations: 3,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'completed',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'model-a',
-      auditorModel: 'model-b',
-      workspaceId: 'ws-multi',
-      hostSessionId: 'host-multi',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'completed',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-multi',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-multi',
+        maxIterations: 3,
+        prompt: 'Test',
+        status: 'completed',
+        executionModel: 'model-a',
+        auditorModel: 'model-b',
+        workspaceId: 'ws-multi',
+        hostSessionId: 'host-multi',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     // Insert multiple models
     loopSessionUsageRepo.upsertSessionUsage([
@@ -773,30 +760,22 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Active loop with current session NOT persisted
-    loopService.setState(loopName, {
-      active: true,
-      status: 'running',
-      sessionId: 'session-current-live',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-merge',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt merge',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-merge',
-      hostSessionId: 'host-merge',
-      currentSectionIndex: 0,
-      totalSections: 0,
-    } as any)
+      makeLoopState({
+        sessionId: 'session-current-live',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-merge',
+        iteration: 2,
+        prompt: 'Test prompt merge',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-merge',
+        hostSessionId: 'host-merge',
+      }),
+    )
     
     // Insert persisted data from PREVIOUS session only
     loopSessionUsageRepo.upsertSessionUsage({
@@ -865,30 +844,24 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Active loop with current session ALREADY persisted
-    loopService.setState(loopName, {
-      active: true,
-      status: 'running',
-      sessionId: 'session-current-persisted',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-nodouble',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt nodouble',
-      phase: 'auditing',
-      errorCount: 0,
-      auditCount: 1,
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-nodouble',
-      hostSessionId: 'host-nodouble',
-      currentSectionIndex: 0,
-      totalSections: 0,
-    } as any)
+      makeLoopState({
+        sessionId: 'session-current-persisted',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-nodouble',
+        iteration: 2,
+        prompt: 'Test prompt nodouble',
+        phase: 'auditing',
+        auditCount: 1,
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-nodouble',
+        hostSessionId: 'host-nodouble',
+      }),
+    )
     
     // Insert persisted data including CURRENT session
     loopSessionUsageRepo.upsertSessionUsage([
@@ -975,30 +948,21 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Active loop with NO persisted usage
-    loopService.setState(loopName, {
-      active: true,
-      status: 'running',
-      sessionId: 'session-live-only',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-liveonly',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt live only',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-liveonly',
-      hostSessionId: 'host-liveonly',
-      currentSectionIndex: 0,
-      totalSections: 0,
-    } as any)
+      makeLoopState({
+        sessionId: 'session-live-only',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-liveonly',
+        prompt: 'Test prompt live only',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-liveonly',
+        hostSessionId: 'host-liveonly',
+      }),
+    )
     
     // NO persisted usage inserted
     
@@ -1050,32 +1014,26 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Inactive loop with final session NOT persisted (simulates failed termination capture)
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-final-live',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-inactive-live',
-      iteration: 3,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt inactive live',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'completed',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-inactive-live',
-      hostSessionId: 'host-inactive-live',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'completed',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-final-live',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-inactive-live',
+        iteration: 3,
+        prompt: 'Test prompt inactive live',
+        status: 'completed',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-inactive-live',
+        hostSessionId: 'host-inactive-live',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     // Insert persisted data from PREVIOUS sessions only (final session NOT persisted)
     loopSessionUsageRepo.upsertSessionUsage({
@@ -1136,32 +1094,27 @@ describe('loop-status cumulative usage', () => {
     const worktreeDir = `${TEST_DIR}/worktree-usage-perrole-inactive`
     mkdirSync(worktreeDir, { recursive: true })
 
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-perrole',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-perrole-inactive',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt per role inactive',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 1,
-      status: 'completed',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-perrole-inactive',
-      hostSessionId: 'host-perrole-inactive',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'completed',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-perrole',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-perrole-inactive',
+        iteration: 2,
+        prompt: 'Test prompt per role inactive',
+        auditCount: 1,
+        status: 'completed',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-perrole-inactive',
+        hostSessionId: 'host-perrole-inactive',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
 
     loopSessionUsageRepo.upsertSessionUsage([
       {
@@ -1223,32 +1176,28 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Inactive loop with final session ALREADY persisted
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-final-persisted',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-inactive-persisted',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt inactive persisted',
-      phase: 'auditing',
-      errorCount: 0,
-      auditCount: 1,
-      status: 'completed',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-inactive-persisted',
-      hostSessionId: 'host-inactive-persisted',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'completed',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-final-persisted',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-inactive-persisted',
+        iteration: 2,
+        prompt: 'Test prompt inactive persisted',
+        phase: 'auditing',
+        auditCount: 1,
+        status: 'completed',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-inactive-persisted',
+        hostSessionId: 'host-inactive-persisted',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     // Insert persisted data including final session
     loopSessionUsageRepo.upsertSessionUsage([
@@ -1336,30 +1285,21 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Active loop in coding phase with dialog-selected model
-    loopService.setState(loopName, {
-      active: true,
-      status: 'running',
-      sessionId: 'session-live-attrib',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-attrib-active',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt attribution',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
-      executionModel: 'anthropic/claude-3-7-sonnet',
-      auditorModel: 'anthropic/claude-3-opus',
-      workspaceId: 'ws-attrib-active',
-      hostSessionId: 'host-attrib-active',
-      currentSectionIndex: 0,
-      totalSections: 0,
-    } as any)
+      makeLoopState({
+        sessionId: 'session-live-attrib',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-attrib-active',
+        prompt: 'Test prompt attribution',
+        executionModel: 'anthropic/claude-3-7-sonnet',
+        auditorModel: 'anthropic/claude-3-opus',
+        workspaceId: 'ws-attrib-active',
+        hostSessionId: 'host-attrib-active',
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
@@ -1410,30 +1350,24 @@ describe('loop-status cumulative usage', () => {
     mkdirSync(worktreeDir, { recursive: true })
     
     // Active loop in auditing phase with distinct auditor model
-    loopService.setState(loopName, {
-      active: true,
-      status: 'running',
-      sessionId: 'session-live-audit-attrib',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-attrib-audit',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt audit attribution',
-      phase: 'auditing',
-      errorCount: 0,
-      auditCount: 1,
-      worktree: true,
-      sandbox: false,
-      executionModel: 'anthropic/claude-3-7-sonnet',
-      auditorModel: 'openai/gpt-4o',
-      workspaceId: 'ws-attrib-audit',
-      hostSessionId: 'host-attrib-audit',
-      currentSectionIndex: 0,
-      totalSections: 0,
-    } as any)
+      makeLoopState({
+        sessionId: 'session-live-audit-attrib',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-attrib-audit',
+        iteration: 2,
+        prompt: 'Test prompt audit attribution',
+        phase: 'auditing',
+        auditCount: 1,
+        executionModel: 'anthropic/claude-3-7-sonnet',
+        auditorModel: 'openai/gpt-4o',
+        workspaceId: 'ws-attrib-audit',
+        hostSessionId: 'host-attrib-audit',
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
@@ -1497,32 +1431,25 @@ describe('loop-status restartability display', () => {
     const worktreeDir = `${TEST_DIR}/worktree-restart-cancelled`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-cancelled',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-restart',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'cancelled',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-123',
-      hostSessionId: 'host-456',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'cancelled',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-cancelled',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-restart',
+        iteration: 2,
+        status: 'cancelled',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-123',
+        hostSessionId: 'host-456',
+        terminationReason: 'cancelled',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -1559,32 +1486,26 @@ describe('loop-status restartability display', () => {
     const worktreeDir = `${TEST_DIR}/worktree-restart-errored`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-errored',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-errored',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 3,
-      auditCount: 0,
-      status: 'errored',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-123',
-      hostSessionId: 'host-456',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'error_max_retries: test error',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-errored',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-errored',
+        iteration: 2,
+        errorCount: 3,
+        status: 'errored',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-123',
+        hostSessionId: 'host-456',
+        terminationReason: 'error_max_retries: test error',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -1621,32 +1542,25 @@ describe('loop-status restartability display', () => {
     const worktreeDir = `${TEST_DIR}/worktree-restart-stalled`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-stalled',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-stalled',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'stalled',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-123',
-      hostSessionId: 'host-456',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'stalled',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-stalled',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-stalled',
+        iteration: 2,
+        status: 'stalled',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-123',
+        hostSessionId: 'host-456',
+        terminationReason: 'stalled',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -1683,32 +1597,25 @@ describe('loop-status restartability display', () => {
     const worktreeDir = `${TEST_DIR}/worktree-restart-completed`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-completed',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-completed',
-      iteration: 3,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'completed',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-789',
-      hostSessionId: 'host-012',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'completed',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-completed',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-completed',
+        iteration: 3,
+        status: 'completed',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-789',
+        hostSessionId: 'host-012',
+        terminationReason: 'completed',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -1745,32 +1652,25 @@ describe('loop-status restartability display', () => {
     const worktreeDir = `${TEST_DIR}/worktree-restart-missing`
     // Do NOT create directory - simulate missing worktree
     
-    loopService.setState(loopName, {
-      active: false,
-      sessionId: 'session-missing-wt',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-missing',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'errored',
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-missing',
-      hostSessionId: 'host-missing',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      terminationReason: 'error_max_retries: test',
-      completedAt: new Date().toISOString(),
-    } as any)
+      makeLoopState({
+        active: false,
+        sessionId: 'session-missing-wt',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-missing',
+        iteration: 2,
+        status: 'errored',
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-missing',
+        hostSessionId: 'host-missing',
+        terminationReason: 'error_max_retries: test',
+        completedAt: new Date().toISOString(),
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
@@ -1807,30 +1707,24 @@ describe('loop-status restartability display', () => {
     const worktreeDir = `${TEST_DIR}/worktree-restart-active`
     mkdirSync(worktreeDir, { recursive: true })
     
-    loopService.setState(loopName, {
-      active: true,
-      status: 'running',
-      sessionId: 'session-active-restart',
+    loopService.setState(
       loopName,
-      worktreeDir,
-      projectDir: TEST_DIR,
-      worktreeBranch: 'opencode/loop-test-active',
-      iteration: 2,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt active',
-      phase: 'auditing',
-      errorCount: 0,
-      auditCount: 1,
-      worktree: true,
-      sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
-      workspaceId: 'ws-active',
-      hostSessionId: 'host-active',
-      currentSectionIndex: 0,
-      totalSections: 0,
-    } as any)
+      makeLoopState({
+        sessionId: 'session-active-restart',
+        loopName,
+        worktreeDir,
+        projectDir: TEST_DIR,
+        worktreeBranch: 'opencode/loop-test-active',
+        iteration: 2,
+        prompt: 'Test prompt active',
+        phase: 'auditing',
+        auditCount: 1,
+        executionModel: 'test-model',
+        auditorModel: 'test-auditor',
+        workspaceId: 'ws-active',
+        hostSessionId: 'host-active',
+      }),
+    )
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
