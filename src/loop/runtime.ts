@@ -1975,6 +1975,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const codeGraphSnapshotter = createCodeGraphSnapshotter({ logger })
 
   /**
+   * Runs one code-graph snapshot task with the loop marked live for its whole
+   * duration. A first index can run for minutes while no session is busy, so the
+   * heartbeat keeps the watchdog from treating the wait as a stall. Any failure,
+   * including a storage throw, is logged and swallowed: a snapshot must never
+   * fail, stall, or advance a loop.
+   */
+  async function withCodeGraphHeartbeat(loopName: string, task: () => Promise<void>): Promise<void> {
+    const heartbeat = setInterval(
+      () => watchdog.recordActivity(loopName, 'code-graph-snapshot'),
+      CODE_GRAPH_HEARTBEAT_MS,
+    )
+    try {
+      await task()
+    } catch (err) {
+      logger.error(`[code-graph] snapshot failed for ${loopName}`, err)
+    } finally {
+      clearInterval(heartbeat)
+      watchdog.recordActivity(loopName, 'code-graph-snapshot')
+    }
+  }
+
+  /**
    * Snapshot A: capture the code graph for the section that is about to start,
    * before its first coder prompt is built. A section that already carries a
    * report (restart, reused worktree) is left alone so the snapshot is taken
@@ -1982,58 +2004,34 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
     if (state.totalSections <= 0) return
-    const index = state.currentSectionIndex
-    const section = loopService.getSectionPlan(state, index)
-    if (!section || section.codeGraph) return
-    const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
-    if (!target) return
-
-    // A first index can run for minutes, and no session is busy while the first
-    // prompt is still being prepared. Without a heartbeat the watchdog would treat
-    // the wait as a stall and re-trigger the coding phase for the same section.
-    const heartbeat = setInterval(
-      () => watchdog.recordActivity(state.loopName, 'code-graph-snapshot'),
-      CODE_GRAPH_HEARTBEAT_MS,
-    )
-    try {
+    await withCodeGraphHeartbeat(state.loopName, async () => {
+      const index = state.currentSectionIndex
+      const section = loopService.getSectionPlan(state, index)
+      if (!section || section.codeGraph) return
+      const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
+      if (!target) return
       const text = await codeGraphSnapshotter.snapshotFiles(target, {
         title: `section ${index + 1}: ${section.title}`,
         files: extractSectionFiles(section.content),
       })
       if (!text) return
       loopService.recordSectionCodeGraph(state, index, text)
-    } finally {
-      clearInterval(heartbeat)
-      watchdog.recordActivity(state.loopName, 'code-graph-snapshot')
-    }
+    })
   }
 
   /**
    * Snapshot B: capture the code graph for the attempt that just ended, before
    * the audit prompt is built. Both a fresh audit session and a reused standby
-   * then point at the affected tests and dependents of exactly this attempt. A
-   * heartbeat keeps a long first index from counting as a watchdog stall while
-   * no session is busy.
+   * then point at the affected tests and dependents of exactly this attempt.
    */
   async function snapshotAttemptCodeGraph(state: LoopState): Promise<void> {
-    const attempt = loopService.getLatestAttempt(state)
-    if (!attempt?.snapshotCommit || attempt.codeGraph) return
-    const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
-    if (!target) return
-    const from = attempt.previousCommit ?? `${attempt.snapshotCommit}^`
-
-    const heartbeat = setInterval(
-      () => watchdog.recordActivity(state.loopName, 'code-graph-snapshot'),
-      CODE_GRAPH_HEARTBEAT_MS,
-    )
-    try {
-      let files: string[]
-      try {
-        files = await listSnapshotChangedFiles(state.worktreeDir, from, attempt.snapshotCommit, logger)
-      } catch (err) {
-        logger.error(`Loop: code-graph changed-file listing failed for ${state.loopName}`, err)
-        return
-      }
+    await withCodeGraphHeartbeat(state.loopName, async () => {
+      const attempt = loopService.getLatestAttempt(state)
+      if (!attempt?.snapshotCommit || attempt.codeGraph) return
+      const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
+      if (!target) return
+      const from = attempt.previousCommit ?? `${attempt.snapshotCommit}^`
+      const files = await listSnapshotChangedFiles(state.worktreeDir, from, attempt.snapshotCommit, logger)
       if (files.length === 0) return
       const text = await codeGraphSnapshotter.snapshotFiles(target, {
         title: `audit attempt ${attempt.attemptNumber} (${attempt.scope})`,
@@ -2041,10 +2039,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       })
       if (!text) return
       loopService.recordAttemptCodeGraph(state, attempt, text)
-    } finally {
-      clearInterval(heartbeat)
-      watchdog.recordActivity(state.loopName, 'code-graph-snapshot')
-    }
+    })
   }
 
   /**

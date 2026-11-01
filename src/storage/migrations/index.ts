@@ -548,11 +548,11 @@ export const migrations: Migration[] = [
     },
   },
   {
-    id: '157',
+    id: '158',
     description: 'Add nullable code_graph reports to section_plans and loop_attempts',
     apply: (db: Database) => {
-      addColumnIfMissing(db, 'section_plans', 'code_graph', '157_add_code_graph_to_section_plans.sql')
-      addColumnIfMissing(db, 'loop_attempts', 'code_graph', '157_add_code_graph_to_loop_attempts.sql')
+      addColumnIfMissing(db, 'section_plans', 'code_graph', '158_add_code_graph_to_section_plans.sql')
+      addColumnIfMissing(db, 'loop_attempts', 'code_graph', '158_add_code_graph_to_loop_attempts.sql')
     },
   },
 ]

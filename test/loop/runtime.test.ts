@@ -4706,6 +4706,36 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
     })
 
+    test('a throwing section report write still advances the section without a pointer', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-throw-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop, logs } = createRuntime({
+        client,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-section-throws'
+      seedSectionedAudit(loopName, 'codegraph-throw-audit', worktreeDir)
+      const originalSetCodeGraph = sectionPlansRepo.setCodeGraph
+      sectionPlansRepo.setCodeGraph = () => { throw new Error('database is locked') }
+      try {
+        await advanceToSectionTwo(loop, 'codegraph-throw-audit')
+      } finally {
+        sectionPlansRepo.setCodeGraph = originalSetCodeGraph
+      }
+
+      const after = loopService.getActiveState(loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.currentSectionIndex).toBe(1)
+
+      const prompt = codePrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('[Loop section 2/2')
+      expect(prompt).not.toContain('## Code graph')
+      expect(logs.some(entry => entry.level === 'error' && entry.message.includes('[code-graph]'))).toBe(true)
+    })
+
     function initAttemptWorktree(prefix: string): string {
       const dir = mkdtempSync(join(tempDir, prefix))
       execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, encoding: 'utf-8' })
@@ -4816,6 +4846,99 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
       expect(loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!.codeGraph).toBeNull()
       expect(auditorPrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+    })
+
+    function createServiceWithConfig(loopConfig: LoopConfig | undefined, attemptsRepo?: LoopAttemptsRepo) {
+      return createLoopService(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        PROJECT_ID,
+        { log: () => {}, error: () => {}, debug: () => {} },
+        loopConfig,
+        undefined,
+        sectionPlansRepo,
+        undefined,
+        undefined,
+        undefined,
+        attemptsRepo,
+      )
+    }
+
+    function seedStoredReports(loopName: string, sessionId: string, worktreeDir: string, attemptsRepo: LoopAttemptsRepo): void {
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [
+          { index: 0, title: 'Section 1', content: '## Phase 1\n### Files\n- `src/a.ts`' },
+          { index: 1, title: 'Section 2', content: '## Phase 2\n### Files\n- `src/b.ts`' },
+        ],
+      })
+      sectionPlansRepo.setCodeGraph(PROJECT_ID, loopName, 0, '# Code graph: section 1')
+      const attempt = attemptsRepo.record({
+        projectId: PROJECT_ID,
+        loopName,
+        scope: 'section:0',
+        sourceSessionId: sessionId,
+        completionKey: 'stored-report',
+        iteration: 1,
+        worktreeDir,
+        planHash: 'plan-hash',
+        coderDecisions: null,
+        snapshotCommit: null,
+        snapshotRef: null,
+        previousCommit: null,
+        diffSummary: null,
+        fallbackReason: null,
+        findingsBefore: [],
+      })!
+      attemptsRepo.setCodeGraph(PROJECT_ID, loopName, attempt.id, '# Code graph: audit attempt 1')
+    }
+
+    test('stored reports are not pointed at when the loop service config disables loop.codeGraph', () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'cg-gate-off-'))
+      const attemptsRepo = createLoopAttemptsRepo(db)
+      const loopName = 'codegraph-gate-disabled'
+      const service = createServiceWithConfig({ enabled: true, codeGraph: { enabled: false } }, attemptsRepo)
+      const state = makeState({
+        loopName,
+        sessionId: 'gate-off-session',
+        phase: 'coding',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        sandbox: true,
+        worktreeDir,
+      })
+      service.setState(loopName, state)
+      seedStoredReports(loopName, state.sessionId, worktreeDir, attemptsRepo)
+
+      expect(service.buildSectionInitialPrompt(state)).not.toContain('## Code graph')
+      expect(service.buildSectionAuditPrompt(state)).not.toContain('## Code graph')
+    })
+
+    test('stored reports are only pointed at for a sandboxed loop', () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'cg-gate-sandbox-'))
+      const attemptsRepo = createLoopAttemptsRepo(db)
+      const loopName = 'codegraph-gate-sandbox'
+      const service = createServiceWithConfig(undefined, attemptsRepo)
+      const state = makeState({
+        loopName,
+        sessionId: 'gate-sandbox-session',
+        phase: 'coding',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        sandbox: false,
+        worktreeDir,
+      })
+      service.setState(loopName, state)
+      seedStoredReports(loopName, state.sessionId, worktreeDir, attemptsRepo)
+
+      const sandboxed = { ...state, sandbox: true }
+      expect(service.buildSectionInitialPrompt(sandboxed)).toContain('.forge/codegraph/section-1.md')
+      expect(service.buildSectionAuditPrompt(sandboxed)).toContain('.forge/codegraph/audit-section-0-attempt-1.md')
+
+      expect(service.buildSectionInitialPrompt(state)).not.toContain('## Code graph')
+      expect(service.buildSectionAuditPrompt(state)).not.toContain('## Code graph')
     })
   })
 })

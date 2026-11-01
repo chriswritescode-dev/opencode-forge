@@ -8,8 +8,16 @@ import type { CommandResult } from '../sandbox/process'
 import type { Logger, PluginConfig } from '../types'
 import { LRUCache } from '../utils/lru-cache'
 
-const CODE_GRAPH_ENV = 'CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1'
 const CODE_GRAPH_CACHE_DIR = `${SANDBOX_CACHE_DIR}/codegraph`
+const CODE_GRAPH_GIT_HOOKS_DIR = `${SANDBOX_CACHE_DIR}/codegraph-git-hooks`
+const CODE_GRAPH_ENV = [
+  'CODEGRAPH_TELEMETRY=0',
+  'CODEGRAPH_NO_DAEMON=1',
+  'CODEGRAPH_NO_WATCH=1',
+  'GIT_CONFIG_COUNT=1',
+  'GIT_CONFIG_KEY_0=core.hooksPath',
+  `GIT_CONFIG_VALUE_0=${quoteShellArg(CODE_GRAPH_GIT_HOOKS_DIR)}`,
+].join(' ')
 const BINARY_PROBE_TIMEOUT_MS = 30000
 const INDEX_TIMEOUT_MS = 600000
 const SYNC_TIMEOUT_MS = 120000
@@ -196,6 +204,7 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
       })
       .catch((err) => {
         logger.error(`[code-graph] binary probe failed for ${target.key}`, err)
+        binaryProbes.delete(target.key)
         return false
       })
     binaryProbes.set(target.key, pending)
@@ -214,7 +223,13 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
       `if [ -f ${CODE_GRAPH_LINK_NAME}/codegraph.db ]; then echo present; else echo missing; fi`,
       BINARY_PROBE_TIMEOUT_MS,
     )
-    const hasIndex = dbProbe.exitCode === 0 && dbProbe.stdout.includes('present')
+    const dbState = dbProbe.exitCode === 0 ? dbProbe.stdout.trim() : ''
+    if (dbState !== 'present' && dbState !== 'missing') {
+      const detail = dbProbe.stderr.trim() || dbState || `exit code ${dbProbe.exitCode}`
+      logger.error(`[code-graph] cannot read the index state in ${target.key}: ${detail}`)
+      return false
+    }
+    const hasIndex = dbState === 'present'
     const command = hasIndex ? 'codegraph sync --quiet' : 'codegraph init --yes'
     const result = await target.exec(`${CODE_GRAPH_ENV} ${command}`, hasIndex ? SYNC_TIMEOUT_MS : INDEX_TIMEOUT_MS)
     if (result.exitCode === 0) return true

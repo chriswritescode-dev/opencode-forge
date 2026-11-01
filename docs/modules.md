@@ -202,6 +202,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `post-action-config.ts` | `ResolvedPostActionConfig` interface and `resolvePostActionConfig()` resolver |
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
+| `code-graph.ts` | Sole owner of `codegraph` execution in loop sandboxes: `resolveLoopCodeGraphTarget()`, `createCodeGraphSnapshotter()` (index setup, `affected`/`node` queries, report formatting), report paths under `.forge/codegraph/`, and the `## Code graph` prompt pointer |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
 | `name-uniqueness.ts` | Reserve a unique loop identity before any side effects, refusing a name still referenced by a goal chunk or whose `forge/<slug>` branch exists |
@@ -440,7 +441,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–156; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–158; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 

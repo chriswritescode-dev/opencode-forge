@@ -25,7 +25,7 @@ import {
 } from './prompts'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
-import { MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { isLoopCodeGraphEnabled, MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
 import { buildCodeGraphPromptBlock, codeGraphReportPath, ensureCodeGraphReportFile } from './code-graph'
@@ -714,53 +714,62 @@ export function createLoopService(
     return sectionPlansRepo.list(projectId, state.loopName)
   }
 
+  const codeGraphEnabled = isLoopCodeGraphEnabled({ loop: loopConfig })
+
+  function sectionReportPath(index: number): string {
+    return codeGraphReportPath(`section-${index + 1}`)
+  }
+
+  function attemptReportPath(attempt: LoopAttemptRow): string {
+    return codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
+  }
+
+  function writeCodeGraphReport(state: LoopState, relPath: string, text: string): boolean {
+    if (ensureCodeGraphReportFile(state.worktreeDir, relPath, text)) return true
+    logger.error(`[code-graph] cannot write report ${relPath} for ${state.loopName}`)
+    return false
+  }
+
   function recordSectionCodeGraph(state: LoopState, index: number, text: string): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.setCodeGraph(projectId, state.loopName, index, text)
-    if (!ensureCodeGraphReportFile(state.worktreeDir, codeGraphReportPath(`section-${index + 1}`), text)) {
-      logger.error(`[code-graph] cannot write section ${index + 1} report for ${state.loopName}`)
-    }
+    writeCodeGraphReport(state, sectionReportPath(index), text)
   }
 
   /**
    * The `## Code graph` pointer rendered into this section's coder prompts.
    * Restarts and reused worktrees rewrite the report from the stored row text so
-   * the pointer never outlives its file.
+   * the pointer never outlives its file. A non-sandboxed loop or a disabled
+   * `loop.codeGraph` setting drops the pointer entirely.
    */
   function getSectionCodeGraphBlock(state: LoopState): string {
+    if (!state.sandbox || !codeGraphEnabled) return ''
     const index = state.currentSectionIndex
     const text = getSectionPlan(state, index)?.codeGraph ?? null
     if (!text) return ''
-    const reportPath = codeGraphReportPath(`section-${index + 1}`)
-    if (!ensureCodeGraphReportFile(state.worktreeDir, reportPath, text)) {
-      logger.error(`[code-graph] cannot write section ${index + 1} report for ${state.loopName}`)
-      return ''
-    }
+    const reportPath = sectionReportPath(index)
+    if (!writeCodeGraphReport(state, reportPath, text)) return ''
     return buildCodeGraphPromptBlock(reportPath, 'section start')
   }
 
   function recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void {
     if (!loopAttemptsRepo) return
     loopAttemptsRepo.setCodeGraph(projectId, state.loopName, attempt.id, text)
-    const reportPath = codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
-    if (!ensureCodeGraphReportFile(state.worktreeDir, reportPath, text)) {
-      logger.error(`[code-graph] cannot write audit report ${reportPath} for ${state.loopName}`)
-    }
+    writeCodeGraphReport(state, attemptReportPath(attempt), text)
   }
 
   /**
    * The `## Code graph` pointer rendered into this scope's audit and coder
    * prompts. Restarts and reused worktrees rewrite the report from the stored
-   * attempt row so the pointer never outlives its file.
+   * attempt row so the pointer never outlives its file. A non-sandboxed loop or
+   * a disabled `loop.codeGraph` setting drops the pointer entirely.
    */
   function getAttemptCodeGraphBlock(state: LoopState): string {
-    const attempt = getPromptAttemptHistory(state, 1).at(-1)
+    if (!state.sandbox || !codeGraphEnabled) return ''
+    const attempt = getLatestAttempt(state)
     if (!attempt?.codeGraph) return ''
-    const reportPath = codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
-    if (!ensureCodeGraphReportFile(state.worktreeDir, reportPath, attempt.codeGraph)) {
-      logger.error(`[code-graph] cannot write audit report ${reportPath} for ${state.loopName}`)
-      return ''
-    }
+    const reportPath = attemptReportPath(attempt)
+    if (!writeCodeGraphReport(state, reportPath, attempt.codeGraph)) return ''
     return buildCodeGraphPromptBlock(reportPath, 'audit checkpoint')
   }
 

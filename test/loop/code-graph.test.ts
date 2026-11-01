@@ -53,6 +53,7 @@ function createTarget(
       if (scripted instanceof Error) throw scripted
       if (scripted) return scripted
       if (command === 'command -v codegraph') return ok('/usr/local/bin/codegraph\n')
+      if (command.includes('codegraph.db')) return ok('missing\n')
       if (command.includes('codegraph affected')) return ok(JSON.stringify({ affectedTests: ['test/a.test.ts'] }))
       if (command.includes('codegraph node')) return ok(`symbols for ${command}`)
       return ok()
@@ -99,6 +100,36 @@ describe('createCodeGraphSnapshotter', () => {
     expect(readlinkSync(join(worktreeDir, '.codegraph'))).toBe('/opt/forge/cache/codegraph')
   })
 
+  it('redirects codegraph git hooks to the cache disk for init and sync', async () => {
+    const initWorktree = createWorktree()
+    writeFileSync(join(initWorktree, 'a.ts'), 'export const a = 1\n')
+    const initTarget = createTarget(initWorktree)
+
+    await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(initTarget, {
+      title: 'init hooks',
+      files: ['a.ts'],
+    })
+
+    const initCommand = initTarget.commands.find((entry) => entry.command.includes('codegraph init --yes'))?.command
+    expect(initCommand).toContain('GIT_CONFIG_KEY_0=core.hooksPath')
+    expect(initCommand).toContain("GIT_CONFIG_VALUE_0='/opt/forge/cache/codegraph-git-hooks'")
+
+    const syncWorktree = createWorktree()
+    writeFileSync(join(syncWorktree, 'a.ts'), 'export const a = 1\n')
+    const syncTarget = createTarget(syncWorktree, (command) =>
+      command.includes('codegraph.db') ? ok('present\n') : undefined,
+    )
+
+    await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(syncTarget, {
+      title: 'sync hooks',
+      files: ['a.ts'],
+    })
+
+    const syncCommand = syncTarget.commands.find((entry) => entry.command.includes('codegraph sync --quiet'))?.command
+    expect(syncCommand).toContain('GIT_CONFIG_KEY_0=core.hooksPath')
+    expect(syncCommand).toContain("GIT_CONFIG_VALUE_0='/opt/forge/cache/codegraph-git-hooks'")
+  })
+
   it('syncs instead of initializing when the index database already exists', async () => {
     const worktreeDir = createWorktree()
     writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
@@ -133,6 +164,30 @@ describe('createCodeGraphSnapshotter', () => {
     expect(commands.some((command) => command.includes('codegraph index --quiet'))).toBe(true)
   })
 
+  it('refuses to initialize when the index probe cannot report the index state', async () => {
+    for (const dbProbe of [fail('probe exploded'), ok('unknown\n')]) {
+      const worktreeDir = createWorktree()
+      writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
+      const errors: unknown[][] = []
+      const logger = createLogger()
+      logger.error = (...args: unknown[]) => {
+        errors.push(args)
+      }
+      const target = createTarget(worktreeDir, (command) => (command.includes('codegraph.db') ? dbProbe : undefined))
+
+      const report = await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, {
+        title: 'probe',
+        files: ['a.ts'],
+      })
+
+      expect(report).toBeNull()
+      const commands = target.commands.map((entry) => entry.command)
+      expect(commands.some((command) => command.includes('codegraph init'))).toBe(false)
+      expect(commands.some((command) => command.includes('codegraph sync'))).toBe(false)
+      expect(errors.length).toBeGreaterThan(0)
+    }
+  })
+
   it('returns null when the binary is missing and probes it once across snapshots', async () => {
     const worktreeDir = createWorktree()
     writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
@@ -147,6 +202,23 @@ describe('createCodeGraphSnapshotter', () => {
     const commands = target.commands.map((entry) => entry.command)
     expect(commands.filter((command) => command === 'command -v codegraph')).toHaveLength(1)
     expect(commands.some((command) => command.includes('codegraph init'))).toBe(false)
+  })
+
+  it('retries the binary probe after a failed probe exec', async () => {
+    const worktreeDir = createWorktree()
+    writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
+    let probes = 0
+    const target = createTarget(worktreeDir, (command) => {
+      if (command !== 'command -v codegraph') return undefined
+      probes += 1
+      return probes === 1 ? new Error('msb exec failed') : ok('/usr/local/bin/codegraph\n')
+    })
+    const snapshotter = createCodeGraphSnapshotter({ logger: createLogger() })
+
+    expect(await snapshotter.snapshotFiles(target, { title: 'one', files: ['a.ts'] })).toBeNull()
+    expect(await snapshotter.snapshotFiles(target, { title: 'two', files: ['a.ts'] })).toContain('# Code graph: two')
+
+    expect(probes).toBe(2)
   })
 
   it('leaves a non-symlink .codegraph directory untouched and returns null', async () => {

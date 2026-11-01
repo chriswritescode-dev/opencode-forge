@@ -129,7 +129,9 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   `)
 
   const stmtUpdateContent = db.prepare(`
-    UPDATE section_plans SET title = ?, content = ? WHERE project_id = ? AND loop_name = ? AND section_index = ?
+    UPDATE section_plans
+    SET code_graph = CASE WHEN content = ? THEN code_graph ELSE NULL END, title = ?, content = ?
+    WHERE project_id = ? AND loop_name = ? AND section_index = ?
   `)
 
   const stmtSetCodeGraph = db.prepare(`
@@ -198,7 +200,10 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     updateContent(projectId, loopName, sections) {
       let updated = 0
       for (const section of sections) {
-        const result = stmtUpdateContent.run(section.title, section.content, projectId, loopName, section.index) as unknown as { changes: number }
+        const result = stmtUpdateContent.run(
+          section.content, section.title, section.content,
+          projectId, loopName, section.index,
+        ) as unknown as { changes: number }
         if (result.changes > 0) updated++
       }
       return { updated }

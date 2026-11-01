@@ -673,6 +673,10 @@ export async function attachLoopToSession(
     if (totalSections > 0) {
       const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
       await deps.loop.snapshotSectionCodeGraph(updatedState as import('../loop/state').LoopState)
+      if (!deps.loop.service.getActiveState(loopName)) {
+        deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled before its first prompt was built; skipping prompt and watchdog`)
+        return { ok: true, loopName }
+      }
       promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
     } else {
       promptText = deps.loop.service.buildPlanInitialPrompt(planText)

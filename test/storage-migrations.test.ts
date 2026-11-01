@@ -1947,7 +1947,7 @@ test('migration 156 applies to a database migrated through 155 and is idempotent
   db.close()
 })
 
-test('migration 157 adds nullable code_graph reports to section_plans and loop_attempts', () => {
+test('migration 158 adds nullable code_graph reports to section_plans and loop_attempts', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)
 
@@ -1958,21 +1958,21 @@ test('migration 157 adds nullable code_graph reports to section_plans and loop_a
     expect(col!.notnull).toBe(0)
   }
 
-  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('157') as { count: number }
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('158') as { count: number }
   expect(count.count).toBe(1)
 
   db.close()
 })
 
-test('migration 157 is a no-op when applied twice and skips a missing section_plans table', () => {
+test('migration 158 is a no-op when applied twice and skips a missing section_plans table', () => {
   const dbPath = createTempDb()
   const db = new Database(dbPath)
   applyMigrationsThrough(db, '156')
 
   db.run('DROP TABLE section_plans')
 
-  applySingleMigration(db, '157')
-  expect(() => applySingleMigration(db, '157')).not.toThrow()
+  applySingleMigration(db, '158')
+  expect(() => applySingleMigration(db, '158')).not.toThrow()
 
   const attemptCols = db.prepare('PRAGMA table_info(loop_attempts)').all() as Array<{ name: string }>
   expect(attemptCols.filter((c) => c.name === 'code_graph').length).toBe(1)

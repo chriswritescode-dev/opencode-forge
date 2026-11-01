@@ -266,6 +266,33 @@ describe('SectionPlansRepo', () => {
     })
   })
 
+  describe('updateContent', () => {
+    test('keeps the stored code graph report when the content is unchanged', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      repo.setCodeGraph(projectId, loopName, 0, '# Code graph')
+
+      const result = repo.updateContent(projectId, loopName, [{ index: 0, title: 'S renamed', content: 'C' }])
+
+      expect(result.updated).toBe(1)
+      const row = repo.get(projectId, loopName, 0)
+      expect(row?.title).toBe('S renamed')
+      expect(row?.content).toBe('C')
+      expect(row?.codeGraph).toBe('# Code graph')
+    })
+
+    test('clears the stored code graph report when the content changes', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      repo.setCodeGraph(projectId, loopName, 0, '# Code graph')
+
+      const result = repo.updateContent(projectId, loopName, [{ index: 0, title: 'S', content: 'C changed' }])
+
+      expect(result.updated).toBe(1)
+      const row = repo.get(projectId, loopName, 0)
+      expect(row?.content).toBe('C changed')
+      expect(row?.codeGraph).toBeNull()
+    })
+  })
+
   describe('resetForRewind', () => {
     test('resets section to in_progress with cleared fields', () => {
       const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
