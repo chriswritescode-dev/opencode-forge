@@ -8,6 +8,7 @@ import { buildArchitectReminder, createForgeCore, type ForgeCore } from '../../s
 import { closeDatabase, createLoopsRepo, initializeDatabase } from '../../src/storage'
 import { registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../../src/host/v2-hooks'
 import { createSessionHooks } from '../../src/hooks/session'
+import { resolvePromptsDir } from '../../src/install/paths'
 import {
   ensureShellShim,
   SHIM_ENV_CONTAINER,
@@ -41,6 +42,7 @@ interface StubCoreOptions {
   isUnattendedGoalPlannerSession?: ForgeHooksV2Core['isUnattendedGoalPlannerSession']
   autoApproveDenyRules?: ForgeHooksV2Core['autoApproveDenyRules']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
+  systemAddendumFor?: ForgeHooksV2Core['systemAddendumFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
   toolAfter?: ForgeHooksV2Core['toolAfter']
   chatMessage?: ForgeHooksV2Core['chatMessage']
@@ -83,6 +85,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     },
     architectReminderFor:
       options.architectReminderFor ?? ((agent) => (agent === 'architect' ? buildArchitectReminder() : null)),
+    systemAddendumFor: options.systemAddendumFor ?? (() => null),
     resolveSandboxForDirectory: options.resolveSandboxForDirectory ?? (async () => null),
     resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
     autoApprovesPermissions: options.autoApprovesPermissions ?? (async () => false),
@@ -578,6 +581,48 @@ describe('registerForgeHooksV2 session hooks', () => {
     expect(messages[0]!.content).toEqual([{ type: 'text', text: 'implement this' }])
   })
 
+  test('context inserts the agent system addendum after the base prompt', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = {
+      sessionID: 'ses_1',
+      agent: 'code',
+      system: [
+        { type: 'text', text: 'base' },
+        { type: 'text', text: 'instructions' },
+      ],
+      messages: [],
+    }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'ADDENDUM' },
+      { type: 'text', text: 'instructions' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+  })
+
+  test('context inserts no addendum for an agent without one', async () => {
+    const { ctx, hooks } = createFakeV2Context()
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = { sessionID: 'ses_1', agent: 'auditor', system: [{ type: 'text', text: 'base' }], messages: [] }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+  })
+
   test('compaction appends the context to the system parts', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core } = createStubCore()
@@ -691,6 +736,14 @@ describe('createForgeCore integration', () => {
     expect(built.architectReminderFor(architect)).toBe(buildArchitectReminder())
     expect(built.architectReminderFor('code')).toBeNull()
     expect(built.architectReminderFor(undefined)).toBeNull()
+  })
+
+  test('resolves the system addendum for the code agent only', async () => {
+    const built = await buildCore()
+
+    expect(built.systemAddendumFor('code')).toBe(buildAgents(resolvePromptsDir()).code.systemAddendum)
+    expect(built.systemAddendumFor('architect')).toBeNull()
+    expect(built.systemAddendumFor(undefined)).toBeNull()
   })
 
   test('architect reminder narrows with grouped question rounds before storing', () => {

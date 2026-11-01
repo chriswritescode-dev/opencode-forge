@@ -20,7 +20,8 @@ describe('loadPrompt', () => {
 
   test('loads code prompt from bundled markdown', () => {
     const prompt = loadPrompt(['agents', 'code.md'])
-    expect(prompt).toContain('You are an AI agent running in OpenCode')
+    expect(prompt).toContain('# Forge code agent')
+    expect(prompt).toContain('Minimal implementation discipline')
   })
 
   test('uses user-provided prompts dir when file exists', () => {
@@ -39,7 +40,8 @@ describe('loadPrompt', () => {
     mkdirSync(tmpDir, { recursive: true })
 
     const prompt = loadPrompt(['agents', 'code.md'], tmpDir)
-    expect(prompt).toContain('coding agent')
+    expect(prompt).toContain('# Forge code agent')
+    expect(prompt).toContain('Minimal implementation discipline')
 
     rmSync(tmpDir, { recursive: true, force: true })
   })

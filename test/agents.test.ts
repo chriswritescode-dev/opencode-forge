@@ -66,22 +66,25 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
     })
 
-    test('code agent prompt uses the generic harness baseline and current tool names', () => {
-      const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('You are an AI agent running in OpenCode')
-      expect(prompt).not.toContain('TodoWrite')
-      expect(prompt).not.toContain('Task tool')
-      expect(prompt).not.toContain('Bash')
-      expect(prompt).not.toContain('${OPENCODE_TOOL_GUIDANCE}')
+    test("code agent appends to OpenCode's default prompt instead of replacing it", () => {
+      expect(codeAgent.systemPrompt).toBeUndefined()
+      const addendum = codeAgent.systemAddendum ?? ''
+      expect(codeAgent.systemAddendum).toBeDefined()
+      expect(addendum).not.toContain('You are an AI agent running in OpenCode')
+      expect(addendum).not.toContain('# Harness')
+      expect(addendum).not.toContain('${OPENCODE_TOOL_GUIDANCE}')
+      expect(addendum).not.toContain('TodoWrite')
+      expect(addendum).not.toContain('Task tool')
+      expect(addendum).not.toContain('Bash')
     })
 
     test('code agent prompt preserves scope, minion, and Forge protections', () => {
-      const prompt = codeAgent.systemPrompt
+      const prompt = codeAgent.systemAddendum
       expect(prompt).toContain('completing the requested scope')
-      expect(prompt).toContain('Treat unfamiliar files or changes as potential user work')
       expect(prompt).toContain('minion')
-      expect(prompt).toContain('permitted by the applicable instructions')
-      expect(prompt).toContain('at most three minions concurrently')
+      expect(prompt).toContain('explicit instruction to delegate')
+      expect(prompt).toContain('every piece of work that can run in parallel')
+      expect(prompt).toContain('up to four minions concurrently')
       expect(prompt).toContain('target files do not overlap')
       expect(prompt).toContain('inspect and reconcile')
       expect(prompt).toContain('files changed, behavior implemented, validation run')
@@ -431,16 +434,16 @@ describe('Agent definitions', () => {
       expect(architectAgent.systemPrompt).not.toContain('graph-query')
       expect(architectAgent.systemPrompt).not.toContain('graph-symbols')
       expect(architectAgent.systemPrompt).not.toContain('graph-analyze')
-      expect(codeAgent.systemPrompt).not.toContain('graph-query')
-      expect(codeAgent.systemPrompt).not.toContain('graph-symbols')
-      expect(codeAgent.systemPrompt).not.toContain('graph-analyze')
+      expect(codeAgent.systemAddendum).not.toContain('graph-query')
+      expect(codeAgent.systemAddendum).not.toContain('graph-symbols')
+      expect(codeAgent.systemAddendum).not.toContain('graph-analyze')
       expect(auditorAgent.systemPrompt).not.toContain('graph-query')
       expect(auditorAgent.systemPrompt).not.toContain('graph-symbols')
       expect(auditorAgent.systemPrompt).not.toContain('graph-analyze')
     })
 
     test('agent prompts avoid deprecated graph tooling names', () => {
-      for (const agent of [architectAgent, codeAgent, auditorAgent, auditorLoopAgent, architectAutoAgent]) {
+      for (const agent of [architectAgent, auditorAgent, auditorLoopAgent, architectAutoAgent]) {
         expect(agent.systemPrompt).not.toContain('graph-query')
         expect(agent.systemPrompt).not.toContain('graph-symbols')
         expect(agent.systemPrompt).not.toContain('graph-analyze')

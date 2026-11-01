@@ -46,7 +46,7 @@ describe('ensureBundledPrompts', () => {
 
     expect(existsSync(codePath)).toBe(true)
     const content = readFileSync(codePath, 'utf-8')
-    expect(content).toContain('coding agent')
+    expect(content).toContain('# Forge code agent')
   })
 
   test('installs only markdown prompts, never build artifacts', () => {

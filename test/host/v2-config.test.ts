@@ -93,6 +93,16 @@ describe('registerForgeAgentsV2', () => {
     )
   })
 
+  test('leaves the code agent without a system prompt so OpenCode builds its default', async () => {
+    const cfg = await configMaps()
+    const { ctx, agents } = createFakeV2Context()
+
+    await registerForgeAgentsV2(ctx, cfg.agent)
+
+    expect(agents.find((agent) => agent.id === 'code')?.info.system).toBeUndefined()
+    expect(agents.find((agent) => agent.id === 'auditor')?.info.system).toBeDefined()
+  })
+
   test('keeps the replaced built-in agents hidden and defaults to code', async () => {
     const cfg = await configMaps()
     const { ctx, agents, defaultAgent } = createFakeV2Context()

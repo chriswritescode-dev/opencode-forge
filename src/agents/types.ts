@@ -18,8 +18,10 @@ export interface AgentDefinition {
   description?: string
   /** Default model to use if not overridden. */
   defaultModel?: string
-  /** System prompt that defines agent behavior. */
-  systemPrompt: string
+  /** System prompt that replaces OpenCode's default system prompt. */
+  systemPrompt?: string
+  /** Prompt appended after OpenCode's default system prompt instead of replacing it. */
+  systemAddendum?: string
   /** Operating mode of the agent. */
   mode?: 'primary' | 'subagent' | 'all'
   /** Hide this agent from UI. */
@@ -52,7 +54,7 @@ export interface AgentConfig {
   /** Model identifier to use. */
   model: string
   /** Prompt override for this instance. */
-  prompt: string
+  prompt?: string
   /** Operating mode override. */
   mode?: 'primary' | 'subagent' | 'all'
   /** Tool availability map. */

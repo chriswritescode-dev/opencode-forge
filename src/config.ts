@@ -127,7 +127,7 @@ function createAgentConfigs(agents: Record<AgentRole, AgentDefinition>): Record<
     result[agent.displayName] = {
       description: agent.description,
       model: agent.defaultModel ?? '',
-      prompt: agent.systemPrompt ?? '',
+      ...(agent.systemPrompt !== undefined ? { prompt: agent.systemPrompt } : {}),
       mode: agent.mode ?? 'subagent',
       ...(Object.keys(tools).length > 0 ? { tools } : {}),
       ...(agent.variant ? { variant: agent.variant } : {}),

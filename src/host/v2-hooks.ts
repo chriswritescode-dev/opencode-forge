@@ -24,6 +24,7 @@ export type ForgeHooksV2Core = Pick<
   | 'systemTransform'
   | 'compacting'
   | 'architectReminderFor'
+  | 'systemAddendumFor'
   | 'resolveSandboxForDirectory'
   | 'resolveShellSandbox'
   | 'autoApprovesPermissions'
@@ -169,6 +170,9 @@ export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooks
   })
 
   await ctx.session.hook('context', async (event) => {
+    const addendum = core.systemAddendumFor(event.agent)
+    if (addendum) event.system.splice(1, 0, { type: 'text', text: addendum })
+
     const system: string[] = []
     await core.systemTransform({ sessionID: event.sessionID }, { system })
     for (const text of system) event.system.push({ type: 'text', text })

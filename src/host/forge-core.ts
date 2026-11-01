@@ -85,6 +85,8 @@ export interface ForgeCore {
   toolAfter(input: ToolAfterInput, output: ToolAfterOutput): Promise<void>
   compacting(input: { sessionID: string }, output: { context: string[]; prompt?: string }): Promise<void>
   architectReminderFor(agent: string | undefined): string | null
+  /** Prompt appended after OpenCode's default system prompt for the named Forge agent, or null. */
+  systemAddendumFor(agent: string | undefined): string | null
   executeTuiPlan(input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput>
   /** Server-side loop-setting defaults the execution dialog shows before a loop is launched. */
   loopDefaults(): ForgeLoopDefaults
@@ -1020,6 +1022,14 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return buildArchitectReminder()
   }
 
+  const systemAddendumFor = (agent: string | undefined): string | null => {
+    if (!agent) return null
+    for (const definition of Object.values(agents)) {
+      if (definition.displayName === agent) return definition.systemAddendum ?? null
+    }
+    return null
+  }
+
   const executeTuiPlan = async (input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput> => {
     const execCtx: ForgeExecutionRequestContext = {
       surface: 'tui',
@@ -1218,6 +1228,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       )
     },
     architectReminderFor,
+    systemAddendumFor,
     executeTuiPlan,
     loopDefaults,
     resolveSandboxForDirectory,
