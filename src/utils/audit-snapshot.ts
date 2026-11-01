@@ -90,7 +90,7 @@ async function runGitCommand(cwd: string, args: string[], env: Record<string, st
     logLabel: `audit-snapshot:${label}`,
   })
   if (result.exitCode !== 0) {
-    const subcommand = args.find((arg) => !arg.startsWith('-')) ?? args[0]
+    const subcommand = args.find((arg, index) => !arg.startsWith('-') && args[index - 1] !== '-c') ?? args[0]
     throw new Error(`git ${subcommand} failed (exit ${result.exitCode}): ${result.stderr.trim().slice(0, 500)}`)
   }
   return result.stdout
@@ -357,7 +357,7 @@ export async function listSnapshotChangedRanges(cwd: string, from: string, to: s
   validateCommitSha(resolvedFrom, 'resolved from snapshot SHA')
   const out = await runGitCommand(
     toplevel,
-    ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--diff-filter=d', '-U0', resolvedFrom, to],
+    ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', '--diff-filter=d', '-U0', resolvedFrom, to],
     gitEnv({}),
     logger,
     'diff-unified',

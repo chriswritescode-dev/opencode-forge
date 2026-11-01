@@ -549,6 +549,25 @@ describe('listSnapshotChangedRanges', () => {
     ])
   })
 
+  it('parses the diff the same way whatever prefix and color config the repository sets', async () => {
+    const repo = initRepo('audit-snapshot-changed-config-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    execSync('git config diff.noprefix true && git config diff.mnemonicPrefix true && git config color.ui always', { cwd: repo })
+    writeFileSync(join(repo, 'base.txt'), 'changed\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const ranges = await listSnapshotChangedRanges(repo, previous.commit, current.commit, logger)
+
+    expect(ranges).toEqual({ 'base.txt': [{ start: 1, end: 1 }] })
+  })
+
+  it('names the git subcommand, not a -c value, when the diff fails', async () => {
+    const repo = initRepo('audit-snapshot-changed-fail-')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    await expect(listSnapshotChangedRanges(repo, current.commit, 'f'.repeat(40), logger)).rejects.toThrow(/^git diff failed/)
+  })
+
   it('reports the new-side range of every modified hunk', async () => {
     const repo = initRepo('audit-snapshot-changed-hunks-')
     const lines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`)
