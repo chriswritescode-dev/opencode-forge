@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach, vi } from 'vitest'
+import { describe, test, expect, afterEach, onTestFinished, vi } from 'vitest'
 import { spawnSync } from 'child_process'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -909,13 +909,13 @@ describe('registerForgeHooksV2 session hooks', () => {
 describe('generated shim', () => {
   test('passes through to the host shell when no container env is set', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-hooks-shim-'))
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
     const shim = ensureShellShim(dir, logger)
     expect(shim).not.toBeNull()
 
     const env = { ...process.env }
     delete env[SHIM_ENV_CONTAINER]
     const result = spawnSync(shim!, ['-c', 'echo ok'], { env, encoding: 'utf-8' })
-    rmSync(dir, { recursive: true, force: true })
 
     expect(result.status).toBe(0)
     expect(result.stdout.trim()).toBe('ok')
