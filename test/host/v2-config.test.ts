@@ -120,7 +120,13 @@ describe('registerForgeAgentsV2', () => {
 
 describe('registerForgeAgentsV2 replaceable agents', () => {
   const replaceableCfg = {
-    minion: { description: 'forge minion', prompt: 'forge minion prompt', mode: 'subagent' as const, model: '' },
+    minion: {
+      description: 'forge minion',
+      prompt: 'forge minion prompt',
+      mode: 'subagent' as const,
+      model: '',
+      permission: { task: 'deny' },
+    },
     code: { description: 'forge code', prompt: 'forge code prompt', mode: 'primary' as const, model: '' },
   }
 
@@ -145,7 +151,7 @@ describe('registerForgeAgentsV2 replaceable agents', () => {
     expect(agents.find((agent) => agent.id === 'minion')?.info.system).toBe('forge minion prompt')
   })
 
-  test('leaves a user-defined minion untouched', async () => {
+  test('keeps a user-defined minion and adds only the Forge permission rules', async () => {
     const { ctx, agents } = createFakeV2Context()
     agents.push({ id: 'minion', info: userAgentInfo('minion', 'user minion prompt') })
 
@@ -154,6 +160,8 @@ describe('registerForgeAgentsV2 replaceable agents', () => {
     const minion = agents.find((agent) => agent.id === 'minion')
     expect(minion?.info.system).toBe('user minion prompt')
     expect(minion?.info.model).toEqual({ id: 'user-model', providerID: 'user-provider' })
+    expect(minion?.info.description).toBeUndefined()
+    expect(minion?.info.permissions).toContainEqual({ action: 'subagent', resource: '*', effect: 'deny' })
   })
 
   test('always updates a non-replaceable agent that already exists', async () => {

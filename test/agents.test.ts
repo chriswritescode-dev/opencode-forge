@@ -291,6 +291,8 @@ describe('Agent definitions', () => {
         'loop-status',
         'goal-cancel',
         'goal-status',
+        'loop-handoff',
+        'loop-complete',
         'review-write',
         'review-delete',
         'task',

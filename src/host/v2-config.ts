@@ -45,9 +45,10 @@ function applyV2AgentConfig(agent: V2AgentInfo, cfg: AgentConfig): void {
 }
 
 /**
- * Registers Forge's agents on the V2 agent editor. A replaceable agent keeps the user's
- * definition whichever order the transforms run in: OpenCode's config plugin overrides Forge's
- * fields when it runs later, and Forge skips the agent when it runs later.
+ * Registers Forge's agents on the V2 agent editor. A replaceable agent keeps the user's prompt,
+ * model, and description and gains Forge's permission rules whichever order the transforms run
+ * in: OpenCode's config plugin overrides Forge's fields when it runs later, and Forge adds only
+ * its permission rules when it runs later.
  */
 export function registerForgeAgentsV2(
   ctx: Pick<Plugin.Context, 'agent'>,
@@ -55,7 +56,10 @@ export function registerForgeAgentsV2(
 ) {
   return ctx.agent.transform((editor) => {
     for (const [id, cfg] of Object.entries(cfgAgent)) {
-      if (USER_REPLACEABLE_AGENTS.includes(id) && editor.get(id) !== undefined) continue
+      if (USER_REPLACEABLE_AGENTS.includes(id) && editor.get(id) !== undefined) {
+        editor.update(id, (agent) => agent.permissions.push(...toV2PermissionMap(cfg.permission)))
+        continue
+      }
       editor.update(id, (agent) => applyV2AgentConfig(agent, cfg))
     }
     editor.default(DEFAULT_AGENT)

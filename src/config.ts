@@ -5,7 +5,7 @@ export interface PluginCommand { template: string; description: string; agent: s
 
 export const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
 
-/** Forge agents that a user-defined agent of the same name replaces. */
+/** Forge agents whose prompt, model, and description a user-defined agent of the same name overrides; Forge's tool restrictions still apply. */
 export const USER_REPLACEABLE_AGENTS = ['minion']
 
 /** Forge subagents that run on OpenCode's default model instead of the caller's when the resolved agent has no model. */

@@ -723,6 +723,21 @@ describe('registerForgeHooksV2 shell tool sandbox routing', () => {
 })
 
 describe('registerForgeHooksV2 session hooks', () => {
+  function contextAgentLookup(system?: string) {
+    return async () => ({
+      location: { directory: PROJECT },
+      data: {
+        id: 'code',
+        name: 'code',
+        mode: 'primary',
+        hidden: false,
+        request: { settings: {}, headers: {}, body: {} },
+        permissions: [],
+        ...(system === undefined ? {} : { system }),
+      },
+    })
+  }
+
   test('prompt forwards the session, message, and text to the core', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, prompts } = createStubCore()
@@ -771,7 +786,7 @@ describe('registerForgeHooksV2 session hooks', () => {
   })
 
   test('context inserts the agent system addendum after the base prompt', async () => {
-    const { ctx, hooks } = createFakeV2Context()
+    const { ctx, hooks } = createFakeV2Context({ agent: { get: contextAgentLookup() } })
     const { core } = createStubCore({
       systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
     })
@@ -796,8 +811,59 @@ describe('registerForgeHooksV2 session hooks', () => {
     ])
   })
 
+  test('context omits the agent system addendum when the user configured a system prompt', async () => {
+    const { ctx, hooks } = createFakeV2Context({ agent: { get: contextAgentLookup('user prompt') } })
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = {
+      sessionID: 'ses_1',
+      agent: 'code',
+      system: [
+        { type: 'text', text: 'base' },
+        { type: 'text', text: 'instructions' },
+      ],
+      messages: [],
+    }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'instructions' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+  })
+
+  test('context keeps the agent system addendum when the agent lookup fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, hooks } = createFakeV2Context({
+      agent: {
+        get: async () => {
+          throw new Error('agent lookup failed')
+        },
+      },
+    })
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = { sessionID: 'ses_1', agent: 'code', system: [{ type: 'text', text: 'base' }], messages: [] }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'ADDENDUM' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+    expect(errorSpy).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
   test('context inserts no addendum for an agent without one', async () => {
-    const { ctx, hooks } = createFakeV2Context()
+    const { ctx, hooks, calls } = createFakeV2Context({ agent: { get: contextAgentLookup() } })
     const { core } = createStubCore({
       systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
     })
@@ -810,6 +876,7 @@ describe('registerForgeHooksV2 session hooks', () => {
       { type: 'text', text: 'base' },
       { type: 'text', text: 'sandbox context note' },
     ])
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
   })
 
   test('compaction appends the context to the system parts', async () => {

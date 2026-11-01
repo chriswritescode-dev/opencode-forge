@@ -2,12 +2,14 @@ import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
 import {
   LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS,
+  LOOP_PHASE_TOOL_NAMES,
   SHARED_STRUCTURAL_DENY_PERMISSIONS,
 } from '../constants/loop'
 
 const MINION_TOOL_EXCLUDES = [
   ...SHARED_STRUCTURAL_DENY_PERMISSIONS,
   ...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS,
+  ...LOOP_PHASE_TOOL_NAMES,
   'task',
 ]
 

@@ -144,6 +144,21 @@ async function applySubagentDefaultModel(
   }
 }
 
+/**
+ * Decides whether Forge's agent addendum still applies to the session's resolved agent. A
+ * user-configured `system` prompt on the agent takes precedence over the addendum, and a failed
+ * lookup keeps the addendum so Forge's instructions are never dropped silently.
+ */
+async function shouldInsertSystemAddendum(ctx: Pick<Plugin.Context, 'agent'>, agentID: string): Promise<boolean> {
+  try {
+    const resolved = await ctx.agent.get({ agentID })
+    return !resolved.data.system
+  } catch (err) {
+    console.error('[forge] Failed to resolve the agent system prompt', err)
+    return true
+  }
+}
+
 export async function registerForgeHooksV2(
   ctx: Plugin.Context,
   core: ForgeHooksV2Core,
@@ -213,7 +228,9 @@ export async function registerForgeHooksV2(
 
   await ctx.session.hook('context', async (event) => {
     const addendum = core.systemAddendumFor(event.agent)
-    if (addendum) event.system.splice(1, 0, { type: 'text', text: addendum })
+    if (addendum && (await shouldInsertSystemAddendum(ctx, event.agent))) {
+      event.system.splice(1, 0, { type: 'text', text: addendum })
+    }
 
     const system: string[] = []
     await core.systemTransform({ sessionID: event.sessionID }, { system })

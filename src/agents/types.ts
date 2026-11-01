@@ -20,7 +20,7 @@ export interface AgentDefinition {
   defaultModel?: string
   /** System prompt that replaces OpenCode's default system prompt. */
   systemPrompt?: string
-  /** Prompt appended after OpenCode's default system prompt instead of replacing it. */
+  /** Prompt appended after OpenCode's default system prompt instead of replacing it. Skipped when the user configures their own system prompt for the agent. */
   systemAddendum?: string
   /** Operating mode of the agent. */
   mode?: 'primary' | 'subagent' | 'all'
