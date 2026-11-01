@@ -6,7 +6,7 @@ import { USAGE_ROLE_ORDER } from '../../loop/token-usage'
 import type { UsageRole } from '../../loop/token-usage'
 
 export type LoopTab = 'overview' | 'timeline' | 'sections' | 'findings' | 'plan' | 'usage'
-export type RepoSection = 'loops' | 'goals' | 'findings' | 'plans'
+export type RepoSection = 'loops' | 'findings' | 'plans'
 
 /** Every loop tab, in render order. Also the set `parseDashboardHash` accepts. */
 export const ALL_TABS: readonly LoopTab[] = ['overview', 'timeline', 'sections', 'findings', 'plan', 'usage']
@@ -42,12 +42,11 @@ export interface DashboardRoute {
   section: RepoSection
   loopName: string | null
   tab: LoopTab
-  goalId: string | null
   statuses: string[]
   query: string
 }
 
-const SECTION_KEYWORDS: ReadonlySet<string> = new Set<RepoSection>(['loops', 'goals', 'findings', 'plans'])
+const SECTION_KEYWORDS: ReadonlySet<string> = new Set<RepoSection>(['loops', 'findings', 'plans'])
 const LOOP_TABS: ReadonlySet<string> = new Set<string>(ALL_TABS)
 
 function safeDecode(s: string): string {
@@ -64,7 +63,6 @@ function emptyRoute(): DashboardRoute {
     section: 'loops',
     loopName: null,
     tab: 'overview',
-    goalId: null,
     statuses: [],
     query: '',
   }
@@ -128,9 +126,6 @@ export function parseDashboardHash(hash: string): DashboardRoute {
     }
   } else if (SECTION_KEYWORDS.has(first)) {
     route.section = first as RepoSection
-    if (first === 'goals' && segs.length >= 2) {
-      route.goalId = safeDecode(segs[1])
-    }
   } else {
     route.loopName = first
   }
@@ -148,9 +143,6 @@ export function buildDashboardHash(route: DashboardRoute): string {
       h += '/loop/' + encodeURIComponent(route.loopName)
       if (route.tab !== 'overview') h += '/' + route.tab
     }
-  } else if (route.section === 'goals') {
-    h += '/goals'
-    if (route.goalId) h += '/' + encodeURIComponent(route.goalId)
   } else {
     h += '/' + route.section
   }
@@ -202,15 +194,6 @@ export function statusClass(status: string): string {
 
 export function sectionStatusClass(s: string): string {
   return 'section-status section-' + s
-}
-
-/**
- * Badge family for goal chunk stages. Goal statuses use `statusClass`; chunk
- * stages have their own `chunk-stage-*` vocabulary because the two are distinct
- * sets (a chunk is never a goal draft/paused, a goal is never planning).
- */
-export function chunkStageClass(value: string): string {
-  return 'chunk-stage-badge chunk-stage-' + value
 }
 
 export type SortMode = 'recent' | 'cost' | 'duration' | 'findings'

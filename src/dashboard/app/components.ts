@@ -1,13 +1,12 @@
 import html from 'solid-js/html'
 import { createMemo, createSignal, createEffect, getOwner, runWithOwner, onCleanup, untrack, batch } from 'solid-js'
-import type { DashboardLoop, DashboardProject, DashboardGoal, DashboardUnexecutedPlan } from './types'
+import type { DashboardLoop, DashboardProject, DashboardUnexecutedPlan } from './types'
 import type { AmendmentDiff, AmendmentDiffLine } from '../amendment-diff'
 import type { RepoSection, SortMode } from './helpers'
 import type { MarkdownHeading } from './helpers'
 import {
   statusClass,
   sectionStatusClass,
-  chunkStageClass,
   fmtTime,
   formatSectionDuration,
   formatSpanDuration,
@@ -45,7 +44,6 @@ import {
 } from './helpers'
 import type { LoopTab, PhaseSpan } from './helpers'
 import { formatDuration } from '../../utils/duration'
-import { findCurrentGoalChunk } from '../../utils/goal-chunks'
 import { LoopMachineGraph } from './machine-graph'
 
 type DashboardSection = NonNullable<DashboardLoop['sections']>[number]
@@ -471,12 +469,11 @@ export function Breadcrumb(props: {
 
 export function SectionNav(props: {
   section: RepoSection
-  counts: { loops: number; goals: number; findings: number; plans: number }
+  counts: { loops: number; findings: number; plans: number }
   onNavigate: (section: RepoSection) => void
 }) {
   const items: { key: RepoSection; label: string; count: number }[] = [
     { key: 'loops', label: 'Loops', count: props.counts.loops },
-    { key: 'goals', label: 'Goals', count: props.counts.goals },
     { key: 'findings', label: 'Findings', count: props.counts.findings },
     { key: 'plans', label: 'Plans', count: props.counts.plans },
   ]
@@ -1344,7 +1341,6 @@ function LoopLink(props: {
       section: 'loops',
       loopName: props.loopName,
       tab: 'overview',
-      goalId: null,
       statuses: [],
       query: '',
     })
@@ -1496,109 +1492,6 @@ export function LoopDetail(props: {
 
 export function EmptyState() {
   return html`<div class="empty-state">No loops match the current filters.</div>`
-}
-
-function goalChunkMeter(goal: DashboardGoal): { completed: number; total: number } {
-  const total = goal.chunks.length
-  const completed = goal.chunks.filter(c => c.stage === 'completed').length
-  return { completed, total }
-}
-
-/** Stage of the goal's current chunk (an active stage), else the last chunk's stage. */
-function goalCurrentStage(goal: DashboardGoal): string | null {
-  const current = findCurrentGoalChunk(goal.chunks) ?? goal.chunks[goal.chunks.length - 1]
-  return current?.stage ?? null
-}
-
-export function GoalsPanel(props: {
-  goals: () => DashboardGoal[]
-  onOpen: (goalId: string) => void
-}) {
-  const [showAll, setShowAll] = createSignal(false)
-  const view = createMemo(() => capList(props.goals(), MAX_RENDERED_LOOP_ROWS, showAll()))
-  return html`<div class="goals-panel">
-    <h4>Goals <span class="goals-panel-count">${() => view().total}</span></h4>
-    ${() => (view().capped
-      ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'goals', onShowAll: () => setShowAll(true) })
-      : '')}
-    ${() => {
-      const goals = view().rows
-      if (goals.length === 0) return html`<div class="tab-empty">No goals for this repo.</div>`
-      return html`<div class="goals-list">
-        ${goals.map(goal => {
-          const meter = createMemo(() => goalChunkMeter(goal))
-          return html`<div class="goal-row" data-goal-status=${() => goal.status} onclick=${() => props.onOpen(goal.goalId)}>
-            <span class=${() => statusClass(goal.status)}>${() => goal.status}</span>
-            <span class="goal-row-title">${() => goal.title}</span>
-            ${MiniMeter({ current: () => meter().completed, total: () => meter().total })}
-            <span class="goal-row-stage">${() => goalCurrentStage(goal) ?? ''}</span>
-            <span class="goal-row-max">max ${() => goal.maxChunks}</span>
-            ${() => (goal.error ? html`<span class="goal-row-error">${() => goal.error}</span>` : '')}
-          </div>`
-        })}
-      </div>`
-    }}
-  </div>`
-}
-
-export function GoalDetail(props: {
-  goal: () => DashboardGoal | null
-  loopNames: () => Set<string>
-  projectId: () => string | null
-  onBack: () => void
-  onOpenLoop: (loopName: string) => void
-}) {
-  return html`<div class="goal-detail">
-    <div class="back-to-goals" onclick=${props.onBack}>← Back to goals</div>
-    ${() => {
-      const goal = props.goal()
-      if (!goal) return html`<div class="tab-empty">Goal not found.</div>`
-      const meter = createMemo(() => goalChunkMeter(goal))
-      // Single root element: solid-js/html generates invalid code for a
-      // template whose top level is a fragment of sibling roots.
-      return html`<div class="goal-detail-body">
-        <div class="goal-header" data-goal-status=${() => goal.status}>
-          <div class="goal-header-top">
-            <span class=${() => statusClass(goal.status)}>${() => goal.status}</span>
-            <h3 class="goal-header-title">${() => goal.title}</h3>
-            <span class="goal-header-meta">max ${() => goal.maxChunks} chunks</span>
-          </div>
-          <div class="goal-header-stats">
-            <span class="goal-header-stat">${() => 'Chunks ' + meter().completed + '/' + meter().total}</span>
-            <span class="goal-header-stat">Created ${() => fmtTime(goal.createdAt)}</span>
-            ${() => (goal.completedAt ? html`<span class="goal-header-stat">Completed ${() => fmtTime(goal.completedAt)}</span>` : '')}
-            ${() => (goal.error ? html`<span class="goal-header-error">${() => goal.error}</span>` : '')}
-          </div>
-          <div class="goal-objective">
-            <div class="goal-section-label">Objective</div>
-            <pre class="goal-objective-text">${() => goal.objectivePreview}</pre>
-          </div>
-          ${() => (goal.tasks.length > 0 ? html`<div class="goal-tasks">
-            <div class="goal-section-label">Tasks</div>
-            ${goal.tasks.map(task => html`<div class="goal-task-row">
-              ${() => (task.ref ? html`<span class="goal-task-ref">${() => task.ref}</span>` : '')}
-              <span class="goal-task-title">${() => task.title}</span>
-            </div>`)}
-          </div>` : '')}
-        </div>
-        <div class="goal-chunks">
-          <div class="goal-section-label">Chunks</div>
-          ${() => (goal.chunks.length === 0
-            ? html`<div class="tab-empty">No chunks recorded yet.</div>`
-            : goal.chunks.map(chunk => html`<div class="goal-chunk-row" data-chunk-stage=${() => chunk.stage}>
-                <span class="goal-chunk-index">${() => 'chunk ' + (chunk.chunkIndex + 1)}</span>
-                <span class=${() => chunkStageClass(chunk.stage)}>${() => chunk.stage}</span>
-                <span class="goal-chunk-title">${() => chunk.title ?? ''}</span>
-                ${() => (chunk.branch ? html`<span class="goal-chunk-branch">${() => chunk.branch}</span>` : '')}
-                ${() => (chunk.loopName && props.loopNames().has(chunk.loopName)
-                  ? LoopLink({ className: 'goal-chunk-loop-link', projectId: props.projectId, loopName: chunk.loopName, onOpen: props.onOpenLoop })
-                  : '')}
-                ${() => (chunk.summaryPreview ? html`<span class="goal-chunk-summary">${() => chunk.summaryPreview}</span>` : '')}
-              </div>`))}
-        </div>
-      </div>`
-    }}
-  </div>`
 }
 
 function findingsGroupsForLoops(

@@ -1,7 +1,7 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup, untrack, on, batch } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import html from 'solid-js/html'
-import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardGoal } from './types'
+import type { DashboardPayload, DashboardProject, DashboardLoop } from './types'
 import type { DashboardRoute, SortMode, RepoSection, LoopTab } from './helpers'
 import { parseDashboardHash, buildDashboardHash, syncHash, dataHash, loopMatchesFilters, buildRepoLabels, repoRawPath, repoLabel, loopActivityAt, sortLoops, tabsForLoop, sameList, fmtTime } from './helpers'
 import {
@@ -14,8 +14,6 @@ import {
   LoopTable,
   LoopDetail,
   EmptyState,
-  GoalsPanel,
-  GoalDetail,
   FindingsPanel,
   PlansPanel,
   type MatchedEntry,
@@ -36,7 +34,6 @@ export function App() {
   const [section, setSection] = createSignal<RepoSection>(initialRoute.section)
   const [loopName, setLoopName] = createSignal<string | null>(initialRoute.loopName)
   const [tab, setTab] = createSignal<LoopTab>(initialRoute.tab)
-  const [goalId, setGoalId] = createSignal<string | null>(initialRoute.goalId)
   const [statuses, setStatuses] = createSignal<string[]>(initialRoute.statuses, { equals: sameList })
   const [query, setQuery] = createSignal(initialRoute.query)
   // Rebuilt only for the hash-serialisation boundary and the scope key; the
@@ -47,7 +44,6 @@ export function App() {
     section: section(),
     loopName: loopName(),
     tab: tab(),
-    goalId: goalId(),
     statuses: statuses(),
     query: query(),
   }))
@@ -132,7 +128,6 @@ export function App() {
       setSection(next.section)
       setLoopName(next.loopName)
       setTab(next.tab)
-      setGoalId(next.goalId)
       setStatuses(next.statuses)
       setQuery(next.query)
     })
@@ -145,7 +140,6 @@ export function App() {
       if (patch.section !== undefined) setSection(patch.section)
       if (patch.loopName !== undefined) setLoopName(patch.loopName)
       if (patch.tab !== undefined) setTab(patch.tab)
-      if (patch.goalId !== undefined) setGoalId(patch.goalId)
       if (patch.statuses !== undefined) setStatuses(patch.statuses)
       if (patch.query !== undefined) setQuery(patch.query)
       if (projectChanged) {
@@ -160,7 +154,7 @@ export function App() {
   }
 
   const openLoop = (name: string) => {
-    navigate({ loopName: name, section: 'loops', goalId: null, statuses: [], query: '', tab: 'overview' })
+    navigate({ loopName: name, section: 'loops', statuses: [], query: '', tab: 'overview' })
   }
 
   // ── Event handlers ──────────────────────────────────────────────────────
@@ -203,7 +197,7 @@ export function App() {
       }
       if (matched.length > 0) {
         result.push({ proj, loops: matched })
-      } else if ((proj.goalCount > 0 || proj.unexecutedPlanCount > 0) && (!q || label.toLowerCase().indexOf(q) !== -1)) {
+      } else if (proj.unexecutedPlanCount > 0 && (!q || label.toLowerCase().indexOf(q) !== -1)) {
         result.push({ proj, loops: [] })
       }
     }
@@ -214,9 +208,9 @@ export function App() {
 
   /**
    * A project with at least one loop is an official repo: it has a projectDir,
-   * so the repo menu can label it. Projects discovered only from goals or
-   * unexecuted plans are unofficial — the repo menu omits them and the repo
-   * index lists those still holding unexecuted plans in a single section.
+   * so the repo menu can label it. Projects discovered only from unexecuted
+   * plans are unofficial — the repo menu omits them and the repo index lists
+   * those still holding unexecuted plans in a single section.
    */
   const officialEntries = createMemo<MatchedEntry[]>(
     () => matchedByProject().filter(entry => entry.proj.loops.length > 0),
@@ -232,7 +226,6 @@ export function App() {
   )
 
   const atLoopsSection = createMemo(() => section() === 'loops')
-  const atGoalsSection = createMemo(() => section() === 'goals')
   const atFindingsSection = createMemo(() => section() === 'findings')
   const atPlansSection = createMemo(() => section() === 'plans')
 
@@ -260,14 +253,14 @@ export function App() {
 
   const sectionCounts = createMemo(() => {
     const proj = selectedRepoProject()
-    if (!proj) return { loops: 0, goals: 0, findings: 0, plans: 0 }
+    if (!proj) return { loops: 0, findings: 0, plans: 0 }
     let findings = 0
     let plans = 0
     for (const dl of proj.loops) {
       findings += dl.findings.length
       if (dl.hasPlan) plans++
     }
-    return { loops: proj.loops.length, goals: proj.goalCount, findings, plans: plans + proj.unexecutedPlanCount }
+    return { loops: proj.loops.length, findings, plans: plans + proj.unexecutedPlanCount }
   })
 
   const repoLoopOptions = createMemo<LoopOption[]>(() => {
@@ -362,7 +355,7 @@ export function App() {
     return SectionNav({
       section: section(),
       counts: sectionCounts(),
-      onNavigate: (section) => navigate({ section, loopName: null, goalId: null }),
+      onNavigate: (section) => navigate({ section, loopName: null }),
     }) as Node
   })
 
@@ -414,38 +407,6 @@ export function App() {
       })}
       ${() => (selectedEntry() ? '' : EmptyState() as Node)}
     </div>` as Node
-  })
-
-  const selectedGoal = createMemo<DashboardGoal | null>(() => {
-    if (section() !== 'goals' || !goalId()) return null
-    const proj = selectedRepoProject()
-    if (!proj) return null
-    return proj.goals?.find(g => g.goalId === goalId()) ?? null
-  })
-
-  const repoLoopNames = createMemo(() => {
-    const proj = selectedRepoProject()
-    if (!proj) return new Set<string>()
-    return new Set(proj.loops.map(l => l.loop.loopName))
-  })
-
-  const goalsView = createMemo<Node | string>(() => {
-    if (!atGoalsSection()) return ''
-    const pid = projectId()
-    if (!pid) return ''
-    if (goalId()) {
-      return GoalDetail({
-        goal: selectedGoal,
-        loopNames: repoLoopNames,
-        projectId: () => projectId(),
-        onBack: () => navigate({ goalId: null }),
-        onOpenLoop: openLoop,
-      }) as Node
-    }
-    return GoalsPanel({
-      goals: () => selectedRepoProject()?.goals ?? [],
-      onOpen: (goalId: string) => navigate({ goalId }),
-    }) as Node
   })
 
   const repoAllLoops = createMemo<DashboardLoop[]>(() => {
@@ -587,7 +548,7 @@ export function App() {
                 ? RepoMenu({
                     entries: officialEntries,
                     labels: () => repoLabels(),
-                    onSelect: (projectId: string) => navigate({ projectId, loopName: null, section: 'loops', goalId: null }),
+                    onSelect: (projectId: string) => navigate({ projectId, loopName: null, section: 'loops' }),
                   })
                 : '')}
               ${RepoIndexPane({
@@ -596,7 +557,7 @@ export function App() {
                 unofficial: unofficialProjects,
                 onPlansChanged: () => void load(true),
                 onOpenLoop: (projectId: string, loopName: string) =>
-                  navigate({ projectId, loopName, section: 'loops', goalId: null, statuses: [], query: '', tab: 'overview' }),
+                  navigate({ projectId, loopName, section: 'loops', statuses: [], query: '', tab: 'overview' }),
               })}
             </div>`
           }
@@ -605,7 +566,6 @@ export function App() {
             ${filterBarView}
             ${listView}
             ${detailView}
-            ${goalsView}
             ${findingsView}
             ${plansView}
           </div>`

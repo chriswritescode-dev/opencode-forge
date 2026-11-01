@@ -5,7 +5,6 @@ import {
   fmtTime,
   statusClass,
   sectionStatusClass,
-  chunkStageClass,
   loopMatchesFilters,
   sortLoops,
   dataHash,
@@ -160,7 +159,6 @@ describe('parseDashboardHash / buildDashboardHash', () => {
       section: 'loops',
       loopName: null,
       tab: 'overview',
-      goalId: null,
       statuses: [],
       query: '',
     })
@@ -207,18 +205,6 @@ describe('parseDashboardHash / buildDashboardHash', () => {
     expect(r.loopName).toBeNull()
   })
 
-  test('goals section keyword sets section goals', () => {
-    const r = parseDashboardHash('#p1/goals')
-    expect(r.section).toBe('goals')
-    expect(r.goalId).toBeNull()
-  })
-
-  test('goal detail sets goalId', () => {
-    const r = parseDashboardHash('#p1/goals/g-abc')
-    expect(r.section).toBe('goals')
-    expect(r.goalId).toBe('g-abc')
-  })
-
   test('filters parse status and query', () => {
     const r = parseDashboardHash('#p1?status=running,errored&q=post')
     expect(r.statuses).toEqual(['running', 'errored'])
@@ -248,36 +234,10 @@ describe('parseDashboardHash / buildDashboardHash', () => {
         section: 'loops',
         loopName: null,
         tab: 'overview',
-        goalId: null,
         statuses: [],
         query: '',
       }),
     ).toBe('#p1')
-  })
-
-  test('buildDashboardHash emits the goals section and detail routes', () => {
-    expect(
-      buildDashboardHash({
-        projectId: 'p1',
-        section: 'goals',
-        loopName: null,
-        tab: 'overview',
-        goalId: null,
-        statuses: [],
-        query: '',
-      }),
-    ).toBe('#p1/goals')
-    expect(
-      buildDashboardHash({
-        projectId: 'p1',
-        section: 'goals',
-        loopName: null,
-        tab: 'overview',
-        goalId: 'goal a/b',
-        statuses: [],
-        query: '',
-      }),
-    ).toBe('#p1/goals/goal%20a%2Fb')
   })
 
   test('round-trip property for canonical hashes', () => {
@@ -288,8 +248,6 @@ describe('parseDashboardHash / buildDashboardHash', () => {
       '#p1',
       '#p1/loop/my-loop',
       '#p1/loop/my-loop/timeline',
-      '#p1/goals',
-      '#p1/goals/g-abc',
       '#p1?status=running,errored&q=post',
       '#p1/loop/x/usage?status=running',
       '#' + encodeURIComponent('proj x/y') + '/loop/' + encodeURIComponent('loop a/b'),
@@ -322,16 +280,9 @@ describe('parseDashboardHash / buildDashboardHash', () => {
       section: 'loops',
       loopName: null,
       tab: 'overview',
-      goalId: null,
       statuses: [],
       query: '',
     })
-  })
-
-  test('malformed percent escape in goals segment does not throw', () => {
-    const r = parseDashboardHash('#p1/goals/%GG')
-    expect(r.section).toBe('goals')
-    expect(r.goalId).toBe('%GG')
   })
 
   test('malformed percent escape in loop segment does not throw', () => {
@@ -718,16 +669,6 @@ describe('sectionStatusClass', () => {
     expect(sectionStatusClass('in_progress')).toBe('section-status section-in_progress')
     expect(sectionStatusClass('completed')).toBe('section-status section-completed')
     expect(sectionStatusClass('failed')).toBe('section-status section-failed')
-  })
-})
-
-describe('chunkStageClass', () => {
-  test('returns chunk-stage-badge chunk-stage-<stage> for chunk stages', () => {
-    expect(chunkStageClass('planning')).toBe('chunk-stage-badge chunk-stage-planning')
-    expect(chunkStageClass('launching')).toBe('chunk-stage-badge chunk-stage-launching')
-    expect(chunkStageClass('running')).toBe('chunk-stage-badge chunk-stage-running')
-    expect(chunkStageClass('completed')).toBe('chunk-stage-badge chunk-stage-completed')
-    expect(chunkStageClass('cancelled')).toBe('chunk-stage-badge chunk-stage-cancelled')
   })
 })
 
