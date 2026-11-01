@@ -300,7 +300,7 @@ describe('Loop', () => {
   })
 
   describe('bumpFindingRecurrence', () => {
-    test('increments finding recurrence count across consecutive calls', () => {
+    test('escalates recurrence in the coder and auditor prompts after the threshold', () => {
       const reviewFindingsRepo = createReviewFindingsRepo(db)
       reviewFindingsRepo.write({
         projectId, file: 'src/bug.ts', line: 10, severity: 'bug', description: 'Bug', scenario: 'test', loopName: 'test-loop',
@@ -309,52 +309,41 @@ describe('Loop', () => {
       const findings = loop.service.getOutstandingFindings('test-loop', 'bug')
       expect(findings.length).toBe(1)
 
-      // First bump → count=1
-      loop.service.bumpFindingRecurrence('test-loop', findings)
-      const prompt1 = loop.service.buildContinuationPrompt({
+      const state = {
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 1, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
+        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
+        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 2,
         currentSectionIndex: 0, totalSections: 0,
-      } as any)
-      // Count 1 is below threshold, so no escalation
+      } as any
+
+      // First bump → count=1, resolved through the repository.
+      loop.service.bumpFindingRecurrence('test-loop', findings)
+      const prompt1 = loop.service.buildContinuationPrompt({ ...state, iteration: 1 })
       expect(prompt1).not.toContain('Recurring blocking findings')
       expect(prompt1).not.toContain('revisit the causal hypothesis')
       expect(prompt1).not.toContain('Recurring findings — re-evaluate')
 
-      // Second bump → count=2
+      // Second bump → count=2, with explicit findings input.
       loop.service.bumpFindingRecurrence('test-loop', findings)
-      const prompt2 = loop.service.buildContinuationPrompt({
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 2, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any)
-      // Count 2 is still below threshold
+      const prompt2 = loop.service.buildContinuationPrompt({ ...state, iteration: 2 }, undefined, findings)
       expect(prompt2).not.toContain('Recurring blocking findings')
 
-      // Third bump → count=3 (threshold reached)
+      // Third bump → count=3 (threshold reached) in both input paths.
       loop.service.bumpFindingRecurrence('test-loop', findings)
-      const prompt3 = loop.service.buildContinuationPrompt({
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any)
-      expect(prompt3).toContain('Recurring blocking findings')
-      expect(prompt3).toContain('src/bug.ts:10')
-      expect(prompt3).toContain('recurred 3×')
-      expect(prompt3).toContain('revisit the causal hypothesis')
-      expect(prompt3).toContain('reproducer or counterexample')
-      expect(prompt3).toContain('Do not repeat the previous patch')
+      for (const prompt of [
+        loop.service.buildContinuationPrompt(state),
+        loop.service.buildContinuationPrompt(state, undefined, findings),
+      ]) {
+        expect(prompt).toContain('Recurring blocking findings')
+        expect(prompt).toContain('src/bug.ts:10')
+        expect(prompt).toContain('recurred 3×')
+        expect(prompt).toContain('revisit the causal hypothesis')
+        expect(prompt).toContain('reproducer or counterexample')
+        expect(prompt).toContain('Do not repeat the previous patch')
+      }
 
-      // Also surfaces in audit prompt
-      const auditPrompt = loop.service.buildAuditPrompt({
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any)
+      // Also surfaces in the auditor prompt.
+      const auditPrompt = loop.service.buildAuditPrompt({ ...state, phase: 'auditing' })
       expect(auditPrompt).toContain('Recurring findings — re-evaluate')
       expect(auditPrompt).toContain('src/bug.ts:10')
       expect(auditPrompt).toContain('`src/bug.ts:10` (3×)')
@@ -398,49 +387,6 @@ describe('Loop', () => {
       } as any)
       // Count=1, below threshold — no escalation
       expect(prompt).not.toContain('Recurring blocking findings')
-    })
-
-    test('escalates recurrence in the coder and auditor prompts after threshold', () => {
-      const reviewFindingsRepo = createReviewFindingsRepo(db)
-
-      reviewFindingsRepo.write({
-        projectId, file: 'src/final-bug.ts', line: 42, severity: 'bug', description: 'Escalating bug', scenario: 'test', loopName: 'test-loop-escalating',
-      })
-
-      const findings = loop.service.getOutstandingFindings('test-loop-escalating', 'bug')
-      expect(findings.length).toBe(1)
-
-      const state = {
-        active: true, sessionId: 's1', loopName: 'test-loop-escalating', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 2,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any
-
-      // Bump once — below threshold, no escalation
-      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
-      const prompt1 = loop.service.buildContinuationPrompt(state, undefined, findings)
-      expect(prompt1).not.toContain('Recurring blocking findings')
-
-      // Bump twice — still below threshold
-      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
-      const prompt2 = loop.service.buildContinuationPrompt(state, undefined, findings)
-      expect(prompt2).not.toContain('Recurring blocking findings')
-
-      // Bump third time — threshold reached, escalation appears
-      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
-      const prompt3 = loop.service.buildContinuationPrompt(state, undefined, findings)
-      expect(prompt3).toContain('Recurring blocking findings')
-      expect(prompt3).toContain('src/final-bug.ts:42')
-      expect(prompt3).toContain('recurred 3×')
-      expect(prompt3).toContain('revisit the causal hypothesis')
-      expect(prompt3).toContain('reproducer or counterexample')
-
-      // Also surfaces in the auditor prompt
-      const auditPrompt = loop.service.buildAuditPrompt({ ...state, phase: 'auditing' })
-      expect(auditPrompt).toContain('Recurring findings — re-evaluate')
-      expect(auditPrompt).toContain('src/final-bug.ts:42')
-      expect(auditPrompt).toContain('Recurring Findings policy')
     })
   })
 

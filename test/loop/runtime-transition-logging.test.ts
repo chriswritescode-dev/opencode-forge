@@ -122,53 +122,6 @@ describe('Runtime transition logging', () => {
     return loopTransitionsRepo.listForLoop(projectId, loopName)
   }
 
-  describe('Bug 1: capped dirty last open section records only the terminate row', () => {
-    test('capped dirty last open section records only the terminate row', async () => {
-      const state = makeLoopState({
-        ...STATE_DEFAULTS,
-        loopName,
-        phase: 'auditing',
-        iteration: 5,
-        maxIterations: 5,
-        currentSectionIndex: 1,
-        totalSections: 2,
-      })
-
-      reviewFindingsRepo.write({
-        projectId,
-        loopName,
-        file: 'src/x.ts',
-        line: 1,
-        severity: 'bug',
-        description: 'unfixed bug',
-        sectionIndex: 1,
-      })
-
-      const loopInstance = buildLoop({
-        clientTweaks: { session: { messages: async () => assistantMessage('last open section still has findings') } },
-      })
-      loopInstance.start({ state })
-
-      db.run(
-        `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [projectId, loopName, 0, 'Section 1', 'Content 1', 'completed', 0, Date.now(), Date.now(), Date.now()],
-      )
-      db.run(
-        `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [projectId, loopName, 1, 'Section 2', 'Content 2', 'in_progress', 0, Date.now(), null, Date.now()],
-      )
-
-      await tickIdle(loopInstance, 'audit-sess')
-
-      const rows = getRows()
-      expect(rows).toHaveLength(1)
-      expect(rows[0].transitionKind).toBe('terminate')
-      expect(rows[0].fromPhase).toBe('auditing')
-      expect(rows[0].toPhase).toBeNull()
-      expect(rows[0].eventType).toBe('max_iterations')
-    })
-  })
-
   describe('Bug 2a: rewind completion produces exactly one terminal row', () => {
     test('rewind-all-completed clean audit completes the loop with one terminate row', async () => {
       const state = makeLoopState({

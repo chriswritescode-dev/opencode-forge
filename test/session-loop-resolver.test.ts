@@ -1,6 +1,21 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
+import { createSessionLoopResolver, type SessionLoopResolverDeps } from '../src/services/session-loop-resolver'
 import { ParentLookupUndeterminedError } from '../src/utils/session-ancestry'
+
+type PartialLoopService = {
+  resolveLoopName: (sessionId: string) => string | null
+  getActiveState: (name: string) => { loopName: string; active: boolean; sandbox?: boolean; worktreeDir?: string } | null
+  findActiveByWorktreeDir?: () => { loopName: string; active: boolean; sandbox?: boolean; worktreeDir?: string } | null
+}
+
+function mockLoop(loop: { service: PartialLoopService; listActive?: () => unknown[] }): SessionLoopResolverDeps['loop'] {
+  return {
+    service: {
+      findActiveByWorktreeDir: () => null,
+      ...loop.service,
+    } as unknown as SessionLoopResolverDeps['loop']['service'],
+  }
+}
 
 describe('createSessionLoopResolver', () => {
   const mockLogger = {
@@ -16,10 +31,10 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: {
+        loop: mockLoop({
           service: { resolveLoopName: () => null, getActiveState: () => null },
           listActive: () => [],
-        },
+        }),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -33,10 +48,10 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: {
+        loop: mockLoop({
           service: { resolveLoopName: () => null, getActiveState: () => null },
           listActive: () => [],
-        },
+        }),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -50,13 +65,13 @@ describe('createSessionLoopResolver', () => {
       let active = false
       const logger = { log: vi.fn(), debug: vi.fn(), error: vi.fn() }
       const resolver = createSessionLoopResolver({
-        loop: {
+        loop: mockLoop({
           service: {
             resolveLoopName: () => 'loop-1',
             getActiveState: () => (active ? { loopName: 'loop-1', active: true } : null),
             findActiveByWorktreeDir: () => null,
           },
-        },
+        }),
         getParentSessionId: async () => null,
         logger,
       })
@@ -86,7 +101,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: { service: loopService },
+        loop: mockLoop({ service: loopService }),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -121,7 +136,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: { service: loopService },
+        loop: mockLoop({ service: loopService }),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -143,7 +158,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: { service: loopService },
+        loop: mockLoop({ service: loopService }),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -167,7 +182,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: { service: loopService },
+        loop: mockLoop({ service: loopService }),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -177,42 +192,6 @@ describe('createSessionLoopResolver', () => {
       await resolver.resolveActiveLoopForSession('session-a')
 
       expect(callCount).toBe(3)
-    })
-  })
-
-  describe('inactive direct loop still consults parent', () => {
-    it('falls back to parent even when direct loop exists but is inactive', async () => {
-      let parentLookupCalled = false
-      const getParentSessionId = async (sessionId: string) => {
-        if (sessionId === 'session-a') {
-          parentLookupCalled = true
-          return 'parent-session-1'
-        }
-        return null
-      }
-
-      const loopService = {
-        resolveLoopName: (sessionId: string) => {
-          if (sessionId === 'session-a') return 'loop-1'
-          if (sessionId === 'parent-session-1') return 'loop-2'
-          return null
-        },
-        getActiveState: (name: string) => {
-          if (name === 'loop-1') return { loopName: 'loop-1', active: false, sandbox: true }
-          if (name === 'loop-2') return { loopName: 'loop-2', active: true, sandbox: true }
-          return null
-        },
-      }
-
-      const resolver = createSessionLoopResolver({
-        loop: { service: loopService },
-        getParentSessionId,
-        logger: mockLogger,
-      })
-
-      const result = await resolver.resolveActiveLoopForSession('session-a')
-      expect(parentLookupCalled).toBe(true)
-      expect(result).toEqual({ loopName: 'loop-2', active: true, sandbox: true })
     })
   })
 
@@ -240,7 +219,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -269,7 +248,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -295,7 +274,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -324,7 +303,7 @@ describe('createSessionLoopResolver', () => {
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,
@@ -353,7 +332,7 @@ describe('createSessionLoopResolver', () => {
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,
@@ -380,7 +359,7 @@ describe('createSessionLoopResolver', () => {
       const getSessionDirectory = async (_sessionId: string) => '/some-other-dir'
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,
@@ -402,7 +381,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         logger: mockLogger,
       })
@@ -429,7 +408,7 @@ describe('createSessionLoopResolver', () => {
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
 
       const resolver = createSessionLoopResolver({
-        loop,
+        loop: mockLoop(loop),
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,

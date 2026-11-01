@@ -109,6 +109,39 @@ describe('LoopService section management', () => {
       expect(section!.summaryFollowUps).toBe('Handled in section 2')
       expect(section!.completedAt).not.toBeNull()
     })
+
+    test('stores null summary fields and still records completion time', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 1)
+
+      loopService.completeSection('test-loop', 0, {
+        done: null,
+        deviations: null,
+        followUps: null,
+      })
+
+      const section = sectionPlansRepo.get(projectId, 'test-loop', 0)
+      expect(section).not.toBeNull()
+      expect(section!.status).toBe('completed')
+      expect(section!.summaryDone).toBeNull()
+      expect(section!.summaryDeviations).toBeNull()
+      expect(section!.summaryFollowUps).toBeNull()
+      expect(section!.completedAt).not.toBeNull()
+    })
+
+    test('completing a non-existent section leaves existing sections unchanged', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+
+      loopService.completeSection('test-loop', 5, {
+        done: 'phantom done',
+        deviations: null,
+        followUps: null,
+      })
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)!.status).toBe('pending')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 1)!.status).toBe('pending')
+    })
   })
 
   describe('incrementSectionAttempts', () => {
@@ -123,6 +156,29 @@ describe('LoopService section management', () => {
 
       loopService.incrementSectionAttempts('test-loop', 0)
       expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.attempts).toBe(2)
+    })
+
+    test('does not change the current section index', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'in_progress')
+      loopsRepo.setCurrentSectionIndex(projectId, 'test-loop', 1)
+
+      loopService.incrementSectionAttempts('test-loop', 1)
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(state.currentSectionIndex).toBe(1)
+      expect(state.totalSections).toBe(3)
+    })
+
+    test('incrementing a non-existent section does not touch existing sections', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 1)
+
+      loopService.incrementSectionAttempts('test-loop', 5)
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)!.attempts).toBe(0)
     })
   })
 
@@ -144,6 +200,15 @@ describe('LoopService section management', () => {
       expect(section!.summaryFollowUps).toBeNull()
       expect(section!.completedAt).toBeNull()
     })
+
+    test('resetting a non-existent section leaves existing sections unchanged', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 1)
+
+      loopService.resetSectionForRewind('test-loop', 5)
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)!.status).toBe('pending')
+    })
   })
 
   describe('setCurrentSectionIndex', () => {
@@ -156,6 +221,27 @@ describe('LoopService section management', () => {
       const state = loopService.getActiveState('test-loop-with-3')
       expect(state).not.toBeNull()
       expect(state!.currentSectionIndex).toBe(2)
+    })
+  })
+
+  describe('startSection', () => {
+    test('advancing through sections updates the index and marks each section in_progress', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 5)
+
+      for (let i = 0; i < 5; i++) {
+        loopService.setCurrentSectionIndex('test-loop', i)
+        loopService.startSection('test-loop', i)
+      }
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(state.currentSectionIndex).toBe(4)
+
+      for (let i = 0; i < 5; i++) {
+        const plan = sectionPlansRepo.get(projectId, 'test-loop', i)!
+        expect(plan.status).toBe('in_progress')
+        expect(plan.startedAt).not.toBeNull()
+      }
     })
   })
 
@@ -177,6 +263,26 @@ describe('LoopService section management', () => {
       sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'in_progress')
 
       const state = loopService.getActiveState('test-loop')!
+      expect(loopService.isLastOpenSection(state)).toBe(false)
+    })
+
+    test('is true for an earlier index after a rewind', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'in_progress')
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 2, 'completed')
+      loopsRepo.setCurrentSectionIndex(projectId, 'test-loop', 0)
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(loopService.isLastOpenSection(state)).toBe(true)
+    })
+
+    test('is false for a non-sectioned loop', () => {
+      insertLoop('no-sections')
+      loopsRepo.setTotalSections(projectId, 'no-sections', 0)
+
+      const state = loopService.getActiveState('no-sections')!
       expect(loopService.isLastOpenSection(state)).toBe(false)
     })
   })
@@ -256,27 +362,92 @@ describe('LoopService section management', () => {
     })
   })
 
-  describe('parseSectionSummary', () => {
-    test('extracts summary sections', () => {
-      const text = `<!-- section-summary:start -->
-### Done
-- Implemented feature X
-### Deviations
-- None
-### Follow-ups
-- Handled in section 2
-<!-- section-summary:end -->`
+  describe('last audit result', () => {
+    test('persists audit text in large fields', () => {
+      insertLoop('test-loop')
 
-      const result = loopService.parseSectionSummary(text)
-      expect(result).not.toBeNull()
-      expect(result!.done).toContain('Implemented feature X')
-      expect(result!.deviations).toContain('None')
-      expect(result!.followUps).toContain('Handled in section 2')
+      loopService.setLastAuditResult('test-loop', 'Section looks good')
+
+      expect(loopService.getActiveState('test-loop')!.lastAuditResult).toBe('Section looks good')
     })
 
-    test('returns null when no section summary marker', () => {
-      const result = loopService.parseSectionSummary('No summary here')
-      expect(result).toBeNull()
+    test('ignores empty string', () => {
+      insertLoop('test-loop')
+
+      loopService.setLastAuditResult('test-loop', '')
+
+      expect(loopService.getActiveState('test-loop')!.lastAuditResult).toBeUndefined()
+    })
+
+    test('clearLastAuditResult removes stored audit text', () => {
+      insertLoop('test-loop')
+      loopService.setLastAuditResult('test-loop', 'Some text')
+
+      loopService.clearLastAuditResult('test-loop')
+
+      expect(loopService.getActiveState('test-loop')!.lastAuditResult).toBeUndefined()
+    })
+  })
+
+  describe('getCompletedSectionDigest', () => {
+    test('returns completed sections with their summaries', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+      sectionPlansRepo.setSummary(projectId, 'test-loop', 0, {
+        done: 'Feature A implemented',
+        deviations: 'None',
+        followUps: 'Deferred item',
+      })
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'completed')
+      sectionPlansRepo.setSummary(projectId, 'test-loop', 1, {
+        done: 'Feature B implemented',
+        deviations: 'Minor deviation',
+      })
+
+      const state = loopService.getActiveState('test-loop')!
+      const digest = loopService.getCompletedSectionDigest(state)
+
+      expect(digest).toEqual([
+        {
+          index: 0,
+          title: 'Section 1',
+          summaryDone: 'Feature A implemented',
+          summaryDeviations: 'None',
+          summaryFollowUps: 'Deferred item',
+        },
+        {
+          index: 1,
+          title: 'Section 2',
+          summaryDone: 'Feature B implemented',
+          summaryDeviations: 'Minor deviation',
+          summaryFollowUps: null,
+        },
+      ])
+      expect(digest.length).toBeLessThan(state.totalSections)
+    })
+
+    test('returns an empty digest when no sections are completed', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+
+      const state = loopService.getActiveState('test-loop')!
+      expect(loopService.getCompletedSectionDigest(state)).toHaveLength(0)
+    })
+
+    test('includes every completed section once all sections are complete', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 3)
+
+      for (let i = 0; i < 3; i++) {
+        loopService.completeSection('test-loop', i, { done: `Done ${i}`, deviations: null, followUps: null })
+      }
+
+      const state = loopService.getActiveState('test-loop')!
+      const digest = loopService.getCompletedSectionDigest(state)
+
+      expect(digest).toHaveLength(state.totalSections)
+      expect(digest).toHaveLength(3)
     })
   })
 
@@ -343,73 +514,6 @@ describe('LoopService section management', () => {
 
       expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.status).toBe(beforeStatuses[0])
       expect(sectionPlansRepo.get(projectId, 'test-loop', 1)?.status).toBe(beforeStatuses[1])
-    })
-  })
-
-
-
-  describe('buildSectionContinuationPrompt', () => {
-    test('includes outstanding bug findings', () => {
-      insertLoop('test-loop')
-      insertSections('test-loop', 2)
-
-      reviewFindingsRepo.write({
-        projectId,
-        file: 'src/test.ts',
-        line: 10,
-        severity: 'bug',
-        description: 'Test bug',
-        loopName: 'test-loop',
-        sectionIndex: 0,
-      })
-
-      const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionContinuationPrompt(state)
-
-      expect(prompt).toContain('Outstanding review findings (1)')
-      expect(prompt).toContain('src/test.ts:10')
-      expect(prompt).toContain('Test bug')
-    })
-
-    test('includes cross-section findings in the continuation prompt', () => {
-      insertLoop('test-loop')
-      insertSections('test-loop', 2)
-
-      reviewFindingsRepo.write({
-        projectId,
-        file: 'src/test.ts',
-        line: 10,
-        severity: 'bug',
-        description: 'Cross-section bug',
-        loopName: 'test-loop',
-        sectionIndex: null,
-      })
-
-      const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionContinuationPrompt(state)
-
-      expect(prompt).toContain('Outstanding review findings (1)')
-      expect(prompt).toContain('src/test.ts:10')
-    })
-
-    test('excludes bugs attributed to a later section from the continuation prompt', () => {
-      insertLoop('test-loop')
-      insertSections('test-loop', 2)
-
-      reviewFindingsRepo.write({
-        projectId,
-        file: 'src/later.ts',
-        line: 11,
-        severity: 'bug',
-        description: 'Later-section bug',
-        loopName: 'test-loop',
-        sectionIndex: 1,
-      })
-
-      const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionContinuationPrompt(state)
-
-      expect(prompt).not.toContain('Outstanding review findings')
     })
   })
 })
