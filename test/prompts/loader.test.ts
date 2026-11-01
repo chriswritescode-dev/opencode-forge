@@ -12,12 +12,6 @@ describe('loadPrompt', () => {
     expect(prompt).toContain('plan-edit')
   })
 
-  test('architect-auto prompt retains forge-plan:none token', () => {
-    const prompt = loadPrompt(['agents', 'architect-auto.md'])
-    expect(prompt).toContain('<!-- forge-plan:none -->')
-    expect(prompt).toContain('plan-write')
-  })
-
   test('loads code prompt from bundled markdown', () => {
     const prompt = loadPrompt(['agents', 'code.md'])
     expect(prompt).toContain('# Forge code agent')

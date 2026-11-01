@@ -34,19 +34,11 @@ describe('createConfigHandler commands', () => {
     // Exactly the bundled commands are registered.
     expect(Object.keys(commands).sort()).toEqual([
       'execute-plan',
-      'goal',
       'loop-cancel',
       'loop-status',
       'review',
       'review-plan',
     ])
-
-    const goal = commands.goal
-    expect(goal).toBeDefined()
-    expect(goal.agent).toBe('architect')
-    expect(goal.subtask).toBe(false)
-    expect(goal.template).toContain('goal-write')
-    expect(goal.template).toContain('$ARGUMENTS')
 
     const loopStatus = commands['loop-status']
     expect(loopStatus).toBeDefined()

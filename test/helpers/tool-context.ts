@@ -1,6 +1,4 @@
 import type { Database } from 'bun:sqlite'
-import type { GoalOrchestrator } from '../../src/services/goal-orchestrator'
-import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import type { ToolContext } from '../../src/tools/types'
 import { PLAN_EXECUTION_LABELS } from '../../src/utils/plan-execution'
 import { buildExecutionDeps } from './loop-fixtures'
@@ -29,8 +27,6 @@ export function buildToolContext(overrides: Partial<ToolContext> & { db: Databas
     plansRepo: deps.plansRepo,
     reviewFindingsRepo: deps.reviewFindingsRepo!,
     loopsRepo: deps.loopsRepo,
-    goalsRepo: createGoalsRepo(db),
-    goalOrchestrator: {} as GoalOrchestrator,
     sectionPlansRepo: deps.sectionPlansRepo!,
     pendingTeardowns: deps.pendingTeardowns,
     resolveActiveLoopForSession: async (sessionID) => {

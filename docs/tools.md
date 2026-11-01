@@ -1,6 +1,6 @@
 # Tools Reference
 
-Forge exposes server-side tools for plan storage, review findings, loop management, goal orchestration, section navigation, and sandbox shell execution. The `review` / `review-plan` slash commands run inline instead of spawning a subtask. See [Limitations](../README.md#limitations).
+Forge exposes server-side tools for plan storage, review findings, loop management, section navigation, and sandbox shell execution. The `review` / `review-plan` slash commands run inline instead of spawning a subtask. See [Limitations](../README.md#limitations).
 
 See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](configuration.md), [Loop System](loop-system.md).
 
@@ -21,9 +21,6 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-handoff` | Record the coder or auditor handoff for the current loop phase, then end the turn. | [`src/tools/loop-handoff.ts`](../src/tools/loop-handoff.ts) |
 | `loop-complete` | Record the post-action report for the current loop phase, then end the turn. | [`src/tools/loop-handoff.ts`](../src/tools/loop-handoff.ts) |
-| `goal-write` | Save the ordered goal (objective and task list) for this session as a draft; the next loop launched from this session becomes chunk 1. Architect-only. | [`src/tools/goal.ts`](../src/tools/goal.ts) |
-| `goal-status` | List goals, inspect one goal's chunks, or restart a paused/interrupted goal (optionally raising `maxChunks`). | [`src/tools/goal.ts`](../src/tools/goal.ts) |
-| `goal-cancel` | Cancel a goal, optionally cancelling its running chunk loop. | [`src/tools/goal.ts`](../src/tools/goal.ts) |
 
 ## Plan Tools
 
@@ -45,7 +42,7 @@ Arguments:
 
 ### `plan-write`
 
-Creates or overwrites the plan stored for the current session, matching the regular Write interaction with the plan as the implicit target. The stored plan is the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `plan-edit` for incremental additions and revisions. Available to architect and architect-auto sessions; denied in code, minion, auditor, and auditor-loop sessions, and inside loop/audit sessions.
+Creates or overwrites the plan stored for the current session, matching the regular Write interaction with the plan as the implicit target. The stored plan is the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `plan-edit` for incremental additions and revisions. Available to architect sessions; denied in code, minion, auditor, and auditor-loop sessions, and inside loop/audit sessions.
 
 Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, the full decomposed section outline, and a `Warnings:` block when any structural requirement is unmet.
 
@@ -175,7 +172,7 @@ Arguments:
 
 Completed loops are history-only and cannot be restarted. See [Loop System](loop-system.md#restartability).
 
-> Plan authoring (`plan-write`, `plan-edit`, `goal-write`), the loop management tools (`execute-plan`, `loop-cancel`, `loop-status`), the goal tools (`goal-status`, `goal-cancel`), and `question` are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work. `plan-read` stays available, and `plan-adjust` is callable by the auditor during a section audit. `loop-handoff` and `loop-complete` are Forge-managed as well: they are accepted only from the loop's current phase session and cannot be denied through `loop.permissions` (see [Loop Handoff Tools](#loop-handoff-tools)).
+> Plan authoring (`plan-write`, `plan-edit`), the loop management tools (`execute-plan`, `loop-cancel`, `loop-status`), and `question` are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work. `plan-read` stays available, and `plan-adjust` is callable by the auditor during a section audit. `loop-handoff` and `loop-complete` are Forge-managed as well: they are accepted only from the loop's current phase session and cannot be denied through `loop.permissions` (see [Loop Handoff Tools](#loop-handoff-tools)).
 
 ## Loop Handoff Tools
 
@@ -216,48 +213,7 @@ Both tools share these rules:
 - The last call wins: a second call in the same turn replaces the earlier pending record, and the reply says so.
 - A record is applied once and only by the session that wrote it. The loop never parses assistant text to decide that a turn ended.
 - `loop-handoff` is rejected in `post_action` with an error that says to use `loop-complete`; `loop-complete` is rejected outside `post_action`.
-- Agent availability: `architect` and `architect-auto` exclude both tools; the `auditor` subagent excludes both; the `minion` subagent excludes both; the `auditor-loop` agent excludes `loop-complete`; the `code` agent excludes neither.
-
-## Goal Tools
-
-Goal tools drive the sequential goal orchestrator: a goal is an objective run as a series of plan-loop **chunks**, one per task, each stacked on the previous chunk's branch. See [Loop System → Goals](loop-system.md#goals) for the full lifecycle. `goal-write` is architect-only; all three are denied inside loop and audit sessions.
-
-### `goal-write`
-
-Saves the ordered goal for the current session as a `draft`. The next loop launched from that session — through the TUI dialog, the plan-approval `Loop` path, or `execute-plan` — is attached as chunk 1 and promotes the draft to `running`. A session may hold at most one running or paused goal, and `goal-write` replaces any existing draft for the session. Available to architect sessions only (excluded from code, minion, auditor, and architect-auto).
-
-Arguments:
-
-| Argument | Description |
-|---|---|
-| `title` | Short title for the goal; also seeds the generated goal id. |
-| `objective` | The goal objective, verbatim plus any clarified scope. |
-| `tasks` | Optional ordered task list; each task becomes its own chunk. Each entry takes an optional `ref` (ticket/issue identifier), a `title`, and optional `details` (a self-contained summary including acceptance criteria). |
-| `maxChunks` | Optional cap on how many chunks the goal may run, 1–100. Defaults to 20. |
-
-### `goal-status`
-
-Lists goals when called with no arguments; pass `goalId` for a goal's detail (status, models, objective, tasks, and chunks with their stage, loop, branch, and summary). List and detail show the current chunk's loop status whenever that loop is not running, with a restart hint; a cancelled chunk is never shown as the current chunk. With `restart`, resumes a paused or interrupted goal; when the running chunk's loop row is gone, it cancels that chunk, advances the goal from the last completed chunk, and names the abandoned branch.
-
-Arguments:
-
-| Argument | Description |
-|---|---|
-| `goalId` | Goal id to show in detail, or to restart when `restart` is true. |
-| `restart` | Restart a paused or interrupted goal. Requires `goalId`. |
-| `force` | Discard planning that is still marked in flight when restarting. |
-| `maxChunks` | Raise the goal chunk limit when restarting. |
-
-### `goal-cancel`
-
-Cancels a goal by `goalId`, cleaning up any planning chunks.
-
-Arguments:
-
-| Argument | Description |
-|---|---|
-| `goalId` | Goal id to cancel. |
-| `cancelRunningLoops` | Also cancel the goal chunk loop that is currently running. |
+- Agent availability: the `architect` agent excludes both tools; the `auditor` subagent excludes both; the `minion` subagent excludes both; the `auditor-loop` agent excludes `loop-complete`; the `code` agent excludes neither.
 
 ## Sandbox Shell
 

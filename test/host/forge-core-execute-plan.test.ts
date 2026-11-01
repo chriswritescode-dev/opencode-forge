@@ -13,7 +13,7 @@ vi.mock('../../src/services/execution', async (importOriginal) => {
         dispatched.push(command)
         return {
           ok: true as const,
-          data: { sessionId: 'ses_loop', loopName: 'loop-a', worktreeDir: '/wt', workspaceId: 'ws-1', goalId: 'goal-1', worktreeBranch: 'pm-61-export' },
+          data: { sessionId: 'ses_loop', loopName: 'loop-a', worktreeDir: '/wt', workspaceId: 'ws-1', worktreeBranch: 'pm-61-export' },
         }
       },
     }),
@@ -75,7 +75,7 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
       sandbox: { enabled: false, resources: { memory: '2g', cpus: '2', dockerDisk: 'bad' } },
     })
 
-    expect(result).toEqual({ sessionId: 'ses_loop', loopName: 'loop-a', branch: 'pm-61-export', worktreeDir: '/wt', workspaceId: 'ws-1', goalId: 'goal-1' })
+    expect(result).toEqual({ sessionId: 'ses_loop', loopName: 'loop-a', branch: 'pm-61-export', worktreeDir: '/wt', workspaceId: 'ws-1' })
     const command = dispatched.at(-1) as Record<string, unknown>
     expect(command.type).toBe('loop.start')
     expect(command.maxIterations).toBe(3)

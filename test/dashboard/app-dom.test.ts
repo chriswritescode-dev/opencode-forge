@@ -73,12 +73,8 @@ function makePayload(over: Record<string, any> = {}): any {
   // for keyed reconcile.
   const loops = over.loops
   delete over.loops
-  const goals = over.goals ?? []
-  delete over.goals
   const unexecutedPlans = over.unexecutedPlans ?? []
   delete over.unexecutedPlans
-  const goalCount = over.goalCount ?? goals.length
-  delete over.goalCount
   return {
     generatedAt: Date.now(),
     projects: [
@@ -87,8 +83,6 @@ function makePayload(over: Record<string, any> = {}): any {
         projectId: 'p1',
         projectDir: '/proj/p1',
         loops: loops ?? [makeLoop({ ...dashLoopOver, loop: loopOver })],
-        goals,
-        goalCount,
         unexecutedPlans,
         unexecutedPlanCount: over.unexecutedPlanCount ?? unexecutedPlans.length,
       },
@@ -4464,8 +4458,6 @@ describe('dashboard App findings and plans sections', () => {
           projectId: 'p1',
           projectDir: '/proj/p1',
           loops: [makeLoop()],
-          goals: [],
-          goalCount: 0,
           unexecutedPlans: [],
           unexecutedPlanCount: 0,
         },
@@ -4474,8 +4466,6 @@ describe('dashboard App findings and plans sections', () => {
           projectId: 'p2',
           projectDir: null,
           loops: [],
-          goals: [],
-          goalCount: 0,
           unexecutedPlans: [makeUnexecutedPlan({ projectId: 'p2' })],
           unexecutedPlanCount: 1,
         },
@@ -4500,6 +4490,7 @@ describe('dashboard App findings and plans sections', () => {
     await flush()
 
     const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
+    expect(navItems.map(i => i.textContent?.replace(/\s*\d+$/, '').trim())).toEqual(['Loops', 'Findings', 'Plans'])
     const plansItem = navItems.find(i => i.textContent?.startsWith('Plans'))!
     expect(plansItem.querySelector('.section-nav-count')?.textContent).toBe('3')
   })
@@ -4705,196 +4696,6 @@ describe('dashboard App findings and plans sections', () => {
     await flush()
     expect(container.querySelector('.markdown-content')?.textContent).toContain('PLAN BODY')
     expect(container.querySelector('.unexecuted-plan-loading')).toBeFalsy()
-  })
-})
-
-describe('dashboard App goals section', () => {
-  function makeGoal(over: Record<string, any> = {}): any {
-    const goalId = over.goalId ?? 'g-abc'
-    const { chunks = [], ...rest } = over
-    return {
-      id: goalId,
-      goalId,
-      title: 'Goal ABC',
-      objectivePreview: 'Objective text',
-      status: 'running',
-      error: null,
-      maxChunks: 5,
-      tasks: [],
-      executionModel: null,
-      auditorModel: null,
-      createdAt: 1700000000000,
-      updatedAt: 1700000000000,
-      completedAt: null,
-      chunks,
-      ...rest,
-    }
-  }
-
-  function makeChunk(over: Record<string, any> = {}): any {
-    return {
-      chunkIndex: 0,
-      stage: 'running',
-      title: 'Chunk',
-      loopName: null,
-      branch: null,
-      summaryPreview: null,
-      ...over,
-    }
-  }
-
-  test('#p1/goals renders one .goal-row per goal with a chunks meter, stage, and error', async () => {
-    window.location.hash = '#p1/goals'
-    payload = makePayload({
-      goals: [
-        makeGoal({
-          goalId: 'g-a',
-          title: 'A',
-          chunks: [
-            makeChunk({ chunkIndex: 0, stage: 'completed' }),
-            makeChunk({ chunkIndex: 1, stage: 'running' }),
-          ],
-        }),
-        makeGoal({ goalId: 'g-b', title: 'B', status: 'cancelled', error: 'boom' }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const rows = Array.from(container.querySelectorAll('.goal-row')) as HTMLElement[]
-    expect(rows.length).toBe(2)
-    expect(rows.every(r => r.querySelector('.lt-meter-cell'))).toBe(true)
-    const a = rows.find(r => r.querySelector('.goal-row-title')?.textContent === 'A')!
-    expect(a.querySelector('.lt-meter-text')?.textContent).toBe('1/2')
-    expect(a.querySelector('.goal-row-stage')?.textContent).toBe('running')
-    expect(a.querySelector('.status-badge')?.textContent).toBe('running')
-    const b = rows.find(r => r.querySelector('.goal-row-title')?.textContent === 'B')!
-    expect(b.querySelector('.goal-row-error')?.textContent).toBe('boom')
-    // Loop table is hidden on the goals section.
-    expect(container.querySelector('table.loop-table')).toBeFalsy()
-  })
-
-  test('#p1/goals/g-abc numbers chunks from 1 and links a chunk loop present in the payload', async () => {
-    window.location.hash = '#p1/goals/g-abc'
-    payload = makePayload({
-      loops: [makeLoop({ loop: { loopName: 'loop-linked', status: 'running' } })],
-      goals: [
-        makeGoal({
-          title: 'Goal ABC',
-          tasks: [{ ref: 'T-1', title: 'Task A' }, { title: 'Task B' }],
-          chunks: [
-            makeChunk({
-              chunkIndex: 0,
-              stage: 'completed',
-              title: 'First',
-              branch: 'feat/a',
-              loopName: 'loop-linked',
-              summaryPreview: 'summary text',
-            }),
-            makeChunk({ chunkIndex: 1, stage: 'running', title: 'Second' }),
-          ],
-        }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const rows = Array.from(container.querySelectorAll('.goal-chunk-row')) as HTMLElement[]
-    expect(rows.length).toBe(2)
-    expect(rows.map(r => r.querySelector('.goal-chunk-index')?.textContent)).toEqual(['chunk 1', 'chunk 2'])
-    expect(rows[0].querySelector('.goal-chunk-title')?.textContent).toBe('First')
-    expect(rows[0].querySelector('.goal-chunk-branch')?.textContent).toBe('feat/a')
-    expect(rows[0].querySelector('.goal-chunk-summary')?.textContent).toBe('summary text')
-    expect(rows[0].querySelector('.chunk-stage-badge')?.textContent).toBe('completed')
-    expect(rows[1].querySelector('.chunk-stage-badge')?.textContent).toBe('running')
-    const link = rows[0].querySelector('.goal-chunk-loop-link') as HTMLAnchorElement
-    expect(link).toBeTruthy()
-    expect(link.getAttribute('href')).toBe('#p1/loop/loop-linked')
-    // The second chunk has no loop in the payload, so it renders no link.
-    expect(rows[1].querySelector('.goal-chunk-loop-link')).toBeFalsy()
-    // Objective and task refs render on the detail view.
-    expect(container.querySelector('.goal-objective-text')?.textContent).toBe('Objective text')
-    expect(Array.from(container.querySelectorAll('.goal-task-ref')).map(e => e.textContent)).toEqual(['T-1'])
-  })
-
-  test('primary-clicking a goal chunk loop link navigates to the loop detail', async () => {
-    window.location.hash = '#p1/goals/g-abc'
-    payload = makePayload({
-      loops: [makeLoop({ loop: { loopName: 'loop-linked', status: 'running' } })],
-      goals: [makeGoal({ chunks: [makeChunk({ chunkIndex: 0, loopName: 'loop-linked' })] })],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const link = container.querySelector('.goal-chunk-loop-link') as HTMLAnchorElement
-    expect(link).toBeTruthy()
-    link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-    await flush()
-    expect(location.hash).toBe('#p1/loop/loop-linked')
-  })
-
-  test('the Goals count in .section-nav matches the number of goals', async () => {
-    window.location.hash = '#p1/goals'
-    payload = makePayload({
-      goals: [
-        makeGoal({ goalId: 'g-a' }),
-        makeGoal({ goalId: 'g-b' }),
-        makeGoal({ goalId: 'g-c' }),
-      ],
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
-    const goalsItem = navItems.find(i => i.textContent?.startsWith('Goals'))!
-    expect(goalsItem).toBeTruthy()
-    expect(goalsItem.querySelector('.section-nav-count')?.textContent).toBe('3')
-  })
-
-  test('the Goals nav count comes from goalCount while goal rows ship only for the scoped project', async () => {
-    window.location.hash = '#p1/goals'
-    payload = makePayload({ goals: [], goalCount: 4 })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    const navItems = Array.from(container.querySelectorAll('.section-nav-item')) as HTMLElement[]
-    const goalsItem = navItems.find(i => i.textContent?.startsWith('Goals'))!
-    expect(goalsItem.querySelector('.section-nav-count')?.textContent).toBe('4')
-    expect(container.querySelectorAll('.goal-row').length).toBe(0)
-    expect(container.querySelector('.goals-panel .tab-empty')?.textContent).toContain('No goals')
-  })
-
-  test('the goal detail view shows not-found when the payload omitted goal rows', async () => {
-    window.location.hash = '#p1/goals/g-abc'
-    payload = makePayload({ goals: [], goalCount: 1 })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    expect(container.querySelector('.goal-detail .tab-empty')?.textContent).toContain('Goal not found')
-  })
-
-  test('#p1/goals with no goals shows an empty state, not the loops table', async () => {
-    window.location.hash = '#p1/goals'
-    payload = makePayload({ goals: [] })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    expect(container.querySelector('table.loop-table')).toBeFalsy()
-    expect(container.querySelector('.goals-panel .tab-empty')?.textContent).toContain('No goals')
-  })
-
-  test('the goals list caps rendered rows and reports the true total', async () => {
-    window.location.hash = '#p1/goals'
-    const total = MAX_RENDERED_LOOP_ROWS + 5
-    payload = makePayload({
-      goals: Array.from({ length: total }, (_, i) => makeGoal({ goalId: `g-${i}`, title: `Goal ${i}` })),
-    })
-    dispose = render(() => App() as unknown as Element, container)
-    await flush()
-
-    expect(container.querySelectorAll('.goal-row').length).toBe(MAX_RENDERED_LOOP_ROWS)
-    const notice = container.querySelector('.goals-panel .list-cap-text') as HTMLElement
-    expect(notice.textContent).toContain(String(total))
   })
 })
 

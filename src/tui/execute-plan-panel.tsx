@@ -39,9 +39,8 @@ const MODE_DESCRIPTIONS: Record<PlanExecutionLabel, string> = {
   Loop: 'Run an iterative coding/auditing loop in an isolated git worktree, using the loop settings above',
 }
 
-/** Success toast for a plan launch: a goal's first chunk is called out by goal id. */
-export function formatExecutePlanToast(result: { loopName?: string; goalId?: string }): string {
-  if (result.goalId) return `Goal ${result.goalId}: chunk 1 started`
+/** Success toast for a plan launch. */
+export function formatExecutePlanToast(result: { loopName?: string }): string {
   return result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started'
 }
 

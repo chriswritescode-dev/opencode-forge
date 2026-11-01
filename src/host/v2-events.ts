@@ -207,18 +207,12 @@ export function mapV2Error(error: { type: string; message: string; status?: numb
 /**
  * Builds the normalized events a session emits when it goes idle. The inbox-cancel
  * replay path reuses these so a replayed idle is byte-identical to a real one.
- * An optional interrupt reason is attached to the idle status event (never to the
- * session.idle event) so a consumer can distinguish an interrupted execution.
  */
-export function v2IdleEvents(sessionID: string, interruptReason?: string): ForgeEvent[] {
+export function v2IdleEvents(sessionID: string): ForgeEvent[] {
   return [
     {
       type: FORGE_EVENT_TYPES.sessionStatus,
-      properties: {
-        sessionID,
-        status: { type: 'idle' },
-        ...(interruptReason === undefined ? {} : { interruptReason }),
-      },
+      properties: { sessionID, status: { type: 'idle' } },
     },
     { type: FORGE_EVENT_TYPES.sessionIdle, properties: { sessionID } },
   ]
@@ -282,7 +276,7 @@ export function normalizeV2Event(event: V2Event): ForgeEvent[] {
           ...v2IdleEvents(event.data.sessionID),
         ]
       }
-      return v2IdleEvents(event.data.sessionID, event.data.reason)
+      return v2IdleEvents(event.data.sessionID)
     case V2_EVENT_TYPES.sessionRetryScheduled:
       return [{
         type: FORGE_EVENT_TYPES.sessionStatus,

@@ -221,7 +221,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
 }
 
 /** Parses a persisted `sandbox_settings` JSON column; malformed or empty values hydrate as null. */
-export function parseSandboxSettings(value: string | null): LoopSandboxSettings | null {
+function parseSandboxSettings(value: string | null): LoopSandboxSettings | null {
   if (!value) return null
   try {
     return readLoopSandboxSettings(JSON.parse(value)) ?? null
@@ -231,7 +231,7 @@ export function parseSandboxSettings(value: string | null): LoopSandboxSettings 
 }
 
 /** Serializes sandbox overrides for a `sandbox_settings` JSON column; unset settings store as null. */
-export function serializeSandboxSettings(settings: LoopSandboxSettings | null | undefined): string | null {
+function serializeSandboxSettings(settings: LoopSandboxSettings | null | undefined): string | null {
   return settings ? JSON.stringify(settings) : null
 }
 

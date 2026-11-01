@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import { generateUniqueName } from '../../src/loop/name-uniqueness'
 import { createForgeExecutionService } from '../../src/services/execution'
 import type { Logger } from '../../src/types'
@@ -1076,222 +1075,22 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect((secondResult.data as { deduped?: boolean }).deduped).toBe(true)
     expect(h.client.workspace.create).toHaveBeenCalledTimes(1)
   })
-})
-
-describe('handleStartLoop goal attach', () => {
-  function buildHarness() {
-    const testDb = createTestDb()
-    openDbs.push(testDb)
-    const db = testDb.db
-    const goalsRepo = createGoalsRepo(db)
-    const { client } = createFakeForgeClient({
-      workspace: {
-        create: async () => ({ id: 'ws_goal', directory: '/tmp/wt/goal', branch: 'forge/goal-loop' }),
-        warp: async () => {},
-      },
-      session: {
-        create: async () => ({ id: 'sess-goal' }),
-        get: async () => ({}),
-      },
-    })
-    return { db, goalsRepo, client }
-  }
-
-  function buildDeps(
-    h: ReturnType<typeof buildHarness>,
-    logger: Logger = mockLogger,
-    goalsRepo: any = h.goalsRepo,
-  ) {
-    const built = buildExecutionDeps(h.db, {
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-        executionVariant: 'high',
-        auditorVariant: 'audit-high',
-      },
-      logger,
-      gitService: mockGitService,
-      goalsRepo,
-      client: h.client,
-      loop: {
-        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
-      },
-    })
-    return built.deps
-  }
-
-  function saveDraft(h: ReturnType<typeof buildHarness>, hostSessionId: string) {
-    return h.goalsRepo.saveDraft({
-      projectId: PROJECT_ID,
-      goalId: 'goal-draft',
-      title: 'Goal title',
-      objective: 'Goal objective',
-      tasks: [{ title: 'First task' }],
-      hostSessionId,
-      maxChunks: 3,
-    })
-  }
-
-  const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
-
-  test('attaches a draft goal as chunk 1 and snapshots the resolved launch settings', async () => {
-    const h = buildHarness()
-    saveDraft(h, 'host-goal')
-    const service = createForgeExecutionService(buildDeps(h))
-
-    const result = await service.dispatch(ctx, {
-      type: 'loop.start' as const,
-      source: { kind: 'inline' as const, planText: '# Goal Plan\n\nBody.' },
-      hostSessionId: 'host-goal',
-      maxIterations: 7,
-      sandbox: { enabled: false },
-    })
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.data.goalId).toBe('goal-draft')
-
-    const goal = h.goalsRepo.getGoal(PROJECT_ID, 'goal-draft')!
-    expect(goal.status).toBe('running')
-    expect(goal.projectDir).toBe('/tmp/test')
-    expect(goal.executionModel).toBe('prov/exec')
-    expect(goal.auditorModel).toBe('prov/aud')
-    expect(goal.executionVariant).toBe('high')
-    expect(goal.auditorVariant).toBe('audit-high')
-    expect(goal.sandboxSettings).toEqual({ enabled: false })
-    expect(goal.maxIterations).toBe(7)
-
-    const chunks = h.goalsRepo.listChunks(PROJECT_ID, 'goal-draft')
-    expect(chunks).toHaveLength(1)
-    expect(chunks[0]).toMatchObject({
-      chunkIndex: 0,
-      stage: 'running',
-      loopName: result.data.loopName,
-      branch: 'forge/goal-loop',
-      baseCommit: MOCK_BASE_COMMIT,
-      title: result.data.displayName,
-    })
-  })
-
-  test('without a draft goal nothing changes and no goalId is returned', async () => {
-    const h = buildHarness()
-    const service = createForgeExecutionService(buildDeps(h))
-
-    const result = await service.dispatch(ctx, {
-      type: 'loop.start' as const,
-      source: { kind: 'inline' as const, planText: '# No Goal\n\nBody.' },
-      hostSessionId: 'host-none',
-    })
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.data.goalId).toBeUndefined()
-    expect(h.goalsRepo.listGoals(PROJECT_ID)).toHaveLength(0)
-  })
-
-  test('an attachFirstChunk throw is logged and the start still succeeds', async () => {
-    const h = buildHarness()
-    saveDraft(h, 'host-throw')
-    const logger = createMockLogger()
-    const throwingRepo = {
-      ...h.goalsRepo,
-      attachFirstChunk: () => {
-        throw new Error('boom')
-      },
-    }
-    const service = createForgeExecutionService(buildDeps(h, logger, throwingRepo))
-
-    const result = await service.dispatch(ctx, {
-      type: 'loop.start' as const,
-      source: { kind: 'inline' as const, planText: '# Throwing Goal\n\nBody.' },
-      hostSessionId: 'host-throw',
-    })
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.data.goalId).toBeUndefined()
-    expect(logger.error).toHaveBeenCalledWith('handleStartLoop: failed to attach first goal chunk', expect.any(Error))
-  })
-
-  test('a deduped concurrent start attaches exactly once', async () => {
-    const h = buildHarness()
-    saveDraft(h, 'host-dedupe')
-    const attachFirstChunk = vi.fn(h.goalsRepo.attachFirstChunk.bind(h.goalsRepo))
-    const repo = { ...h.goalsRepo, attachFirstChunk }
-    const service = createForgeExecutionService(buildDeps(h, mockLogger, repo))
-
-    const command = {
-      type: 'loop.start' as const,
-      source: { kind: 'inline' as const, planText: '# Dedupe Goal\n\nBody.' },
-      hostSessionId: 'host-dedupe',
-    }
-    const [r1, r2] = await Promise.all([service.dispatch(ctx, command), service.dispatch(ctx, command)])
-
-    expect(attachFirstChunk).toHaveBeenCalledTimes(1)
-    expect(r1.ok).toBe(true)
-    expect(r2.ok).toBe(true)
-    expect(h.goalsRepo.getGoal(PROJECT_ID, 'goal-draft')!.status).toBe('running')
-  })
-
-  test('skips a name still referenced by a goal chunk and attaches chunk 1 with the suffixed name', async () => {
-    const h = buildHarness()
-    h.goalsRepo.saveDraft({
-      projectId: PROJECT_ID,
-      goalId: 'goal-old',
-      title: 'Old goal',
-      objective: 'Old objective',
-      tasks: [{ title: 'Old task' }],
-      hostSessionId: 'host-old',
-      maxChunks: 3,
-    })
-    h.goalsRepo.attachFirstChunk(
-      PROJECT_ID,
-      'host-old',
-      {
-        projectDir: '/tmp/test',
-        executionModel: null,
-        auditorModel: null,
-        executionVariant: null,
-        auditorVariant: null,
-        sandboxSettings: null,
-        maxIterations: null,
-      },
-      { loopName: 'shared-name', branch: 'forge/shared-name', title: 'Old chunk', baseCommit: MOCK_BASE_COMMIT },
-    )
-    saveDraft(h, 'host-new')
-    const service = createForgeExecutionService(buildDeps(h))
-
-    const result = await service.dispatch(ctx, {
-      type: 'loop.start' as const,
-      source: { kind: 'inline' as const, planText: '# Shared Plan\n\nBody.' },
-      loopName: 'shared-name',
-      hostSessionId: 'host-new',
-    })
-
-    expect(result.ok).toBe(true)
-    if (!result.ok) return
-    expect(result.data.loopName).toBe('shared-name-1')
-    expect(result.data.goalId).toBe('goal-draft')
-
-    const chunks = h.goalsRepo.listChunks(PROJECT_ID, 'goal-draft')
-    expect(chunks).toHaveLength(1)
-    expect(chunks[0].loopName).toBe('shared-name-1')
-  })
 
   test('skips a name whose forge branch already exists', async () => {
-    const h = buildHarness()
-    const gitWithBranch = {
-      ...mockGitService,
-      branchExists: (_cwd: string, branch: string) => branch === 'forge/taken-branch',
-    }
-    const service = createForgeExecutionService({ ...buildDeps(h), gitService: gitWithBranch })
-
-    const result = await service.dispatch(ctx, {
-      type: 'loop.start' as const,
-      source: { kind: 'inline' as const, planText: '# Taken Plan\n\nBody.' },
-      loopName: 'taken-branch',
+    const h = buildHarness(undefined, {
+      gitService: { ...mockGitService, branchExists: (_cwd: string, branch: string) => branch === 'forge/taken-branch' },
     })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(h.deps)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Taken Plan\n\nBody.' },
+        loopName: 'taken-branch',
+      },
+    )
 
     expect(result.ok).toBe(true)
     if (!result.ok) return

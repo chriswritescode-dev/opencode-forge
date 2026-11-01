@@ -2,7 +2,7 @@ import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
 import { LOOP_PHASE_TOOL_NAMES } from '../constants/loop'
 
-export const ARCHITECT_TOOL_EXCLUDES = [
+const ARCHITECT_TOOL_EXCLUDES = [
   'edit',
   'write',
   'patch',

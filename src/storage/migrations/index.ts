@@ -548,6 +548,14 @@ export const migrations: Migration[] = [
     },
   },
   {
+    id: '157',
+    description: 'Remove goals: drop goal_chunks and goals',
+    apply: (db: Database) => {
+      db.run('DROP TABLE IF EXISTS goal_chunks')
+      db.run('DROP TABLE IF EXISTS goals')
+    },
+  },
+  {
     id: '158',
     description: 'Add nullable code_graph reports to section_plans and loop_attempts',
     apply: (db: Database) => {
