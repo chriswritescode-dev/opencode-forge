@@ -80,7 +80,11 @@ function fakeLibraryLoader(options: FakeIndexOptions = {}): (path: string) => un
     if (path.endsWith('/dist/search/query-utils.js')) {
       return { isTestPath: (file: string) => file.startsWith('test/') }
     }
+    if (path.endsWith('/dist/mcp/writer-lock.js')) {
+      return { tryAcquireWriterLock: () => ({ kind: 'acquired' }), releaseWriterLock: () => {} }
+    }
     return {
+      LockUnavailableError: class extends Error {},
       setLogger: () => {},
       silentLogger: {},
       CodeGraph: {
@@ -163,6 +167,7 @@ describe('createCodeGraphSnapshotter', () => {
         indexDir: '/opt/forge/cache/codegraph',
         files: ['a.ts'],
         maxDepth: 5,
+        deadlineMs: 540000,
       },
     ])
     expect(readlinkSync(join(worktreeDir, '.codegraph'))).toBe('/opt/forge/cache/codegraph')
@@ -235,6 +240,27 @@ describe('createCodeGraphSnapshotter', () => {
       expect(await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, { title: 'crash', files: ['a.ts'] })).toBeNull()
       expect(String(errors.at(-1)?.[0])).toMatch(/Segmentation fault|index failed .*disk full/)
     }
+  })
+
+  it('logs a held index as a skipped snapshot, not an error', async () => {
+    const worktreeDir = createWorktree()
+    writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
+    const errors: unknown[][] = []
+    const infos: unknown[][] = []
+    const logger = createLogger()
+    logger.error = (...args: unknown[]) => {
+      errors.push(args)
+    }
+    logger.log = (...args: unknown[]) => {
+      infos.push(args)
+    }
+    const target = createTarget(worktreeDir, (command) =>
+      isRunnerCommand(command) ? ok(`${JSON.stringify({ ok: false, stage: 'locked', error: 'rebuild.pid is held' })}\n`) : undefined,
+    )
+
+    expect(await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, { title: 'busy', files: ['a.ts'] })).toBeNull()
+    expect(errors).toEqual([])
+    expect(String(infos.at(-1)?.[0])).toContain('index busy')
   })
 
   it('skips the runner when no planned file exists in the worktree', async () => {

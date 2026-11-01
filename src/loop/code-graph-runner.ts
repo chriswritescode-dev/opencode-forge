@@ -41,8 +41,19 @@ interface CodeGraphLibrary {
     open(projectRoot: string, options?: { readOnly?: boolean }): Promise<CodeGraphHandle>
     recreate(projectRoot: string): Promise<CodeGraphHandle>
   }
+  /** Thrown by `sync`/`indexAll` when another live process holds the index's `codegraph.lock`. */
+  LockUnavailableError: abstract new (...args: never[]) => Error
   setLogger(logger: unknown): void
   silentLogger: unknown
+}
+
+/**
+ * `lib/dist/mcp/writer-lock.js` of the codegraph release: the `rebuild.pid` lock `codegraph index`
+ * takes, which the CLI's read commands check to warn about a half-built index.
+ */
+interface CodeGraphWriterLock {
+  tryAcquireWriterLock(projectRoot: string, mode: string, lockName: 'rebuild.pid'): { kind: 'acquired' | 'taken' }
+  releaseWriterLock(projectRoot: string, lockName: 'rebuild.pid'): void
 }
 
 /** Node's `fs`, as far as this runner uses it. */
@@ -66,6 +77,12 @@ export interface CodeGraphRunnerInput {
   files: string[]
   /** Maximum reverse-dependency depth when collecting affected tests. */
   maxDepth: number
+  /**
+   * The runner prints a `deadline` result and exits after this many milliseconds, so it never
+   * outlives the host's exec timeout inside the sandbox even if killing the host-side exec does
+   * not reach it.
+   */
+  deadlineMs: number
 }
 
 /** How the run brought the index up to date before querying it. */
@@ -85,7 +102,13 @@ export interface CodeGraphFileReport {
   dependents: string[]
 }
 
-export type CodeGraphRunnerStage = 'load' | 'index' | 'query'
+/**
+ * Where a run failed. `locked`: another live process holds the index (`codegraph.lock` or
+ * `rebuild.pid`), so the run left it untouched. `deadline`: the run hit `deadlineMs`.
+ */
+export type CodeGraphRunnerStage = 'load' | 'locked' | 'index' | 'query' | 'deadline'
+
+const CODE_GRAPH_RUNNER_STAGES: readonly CodeGraphRunnerStage[] = ['load', 'locked', 'index', 'query', 'deadline']
 
 export type CodeGraphRunnerResult =
   | { ok: true; index: CodeGraphIndexAction; files: CodeGraphFileReport[]; affectedTests: string[] }
@@ -97,9 +120,12 @@ export type CodeGraphRunnerResult =
  * file counts itself, and the walk stops at test files and at `maxDepth`).
  *
  * A missing index is created with a full index; an existing one is synced, and a failed sync is
- * replaced by a full rebuild. The library never installs git hooks or writes a `.gitignore` on
- * this path, unlike the `codegraph init` command. Never throws: every failure is reported with the
- * stage it happened in.
+ * replaced by a full rebuild. Creating and rebuilding hold `rebuild.pid`, like `codegraph index`.
+ * When another live process holds the index (a sync refused with `LockUnavailableError`, or
+ * `rebuild.pid` taken), the run reports `locked` and leaves the index alone instead of deleting
+ * an index that process still uses. The library never installs git hooks or writes a
+ * `.gitignore` on this path, unlike the `codegraph init` command. Never throws: every failure is
+ * reported with the stage it happened in.
  */
 export async function runCodeGraphSnapshot(
   load: (path: string) => unknown,
@@ -122,19 +148,33 @@ export async function runCodeGraphSnapshot(
 
   let lib: CodeGraphLibrary
   let queryUtils: CodeGraphQueryUtils
+  let writerLock: CodeGraphWriterLock
   try {
     lib = load(`${input.libDir}/dist/index.js`) as CodeGraphLibrary
     queryUtils = load(`${input.libDir}/dist/search/query-utils.js`) as CodeGraphQueryUtils
+    writerLock = load(`${input.libDir}/dist/mcp/writer-lock.js`) as CodeGraphWriterLock
     lib.setLogger(lib.silentLogger)
     ;(load('fs') as FileSystem).mkdirSync(input.indexDir, { recursive: true })
   } catch (err) {
     return { ok: false, stage: 'load', error: message(err) }
   }
 
+  const rebuildBusy: CodeGraphRunnerResult = {
+    ok: false,
+    stage: 'locked',
+    error: 'another process is rebuilding this index (rebuild.pid is held)',
+  }
+  let holdsRebuildLock = false
+  const acquireRebuildLock = (): boolean => {
+    holdsRebuildLock = writerLock.tryAcquireWriterLock(input.projectRoot, 'forge-snapshot', 'rebuild.pid').kind === 'acquired'
+    return holdsRebuildLock
+  }
+
   let graph: CodeGraphHandle | null = null
   let index: CodeGraphIndexAction
   try {
     if (!lib.CodeGraph.isInitialized(input.projectRoot)) {
+      if (!acquireRebuildLock()) return rebuildBusy
       graph = await lib.CodeGraph.init(input.projectRoot, { index: false })
       await fullIndex(graph)
       index = 'created'
@@ -146,6 +186,10 @@ export async function runCodeGraphSnapshot(
       } catch (syncError) {
         close(graph)
         graph = null
+        if (syncError instanceof lib.LockUnavailableError) {
+          return { ok: false, stage: 'locked', error: message(syncError) }
+        }
+        if (!acquireRebuildLock()) return rebuildBusy
         graph = await lib.CodeGraph.recreate(input.projectRoot)
         try {
           await fullIndex(graph)
@@ -157,7 +201,9 @@ export async function runCodeGraphSnapshot(
     }
   } catch (err) {
     if (graph) close(graph)
-    return { ok: false, stage: 'index', error: message(err) }
+    return { ok: false, stage: err instanceof lib.LockUnavailableError ? 'locked' : 'index', error: message(err) }
+  } finally {
+    if (holdsRebuildLock) writerLock.releaseWriterLock(input.projectRoot, 'rebuild.pid')
   }
 
   const opened = graph
@@ -201,14 +247,19 @@ export async function runCodeGraphSnapshot(
 
 /**
  * The `node -e` program that runs `runCodeGraphSnapshot` with the JSON input passed as the first
- * argument and prints the result as the last line of stdout.
+ * argument, prints the result as the last line of stdout, and exits once it is flushed (the
+ * library can leave worker handles open). At `deadlineMs` it prints a `deadline` result and
+ * exits instead; codegraph's locks record the pid, so a lock left behind is cleared as stale.
  */
 export function buildCodeGraphRunnerScript(): string {
   return [
-    `(${runCodeGraphSnapshot.toString()})(require, JSON.parse(process.argv[1]))`,
-    `.then((result) => process.stdout.write('\\n' + JSON.stringify(result) + '\\n'))`,
-    `.catch((err) => process.stdout.write('\\n' + JSON.stringify({ ok: false, stage: 'load', error: String(err) }) + '\\n'))`,
-  ].join('')
+    'const input = JSON.parse(process.argv[1]);',
+    'const finish = (result, code) => process.stdout.write("\\n" + JSON.stringify(result) + "\\n", () => process.exit(code));',
+    'setTimeout(() => finish({ ok: false, stage: "deadline", error: "runner exceeded " + input.deadlineMs + " ms" }, 124), input.deadlineMs).unref();',
+    `(${runCodeGraphSnapshot.toString()})(require, input)`,
+    '.then((result) => finish(result, 0))',
+    '.catch((err) => finish({ ok: false, stage: "load", error: String(err) }, 1));',
+  ].join('\n')
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -253,12 +304,9 @@ export function parseCodeGraphRunnerResult(stdout: string): CodeGraphRunnerResul
     if (!Array.isArray(result.files) || !result.files.every(isFileReport) || !isStringArray(result.affectedTests)) return null
     return { ok: true, index: result.index, files: result.files, affectedTests: result.affectedTests }
   }
-  if (
-    result.ok === false &&
-    (result.stage === 'load' || result.stage === 'index' || result.stage === 'query') &&
-    typeof result.error === 'string'
-  ) {
-    return { ok: false, stage: result.stage, error: result.error }
+  const stage = CODE_GRAPH_RUNNER_STAGES.find((candidate) => candidate === result.stage)
+  if (result.ok === false && stage && typeof result.error === 'string') {
+    return { ok: false, stage, error: result.error }
   }
   return null
 }

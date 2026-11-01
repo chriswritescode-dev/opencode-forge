@@ -190,7 +190,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | File | Purpose |
 |------|---------|
 | `index.ts` | Public API barrel (all re-exports) |
-| `runtime.ts` | `createLoop()` factory, `Loop` interface, session rotation and standby-session reuse (`inspectReusableStandby`, `switchToCodingPhase`, `switchToAuditingPhase`) |
+| `runtime.ts` | `createLoop()` factory, `Loop` interface, session rotation and standby-session reuse (`inspectReusableStandby`, `switchToCodingPhase`, `switchToAuditingPhase`), and `continueAfterCodeGraphSnapshot`: code-graph snapshots run outside the state lock and the transition resumes under it only when the loop is still at the planned state |
 | `service.ts` | DB-backed `LoopService` (`createLoopService`) |
 | `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `post_action`), row↔state converters |
 | `transitions.ts` | Pure `nextTransition()` table — no side effects; includes `'post-action-complete'` event and `handlePostActionEvent` |
@@ -203,7 +203,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
 | `code-graph.ts` | Sole owner of `codegraph` execution in loop sandboxes: `resolveLoopCodeGraphTarget()`, `createCodeGraphSnapshotter()` (installation probe, the `.codegraph` cache link, exactly one runner exec per snapshot, report formatting; no `codegraph` CLI call), report paths under `.forge/codegraph/`, and the `## Code graph` prompt pointer |
-| `code-graph-runner.ts` | The in-sandbox half of a snapshot: `runCodeGraphSnapshot()` runs under codegraph's bundled Node against the pinned codegraph library (creates a missing index, syncs an existing one and rebuilds it when the sync fails, then per-file symbols and dependents, the `affected`-style reverse-import walk to test files) and must stay self-contained because `buildCodeGraphRunnerScript()` serializes it with `toString()`; `parseCodeGraphRunnerResult()` validates the typed JSON result on the host |
+| `code-graph-runner.ts` | The in-sandbox half of a snapshot: `runCodeGraphSnapshot()` runs under codegraph's bundled Node against the pinned codegraph library (creates a missing index, syncs an existing one and rebuilds it when the sync fails, holding codegraph's `rebuild.pid` while it creates or rebuilds; reports `locked` and leaves the index alone when another live process holds it; exits with a `deadline` result at `deadlineMs`; then per-file symbols and dependents, the `affected`-style reverse-import walk to test files) and must stay self-contained because `buildCodeGraphRunnerScript()` serializes it with `toString()`; `parseCodeGraphRunnerResult()` validates the typed JSON result on the host |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
 | `name-uniqueness.ts` | Reserve a unique loop identity before any side effects, refusing a name still referenced by a goal chunk or whose `forge/<slug>` branch exists |

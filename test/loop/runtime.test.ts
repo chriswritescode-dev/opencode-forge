@@ -4660,6 +4660,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const loopName = 'codegraph-section'
       seedSectionedAudit(loopName, 'codegraph-audit', worktreeDir)
       await advanceToSectionTwo(loop, 'codegraph-audit')
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
 
       const after = loopService.getActiveState(loopName)!
       expect(after.phase).toBe('coding')
@@ -4711,6 +4712,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const loopName = 'codegraph-failing'
       seedSectionedAudit(loopName, 'codegraph-fail-audit', worktreeDir)
       await advanceToSectionTwo(loop, 'codegraph-fail-audit')
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
 
       expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
       expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
@@ -4733,6 +4735,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       sectionPlansRepo.setCodeGraph = () => { throw new Error('database is locked') }
       try {
         await advanceToSectionTwo(loop, 'codegraph-throw-audit')
+        await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
       } finally {
         sectionPlansRepo.setCodeGraph = originalSetCodeGraph
       }
@@ -4782,6 +4785,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       await recordCoderHandoff(loop, sessionId)
       await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
 
       expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
       const attempt = loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!
@@ -4812,6 +4816,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       await recordCoderHandoff(loop, coderSessionId)
       await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: coderSessionId } })
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
 
       const auditSessionId = loopService.getActiveState(loopName)!.sessionId
       expect(auditSessionId).not.toBe(coderSessionId)
@@ -4853,10 +4858,112 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       await recordCoderHandoff(loop, sessionId)
       await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
 
       expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
       expect(loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!.codeGraph).toBeNull()
       expect(auditorPrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+    })
+
+    function gatedSandboxManager() {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      let markStarted!: () => void
+      const started = new Promise<void>((resolve) => { markStarted = resolve })
+      const manager = fakeSandboxManager(async (command) => {
+        if (command.includes('/opt/codegraph/node')) {
+          markStarted()
+          await gate
+        }
+        return successfulExec(command)
+      })
+      return { manager, release, started }
+    }
+
+    function idleEvent(sessionID: string) {
+      return { type: 'session.status', properties: { status: { type: 'idle' }, sessionID } } as const
+    }
+
+    function promptCount(calls: RecordedCall[]): number {
+      return calls.filter(c => c.method === 'session.promptAsync').length
+    }
+
+    test('a cancel during snapshot B does not wait for the snapshot, which then starts no audit', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-cancel-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const gated = gatedSandboxManager()
+      const { loop, logs } = createRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-cancel'
+      const sessionId = 'codegraph-cancel-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick(idleEvent(sessionId))
+      await gated.started
+
+      expect(await loop.cancelBySessionId(sessionId)).toBe(true)
+      expect(loopService.getActiveState(loopName)?.active ?? false).toBe(false)
+
+      gated.release()
+      await vi.waitFor(() => expect(logs.some(entry => entry.message.includes('moved on during the snapshot'))).toBe(true))
+      expect(auditorPrompts(calls)).toEqual([])
+      expect(loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!.codeGraph).toBeNull()
+    })
+
+    test('an idle event during snapshot B is ignored, and the audit starts exactly once afterwards', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-idle-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const gated = gatedSandboxManager()
+      const { loop } = createRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-idle-gap'
+      const sessionId = 'codegraph-idle-gap-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick(idleEvent(sessionId))
+      await gated.started
+      const promptsBefore = promptCount(calls)
+
+      await loop.tick(idleEvent(sessionId))
+
+      expect(promptCount(calls)).toBe(promptsBefore)
+      expect(loopService.getActiveState(loopName)!.phase).toBe('coding')
+
+      gated.release()
+      await vi.waitFor(() => expect(loopService.getActiveState(loopName)!.phase).toBe('auditing'))
+      expect(auditorPrompts(calls)).toHaveLength(1)
+      expect(auditorPrompts(calls)[0]).toContain('## Code graph')
+    })
+
+    test('an idle event from the finished audit session during snapshot A is ignored', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-gap-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const gated = gatedSandboxManager()
+      const { loop } = createRuntime({ client, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-section-gap'
+      const auditSessionId = 'codegraph-section-gap-audit'
+      seedSectionedAudit(loopName, auditSessionId, worktreeDir)
+      await advanceToSectionTwo(loop, auditSessionId)
+      await gated.started
+      expect(loopService.getActiveState(loopName)!.phase).toBe('coding')
+      const promptsBefore = promptCount(calls)
+
+      await loop.tick(idleEvent(auditSessionId))
+      expect(promptCount(calls)).toBe(promptsBefore)
+
+      gated.release()
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
+      expect(codePrompts(calls).filter(prompt => prompt.includes('[Loop section 2/2'))).toHaveLength(1)
+      expect(codePrompts(calls).at(-1)).toContain('.forge/codegraph/section-2.md')
     })
 
     function createServiceWithConfig(codeGraphEnabled: boolean, attemptsRepo?: LoopAttemptsRepo) {

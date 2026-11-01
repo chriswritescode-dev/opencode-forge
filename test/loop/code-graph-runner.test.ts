@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -22,10 +22,14 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
+class FakeLockUnavailableError extends Error {}
+
 interface FakeGraphOptions {
   initialized?: boolean
   dependents?: Record<string, string[]>
   syncError?: string
+  syncLocked?: boolean
+  rebuildLockTaken?: boolean
   indexFails?: boolean
   openError?: string
   queryError?: string
@@ -41,6 +45,7 @@ function fakeLoader(options: FakeGraphOptions = {}) {
     },
     sync: async () => {
       calls.push('sync')
+      if (options.syncLocked) throw new FakeLockUnavailableError('Sync could not acquire the file lock')
       if (options.syncError) throw new Error(options.syncError)
     },
     getNodesInFile: (file: string) => {
@@ -60,7 +65,17 @@ function fakeLoader(options: FakeGraphOptions = {}) {
   const load = (path: string): unknown => {
     if (path === 'fs') return { mkdirSync: (dir: string) => mkdirs.push(dir) }
     if (path.endsWith('/dist/search/query-utils.js')) return { isTestPath: (file: string) => file.includes('.test.') }
+    if (path.endsWith('/dist/mcp/writer-lock.js')) {
+      return {
+        tryAcquireWriterLock: (_root: string, _mode: string, lockName: string) => {
+          calls.push(`acquire:${lockName}`)
+          return { kind: options.rebuildLockTaken ? 'taken' : 'acquired' }
+        },
+        releaseWriterLock: (_root: string, lockName: string) => calls.push(`release:${lockName}`),
+      }
+    }
     return {
+      LockUnavailableError: FakeLockUnavailableError,
       setLogger: () => {},
       silentLogger: {},
       CodeGraph: {
@@ -94,6 +109,7 @@ function input(overrides: Partial<CodeGraphRunnerInput> = {}): CodeGraphRunnerIn
     indexDir: '/opt/forge/cache/codegraph',
     files: ['src/a.ts'],
     maxDepth: 5,
+    deadlineMs: 60_000,
     ...overrides,
   }
 }
@@ -136,7 +152,14 @@ describe('runCodeGraphSnapshot', () => {
     const result = await runCodeGraphSnapshot(load, input())
 
     expect(result).toMatchObject({ ok: true, index: 'created' })
-    expect(calls).toEqual(['isInitialized:/work', 'init:{"index":false}', 'indexAll:init', 'destroy:init'])
+    expect(calls).toEqual([
+      'isInitialized:/work',
+      'acquire:rebuild.pid',
+      'init:{"index":false}',
+      'indexAll:init',
+      'release:rebuild.pid',
+      'destroy:init',
+    ])
   })
 
   it('rebuilds the index when sync fails', async () => {
@@ -145,7 +168,36 @@ describe('runCodeGraphSnapshot', () => {
     const result = await runCodeGraphSnapshot(load, input())
 
     expect(result).toMatchObject({ ok: true, index: 'rebuilt' })
-    expect(calls).toEqual(['isInitialized:/work', 'open', 'sync', 'destroy:open', 'recreate', 'indexAll:recreate', 'destroy:recreate'])
+    expect(calls).toEqual([
+      'isInitialized:/work',
+      'open',
+      'sync',
+      'destroy:open',
+      'acquire:rebuild.pid',
+      'recreate',
+      'indexAll:recreate',
+      'release:rebuild.pid',
+      'destroy:recreate',
+    ])
+  })
+
+  it('leaves an index another process holds untouched instead of rebuilding it', async () => {
+    const lockedSync = fakeLoader({ syncLocked: true })
+    expect(await runCodeGraphSnapshot(lockedSync.load, input())).toEqual({
+      ok: false,
+      stage: 'locked',
+      error: 'Sync could not acquire the file lock',
+    })
+    expect(lockedSync.calls).toEqual(['isInitialized:/work', 'open', 'sync', 'destroy:open'])
+
+    const busyRebuild = fakeLoader({ syncError: 'corrupt', rebuildLockTaken: true })
+    expect(await runCodeGraphSnapshot(busyRebuild.load, input())).toMatchObject({ ok: false, stage: 'locked' })
+    expect(busyRebuild.calls).not.toContain('recreate')
+    expect(busyRebuild.calls).not.toContain('release:rebuild.pid')
+
+    const busyCreate = fakeLoader({ initialized: false, rebuildLockTaken: true })
+    expect(await runCodeGraphSnapshot(busyCreate.load, input())).toMatchObject({ ok: false, stage: 'locked' })
+    expect(busyCreate.calls.some((call) => call.startsWith('init'))).toBe(false)
   })
 
   it('counts a changed test file as affected and stops the walk at maxDepth', async () => {
@@ -167,13 +219,14 @@ describe('runCodeGraphSnapshot', () => {
       stage: 'index',
       error: 'full index failed after 3 files with 1 errors',
     })
-    expect(failedCreate.calls.at(-1)).toBe('destroy:init')
+    expect(failedCreate.calls.slice(-2)).toEqual(['destroy:init', 'release:rebuild.pid'])
 
     const failedRebuild = fakeLoader({ syncError: 'locked', indexFails: true })
     const rebuild = await runCodeGraphSnapshot(failedRebuild.load, input())
     expect(rebuild).toMatchObject({ ok: false, stage: 'index' })
     expect(rebuild.ok === false && rebuild.error).toContain('sync failed (locked)')
     expect(failedRebuild.calls.filter((call) => call.startsWith('destroy'))).toEqual(['destroy:open', 'destroy:recreate'])
+    expect(failedRebuild.calls.at(-1)).toBe('release:rebuild.pid')
 
     const queryFailure = fakeLoader({ queryError: 'corrupt' })
     expect(await runCodeGraphSnapshot(queryFailure.load, input())).toEqual({ ok: false, stage: 'query', error: 'corrupt' })
@@ -194,11 +247,9 @@ describe('parseCodeGraphRunnerResult', () => {
   it('reads the last non-empty line', () => {
     const result = { ok: true, index: 'synced', files: [{ path: 'a.ts', symbols: [], dependents: [] }], affectedTests: [] }
     expect(parseCodeGraphRunnerResult(`warning: noise\n${JSON.stringify(result)}\n\n`)).toEqual(result)
-    expect(parseCodeGraphRunnerResult(JSON.stringify({ ok: false, stage: 'index', error: 'x' }))).toEqual({
-      ok: false,
-      stage: 'index',
-      error: 'x',
-    })
+    for (const stage of ['load', 'locked', 'index', 'query', 'deadline']) {
+      expect(parseCodeGraphRunnerResult(JSON.stringify({ ok: false, stage, error: 'x' }))).toEqual({ ok: false, stage, error: 'x' })
+    }
   })
 
   it('rejects empty, non-JSON, and wrongly shaped output', () => {
@@ -226,6 +277,7 @@ describe('buildCodeGraphRunnerScript', () => {
     const libDir = tempDir('forge-codegraph-lib-')
     const indexDir = join(libDir, 'index', 'nested')
     mkdirSync(join(libDir, 'dist', 'search'), { recursive: true })
+    mkdirSync(join(libDir, 'dist', 'mcp'), { recursive: true })
     writeFileSync(
       join(libDir, 'dist', 'index.js'),
       `const handle = {
@@ -237,10 +289,12 @@ describe('buildCodeGraphRunnerScript', () => {
 }
 exports.silentLogger = {}
 exports.setLogger = () => {}
+exports.LockUnavailableError = class LockUnavailableError extends Error {}
 exports.CodeGraph = { isInitialized: () => true, open: async () => handle }
 `,
     )
     writeFileSync(join(libDir, 'dist', 'search', 'query-utils.js'), `exports.isTestPath = (file) => file.endsWith('.test.ts')\n`)
+    writeFileSync(join(libDir, 'dist', 'mcp', 'writer-lock.js'), `exports.tryAcquireWriterLock = () => ({ kind: 'acquired' })\nexports.releaseWriterLock = () => {}\n`)
 
     const { run, result } = runScript(process.execPath, input({ libDir, indexDir, files: ['a.ts'] }), libDir)
 
@@ -254,17 +308,41 @@ exports.CodeGraph = { isInitialized: () => true, open: async () => handle }
     })
   })
 
+  it('prints a deadline result and exits when the run outlives deadlineMs', () => {
+    const libDir = tempDir('forge-codegraph-slow-')
+    mkdirSync(join(libDir, 'dist', 'search'), { recursive: true })
+    mkdirSync(join(libDir, 'dist', 'mcp'), { recursive: true })
+    writeFileSync(
+      join(libDir, 'dist', 'index.js'),
+      `exports.silentLogger = {}
+exports.setLogger = () => {}
+exports.LockUnavailableError = class extends Error {}
+exports.CodeGraph = { isInitialized: () => true, open: () => new Promise(() => { setInterval(() => {}, 1000) }) }
+`,
+    )
+    writeFileSync(join(libDir, 'dist', 'search', 'query-utils.js'), `exports.isTestPath = () => false\n`)
+    writeFileSync(join(libDir, 'dist', 'mcp', 'writer-lock.js'), `exports.tryAcquireWriterLock = () => ({ kind: 'acquired' })\nexports.releaseWriterLock = () => {}\n`)
+    const startedAt = Date.now()
+
+    const { run, result } = runScript(process.execPath, input({ libDir, indexDir: join(libDir, 'index'), deadlineMs: 300 }), libDir)
+
+    expect(Date.now() - startedAt).toBeLessThan(20_000)
+    expect(run.status).toBe(124)
+    expect(result).toEqual({ ok: false, stage: 'deadline', error: 'runner exceeded 300 ms' })
+  })
+
   it('prints a load failure when the library is missing', () => {
     const indexDir = join(tempDir('forge-codegraph-missing-'), 'index')
     const { run, result } = runScript(process.execPath, input({ libDir: '/nonexistent/codegraph/lib', indexDir }), tmpdir())
     expect(run.status).toBe(0)
     expect(result).toMatchObject({ ok: false, stage: 'load' })
+    expect(existsSync(join(indexDir, 'rebuild.pid'))).toBe(false)
   })
 
   const localRelease = process.env.CODEGRAPH_RELEASE_DIR ?? join(homedir(), '.codegraph', 'versions', 'v1.6.2')
   const hasLocalRelease = existsSync(join(localRelease, 'node')) && existsSync(join(localRelease, 'lib', 'dist', 'index.js'))
 
-  it.skipIf(!hasLocalRelease)('creates, then syncs, a real codegraph v1.6.2 index through a .codegraph link without git hooks', () => {
+  it.skipIf(!hasLocalRelease)('creates, syncs, and leaves locked a real codegraph v1.6.2 index through a .codegraph link without git hooks', () => {
     const project = tempDir('forge-codegraph-project-')
     const indexDir = join(tempDir('forge-codegraph-cache-'), 'codegraph')
     mkdirSync(join(project, 'test'))
@@ -300,6 +378,17 @@ exports.CodeGraph = { isInitialized: () => true, open: async () => handle }
       affectedTests: ['test/b.test.ts'],
     })
     expect(lstatSync(join(project, '.codegraph')).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(indexDir, 'rebuild.pid'))).toBe(false)
+
+    const databasePath = join(indexDir, 'codegraph.db')
+    const indexedAt = statSync(databasePath).ino
+    writeFileSync(join(indexDir, 'codegraph.lock'), String(process.pid))
+    writeFileSync(join(project, 'b.ts'), 'import { a } from "./a"\nexport const b = a() + 1\n')
+    const locked = runScript(releaseNode, releaseInput, project)
+    rmSync(join(indexDir, 'codegraph.lock'))
+
+    expect(locked.result).toMatchObject({ ok: false, stage: 'locked' })
+    expect(statSync(databasePath).ino).toBe(indexedAt)
     expect(readdirSync(join(project, '.git', 'hooks')).filter((hook) => !hook.endsWith('.sample'))).toEqual([])
     expect(spawnSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: project }).status).not.toBe(0)
   })

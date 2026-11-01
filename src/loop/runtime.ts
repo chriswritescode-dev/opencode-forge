@@ -191,6 +191,7 @@ export { isWorkspaceNotFoundError } from './runtime-workspace'
 
 const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'
 const INTERNAL_FALLBACK_ABORTS_SHARED_KEY = 'loop-internal-fallback-aborts.v1'
+const PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY = 'loop-pending-code-graph-snapshots.v1'
 /** Keeps the loop marked live while a code-graph snapshot outlasts the watchdog stall timeout. */
 const CODE_GRAPH_HEARTBEAT_MS = 20_000
 
@@ -202,6 +203,7 @@ const CODE_GRAPH_HEARTBEAT_MS = 20_000
 export function __resetLoopRuntimeSharedState(): void {
   processShared<Map<string, Promise<unknown>>>(STATE_LOCKS_SHARED_KEY, () => new Map()).clear()
   processShared<Map<string, number>>(INTERNAL_FALLBACK_ABORTS_SHARED_KEY, () => new Map()).clear()
+  processShared<Map<string, string>>(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map()).clear()
 }
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
@@ -1976,71 +1978,171 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const codeGraphSnapshotter = createCodeGraphSnapshotter({ logger })
 
   /**
-   * Runs one code-graph snapshot task with the loop marked live for its whole
-   * duration. A first index can run for minutes while no session is busy, so the
-   * heartbeat keeps the watchdog from treating the wait as a stall. Any failure,
-   * including a storage throw, is logged and swallowed: a snapshot must never
-   * fail, stall, or advance a loop.
+   * Loops whose phase transition is waiting for a code-graph snapshot, mapped to the
+   * transition token of the state the snapshot was planned for. Process-wide because every
+   * instance's phase runners must see it.
    */
-  async function withCodeGraphHeartbeat(loopName: string, task: () => Promise<void>): Promise<void> {
+  const pendingCodeGraphSnapshots = processShared<Map<string, string>>(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map())
+
+  /** The persisted point in a loop a deferred transition resumes from. */
+  function codeGraphTransitionToken(state: LoopState): string {
+    return `${state.sessionId}|${state.phase}|${state.iteration ?? 0}|${state.currentSectionIndex ?? 0}`
+  }
+
+  /** Whether `state` is the exact point a deferred code-graph transition will resume from. */
+  function isAwaitingCodeGraphSnapshot(state: LoopState): boolean {
+    return pendingCodeGraphSnapshots.get(stateLockKey(state.loopName)) === codeGraphTransitionToken(state)
+  }
+
+  /** One planned snapshot: `compute` runs the sandbox work, `record` persists its report. */
+  interface CodeGraphSnapshotPlan {
+    compute(): Promise<string | null>
+    record(text: string): void
+  }
+
+  /**
+   * Snapshot A: the code graph for the section that is about to start, before its first coder
+   * prompt is built. A section that already carries a report (restart, reused worktree) gets
+   * no plan, so the snapshot is taken exactly once per section.
+   */
+  function planSectionCodeGraph(state: LoopState): CodeGraphSnapshotPlan | null {
+    if (state.totalSections <= 0) return null
+    const index = state.currentSectionIndex
+    const section = loopService.getSectionPlan(state, index)
+    if (!section || section.codeGraph) return null
+    const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
+    if (!target) return null
+    return {
+      compute: () =>
+        codeGraphSnapshotter.snapshotFiles(target, {
+          title: `section ${index + 1}: ${section.title}`,
+          files: extractSectionFiles(section.content),
+        }),
+      record: (text) => loopService.recordSectionCodeGraph(state, index, text),
+    }
+  }
+
+  /**
+   * Snapshot B: the code graph for the attempt that just ended, before the audit prompt is
+   * built. Both a fresh audit session and a reused standby then point at the affected tests
+   * and dependents of exactly this attempt.
+   */
+  function planAttemptCodeGraph(state: LoopState): CodeGraphSnapshotPlan | null {
+    const attempt = loopService.getLatestAttempt(state)
+    if (!attempt?.snapshotCommit || attempt.codeGraph) return null
+    const snapshotCommit = attempt.snapshotCommit
+    const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
+    if (!target) return null
+    return {
+      compute: async () => {
+        const from = attempt.previousCommit ?? `${snapshotCommit}^`
+        const files = await listSnapshotChangedFiles(state.worktreeDir, from, snapshotCommit, logger)
+        if (files.length === 0) return null
+        return codeGraphSnapshotter.snapshotFiles(target, {
+          title: `audit attempt ${attempt.attemptNumber} (${attempt.scope})`,
+          files,
+        })
+      },
+      record: (text) => loopService.recordAttemptCodeGraph(state, attempt, text),
+    }
+  }
+
+  /** Builds a plan, logging and dropping a storage throw: a snapshot must never fail or stall a loop. */
+  function planCodeGraphSnapshot(loopName: string, plan: () => CodeGraphSnapshotPlan | null): CodeGraphSnapshotPlan | null {
+    try {
+      return plan()
+    } catch (err) {
+      logger.error(`[code-graph] snapshot planning failed for ${loopName}`, err)
+      return null
+    }
+  }
+
+  /**
+   * Runs a plan's sandbox work with the loop marked live for its whole duration. A first index
+   * can run for minutes while no session is busy, so the heartbeat keeps the watchdog from
+   * treating the wait as a stall. Any failure is logged and yields no report.
+   */
+  async function computeCodeGraphSnapshot(loopName: string, plan: CodeGraphSnapshotPlan): Promise<string | null> {
     const heartbeat = setInterval(
       () => watchdog.recordActivity(loopName, 'code-graph-snapshot'),
       CODE_GRAPH_HEARTBEAT_MS,
     )
     try {
-      await task()
+      return await plan.compute()
     } catch (err) {
       logger.error(`[code-graph] snapshot failed for ${loopName}`, err)
+      return null
     } finally {
       clearInterval(heartbeat)
       watchdog.recordActivity(loopName, 'code-graph-snapshot')
     }
   }
 
-  /**
-   * Snapshot A: capture the code graph for the section that is about to start,
-   * before its first coder prompt is built. A section that already carries a
-   * report (restart, reused worktree) is left alone so the snapshot is taken
-   * exactly once per section.
-   */
-  async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
-    if (state.totalSections <= 0) return
-    await withCodeGraphHeartbeat(state.loopName, async () => {
-      const index = state.currentSectionIndex
-      const section = loopService.getSectionPlan(state, index)
-      if (!section || section.codeGraph) return
-      const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
-      if (!target) return
-      const text = await codeGraphSnapshotter.snapshotFiles(target, {
-        title: `section ${index + 1}: ${section.title}`,
-        files: extractSectionFiles(section.content),
-      })
-      if (!text) return
-      loopService.recordSectionCodeGraph(state, index, text)
-    })
+  function recordCodeGraphSnapshot(loopName: string, plan: CodeGraphSnapshotPlan, text: string | null): void {
+    if (!text) return
+    try {
+      plan.record(text)
+    } catch (err) {
+      logger.error(`[code-graph] storing the snapshot failed for ${loopName}`, err)
+    }
   }
 
   /**
-   * Snapshot B: capture the code graph for the attempt that just ended, before
-   * the audit prompt is built. Both a fresh audit session and a reused standby
-   * then point at the affected tests and dependents of exactly this attempt.
+   * Snapshot A at loop attach, before the loop's first prompt. Attach does not hold the state
+   * lock, so this waits for the snapshot inline; the caller re-checks that the loop is still
+   * active before prompting.
    */
-  async function snapshotAttemptCodeGraph(state: LoopState): Promise<void> {
-    await withCodeGraphHeartbeat(state.loopName, async () => {
-      const attempt = loopService.getLatestAttempt(state)
-      if (!attempt?.snapshotCommit || attempt.codeGraph) return
-      const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
-      if (!target) return
-      const from = attempt.previousCommit ?? `${attempt.snapshotCommit}^`
-      const files = await listSnapshotChangedFiles(state.worktreeDir, from, attempt.snapshotCommit, logger)
-      if (files.length === 0) return
-      const text = await codeGraphSnapshotter.snapshotFiles(target, {
-        title: `audit attempt ${attempt.attemptNumber} (${attempt.scope})`,
-        files,
+  async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
+    const plan = planCodeGraphSnapshot(state.loopName, () => planSectionCodeGraph(state))
+    if (!plan) return
+    recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
+  }
+
+  /**
+   * Continues a phase transition after a code-graph snapshot without holding the loop's state
+   * lock while the snapshot runs, so a cancel, an abort, or shutdown never waits on codegraph.
+   * Called under the lock: with no plan it resumes inline; otherwise it schedules the snapshot
+   * and returns, and the caller must return too so the lock is released. While the snapshot
+   * runs, the coding phase runner ignores the loop at exactly the planned state. Afterwards the
+   * report is stored and the transition resumes under the lock, but only when the loop is still
+   * active at that same state; a cancel, restart, or termination in between drops it.
+   */
+  async function continueAfterCodeGraphSnapshot(
+    loopName: string,
+    expected: LoopState,
+    plan: CodeGraphSnapshotPlan | null,
+    resume: (state: LoopState) => Promise<void>,
+  ): Promise<void> {
+    if (!plan) {
+      await resume(expected)
+      return
+    }
+    const key = stateLockKey(loopName)
+    const token = codeGraphTransitionToken(expected)
+    pendingCodeGraphSnapshots.set(key, token)
+    const clearPending = (): void => {
+      if (pendingCodeGraphSnapshots.get(key) === token) pendingCodeGraphSnapshots.delete(key)
+    }
+    void (async () => {
+      const text = await computeCodeGraphSnapshot(loopName, plan)
+      await withStateLock(loopName, async () => {
+        clearPending()
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active || codeGraphTransitionToken(fresh) !== token) {
+          logger.log(`[code-graph] ${loopName} moved on during the snapshot; dropping the deferred transition`)
+          return
+        }
+        recordCodeGraphSnapshot(loopName, plan, text)
+        try {
+          await resume(fresh)
+        } catch (err) {
+          const current = loopService.getActiveState(loopName) ?? fresh
+          await handlePromptError(loopName, current, `unhandled error resuming ${current.phase} after a code-graph snapshot`, err)
+        }
       })
-      if (!text) return
-      loopService.recordAttemptCodeGraph(state, attempt, text)
-    })
+    })()
+      .catch((err) => logger.error(`[code-graph] deferred transition failed for ${loopName}`, err))
+      .finally(clearPending)
   }
 
   /**
@@ -2175,6 +2277,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
+    if (isAwaitingCodeGraphSnapshot(currentState)) {
+      logger.log(`Loop: ${loopName} is waiting for a code-graph snapshot to finish its transition, ignoring`)
+      return
+    }
+
     if (!currentState.worktreeDir) {
       logger.error(`Loop: loop ${loopName} missing worktreeDir in coding phase, terminating`)
       await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
@@ -2218,8 +2325,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!await loopService.captureAttempt(currentState, `coding-error:${currentState.sessionId}:${currentState.iteration}`, null)) return
     }
 
-    await snapshotAttemptCodeGraph(currentState)
+    await continueAfterCodeGraphSnapshot(
+      loopName,
+      currentState,
+      planCodeGraphSnapshot(loopName, () => planAttemptCodeGraph(currentState)),
+      (state) => startAuditAfterCoding(loopName, state),
+    )
+  }
 
+  /**
+   * The coding → auditing transition after an attempt is captured: resumes a reusable standby
+   * audit session, or creates a fresh one, and dispatches the audit prompt.
+   */
+  async function startAuditAfterCoding(loopName: string, coderState: LoopState): Promise<void> {
+    let currentState = coderState
     const currentConfig = getConfig()
     const auditorChoice = resolveLoopAuditorChoice(currentConfig, loopService, loopName, logger)
     const codeSessionId = currentState.sessionId
@@ -2524,26 +2643,32 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         })
 
         const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
-        await snapshotSectionCodeGraph(updatedState)
-        const continuationPrompt = loopService.buildSectionInitialPrompt(updatedState)
-        await rotateAndSendContinuation(
+        const auditedState = currentState
+        await continueAfterCodeGraphSnapshot(
           loopName,
-          currentState,
-          {
-            iteration: nextIter,
-            currentSectionIndex: nextIdx,
-            phase: 'coding',
-            lastAuditResult: auditResult,
-            auditCount: newAuditCount,
-          },
-          continuationPrompt,
-          assistantErrorDetected,
-          'section coding continuation',
-          {
-            eventType: 'auditor-handoff',
-            transitionKind: sectionTrans.kind,
-            fromPhase: currentState.phase,
-            toPhase: 'coding',
+          updatedState,
+          planCodeGraphSnapshot(loopName, () => planSectionCodeGraph(updatedState)),
+          async (sectionState) => {
+            await rotateAndSendContinuation(
+              loopName,
+              auditedState,
+              {
+                iteration: nextIter,
+                currentSectionIndex: nextIdx,
+                phase: 'coding',
+                lastAuditResult: auditResult,
+                auditCount: newAuditCount,
+              },
+              loopService.buildSectionInitialPrompt(sectionState),
+              assistantErrorDetected,
+              'section coding continuation',
+              {
+                eventType: 'auditor-handoff',
+                transitionKind: sectionTrans.kind,
+                fromPhase: auditedState.phase,
+                toPhase: 'coding',
+              },
+            )
           },
         )
         return

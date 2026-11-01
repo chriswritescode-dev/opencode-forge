@@ -23,7 +23,9 @@ const CODE_GRAPH_ENV = 'CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO
 /** Succeeds only when the bundled Node and the library the runner loads both exist. */
 export const CODE_GRAPH_PROBE_COMMAND = `test -x ${CODE_GRAPH_NODE} && test -f ${CODE_GRAPH_LIB_DIR}/dist/index.js && echo present`
 const BINARY_PROBE_TIMEOUT_MS = 30000
-/** One runner exec, which may build a full index for a loop's first snapshot. */
+/** The runner's own deadline: one exec may build a full index for a loop's first snapshot. */
+const RUNNER_DEADLINE_MS = 540000
+/** Host-side exec timeout, a margin past the runner's deadline so the runner normally reports it itself. */
 const SNAPSHOT_TIMEOUT_MS = 600000
 const AFFECTED_MAX_DEPTH = 5
 const PROBED_CONTAINER_LIMIT = 100
@@ -232,6 +234,7 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
       indexDir: CODE_GRAPH_CACHE_DIR,
       files,
       maxDepth: AFFECTED_MAX_DEPTH,
+      deadlineMs: RUNNER_DEADLINE_MS,
     }
     const command = [
       CODE_GRAPH_ENV,
@@ -257,6 +260,10 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
         if (files.length === 0) return null
 
         const result = await runSnapshot(target, files)
+        if (!result.ok && result.stage === 'locked') {
+          logger.log(`[code-graph] index busy in ${target.key}, skipping this snapshot: ${result.error}`)
+          return null
+        }
         if (!result.ok) {
           logger.error(`[code-graph] snapshot ${result.stage} failed in ${target.key}: ${result.error}`)
           return null
