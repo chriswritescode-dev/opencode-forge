@@ -18,7 +18,7 @@ export type PermissionRule = { permission: string; pattern: string; action: 'all
 
 /** Maximum number of plan sections a loop may execute. Shared by the
  *  deterministic decomposer, section bootstrap, the plan-structure report,
- *  the Forge-hosted planner prompt, and the plan-adjust cap so all agree. */
+ *  the architect agent's prose, and the plan-adjust cap so all agree. */
 export const MAX_TOTAL_SECTIONS = 24
 
 /**

@@ -9,7 +9,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | Option | Default | Description |
 |---|---:|---|
 | `dataDir` | `""` | Data directory for `forge.db` and worktrees. Empty resolves to the platform data dir. It does not relocate the default log path, which is always derived from the platform data dir; set `logging.file` to move logs. |
-| `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops, and for completed/cancelled goals and stale draft goals, before the cleanup sweep. Running and paused goals are never swept. |
+| `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before the cleanup sweep. |
 | `executionModel` | `""` | Fallback model override for plan execution sessions, and the model of the bundled `minion` subagent (OpenCode's default model when unset). Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
@@ -117,7 +117,7 @@ Because configured rules sit between the blanket allow and Forge's structural de
 
 Loops never ask about external directories: the blanket allow covers `external_directory`, so an unattended loop cannot wait on an approval. In a sandboxed loop the sandbox mounts are the boundary instead — file tools are refused outside them (see [Sandbox → File-Tool Boundary](sandbox.md#file-tool-boundary)). A loop with `sandbox.enabled: false` has full host file access.
 
-**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan-write`, `plan-edit`, `goal-write`, `execute-plan`, `question`, `loop-cancel`, `loop-status`, `goal-cancel`, `goal-status`, `loop-handoff`, `loop-complete`, `review-write`, `review-delete`, `edit`, and `write`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*`/`goal-*` would let a loop recurse into itself or manage other loops.
+**Forge-managed permissions are rejected** (ignored with a warning at plugin load, surfaced in the log and a one-time TUI toast). These include `*`, `external_directory`, and the structural denies: `plan-write`, `plan-edit`, `execute-plan`, `question`, `loop-cancel`, `loop-status`, `loop-handoff`, `loop-complete`, `review-write`, `review-delete`, `edit`, and `write`. An unattended loop that can call `question` would hang forever; allowing `plan-write`/`review-write` would corrupt the plan-of-record and audit channels; and `execute-plan`/`loop-*` would let a loop recurse into itself or manage other loops.
 
 **Blanket denies of Forge-required permissions are rejected too**: `review-read`, `plan-read`, `section-read`, `plan-adjust`, `bash`, and `read` may not be denied outright. A loop that cannot read its findings, section plan, or plan-of-record — or cannot run `bash` or `read` at all — cannot do its job and would silently burn iterations to `maxIterations` with nothing pointing at the config. Only the blanket form (a bare tool name, or pattern `*`) is rejected; a scoped deny such as `{ "permission": "bash", "pattern": "git push *" }` is honoured.
 
