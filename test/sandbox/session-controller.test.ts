@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import {
   createSessionSandboxController,
   createUnavailableSandboxLifecycleManager,
@@ -15,7 +11,7 @@ import { createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../../src/storage'
 import type { ActiveSandbox } from '../../src/sandbox/manager'
 import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 import { emitTuiEvent, registerTuiEventEmitter } from '../../src/host/tui-events'
 import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 
@@ -82,9 +78,9 @@ function createFakeManager(): FakeManager {
 }
 
 describe('SessionSandboxController', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
   let repo: ReturnType<typeof createSessionSandboxPreferencesRepo>
-  let tempDir: string
+  let testDb: ReturnType<typeof createTestDb>
   let manager: FakeManager
   let logger: ReturnType<typeof createMockLogger>
 
@@ -114,21 +110,15 @@ describe('SessionSandboxController', () => {
   }
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'session-sandbox-controller-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     repo = createSessionSandboxPreferencesRepo(db)
     manager = createFakeManager()
     logger = createMockLogger()
   })
 
   afterEach(() => {
-    db.close()
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    testDb.cleanup()
   })
 
   test('an ON start converges the sandbox to its overrides and records them on the applied row', async () => {

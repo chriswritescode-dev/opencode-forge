@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -12,7 +11,7 @@ import { createLoopService } from '../../src/loop/service'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -47,7 +46,8 @@ const assistantMessage = (text: string) => [
 ]
 
 describe('Loop Section Advancement', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
@@ -59,10 +59,8 @@ describe('Loop Section Advancement', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-section-advancement-test-'))
-    const dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -73,7 +71,7 @@ describe('Loop Section Advancement', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 

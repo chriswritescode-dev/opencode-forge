@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -13,7 +12,7 @@ import { createLoopEventHandler } from '../../src/hooks/loop'
 import { markPromptSent, isAwaitingBusy, AWAITING_BUSY_TIMEOUT_MS, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -27,7 +26,8 @@ const mockConfig: PluginConfig = {
 }
 
 describe('Loop Event Idle Gate', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let tempDir: string
   let loopsRepo: ReturnType<typeof createLoopsRepo>
@@ -38,9 +38,8 @@ describe('Loop Event Idle Gate', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-event-gate-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -63,7 +62,7 @@ describe('Loop Event Idle Gate', () => {
 
   afterEach(() => {
     handler?.clearAllRetryTimeouts()
-    db.close()
+    testDb.cleanup()
     rmSync(tempDir, { recursive: true, force: true })
     __resetIdleGate()
     handler = null

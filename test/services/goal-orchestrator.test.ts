@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import type { GoalLaunchSnapshot, GoalTask } from '../../src/storage/repos/goals-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
@@ -16,7 +15,7 @@ import { processShared } from '../../src/utils/process-shared'
 import type { LoopState } from '../../src/loop/state'
 import type { Logger } from '../../src/types'
 import { createFakeGitService } from '../helpers/fake-git'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'test-project'
 const HOST = 'host-session'
@@ -60,8 +59,8 @@ function loopState(overrides: Partial<LoopState> & { status: LoopState['status']
 }
 
 function createHarness(overrides: Partial<GoalOrchestratorDeps> = {}) {
-  const db = new Database(':memory:')
-  setupLoopsTestDb(db)
+  const testDb = createTestDb()
+  const db = testDb.db
   const goalsRepo = createGoalsRepo(db)
   const plansRepo = createPlansRepo(db)
   const git = createFakeGitService({
@@ -134,6 +133,7 @@ function createHarness(overrides: Partial<GoalOrchestratorDeps> = {}) {
   }
 
   return {
+    testDb,
     db,
     goalsRepo,
     plansRepo,
@@ -161,7 +161,7 @@ describe('createGoalOrchestrator', () => {
   })
 
   afterEach(() => {
-    h.db.close()
+    h.testDb.cleanup()
   })
 
   describe('onLoopSettled', () => {

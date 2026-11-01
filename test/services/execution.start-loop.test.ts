@@ -1,8 +1,4 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -18,7 +14,7 @@ import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopService } from '../../src/loop/service'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const mockLogger: Logger = {
@@ -55,8 +51,14 @@ function uniqueLoopNameFor(
 
 const PROJECT_ID = 'test-project'
 
+const openDbs: ReturnType<typeof createTestDb>[] = []
+
+afterEach(() => {
+  for (const testDb of openDbs.splice(0)) testDb.cleanup()
+})
+
 describe('handleStartLoop builtin worktree workspace', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
   let reviewFindingsRepo: ReviewFindingsRepo
@@ -66,9 +68,9 @@ describe('handleStartLoop builtin worktree workspace', () => {
   const noopFn = () => {}
 
   beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-loop-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -651,9 +653,9 @@ describe('handleStartLoop concurrent-start dedupe', () => {
   }
 
   test('two concurrent calls with same source produce only one workspace + session', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-concurrent-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -709,14 +711,12 @@ describe('handleStartLoop concurrent-start dedupe', () => {
     const realResult = [r1, r2].find(r => !(r.data as any).deduped)
     expect(dedupedResults.length).toBe(1)
     expect(realResult).toBeDefined()
-
-    db.close()
   })
 
   test('different source sessions do not dedupe each other', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-diffsource-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -771,14 +771,12 @@ describe('handleStartLoop concurrent-start dedupe', () => {
 
     if (!r1.ok || !r2.ok) return
     expect(r1.data.loopName).not.toBe(r2.data.loopName)
-
-    db.close()
   })
 
   test('sequential second call after first completes is not deduped', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-seq-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -821,8 +819,6 @@ describe('handleStartLoop concurrent-start dedupe', () => {
     expect(mocks.client.workspace.create).toHaveBeenCalledTimes(2)
     expect(mocks.client.session.create).toHaveBeenCalledTimes(2)
     expect(second.ok).toBe(true)
-
-    db.close()
   })
 })
 
@@ -831,9 +827,9 @@ describe('handleStartLoop variant config fallback', () => {
   const PROJECT_ID = 'test-project'
 
   test('falls back to config variants when command has no variants', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-variant-fallback-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -900,14 +896,12 @@ describe('handleStartLoop variant config fallback', () => {
     expect(state).not.toBeNull()
     expect(state!.executionVariant).toBe('high')
     expect(state!.auditorVariant).toBe('audit-high')
-
-    db.close()
   })
 
   test('preserves explicit empty string variant over config', async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-variant-empty-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -977,8 +971,6 @@ describe('handleStartLoop variant config fallback', () => {
     // Empty string from command should be preserved, not replaced by config
     expect(state!.executionVariant).toBe('')
     expect(state!.auditorVariant).toBe('')
-
-    db.close()
   })
 })
 
@@ -1021,9 +1013,9 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
   }
 
   function buildHarness(workspaceCreate?: () => Promise<Record<string, unknown>>) {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-base-ref-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1070,8 +1062,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     if (!result.ok) return
     expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.baseCommit).toBe(MOCK_BASE_COMMIT)
     expect(h.loopService.getActiveState(result.data.loopName)!.baseCommit).toBe(MOCK_BASE_COMMIT)
-
-    h.db.close()
   })
 
   async function dispatchBranchStart(
@@ -1105,7 +1095,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.error.code).toBe('bad_request')
     expect(h.client.workspace.create).not.toHaveBeenCalled()
     expect(h.client.session.create).not.toHaveBeenCalled()
-    h.db.close()
   }
 
   test('forwards an explicit branch and baseRef and persists the branch', async () => {
@@ -1138,8 +1127,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.data.worktreeBranch).toBe('feature/loop')
     expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.worktreeBranch).toBe('feature/loop')
     expect(h.loopService.getActiveState(result.data.loopName)!.worktreeBranch).toBe('feature/loop')
-
-    h.db.close()
   })
 
   test('a start without branch or baseRef sends neither extra key', async () => {
@@ -1166,8 +1153,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     const createArgs = (h.client.workspace.create as any).mock.calls[0][0]
     expect(createArgs.extra).not.toHaveProperty('branch')
     expect(createArgs.extra).not.toHaveProperty('baseRef')
-
-    h.db.close()
   })
 
   test('refuses a start with an invalid branch name before creating anything', async () => {
@@ -1238,8 +1223,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.error.message).toBe('Failed to resolve loop base commit')
     expect(h.client.workspace.remove).toHaveBeenCalled()
     expect(h.loopService.listActive()).toHaveLength(0)
-
-    h.db.close()
   })
 
   const PREVIOUS_BRANCH_TIP = 'b'.repeat(40)
@@ -1304,8 +1287,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.ok).toBe(false)
     expect(git.branchForceUpdate).toHaveBeenCalledTimes(1)
     expect(git.branchForceUpdate).toHaveBeenCalledWith('/tmp/test', branch, PREVIOUS_BRANCH_TIP)
-
-    h.db.close()
   })
 
   test('restores an existing branch to its pre-start tip when workspace.create rejects', async () => {
@@ -1338,8 +1319,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.ok).toBe(false)
     expect(git.branchForceUpdate).toHaveBeenCalledTimes(1)
     expect(git.branchForceUpdate).toHaveBeenCalledWith('/tmp/test', branch, PREVIOUS_BRANCH_TIP)
-
-    h.db.close()
   })
 
   test('never restores the branch when the start succeeds', async () => {
@@ -1371,8 +1350,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
 
     expect(result.ok).toBe(true)
     expect(git.branchForceUpdate).not.toHaveBeenCalled()
-
-    h.db.close()
   })
 
   test('neither captures nor restores a branch that does not exist yet', async () => {
@@ -1405,8 +1382,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.ok).toBe(false)
     expect(git.revParse.mock.calls.map((call: [string, string]) => call[1])).not.toContain(`refs/heads/${branch}`)
     expect(git.branchForceUpdate).not.toHaveBeenCalled()
-
-    h.db.close()
   })
 
   test('a concurrent duplicate start with an explicit branch returns the deduped result, not the checked-out refusal', async () => {
@@ -1482,8 +1457,6 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     if (!secondResult.ok) return
     expect((secondResult.data as { deduped?: boolean }).deduped).toBe(true)
     expect(h.client.workspace.create).toHaveBeenCalledTimes(1)
-
-    h.db.close()
   })
 })
 
@@ -1491,9 +1464,9 @@ describe('handleStartLoop goal attach', () => {
   const noopFn = () => {}
 
   function buildHarness() {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-goal-attach-'))
-    const db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1614,8 +1587,6 @@ describe('handleStartLoop goal attach', () => {
       baseCommit: MOCK_BASE_COMMIT,
       title: result.data.displayName,
     })
-
-    h.db.close()
   })
 
   test('without a draft goal nothing changes and no goalId is returned', async () => {
@@ -1632,8 +1603,6 @@ describe('handleStartLoop goal attach', () => {
     if (!result.ok) return
     expect(result.data.goalId).toBeUndefined()
     expect(h.goalsRepo.listGoals(PROJECT_ID)).toHaveLength(0)
-
-    h.db.close()
   })
 
   test('an attachFirstChunk throw is logged and the start still succeeds', async () => {
@@ -1658,8 +1627,6 @@ describe('handleStartLoop goal attach', () => {
     if (!result.ok) return
     expect(result.data.goalId).toBeUndefined()
     expect(logger.error).toHaveBeenCalledWith('handleStartLoop: failed to attach first goal chunk', expect.any(Error))
-
-    h.db.close()
   })
 
   test('a deduped concurrent start attaches exactly once', async () => {
@@ -1680,8 +1647,6 @@ describe('handleStartLoop goal attach', () => {
     expect(r1.ok).toBe(true)
     expect(r2.ok).toBe(true)
     expect(h.goalsRepo.getGoal(PROJECT_ID, 'goal-draft')!.status).toBe('running')
-
-    h.db.close()
   })
 
   test('skips a name still referenced by a goal chunk and attaches chunk 1 with the suffixed name', async () => {
@@ -1727,8 +1692,6 @@ describe('handleStartLoop goal attach', () => {
     const chunks = h.goalsRepo.listChunks(PROJECT_ID, 'goal-draft')
     expect(chunks).toHaveLength(1)
     expect(chunks[0].loopName).toBe('shared-name-1')
-
-    h.db.close()
   })
 
   test('skips a name whose forge branch already exists', async () => {
@@ -1748,7 +1711,5 @@ describe('handleStartLoop goal attach', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.data.loopName).toBe('taken-branch-1')
-
-    h.db.close()
   })
 })

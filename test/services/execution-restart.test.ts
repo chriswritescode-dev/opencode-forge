@@ -19,10 +19,9 @@ import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-rep
 import type { LoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import type { LoopService } from '../../src/loop/service'
-const Database = require('better-sqlite3')
-import { setupLoopsTestDb } from '../helpers/test-db'
+import type { Database } from 'bun:sqlite'
+import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
-type Database = ReturnType<typeof Database>
 
 const mockLogger: Logger = {
   log: () => {},
@@ -62,6 +61,7 @@ function createNonReentrantMutex() {
 }
 
 describe('handleLoopRestart from stall_timeout', () => {
+  let testDb: ReturnType<typeof createTestDb>
   let db: Database
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
@@ -78,10 +78,8 @@ describe('handleLoopRestart from stall_timeout', () => {
   }
 
   beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -106,7 +104,7 @@ describe('handleLoopRestart from stall_timeout', () => {
   })
 
   afterEach(() => {
-    try { db.close() } catch {}
+    testDb.cleanup()
   })
 
   function insertLoop(overrides: Partial<{
@@ -1948,6 +1946,7 @@ describe('handleLoopRestart from stall_timeout', () => {
 })
 
 describe('handleLoopRestart restartability rules', () => {
+  let testDb: ReturnType<typeof createTestDb>
   let db: Database
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
@@ -1958,10 +1957,8 @@ describe('handleLoopRestart restartability rules', () => {
   let notifySpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-rules-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -1983,7 +1980,7 @@ describe('handleLoopRestart restartability rules', () => {
   })
 
   afterEach(() => {
-    try { db.close() } catch {}
+    testDb.cleanup()
   })
 
   function insertLoop(overrides: Partial<{

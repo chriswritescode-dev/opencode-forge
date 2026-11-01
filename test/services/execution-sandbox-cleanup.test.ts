@@ -1,15 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
+import { dirname } from 'path'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
@@ -21,24 +18,18 @@ vi.mock('../../src/utils/sandbox-ready', () => ({
 }))
 
 describe('attachLoopToSession sandbox-not-ready cleanup', () => {
-  let db: Database
+  let testDb: ReturnType<typeof createTestDb>
+  let db: ReturnType<typeof createTestDb>['db']
   let tempDir: string
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'exec-sandbox-cleanup-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-    // attachLoopToSession only runs the sandbox wait when forge.db exists at dataDir.
-    writeFileSync(join(tempDir, 'forge.db'), '')
+    testDb = createTestDb()
+    db = testDb.db
+    tempDir = dirname(testDb.path)
   })
 
   afterEach(() => {
-    try {
-      db.close()
-    } catch {}
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {}
+    testDb.cleanup()
   })
 
   function buildDeps() {

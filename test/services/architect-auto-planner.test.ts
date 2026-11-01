@@ -1,13 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createArchitectAutoPlanner, ARCHITECT_AUTO_AGENT } from '../../src/services/architect-auto-planner'
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -52,22 +48,20 @@ function createCapturingLogger(): { logger: Logger; logs: string[] } {
 }
 
 describe('createArchitectAutoPlanner', () => {
-  let db: Database
-  let tempDir: string
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let logger: Logger
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'architect-auto-planner-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     plansRepo = createPlansRepo(db)
     logger = createCapturingLogger().logger
   })
 
   afterEach(() => {
-    db.close()
-    rmSync(tempDir, { recursive: true, force: true })
+    testDb.cleanup()
   })
 
   describe('spawn', () => {

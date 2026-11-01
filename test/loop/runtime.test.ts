@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -22,7 +21,7 @@ import {
 import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -46,7 +45,8 @@ function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string;
 }
 
 describe('Loop Runtime', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let tempDir: string
   let loopsRepo: ReturnType<typeof createLoopsRepo>
@@ -59,8 +59,8 @@ describe('Loop Runtime', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-runtime-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb({ path: join(tempDir, 'forge.db') })
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -90,7 +90,7 @@ describe('Loop Runtime', () => {
       currentLoop.clearAllRetryTimeouts()
       currentLoop = null
     }
-    db.close()
+    testDb.cleanup()
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {

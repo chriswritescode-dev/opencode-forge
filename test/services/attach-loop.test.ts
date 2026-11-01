@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -10,7 +6,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 type PromptCallArgs = { agent?: string; sessionID?: string; parts: Array<{ text: string }> }
 
@@ -19,19 +15,16 @@ const noopFn = () => {}
 const PROJECT_ID = 'test-project'
 
 describe('attachLoopToSession', () => {
-  let db: Database
-  let tempDir: string
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'attach-loop-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
   })
 
   afterEach(() => {
-    try {
-      db.close()
-    } catch {}
+    testDb.cleanup()
   })
 
   function buildDeps() {

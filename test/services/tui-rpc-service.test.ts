@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -10,7 +9,7 @@ import type { Logger } from '../../src/types'
 import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'project-a'
 const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
@@ -53,22 +52,23 @@ function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
 
 describe('createTuiRpcService', () => {
   let tempDir: string
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let sandboxPreferences: ReturnType<typeof createSessionSandboxPreferencesRepo>
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'tui-rpc-service-test-'))
-    db = new Database(join(tempDir, 'forge.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb({ path: join(tempDir, 'forge.db') })
+    db = testDb.db
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
     sandboxPreferences = createSessionSandboxPreferencesRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     rmSync(tempDir, { recursive: true, force: true })
   })
 

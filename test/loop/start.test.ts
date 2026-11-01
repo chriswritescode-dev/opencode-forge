@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import type { V2Event } from '@opencode/client'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
@@ -16,7 +12,7 @@ import { loopRegistry } from '../../src/utils/loop-registry'
 import { normalizeV2Event } from '../../src/host/v2-events'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { ForgeClient } from '../../src/client/port'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -66,19 +62,17 @@ function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string;
 }
 
 describe('Loop Runtime start()', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
-  let tempDir: string
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'loop-start-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -101,12 +95,7 @@ describe('Loop Runtime start()', () => {
   })
 
   afterEach(() => {
-    db.close()
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    testDb.cleanup()
     __resetIdleGate()
     loopRegistry.clear()
   })

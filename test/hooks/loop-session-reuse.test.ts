@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -14,7 +13,7 @@ import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler, type LoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 import { SECTION_SUMMARY_START_MARKER } from '../../src/utils/section-summary'
 import type { ModelContextLimitParams } from '../../src/client/port'
 import { __resetIdleGate, hasSuppressedIdle, recordInboxEnqueued } from '../../src/loop/idle-gate'
@@ -56,7 +55,8 @@ function assistantMessage(options: AssistantOptions = {}) {
 }
 
 describe('Loop session reuse', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
@@ -74,8 +74,8 @@ describe('Loop session reuse', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-session-reuse-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -91,7 +91,7 @@ describe('Loop session reuse', () => {
     __resetIdleGate()
     __resetInFlightGuard()
     __resetLoopRuntimeSharedState()
-    db.close()
+    testDb.cleanup()
     rmSync(tempDir, { recursive: true, force: true })
   })
 

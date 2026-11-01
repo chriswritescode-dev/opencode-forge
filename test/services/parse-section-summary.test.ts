@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -10,7 +6,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import { parseSectionSummary, SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -21,14 +17,12 @@ const mockLogger: Logger = {
 const PROJECT_ID = 'test-project'
 
 describe('parseSectionSummary', () => {
-  let db: Database
-  let tempDir: string
+  let testDb: ReturnType<typeof createTestDb>
+  let db: ReturnType<typeof createTestDb>['db']
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'parse-section-summary-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -47,8 +41,7 @@ describe('parseSectionSummary', () => {
   })
 
   afterEach(() => {
-    db.close()
-    rmSync(tempDir, { recursive: true, force: true })
+    testDb.cleanup()
   })
 
   test('extracts Done, Deviations, and Follow-ups sections', () => {

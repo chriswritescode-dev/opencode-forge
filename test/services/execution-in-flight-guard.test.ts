@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -18,7 +14,7 @@ import {
   getPromptInFlight,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
-import { setupLoopsTestDb } from '../helpers/test-db'
+import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
@@ -26,12 +22,12 @@ const noopFn = () => {}
 const PROJECT_ID = 'test-project'
 
 describe('execution in-flight guard', () => {
-  let db: Database
+  let testDb: ReturnType<typeof createTestDb>
+  let db: ReturnType<typeof createTestDb>['db']
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
   let reviewFindingsRepo: ReviewFindingsRepo
   let sectionPlansRepo: SectionPlansRepo
-  let tempDir: string
 
   const mockLogger: Logger = {
     log: () => {},
@@ -47,10 +43,8 @@ describe('execution in-flight guard', () => {
 
   beforeEach(() => {
     __resetInFlightGuard()
-    tempDir = mkdtempSync(join(tmpdir(), 'exec-guard-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -59,7 +53,7 @@ describe('execution in-flight guard', () => {
   })
 
   afterEach(() => {
-    try { db.close() } catch {}
+    testDb.cleanup()
     __resetInFlightGuard()
   })
 
