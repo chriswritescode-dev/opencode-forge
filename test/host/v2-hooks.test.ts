@@ -350,6 +350,195 @@ describe('registerForgeHooksV2 tool hooks', () => {
   })
 })
 
+describe('registerForgeHooksV2 subagent default model', () => {
+  function subagentEvent(input: Record<string, unknown> = {}, tool = 'subagent') {
+    return {
+      tool,
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_1',
+      input: { agent: 'minion', prompt: 'do work', ...input },
+    }
+  }
+
+  function agentLookup(model?: { id: string; providerID: string }) {
+    return async () => ({
+      location: { directory: WORKTREE },
+      data: {
+        id: 'minion',
+        name: 'minion',
+        mode: 'subagent',
+        hidden: false,
+        request: { settings: {}, headers: {}, body: {} },
+        permissions: [],
+        ...(model ? { model } : {}),
+      },
+    })
+  }
+
+  const defaultModel = async () => ({
+    location: { directory: WORKTREE },
+    data: { id: 'default-model', modelID: 'default-model', providerID: 'default-provider' },
+  })
+
+  test('sets the default model for a new minion launch whose agent has no model', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls).toContainEqual({ method: 'agent.get', args: [{ agentID: 'minion' }] })
+    expect(calls.map((call) => call.method)).toContain('model.default')
+    expect(event.input).toEqual({
+      agent: 'minion',
+      prompt: 'do work',
+      model: 'default-provider/default-model',
+    })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+  })
+
+  test('leaves the input alone when the resolved agent has a model', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup({ id: 'pinned-model', providerID: 'pinned-provider' }) },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('model.default')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+  })
+
+  test('leaves the input alone for an agent outside the default-model list', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({ agent: 'other' })
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(calls.map((call) => call.method)).not.toContain('model.default')
+    expect(event.input).toEqual({ agent: 'other', prompt: 'do work' })
+  })
+
+  test('leaves the input alone when the caller passed a model', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({ model: 'other-provider/other-model' })
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work', model: 'other-provider/other-model' })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+  })
+
+  test('leaves a continuation of an existing child alone', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({ sessionID: 'ses_child' })
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work', sessionID: 'ses_child' })
+  })
+
+  test('leaves the input alone for other tools', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({}, 'grep')
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+  })
+
+  test('leaves the input alone when the agent lookup fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, hooks } = createFakeV2Context({
+      agent: {
+        get: async () => {
+          throw new Error('agent lookup failed')
+        },
+      },
+      model: { default: defaultModel },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+    expect(errorSpy).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  test('leaves the input alone when resolving the default model fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, hooks } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: {
+        default: async () => {
+          throw new Error('model lookup failed')
+        },
+      },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+    expect(errorSpy).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  test('leaves the input alone when no default model is configured', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: async () => ({ location: { directory: WORKTREE }, data: null }) },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+  })
+})
+
 describe('registerForgeHooksV2 shell hook', () => {
   test('create.before routes a sandboxed loop worktree through the shim', async () => {
     const { ctx, hooks } = createFakeV2Context({

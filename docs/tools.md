@@ -45,7 +45,7 @@ Arguments:
 
 ### `plan-write`
 
-Creates or overwrites the plan stored for the current session, matching the regular Write interaction with the plan as the implicit target. The stored plan is the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `plan-edit` for incremental additions and revisions. Available to architect and architect-auto sessions; denied in code, auditor, and auditor-loop sessions, and inside loop/audit sessions.
+Creates or overwrites the plan stored for the current session, matching the regular Write interaction with the plan as the implicit target. The stored plan is the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `plan-edit` for incremental additions and revisions. Available to architect and architect-auto sessions; denied in code, minion, auditor, and auditor-loop sessions, and inside loop/audit sessions.
 
 Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, the full decomposed section outline, and a `Warnings:` block when any structural requirement is unmet.
 
@@ -216,7 +216,7 @@ Both tools share these rules:
 - The last call wins: a second call in the same turn replaces the earlier pending record, and the reply says so.
 - A record is applied once and only by the session that wrote it. The loop never parses assistant text to decide that a turn ended.
 - `loop-handoff` is rejected in `post_action` with an error that says to use `loop-complete`; `loop-complete` is rejected outside `post_action`.
-- Agent availability: `architect` and `architect-auto` exclude both tools; the `auditor` subagent excludes both; the `auditor-loop` agent excludes `loop-complete`; the `code` agent excludes neither.
+- Agent availability: `architect` and `architect-auto` exclude both tools; the `auditor` subagent excludes both; the `minion` subagent excludes both; the `auditor-loop` agent excludes `loop-complete`; the `code` agent excludes neither.
 
 ## Goal Tools
 
@@ -224,7 +224,7 @@ Goal tools drive the sequential goal orchestrator: a goal is an objective run as
 
 ### `goal-write`
 
-Saves the ordered goal for the current session as a `draft`. The next loop launched from that session — through the TUI dialog, the plan-approval `Loop` path, or `execute-plan` — is attached as chunk 1 and promotes the draft to `running`. A session may hold at most one running or paused goal, and `goal-write` replaces any existing draft for the session. Available to architect sessions only (excluded from code, auditor, and architect-auto).
+Saves the ordered goal for the current session as a `draft`. The next loop launched from that session — through the TUI dialog, the plan-approval `Loop` path, or `execute-plan` — is attached as chunk 1 and promotes the draft to `running`. A session may hold at most one running or paused goal, and `goal-write` replaces any existing draft for the session. Available to architect sessions only (excluded from code, minion, auditor, and architect-auto).
 
 Arguments:
 

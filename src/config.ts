@@ -5,6 +5,12 @@ export interface PluginCommand { template: string; description: string; agent: s
 
 export const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
 
+/** Forge agents that a user-defined agent of the same name replaces. */
+export const USER_REPLACEABLE_AGENTS = ['minion']
+
+/** Forge subagents that run on OpenCode's default model instead of the caller's when the resolved agent has no model. */
+export const DEFAULT_MODEL_SUBAGENTS = ['minion']
+
 export const DEFAULT_AGENT = 'code'
 
 function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand> {

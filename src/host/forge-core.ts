@@ -654,7 +654,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory, defaultGitService, loopAttemptsRepo)
 
   const promptsDir = resolvePromptsDir()
-  const agents = buildAgents(promptsDir)
+  const agents = buildAgents(promptsDir, { model: config.executionModel, variant: config.executionVariant })
 
   const compactionConfig: CompactionConfig | undefined = config.compaction
   const messagesTransformConfig = config.messagesTransform

@@ -118,6 +118,68 @@ describe('registerForgeAgentsV2', () => {
   })
 })
 
+describe('registerForgeAgentsV2 replaceable agents', () => {
+  const replaceableCfg = {
+    minion: { description: 'forge minion', prompt: 'forge minion prompt', mode: 'subagent' as const, model: '' },
+    code: { description: 'forge code', prompt: 'forge code prompt', mode: 'primary' as const, model: '' },
+  }
+
+  function userAgentInfo(id: string, system: string) {
+    return {
+      id,
+      name: id,
+      mode: 'subagent',
+      hidden: false,
+      system,
+      model: { id: 'user-model', providerID: 'user-provider' },
+      request: { settings: {}, headers: {}, body: {} },
+      permissions: [],
+    }
+  }
+
+  test('registers the minion when no user agent exists', async () => {
+    const { ctx, agents } = createFakeV2Context()
+
+    await registerForgeAgentsV2(ctx, replaceableCfg)
+
+    expect(agents.find((agent) => agent.id === 'minion')?.info.system).toBe('forge minion prompt')
+  })
+
+  test('leaves a user-defined minion untouched', async () => {
+    const { ctx, agents } = createFakeV2Context()
+    agents.push({ id: 'minion', info: userAgentInfo('minion', 'user minion prompt') })
+
+    await registerForgeAgentsV2(ctx, replaceableCfg)
+
+    const minion = agents.find((agent) => agent.id === 'minion')
+    expect(minion?.info.system).toBe('user minion prompt')
+    expect(minion?.info.model).toEqual({ id: 'user-model', providerID: 'user-provider' })
+  })
+
+  test('always updates a non-replaceable agent that already exists', async () => {
+    const { ctx, agents } = createFakeV2Context()
+    agents.push({ id: 'code', info: userAgentInfo('code', 'user code prompt') })
+
+    await registerForgeAgentsV2(ctx, replaceableCfg)
+
+    expect(agents.find((agent) => agent.id === 'code')?.info.system).toBe('forge code prompt')
+  })
+
+  test('maps a minion model and variant like any other agent', async () => {
+    const { ctx, agents } = createFakeV2Context()
+
+    await registerForgeAgentsV2(ctx, {
+      minion: { model: 'anthropic/claude-sonnet-4-5', variant: 'fast', mode: 'subagent' },
+    })
+
+    expect(agents.find((agent) => agent.id === 'minion')?.info.model).toEqual({
+      id: 'claude-sonnet-4-5',
+      providerID: 'anthropic',
+      variant: 'fast',
+    })
+  })
+})
+
 describe('registerForgeCommandsV2', () => {
   test('review command switches to the auditor and substitutes $ARGUMENTS', async () => {
     const cfg = await configMaps()

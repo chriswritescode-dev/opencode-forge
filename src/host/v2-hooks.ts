@@ -5,6 +5,7 @@ import type { SandboxContext } from '../sandbox/context'
 import { canonicalizePath } from '../sandbox/path'
 import { SHIM_ENV_CONTAINER } from '../sandbox/shell-shim'
 import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client/v2-adapter'
+import { DEFAULT_MODEL_SUBAGENTS } from '../config'
 import { findLastIndex } from '../utils/array'
 import { resolveAutoApproveDecision, type PermissionEffectLike } from '../utils/auto-approve-policy'
 import { isRecord } from '../utils/is-record'
@@ -106,11 +107,52 @@ async function resolvePermissionAsk(core: ForgeHooksV2Core, event: AutoApprovePe
   if (decision.effect === 'deny') event.message = decision.message
 }
 
-export async function registerForgeHooksV2(ctx: Plugin.Context, core: ForgeHooksV2Core): Promise<void> {
+interface ToolExecuteBeforeEvent {
+  tool: string
+  input: unknown
+}
+
+const SUBAGENT_TOOL = 'subagent'
+
+function subagentLaunchAgent(input: unknown): string | undefined {
+  if (!isRecord(input) || typeof input.agent !== 'string') return undefined
+  if (input.model !== undefined && input.model !== '') return undefined
+  if (input.sessionID !== undefined && input.sessionID !== '') return undefined
+  return input.agent
+}
+
+/**
+ * Gives a new subagent launch an explicit default model when its resolved agent has none, because
+ * OpenCode otherwise resolves the child's model from the calling session. A user-pinned or
+ * `executionModel` model on the agent wins, and a failed lookup leaves the input alone.
+ */
+async function applySubagentDefaultModel(
+  ctx: Pick<Plugin.Context, 'model' | 'agent'>,
+  event: ToolExecuteBeforeEvent,
+): Promise<void> {
+  if (event.tool !== SUBAGENT_TOOL) return
+  const agent = subagentLaunchAgent(event.input)
+  if (!agent || !DEFAULT_MODEL_SUBAGENTS.includes(agent)) return
+  try {
+    const resolved = await ctx.agent.get({ agentID: agent })
+    if (resolved.data.model) return
+    const result = await ctx.model.default()
+    if (!result.data) return
+    event.input = { ...(event.input as Record<string, unknown>), model: `${result.data.providerID}/${result.data.id}` }
+  } catch (err) {
+    console.error('[forge] Failed to resolve the default model for a subagent launch', err)
+  }
+}
+
+export async function registerForgeHooksV2(
+  ctx: Plugin.Context,
+  core: ForgeHooksV2Core,
+): Promise<void> {
   const locationDirectory = ctx.location.directory
   const isProjectLocation = canonicalizePath(locationDirectory) === canonicalizePath(ctx.location.project.canonical)
 
   await ctx.tool.hook('execute.before', async (event) => {
+    await applySubagentDefaultModel(ctx, event)
     const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id }
     const output = { args: event.input }
     await core.toolBefore(input, output)
