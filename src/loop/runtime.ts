@@ -42,6 +42,8 @@ import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-wo
 import { loopRegistry } from '../utils/loop-registry'
 import { processShared, projectLoopKey } from '../utils/process-shared'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
+import { createCodeGraphSnapshotter, resolveLoopCodeGraphTarget } from './code-graph'
+import { extractSectionFiles } from '../utils/plan-structure'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { resolvePostActionConfig } from './post-action-config'
@@ -131,6 +133,11 @@ export interface Loop {
   clearLoopTimers(name: string): Promise<void>
   clearAllRetryTimeouts(): void
   recordActivity(name: string, source?: string): void
+  /**
+   * Take this loop's code-graph snapshot A for the current section and store it
+   * on the section row. Best-effort: any failure leaves the prompt unchanged.
+   */
+  snapshotSectionCodeGraph(state: LoopState): Promise<void>
   startWatchdog(name: string): void
   /**
    * Starts the watchdog for every active loop whose worktree this instance owns and
@@ -183,6 +190,8 @@ export { isWorkspaceNotFoundError } from './runtime-workspace'
 
 const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'
 const INTERNAL_FALLBACK_ABORTS_SHARED_KEY = 'loop-internal-fallback-aborts.v1'
+/** Keeps the loop marked live while a code-graph snapshot outlasts the watchdog stall timeout. */
+const CODE_GRAPH_HEARTBEAT_MS = 20_000
 
 /**
  * Test-only: clear the process-shared runtime maps between tests. Production code must never
@@ -1962,6 +1971,42 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     isPromptQueued,
   })
 
+  const codeGraphSnapshotter = createCodeGraphSnapshotter({ logger })
+
+  /**
+   * Snapshot A: capture the code graph for the section that is about to start,
+   * before its first coder prompt is built. A section that already carries a
+   * report (restart, reused worktree) is left alone so the snapshot is taken
+   * exactly once per section.
+   */
+  async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
+    if (state.totalSections <= 0) return
+    const index = state.currentSectionIndex
+    const section = loopService.getSectionPlan(state, index)
+    if (!section || section.codeGraph) return
+    const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
+    if (!target) return
+
+    // A first index can run for minutes, and no session is busy while the first
+    // prompt is still being prepared. Without a heartbeat the watchdog would treat
+    // the wait as a stall and re-trigger the coding phase for the same section.
+    const heartbeat = setInterval(
+      () => watchdog.recordActivity(state.loopName, 'code-graph-snapshot'),
+      CODE_GRAPH_HEARTBEAT_MS,
+    )
+    try {
+      const text = await codeGraphSnapshotter.snapshotFiles(target, {
+        title: `section ${index + 1}: ${section.title}`,
+        files: extractSectionFiles(section.content),
+      })
+      if (!text) return
+      loopService.recordSectionCodeGraph(state, index, text)
+    } finally {
+      clearInterval(heartbeat)
+      watchdog.recordActivity(state.loopName, 'code-graph-snapshot')
+    }
+  }
+
   /**
    * Sends an audit prompt, handling workspace re-bind recovery and retry
    * registration. The fresh-audit and standby-reuse paths share this dispatch so
@@ -2441,6 +2486,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         })
 
         const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
+        await snapshotSectionCodeGraph(updatedState)
         const continuationPrompt = loopService.buildSectionInitialPrompt(updatedState)
         await rotateAndSendContinuation(
           loopName,
@@ -3347,6 +3393,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearLoopTimers,
     clearAllRetryTimeouts,
     recordActivity,
+    snapshotSectionCodeGraph,
     startWatchdog,
     superviseOwnedLoops,
     getStallInfo,

@@ -26,6 +26,8 @@ export interface PromptContext {
   getFindingRecurrence(loopName?: string): Map<string, number>
   getAttemptHistory?(state: LoopState, limit?: number): LoopAttemptRow[]
   getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
+  /** Rendered `## Code graph` pointer for the current section, or `''` when no snapshot was stored. */
+  getSectionCodeGraphBlock?(state: LoopState): string
 }
 
 /**
@@ -316,6 +318,7 @@ export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState):
     maxIterations: state.maxIterations,
     sectionContent: section.content,
     completedSectionDigest: ctx.getCompletedSectionDigest(state),
+    codeGraphBlock: ctx.getSectionCodeGraphBlock?.(state) ?? '',
     attemptHistoryBlock: buildAttemptHistoryBlock(ctx, state, 'coder'),
   })
 }
@@ -327,6 +330,7 @@ export function buildSectionInitialPromptText(input: {
   maxIterations: number
   sectionContent: string
   completedSectionDigest?: SectionDigestEntry[]
+  codeGraphBlock?: string
   attemptHistoryBlock?: string
 }): string {
   const idx = input.currentSectionIndex
@@ -338,6 +342,10 @@ export function buildSectionInitialPromptText(input: {
   }
 
   header += `\n\n## Section plan\n${input.sectionContent}`
+
+  if (input.codeGraphBlock) {
+    header += input.codeGraphBlock
+  }
 
   if (input.attemptHistoryBlock) {
     header += input.attemptHistoryBlock
@@ -396,6 +404,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
 
   header += `\n\n## Section plan\n${section.content}`
 
+  header += ctx.getSectionCodeGraphBlock?.(state) ?? ''
   header += buildLoopNoticeBlock(notice)
   header += buildAttemptHistoryBlock(ctx, state, 'coder')
   const blockingBugs = outstandingBugs ? blockingBugFindings(outstandingBugs, state) : ctx.getBlockingBugFindings(state)

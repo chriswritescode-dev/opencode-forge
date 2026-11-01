@@ -28,6 +28,7 @@ import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './fi
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
+import { buildCodeGraphPromptBlock, codeGraphReportPath, ensureCodeGraphReportFile } from './code-graph'
 import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
 
 export const MAX_RETRIES = 3
@@ -129,6 +130,8 @@ export interface LoopService {
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getSectionPlans(state: LoopState): SectionPlanRow[]
+  /** Persist a section's code-graph report and write it into the loop worktree. */
+  recordSectionCodeGraph(state: LoopState, index: number, text: string): void
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
 
@@ -354,7 +357,7 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionCodeGraphBlock }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
@@ -700,6 +703,31 @@ export function createLoopService(
   function getSectionPlans(state: LoopState): SectionPlanRow[] {
     if (!sectionPlansRepo) return []
     return sectionPlansRepo.list(projectId, state.loopName)
+  }
+
+  function recordSectionCodeGraph(state: LoopState, index: number, text: string): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.setCodeGraph(projectId, state.loopName, index, text)
+    if (!ensureCodeGraphReportFile(state.worktreeDir, codeGraphReportPath(`section-${index + 1}`), text)) {
+      logger.error(`[code-graph] cannot write section ${index + 1} report for ${state.loopName}`)
+    }
+  }
+
+  /**
+   * The `## Code graph` pointer rendered into this section's coder prompts.
+   * Restarts and reused worktrees rewrite the report from the stored row text so
+   * the pointer never outlives its file.
+   */
+  function getSectionCodeGraphBlock(state: LoopState): string {
+    const index = state.currentSectionIndex
+    const text = getSectionPlan(state, index)?.codeGraph ?? null
+    if (!text) return ''
+    const reportPath = codeGraphReportPath(`section-${index + 1}`)
+    if (!ensureCodeGraphReportFile(state.worktreeDir, reportPath, text)) {
+      logger.error(`[code-graph] cannot write section ${index + 1} report for ${state.loopName}`)
+      return ''
+    }
+    return buildCodeGraphPromptBlock(reportPath, 'section start')
   }
 
   function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {
@@ -1128,6 +1156,7 @@ export function createLoopService(
     replaceSession,
     getSectionPlan,
     getSectionPlans,
+    recordSectionCodeGraph,
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
 

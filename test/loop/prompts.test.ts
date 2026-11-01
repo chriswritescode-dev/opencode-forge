@@ -790,3 +790,39 @@ describe('audit prompts use the exact base commit', () => {
     expect(result).not.toContain('Review scope:')
   })
 })
+
+describe('section code-graph pointer', () => {
+  const block = '\n\n---\n## Code graph\n\nForge ran `codegraph` at the section start; the full output is in `.forge/codegraph/section-1.md`.'
+
+  test('section initial prompt includes the pointer', () => {
+    const withBlock = buildSectionInitialPrompt(
+      makeCtx({ getSectionCodeGraphBlock: () => block }),
+      { ...sectionState },
+    )
+    expect(withBlock).toContain('## Code graph')
+    expect(withBlock).toContain('.forge/codegraph/section-1.md')
+
+    const withoutBlock = buildSectionInitialPrompt(makeCtx(), { ...sectionState })
+    expect(withoutBlock).not.toContain('## Code graph')
+  })
+
+  test('section continuation prompt includes the pointer', () => {
+    const withBlock = buildSectionContinuationPrompt(
+      makeCtx({ getSectionCodeGraphBlock: () => block }),
+      { ...sectionState },
+    )
+    expect(withBlock).toContain('## Code graph')
+    expect(withBlock).toContain('.forge/codegraph/section-1.md')
+
+    const withoutBlock = buildSectionContinuationPrompt(makeCtx(), { ...sectionState })
+    expect(withoutBlock).not.toContain('## Code graph')
+  })
+
+  test('an empty block leaves the prompt unchanged', () => {
+    const withEmpty = buildSectionInitialPrompt(
+      makeCtx({ getSectionCodeGraphBlock: () => '' }),
+      { ...sectionState },
+    )
+    expect(withEmpty).toBe(buildSectionInitialPrompt(makeCtx(), { ...sectionState }))
+  })
+})

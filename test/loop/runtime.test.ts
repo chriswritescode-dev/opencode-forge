@@ -4573,4 +4573,137 @@ describe('stall handling terminates with stall timeout when configured cap is re
       }
     })
   })
+
+  describe('section code-graph snapshot A', () => {
+    type ExecResult = { exitCode: number; stdout: string; stderr: string }
+
+    function fakeSandboxManager(exec: (command: string) => Promise<ExecResult>): LoopRuntimeDeps['sandboxManager'] {
+      return {
+        getActive: () => ({ containerName: 'codegraph-container' }),
+        runtime: { exec: (_container: string, command: string) => exec(command) },
+      } as unknown as LoopRuntimeDeps['sandboxManager']
+    }
+
+    function successfulExec(command: string): ExecResult {
+      if (command === 'command -v codegraph') return { exitCode: 0, stdout: '/usr/local/bin/codegraph\n', stderr: '' }
+      if (command.includes('codegraph.db')) return { exitCode: 0, stdout: 'present\n', stderr: '' }
+      if (command.includes('codegraph affected')) {
+        return { exitCode: 0, stdout: JSON.stringify({ affectedTests: ['test/a.test.ts'] }), stderr: '' }
+      }
+      if (command.includes('codegraph node')) return { exitCode: 0, stdout: 'function fromSectionFile() {}', stderr: '' }
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+
+    function seedSectionedAudit(loopName: string, sessionId: string, worktreeDir: string): void {
+      mkdirSync(join(worktreeDir, 'src'), { recursive: true })
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 1\n')
+      writeFileSync(join(worktreeDir, 'src/b.ts'), 'export const b = 1\n')
+      const state = makeState({
+        loopName,
+        sessionId,
+        phase: 'auditing',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        sandbox: true,
+        worktreeDir,
+      })
+      loopService.setState(loopName, state)
+      loopService.registerLoopSession(sessionId, loopName)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [
+          { index: 0, title: 'Section 1', content: '## Phase 1\n### Files\n- `src/a.ts`' },
+          { index: 1, title: 'Section 2', content: '## Phase 2\n### Files\n- `src/a.ts` (new)\n- `src/b.ts`' },
+        ],
+      })
+      sectionPlansRepo.setStatus(PROJECT_ID, loopName, 0, 'in_progress')
+    }
+
+    function codePrompts(calls: RecordedCall[]): string[] {
+      return calls
+        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+        .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
+    }
+
+    function advanceToSectionTwo(loop: Loop, sessionId: string): Promise<void> {
+      return (async () => {
+        await recordAuditorHandoff(loop, sessionId, { summary: { done: ['Did it'], deviations: [], followUps: [] } })
+        await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+      })()
+    }
+
+    test('clean section advance snapshots section 2 and points its first prompt at the report', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop } = createRuntime({
+        client,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-section'
+      seedSectionedAudit(loopName, 'codegraph-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-audit')
+
+      const after = loopService.getActiveState(loopName)!
+      expect(after.phase).toBe('coding')
+      expect(after.currentSectionIndex).toBe(1)
+
+      const prompt = codePrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('## Code graph')
+      expect(prompt).toContain('.forge/codegraph/section-2.md')
+
+      const row = sectionPlansRepo.get(PROJECT_ID, loopName, 1)!
+      expect(row.codeGraph).toContain('# Code graph: section 2: Section 2')
+      const report = readFileSync(join(worktreeDir, '.forge/codegraph/section-2.md'), 'utf8')
+      expect(report).toBe(row.codeGraph)
+      expect(report).toContain('test/a.test.ts')
+    })
+
+    test('disabled loop.codeGraph leaves the prompt without a pointer and still advances', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-off-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop } = createRuntime({
+        client,
+        loopConfig: { loop: { enabled: true, codeGraph: { enabled: false } } },
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-disabled'
+      seedSectionedAudit(loopName, 'codegraph-off-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-off-audit')
+
+      expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
+      expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
+    })
+
+    test('a failing sandbox exec leaves the prompt without a pointer and still advances', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-fail-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop } = createRuntime({
+        client,
+        sandboxManager: fakeSandboxManager(async () => {
+          throw new Error('sandbox unavailable')
+        }),
+      })
+
+      const loopName = 'codegraph-failing'
+      seedSectionedAudit(loopName, 'codegraph-fail-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-fail-audit')
+
+      expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
+      expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
+    })
+  })
 })

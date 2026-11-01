@@ -629,7 +629,6 @@ export async function attachLoopToSession(
     })
 
     // === Initial prompt ===
-    let promptText: string
     const { totalSections } = applyPlanDecomposition({
       projectId: ctx.projectId,
       loopName,
@@ -637,12 +636,6 @@ export async function attachLoopToSession(
       loopsRepo: deps.loopsRepo,
       sectionPlansRepo: deps.sectionPlansRepo,
     })
-    if (totalSections > 0) {
-      const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
-      promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
-    } else {
-      promptText = deps.loop.service.buildPlanInitialPrompt(planText)
-    }
 
     // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
     if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
@@ -674,6 +667,15 @@ export async function attachLoopToSession(
       }
       deps.logger.log(`attachLoopToSession: attached loop=${loopName} without sending initial prompt`)
       return { ok: true, loopName }
+    }
+
+    let promptText: string
+    if (totalSections > 0) {
+      const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
+      await deps.loop.snapshotSectionCodeGraph(updatedState as import('../loop/state').LoopState)
+      promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
+    } else {
+      promptText = deps.loop.service.buildPlanInitialPrompt(planText)
     }
 
     // Send initial prompt with fallback
