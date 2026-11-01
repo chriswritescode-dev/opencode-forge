@@ -311,6 +311,24 @@ export async function compareAuditSnapshots(cwd: string, previous: string, curre
   return [stat, nameStatus].filter((part) => part.length > 0).join('\n')
 }
 
+/** Repo-relative paths added or modified between two snapshots; deleted paths are excluded. */
+export async function listSnapshotChangedFiles(cwd: string, from: string, to: string, logger: Logger): Promise<string[]> {
+  const fromBase = from.endsWith('^') ? from.slice(0, -1) : from
+  validateCommitSha(fromBase, 'from snapshot SHA')
+  validateCommitSha(to, 'to snapshot SHA')
+  const toplevel = await resolveWorktreeRoot(cwd, logger)
+  const resolvedFrom = (await runGitCommand(toplevel, ['rev-parse', '--verify', from], gitEnv({}), logger, 'rev-parse-from')).trim()
+  validateCommitSha(resolvedFrom, 'resolved from snapshot SHA')
+  const out = await runGitCommand(
+    toplevel,
+    ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--diff-filter=d', resolvedFrom, to],
+    gitEnv({}),
+    logger,
+    'diff-name-only',
+  )
+  return out.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+}
+
 export async function deleteAuditSnapshot(cwd: string, ref: string, logger: Logger): Promise<void> {
   const refName = validateAuditRef(ref)
   const toplevel = await resolveWorktreeRoot(cwd, logger)

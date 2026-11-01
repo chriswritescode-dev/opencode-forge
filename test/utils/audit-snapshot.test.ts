@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
-import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
+import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot, listSnapshotChangedFiles } from '../../src/utils/audit-snapshot'
 import type { Logger } from '../../src/types'
 
 const runCommandState = vi.hoisted(() => ({
@@ -490,6 +490,41 @@ describe('compareAuditSnapshots', () => {
 
     expect(summary).toContain('base.txt')
     expect(summary).not.toContain('EXTERNAL_DIFF_RAN')
+  })
+})
+
+describe('listSnapshotChangedFiles', () => {
+  it('returns added and modified paths but not deleted ones between two snapshots', async () => {
+    const repo = initRepo('audit-snapshot-changed-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), 'changed\n', 'utf-8')
+    writeFileSync(join(repo, 'added.txt'), 'added\n', 'utf-8')
+    rmSync(join(repo, 'gone.txt'))
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const files = await listSnapshotChangedFiles(repo, previous.commit, current.commit, logger)
+
+    expect(files.sort()).toEqual(['added.txt', 'base.txt'])
+  })
+
+  it('resolves a parent-relative from ref', async () => {
+    const repo = initRepo('audit-snapshot-changed-parent-')
+    const previous = await captureAuditSnapshot(repo, auditRef(), logger)
+    writeFileSync(join(repo, 'base.txt'), 'changed\n', 'utf-8')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const files = await listSnapshotChangedFiles(repo, `${current.commit}^`, current.commit, logger)
+
+    expect(files).toEqual(['base.txt'])
+    expect(previous.commit).not.toBe(current.commit)
+  })
+
+  it('rejects invalid commit SHAs', async () => {
+    const repo = initRepo('audit-snapshot-changed-bad-')
+    const current = await captureAuditSnapshot(repo, auditRef(), logger)
+    await expect(listSnapshotChangedFiles(repo, 'not-a-sha', current.commit, logger)).rejects.toThrow(/invalid/)
+    await expect(listSnapshotChangedFiles(repo, `${'z'.repeat(40)}^`, current.commit, logger)).rejects.toThrow(/invalid/)
+    await expect(listSnapshotChangedFiles(repo, current.commit, 'nothex', logger)).rejects.toThrow(/invalid/)
   })
 })
 

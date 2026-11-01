@@ -43,6 +43,7 @@ import { loopRegistry } from '../utils/loop-registry'
 import { processShared, projectLoopKey } from '../utils/process-shared'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 import { createCodeGraphSnapshotter, resolveLoopCodeGraphTarget } from './code-graph'
+import { listSnapshotChangedFiles } from '../utils/audit-snapshot'
 import { extractSectionFiles } from '../utils/plan-structure'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
@@ -2008,6 +2009,45 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
+   * Snapshot B: capture the code graph for the attempt that just ended, before
+   * the audit prompt is built. Both a fresh audit session and a reused standby
+   * then point at the affected tests and dependents of exactly this attempt. A
+   * heartbeat keeps a long first index from counting as a watchdog stall while
+   * no session is busy.
+   */
+  async function snapshotAttemptCodeGraph(state: LoopState): Promise<void> {
+    const attempt = loopService.getLatestAttempt(state)
+    if (!attempt?.snapshotCommit || attempt.codeGraph) return
+    const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
+    if (!target) return
+    const from = attempt.previousCommit ?? `${attempt.snapshotCommit}^`
+
+    const heartbeat = setInterval(
+      () => watchdog.recordActivity(state.loopName, 'code-graph-snapshot'),
+      CODE_GRAPH_HEARTBEAT_MS,
+    )
+    try {
+      let files: string[]
+      try {
+        files = await listSnapshotChangedFiles(state.worktreeDir, from, attempt.snapshotCommit, logger)
+      } catch (err) {
+        logger.error(`Loop: code-graph changed-file listing failed for ${state.loopName}`, err)
+        return
+      }
+      if (files.length === 0) return
+      const text = await codeGraphSnapshotter.snapshotFiles(target, {
+        title: `audit attempt ${attempt.attemptNumber} (${attempt.scope})`,
+        files,
+      })
+      if (!text) return
+      loopService.recordAttemptCodeGraph(state, attempt, text)
+    } finally {
+      clearInterval(heartbeat)
+      watchdog.recordActivity(state.loopName, 'code-graph-snapshot')
+    }
+  }
+
+  /**
    * Sends an audit prompt, handling workspace re-bind recovery and retry
    * registration. The fresh-audit and standby-reuse paths share this dispatch so
    * both recover identically; `buildPrompt` supplies the text re-sent on a retry.
@@ -2181,6 +2221,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // it carries no coder handoff, so the attempt has no decisions.
       if (!await loopService.captureAttempt(currentState, `coding-error:${currentState.sessionId}:${currentState.iteration}`, null)) return
     }
+
+    await snapshotAttemptCodeGraph(currentState)
 
     const currentConfig = getConfig()
     const auditorChoice = resolveLoopAuditorChoice(currentConfig, loopService, loopName, logger)

@@ -132,6 +132,10 @@ export interface LoopService {
   getSectionPlans(state: LoopState): SectionPlanRow[]
   /** Persist a section's code-graph report and write it into the loop worktree. */
   recordSectionCodeGraph(state: LoopState, index: number, text: string): void
+  /** Persist an audit attempt's code-graph report and write it into the loop worktree. */
+  recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void
+  /** The newest attempt row for the state's current audit scope, or null when attempts are not stored. */
+  getLatestAttempt(state: LoopState): LoopAttemptRow | null
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
 
@@ -357,7 +361,7 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionCodeGraphBlock }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionCodeGraphBlock, getAttemptCodeGraphBlock }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
@@ -480,6 +484,11 @@ export function createLoopService(
 
   function getAttemptHistory(name: string, scope?: string, limit?: number, beforeId?: number): LoopAttemptRow[] {
     return loopAttemptsRepo?.list(projectId, name, scope, limit, beforeId) ?? []
+  }
+
+  function getLatestAttempt(state: LoopState): LoopAttemptRow | null {
+    if (!loopAttemptsRepo) return null
+    return loopAttemptsRepo.latest(projectId, state.loopName, auditScope(state))
   }
 
   function attemptPlanHash(state: LoopState): string {
@@ -728,6 +737,31 @@ export function createLoopService(
       return ''
     }
     return buildCodeGraphPromptBlock(reportPath, 'section start')
+  }
+
+  function recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void {
+    if (!loopAttemptsRepo) return
+    loopAttemptsRepo.setCodeGraph(projectId, state.loopName, attempt.id, text)
+    const reportPath = codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
+    if (!ensureCodeGraphReportFile(state.worktreeDir, reportPath, text)) {
+      logger.error(`[code-graph] cannot write audit report ${reportPath} for ${state.loopName}`)
+    }
+  }
+
+  /**
+   * The `## Code graph` pointer rendered into this scope's audit and coder
+   * prompts. Restarts and reused worktrees rewrite the report from the stored
+   * attempt row so the pointer never outlives its file.
+   */
+  function getAttemptCodeGraphBlock(state: LoopState): string {
+    const attempt = getPromptAttemptHistory(state, 1).at(-1)
+    if (!attempt?.codeGraph) return ''
+    const reportPath = codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
+    if (!ensureCodeGraphReportFile(state.worktreeDir, reportPath, attempt.codeGraph)) {
+      logger.error(`[code-graph] cannot write audit report ${reportPath} for ${state.loopName}`)
+      return ''
+    }
+    return buildCodeGraphPromptBlock(reportPath, 'audit checkpoint')
   }
 
   function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {
@@ -1157,6 +1191,8 @@ export function createLoopService(
     getSectionPlan,
     getSectionPlans,
     recordSectionCodeGraph,
+    recordAttemptCodeGraph,
+    getLatestAttempt,
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
 

@@ -4574,7 +4574,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
   })
 
-  describe('section code-graph snapshot A', () => {
+  describe('code-graph snapshots', () => {
     type ExecResult = { exitCode: number; stdout: string; stderr: string }
 
     function fakeSandboxManager(exec: (command: string) => Promise<ExecResult>): LoopRuntimeDeps['sandboxManager'] {
@@ -4594,14 +4594,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       return { exitCode: 0, stdout: '', stderr: '' }
     }
 
-    function seedSectionedAudit(loopName: string, sessionId: string, worktreeDir: string): void {
+    function seedSectionedAudit(loopName: string, sessionId: string, worktreeDir: string, phase: LoopState['phase'] = 'auditing'): void {
       mkdirSync(join(worktreeDir, 'src'), { recursive: true })
       writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 1\n')
       writeFileSync(join(worktreeDir, 'src/b.ts'), 'export const b = 1\n')
       const state = makeState({
         loopName,
         sessionId,
-        phase: 'auditing',
+        phase,
         totalSections: 2,
         currentSectionIndex: 0,
         auditCount: 0,
@@ -4704,6 +4704,118 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
       expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
       expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
+    })
+
+    function initAttemptWorktree(prefix: string): string {
+      const dir = mkdtempSync(join(tempDir, prefix))
+      execSync('git init -q && git config user.email t@t && git config user.name t', { cwd: dir, encoding: 'utf-8' })
+      writeFileSync(join(dir, 'base.txt'), 'base\n')
+      execSync('git add -A && git commit -qm init', { cwd: dir, encoding: 'utf-8' })
+      return dir
+    }
+
+    function auditorPrompts(calls: RecordedCall[]): string[] {
+      return calls
+        .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+        .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
+    }
+
+    function assistantIdleMessages(): Array<{ info: { role: string; finish: string }; parts: Array<{ type: string; text: string }> }> {
+      return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] }]
+    }
+
+    test('snapshot B stores the attempt report and points the audit prompt at it', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const { loop } = createRuntime({
+        client,
+        loopAttemptsRepo,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-attempt'
+      const sessionId = 'codegraph-attempt-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
+      const attempt = loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!
+      expect(attempt.codeGraph).toContain('# Code graph: audit attempt 1 (section:0)')
+      expect(attempt.codeGraph).toContain('src/a.ts')
+      expect(attempt.codeGraph).toContain('test/a.test.ts')
+
+      const prompt = auditorPrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('## Code graph')
+      expect(prompt).toContain('.forge/codegraph/audit-section-0-attempt-1.md')
+      expect(readFileSync(join(worktreeDir, '.forge/codegraph/audit-section-0-attempt-1.md'), 'utf8')).toBe(attempt.codeGraph)
+    })
+
+    test('a dirty audit sends a coder follow-up that still points at the report', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-dirty-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const { loop } = createRuntime({
+        client,
+        loopAttemptsRepo,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'codegraph-attempt-dirty'
+      const coderSessionId = 'codegraph-dirty-coder'
+      seedSectionedAudit(loopName, coderSessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, coderSessionId)
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: coderSessionId } })
+
+      const auditSessionId = loopService.getActiveState(loopName)!.sessionId
+      expect(auditSessionId).not.toBe(coderSessionId)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'still broken',
+        sectionIndex: 0,
+      })
+      await recordAuditorHandoff(loop, auditSessionId, { notes: 'bug remains' })
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: auditSessionId } })
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: auditSessionId } })
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('coding')
+      const prompt = codePrompts(calls).at(-1) ?? ''
+      expect(prompt).toContain('## Code graph')
+      expect(prompt).toContain('.forge/codegraph/audit-section-0-attempt-1.md')
+    })
+
+    test('a failing sandbox exec still rotates to audit without a pointer', async () => {
+      const worktreeDir = initAttemptWorktree('attempt-cg-fail-')
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const loopAttemptsRepo = createLoopAttemptsRepo(db)
+      const { loop } = createRuntime({
+        client,
+        loopAttemptsRepo,
+        sandboxManager: fakeSandboxManager(async () => {
+          throw new Error('sandbox unavailable')
+        }),
+      })
+
+      const loopName = 'codegraph-attempt-failing'
+      const sessionId = 'codegraph-attempt-fail-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 2\n')
+
+      await recordCoderHandoff(loop, sessionId)
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
+      expect(loopAttemptsRepo.latest(PROJECT_ID, loopName, 'section:0')!.codeGraph).toBeNull()
+      expect(auditorPrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
     })
   })
 })
