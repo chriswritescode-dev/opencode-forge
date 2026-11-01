@@ -2,10 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { createLoop } from '../../src/loop/runtime'
 import type { LoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import type { ForgeClient } from '../../src/client/port'
-import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 import { blockingBugFindings } from '../../src/loop/section-scope'
 
 /**
@@ -86,42 +85,12 @@ function makeFakeLoopService(): LoopService {
   }
 }
 
-function makeFakeForgeClient(): ForgeClient {
-  return {
-    session: {
-      create: vi.fn(async () => ({ id: 'sess' }) as any),
-      get: vi.fn(async () => ({}) as any),
-      update: vi.fn(async () => {}),
-      messages: vi.fn(async () => []),
-      status: vi.fn(async () => ({}) as any),
-      promptAsync: vi.fn(async () => {}),
-      abort: vi.fn(async () => {}),
-      delete: vi.fn(async () => {}),
-      compact: vi.fn(async () => {}),
-    },
-    workspace: {
-      create: vi.fn(async () => ({ id: 'w' }) as any),
-      list: vi.fn(async () => []),
-      remove: vi.fn(async () => {}),
-      warp: vi.fn(async () => {}),
-    },
-    model: {
-      contextLimit: vi.fn(async () => undefined),
-    },
-    toast: vi.fn(async () => {}),
-  }
-}
-
-const mockLogger: Logger = {
-  log: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-}
+const mockLogger = createMockLogger()
 
 describe('LoopService seam', () => {
   it('accepts an injected LoopService and delegates start calls to it', () => {
     const fakeService = makeFakeLoopService()
-    const client = makeFakeForgeClient()
+    const { client } = createFakeForgeClient()
 
     const loop = createLoop({
       loopsRepo: {} as any,

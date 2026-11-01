@@ -1,6 +1,18 @@
+import { Database } from 'bun:sqlite'
 import { vi } from 'vitest'
+import type { ForgeClient } from '../../src/client/port'
+import { createLoop, type OnTerminatedCallback } from '../../src/loop/runtime'
+import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
+import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
+import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
+import { createLoopsRepo, type LoopsRepo } from '../../src/storage/repos/loops-repo'
+import { createPlansRepo } from '../../src/storage/repos/plans-repo'
+import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
+import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import type { PluginConfig } from '../../src/types'
+import { createFakeForgeClient, type RecordedCall } from './fake-client'
+import { createCapturingLogger } from './logger'
 
 /** Creates a LoopState with the standard test defaults; overrides replace any default. */
 export function makeLoopState(overrides: Partial<LoopState> = {}): LoopState {
@@ -70,4 +82,85 @@ export function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     setTotalSections: vi.fn(),
     ...overrides,
   } as LoopsRepo
+}
+
+/**
+ * Builds a loop runtime against an already migrated test database.
+ *
+ * Every call gets its own repositories, capturing logger and fake client, so a
+ * test can drive the loop through the returned handles without hand-wiring
+ * `createLoop`. Passing `client` keeps the caller's fake; its `calls` are not
+ * mirrored here.
+ */
+export function buildLoopRuntime(
+  db: Database,
+  options: {
+    projectId?: string
+    client?: ForgeClient
+    config?: Partial<PluginConfig>
+    dataDir?: string
+    directory?: string
+    notify?: LoopChangeNotifier
+    onTerminated?: OnTerminatedCallback
+    withUsageRepo?: boolean
+    getParentSessionId?: (sessionId: string) => Promise<string | null>
+  } = {},
+) {
+  const projectId = options.projectId ?? 'test-project'
+  const loopsRepo = createLoopsRepo(db)
+  const plansRepo = createPlansRepo(db)
+  const reviewFindingsRepo = createReviewFindingsRepo(db)
+  const sectionPlansRepo = createSectionPlansRepo(db)
+  const loopTransitionsRepo = createLoopTransitionsRepo(db)
+  const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+  const { logger, logs } = createCapturingLogger()
+  const forge = options.client
+    ? { client: options.client, calls: [] as RecordedCall[] }
+    : createFakeForgeClient()
+  const config = options.config ?? {}
+
+  const loopService = createLoopService(
+    loopsRepo,
+    plansRepo,
+    reviewFindingsRepo,
+    projectId,
+    logger,
+    undefined,
+    undefined,
+    sectionPlansRepo,
+    loopTransitionsRepo,
+  )
+
+  const loop = createLoop({
+    loopsRepo,
+    plansRepo,
+    reviewFindingsRepo,
+    sectionPlansRepo,
+    loopTransitionsRepo,
+    projectId,
+    client: forge.client,
+    logger,
+    getConfig: () => config,
+    sandboxManager: undefined,
+    dataDir: options.dataDir,
+    directory: options.directory,
+    notify: options.notify,
+    onTerminated: options.onTerminated,
+    loopSessionUsageRepo: options.withUsageRepo ? loopSessionUsageRepo : undefined,
+    getParentSessionId: options.getParentSessionId,
+  })
+
+  return {
+    loop,
+    logger,
+    logs,
+    calls: forge.calls,
+    loopService,
+    loopsRepo,
+    plansRepo,
+    reviewFindingsRepo,
+    sectionPlansRepo,
+    loopTransitionsRepo,
+    loopSessionUsageRepo,
+  }
 }

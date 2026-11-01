@@ -6,15 +6,13 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, type Loop } from '../../src/loop/runtime'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { loopRegistry } from '../../src/utils/loop-registry'
 import { normalizeV2Event } from '../../src/host/v2-events'
-import type { Logger, PluginConfig } from '../../src/types'
-import type { ForgeClient } from '../../src/client/port'
+import type { PluginConfig } from '../../src/types'
 import { createTestDb } from '../helpers/test-db'
-import { makeLoopState } from '../helpers/loop-fixtures'
-import { createCapturingLogger, createMockLogger } from '../helpers/logger'
+import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 const START_STATE_DEFAULTS = {
@@ -29,32 +27,6 @@ const mockConfig: PluginConfig = {
     enabled: true,
     defaultMaxIterations: 5,
   },
-}
-
-function createMockForgeClient(): ForgeClient {
-  return {
-    session: {
-      create: async () => ({ id: 'sess' }) as any,
-      promptAsync: async () => {},
-      status: async () => ({}) as any,
-      abort: async () => {},
-      delete: async () => {},
-      messages: async () => [],
-      get: async () => ({}) as any,
-      update: async () => {},
-      compact: async () => {},
-    },
-    workspace: {
-      create: async () => ({ id: '', directory: '/tmp/wt', branch: 'b' }) as any,
-      list: async () => [],
-      remove: async () => {},
-      warp: async () => {},
-    },
-    model: {
-      contextLimit: async () => undefined,
-    },
-    toast: async () => {},
-  }
 }
 
 describe('Loop Runtime start()', () => {
@@ -96,24 +68,9 @@ describe('Loop Runtime start()', () => {
     loopRegistry.clear()
   })
 
-  function createRuntime(): { loop: Loop; logger: Logger; logs: Array<{ level: string; message: string }> } {
-    const { logger, logs } = createCapturingLogger()
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      projectId: PROJECT_ID,
-      client: createMockForgeClient(),
-      logger,
-      getConfig: () => mockConfig,
-    })
-    return { loop, logger, logs }
-  }
-
   describe('start writes initial state correctly', () => {
     test('persists active loop state via setState and registerLoopSession', () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState(START_STATE_DEFAULTS)
 
       loop.start({ state })
@@ -130,7 +87,7 @@ describe('Loop Runtime start()', () => {
     })
 
     test('loop start always begins in phase=coding regardless of plan content', () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, phase: 'coding' })
 
       loop.start({ state })
@@ -143,7 +100,7 @@ describe('Loop Runtime start()', () => {
 
   describe('start generates unique loop names', () => {
     test('allows multiple distinct loop names', () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
 
       const state1 = makeLoopState({ ...START_STATE_DEFAULTS, loopName: 'loop-alpha' })
       const state2 = makeLoopState({ ...START_STATE_DEFAULTS, loopName: 'loop-beta', sessionId: 'session-beta' })
@@ -160,7 +117,7 @@ describe('Loop Runtime start()', () => {
     })
 
     test('does not overwrite existing loop when starting with a duplicate name', () => {
-      const { loop, logs } = createRuntime()
+      const { loop, logs } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
 
       const existingState = makeLoopState({ ...START_STATE_DEFAULTS, loopName: 'my-loop' })
       loop.start({ state: existingState })
@@ -192,7 +149,7 @@ describe('Loop Runtime start()', () => {
 
   describe('start records activity log', () => {
     test('logs the start operation', () => {
-      const { loop, logs } = createRuntime()
+      const { loop, logs } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState(START_STATE_DEFAULTS)
 
       loop.start({ state })
@@ -204,13 +161,13 @@ describe('Loop Runtime start()', () => {
 
   describe('generateUniqueLoopName returns unique names', () => {
     test('returns base name when no conflicts exist', () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const result = loop.generateUniqueLoopName('fresh-name')
       expect(result).toBe('fresh-name')
     })
 
     test('returns suffixed name when base name already exists', () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state1 = makeLoopState({ ...START_STATE_DEFAULTS, loopName: 'taken' })
       loop.start({ state: state1 })
 
@@ -219,7 +176,7 @@ describe('Loop Runtime start()', () => {
     })
 
     test('increments counter through multiple conflicts', () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
 
       const s1 = makeLoopState({ ...START_STATE_DEFAULTS, loopName: 'loop' })
       const s2 = makeLoopState({ ...START_STATE_DEFAULTS, loopName: 'loop-1', sessionId: 'session-loop-1' })
@@ -235,7 +192,7 @@ describe('Loop Runtime start()', () => {
 
   describe('start enables listing by loop name', () => {
     test('started loop appears in listActive after start', () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState(START_STATE_DEFAULTS)
 
       loop.start({ state })
@@ -247,22 +204,6 @@ describe('Loop Runtime start()', () => {
   })
 
   describe('only the instance owning the worktree supervises a loop', () => {
-    function createRuntimeIn(directory?: string) {
-      const { logger, logs } = createCapturingLogger()
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
-        projectId: PROJECT_ID,
-        client: createMockForgeClient(),
-        logger,
-        getConfig: () => mockConfig,
-        directory,
-      })
-      return { loop, logs }
-    }
-
     function abortEvent(sessionId: string) {
       return {
         type: 'session.error',
@@ -271,7 +212,7 @@ describe('Loop Runtime start()', () => {
     }
 
     test('an instance bound to another directory does not start the watchdog', () => {
-      const { loop, logs } = createRuntimeIn('/tmp/some-other-project')
+      const { loop, logs } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/some-other-project' })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, worktreeDir: '/tmp/owned-worktree' })
       loop.start({ state })
 
@@ -284,7 +225,7 @@ describe('Loop Runtime start()', () => {
     })
 
     test('the instance bound to the worktree does start the watchdog', () => {
-      const { loop, logs } = createRuntimeIn('/tmp/owned-worktree')
+      const { loop, logs } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/owned-worktree' })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, worktreeDir: '/tmp/owned-worktree' })
       loop.start({ state })
 
@@ -300,14 +241,14 @@ describe('Loop Runtime start()', () => {
     // servers boot the worktree location lazily) missed the first idle event and
     // never started supervision, so the loop sat idle forever.
     test('an owning instance created after the loop started supervises it', () => {
-      const host = createRuntimeIn('/tmp/some-other-project')
+      const host = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/some-other-project' })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, worktreeDir: '/tmp/owned-worktree' })
       host.loop.start({ state })
 
-      const owner = createRuntimeIn('/tmp/owned-worktree')
+      const owner = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/owned-worktree' })
 
       expect(host.loop.superviseOwnedLoops()).toEqual([])
-      expect(createRuntimeIn().loop.superviseOwnedLoops()).toEqual([])
+      expect(buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig }).loop.superviseOwnedLoops()).toEqual([])
       expect(owner.loop.superviseOwnedLoops()).toEqual([state.loopName])
       expect(owner.logs.some(l => l.message.includes('Loop watchdog: started for loop test-loop'))).toBe(true)
 
@@ -322,7 +263,7 @@ describe('Loop Runtime start()', () => {
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
-      const owner = createRuntimeIn('/tmp/owned-worktree')
+      const owner = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/owned-worktree' })
 
       expect(owner.loop.superviseOwnedLoops()).toEqual([])
       expect(owner.logs.some(l => l.message.includes('Loop watchdog: started'))).toBe(false)
@@ -334,7 +275,7 @@ describe('Loop Runtime start()', () => {
     // internal-abort marker. Before the ownership gate it read the resulting
     // abort as a user abort and terminated a loop that was actively working.
     test('an aborted event on a non-owning instance does not terminate the loop', async () => {
-      const { loop, logs } = createRuntimeIn('/tmp/some-other-project')
+      const { loop, logs } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/some-other-project' })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, worktreeDir: '/tmp/owned-worktree' })
       loop.start({ state })
 
@@ -345,7 +286,7 @@ describe('Loop Runtime start()', () => {
     })
 
     test('an aborted event on the owning instance still terminates the loop', async () => {
-      const { loop } = createRuntimeIn('/tmp/owned-worktree')
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/owned-worktree' })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, worktreeDir: '/tmp/owned-worktree' })
       loop.start({ state })
 
@@ -355,7 +296,7 @@ describe('Loop Runtime start()', () => {
     })
 
     test('an instance with no directory stays ungated', async () => {
-      const { loop } = createRuntimeIn(undefined)
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, worktreeDir: '/tmp/owned-worktree' })
       loop.start({ state })
 
@@ -370,7 +311,7 @@ describe('Loop Runtime start()', () => {
     // through the existing abort branch; otherwise the trailing idle runs the
     // coding phase runner and the loop advances instead of honoring the stop.
     test('a normalized V2 user interruption terminates an owned coding loop as user_aborted', async () => {
-      const { loop } = createRuntimeIn('/tmp/owned-worktree')
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, directory: '/tmp/owned-worktree' })
       const state = makeLoopState({ ...START_STATE_DEFAULTS, worktreeDir: '/tmp/owned-worktree' })
       loop.start({ state })
 

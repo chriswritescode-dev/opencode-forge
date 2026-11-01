@@ -5,13 +5,11 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, type Loop, type OnTerminatedCallback } from '../../src/loop/runtime'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
-import type { Logger, PluginConfig } from '../../src/types'
-import type { ForgeClient } from '../../src/client/port'
+import type { PluginConfig } from '../../src/types'
 import { createTestDb } from '../helpers/test-db'
-import { makeLoopState } from '../helpers/loop-fixtures'
-import { createCapturingLogger, createMockLogger } from '../helpers/logger'
+import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 const CANCEL_STATE_DEFAULTS = {
@@ -32,32 +30,6 @@ const mockConfig: PluginConfig = {
     enabled: true,
     defaultMaxIterations: 5,
   },
-}
-
-function createMockForgeClient(): ForgeClient {
-  return {
-    session: {
-      create: async () => ({ id: 'sess' }) as any,
-      promptAsync: async () => {},
-      status: async () => ({}) as any,
-      abort: async () => {},
-      delete: async () => {},
-      messages: async () => [],
-      get: async () => ({}) as any,
-      update: async () => {},
-      compact: async () => {},
-    },
-    workspace: {
-      create: async () => ({ id: '', directory: '/tmp/wt', branch: 'b' }) as any,
-      list: async () => [],
-      remove: async () => {},
-      warp: async () => {},
-    },
-    model: {
-      contextLimit: async () => undefined,
-    },
-    toast: async () => {},
-  }
 }
 
 describe('Loop Runtime cancel()', () => {
@@ -97,33 +69,9 @@ describe('Loop Runtime cancel()', () => {
     __resetIdleGate()
   })
 
-  function createRuntime(overrides: {
-    loopConfig?: Partial<PluginConfig>
-    notify?: LoopChangeNotifier
-    onTerminated?: OnTerminatedCallback
-  } = {}): { loop: Loop; logger: Logger; logs: Array<{ level: string; message: string }> } {
-    const { logger, logs } = createCapturingLogger()
-    const config: PluginConfig = { ...mockConfig, ...(overrides.loopConfig ?? {}) }
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      projectId: PROJECT_ID,
-      client: createMockForgeClient(),
-      logger,
-      getConfig: () => config,
-      notify: overrides.notify,
-      onTerminated: overrides.onTerminated,
-    })
-
-    return { loop, logger, logs }
-  }
-
   describe('cancel terminates with cancelled reason', () => {
     test('cancel marks the loop as inactive with user_aborted termination', async () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -142,17 +90,9 @@ describe('Loop Runtime cancel()', () => {
       let callbackInvoked = false
       let receivedState: LoopState | null = null
 
-      const { logger } = createCapturingLogger()
-
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
+      const { loop } = buildLoopRuntime(db, {
         projectId: PROJECT_ID,
-        client: createMockForgeClient(),
-        logger,
-        getConfig: () => mockConfig,
+        config: mockConfig,
         onTerminated: async (state, _reason) => {
           callbackInvoked = true
           receivedState = state
@@ -177,7 +117,9 @@ describe('Loop Runtime cancel()', () => {
         events.push(`notify:${reason}`)
         if (reason === 'settled') settledHints.push(hint)
       }
-      const { loop } = createRuntime({
+      const { loop } = buildLoopRuntime(db, {
+        projectId: PROJECT_ID,
+        config: mockConfig,
         notify,
         onTerminated: async () => {
           events.push('onTerminated:start')
@@ -206,7 +148,9 @@ describe('Loop Runtime cancel()', () => {
       const notify: LoopChangeNotifier = (reason) => {
         if (reason === 'settled') settled.push(reason)
       }
-      const { loop } = createRuntime({
+      const { loop } = buildLoopRuntime(db, {
+        projectId: PROJECT_ID,
+        config: mockConfig,
         notify,
         onTerminated: async () => {
           throw new Error('teardown failed')
@@ -225,7 +169,9 @@ describe('Loop Runtime cancel()', () => {
       const notify: LoopChangeNotifier = (reason) => {
         if (reason === 'settled') settledCount += 1
       }
-      const { loop } = createRuntime({
+      const { loop } = buildLoopRuntime(db, {
+        projectId: PROJECT_ID,
+        config: mockConfig,
         notify,
         onTerminated: async () => {
           await new Promise((resolve) => setTimeout(resolve, 5))
@@ -248,7 +194,7 @@ describe('Loop Runtime cancel()', () => {
       const notify: LoopChangeNotifier = (reason) => {
         if (reason === 'settled') settled.push(reason)
       }
-      const { loop } = createRuntime({ notify })
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig, notify })
 
       const result = await loop.terminate('ghost-loop', { kind: 'user_aborted' })
 
@@ -259,7 +205,7 @@ describe('Loop Runtime cancel()', () => {
 
   describe('cancel clears timers', () => {
     test('after cancel, the loop is no longer active', async () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -270,7 +216,7 @@ describe('Loop Runtime cancel()', () => {
     })
 
     test('calling cancel on already cancelled loop does not throw', async () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -281,7 +227,7 @@ describe('Loop Runtime cancel()', () => {
 
   describe('cancelBySessionId works for sessions registered via start', () => {
     test('cancels by session ID when loop is started via start()', async () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
@@ -293,7 +239,7 @@ describe('Loop Runtime cancel()', () => {
     })
 
     test('returns false for unknown session ID', async () => {
-      const { loop } = createRuntime()
+      const { loop } = buildLoopRuntime(db, { projectId: PROJECT_ID, config: mockConfig })
       const result = await loop.cancelBySessionId('unknown-session-id')
       expect(result).toBe(false)
     })
