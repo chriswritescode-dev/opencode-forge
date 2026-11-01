@@ -1737,7 +1737,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('tolerates delete failure without crashing', async () => {
-      const { client } = createFakeForgeClient({
+      const { client, calls } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
@@ -1745,7 +1745,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           delete: async () => { throw new Error('delete failed') },
         },
       })
-      const { loop } = buildRuntime({ client })
+      const { loop, logs } = buildRuntime({ client })
 
       const state = makeLoopState({
         phase: 'coding',
@@ -1754,13 +1754,20 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
       loopService.setState(state.loopName, state)
 
+      await recordCoderHandoff(loop, state.sessionId)
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
-      // No unhandled rejection from delete failure
-      // Even if no trim happened (queue <= 2), we verify no crash occurred
+      await loop.cancel(state.loopName)
+
+      const deletedSids = calls.filter(c => c.method === 'session.delete').map((c: any) => c.params.sessionID)
+      expect(deletedSids).toContain(state.sessionId)
+      await vi.waitFor(() => {
+        expect(logs.some(l => l.level === 'error' && l.message.includes(`failed to delete trimmed session ${state.sessionId}`))).toBe(true)
+      })
+      expect(loopService.getAnyState(state.loopName)!.active).toBe(false)
     })
 
     test('terminate flushes retained sessions', async () => {

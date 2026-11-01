@@ -89,7 +89,7 @@ export function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     discardPendingHandoff: vi.fn(),
     listHandoffs: vi.fn().mockReturnValue([]),
     ...overrides,
-  } as LoopsRepo
+  }
 }
 
 /**
