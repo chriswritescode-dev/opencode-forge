@@ -83,7 +83,6 @@ describe('createConfigHandler', () => {
       const codePermission = code.permission as Record<string, string>
 
       expect(Object.keys(codePermission).sort()).toEqual([
-        'goal-write',
         'plan-edit',
         'plan-write',
         'question',
@@ -99,7 +98,7 @@ describe('createConfigHandler', () => {
       expect(codePermission['loop-status']).toBeUndefined()
     })
 
-    test('architect agents deny mutation tools while retaining Bash and plan authoring access', async () => {
+    test('architect agent denies mutation tools while retaining Bash and plan authoring access', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
 
@@ -107,41 +106,28 @@ describe('createConfigHandler', () => {
 
       const agentConfigs = config.agent as Record<string, unknown>
       const architect = agentConfigs.architect as Record<string, unknown>
-      const architectAuto = agentConfigs['architect-auto'] as Record<string, unknown>
       const architectTools = architect.tools as Record<string, boolean>
-      const architectAutoTools = architectAuto.tools as Record<string, boolean>
       const architectPermission = architect.permission as Record<string, string>
-      const architectAutoPermission = architectAuto.permission as Record<string, string>
 
       for (const tool of ['edit', 'write', 'patch', 'task']) {
         expect(architectTools[tool]).toBe(false)
-        expect(architectAutoTools[tool]).toBe(false)
         expect(architectPermission[tool]).toBe('deny')
-        expect(architectAutoPermission[tool]).toBe('deny')
       }
 
       expect(architectTools.bash).toBeUndefined()
-      expect(architectAutoTools.bash).toBeUndefined()
       expect(architectPermission.bash).toBeUndefined()
-      expect(architectAutoPermission.bash).toBeUndefined()
 
       expect(architectPermission.question).toBe('allow')
       expect(architectTools.question).toBeUndefined()
-      expect(architectAutoPermission.question).toBe('deny')
-      expect(architectAutoTools.question).toBe(false)
 
       for (const tool of ['execute-plan', 'loop-status', 'loop-cancel']) {
         expect(architectTools[tool]).toBeUndefined()
         expect(architectPermission[tool]).toBeUndefined()
-        expect(architectAutoTools[tool]).toBe(false)
-        expect(architectAutoPermission[tool]).toBe('deny')
       }
 
       for (const tool of ['plan-read', 'plan-write', 'plan-edit']) {
         expect(architectTools[tool]).toBeUndefined()
-        expect(architectAutoTools[tool]).toBeUndefined()
         expect(architectPermission[tool]).toBeUndefined()
-        expect(architectAutoPermission[tool]).toBeUndefined()
       }
     })
 

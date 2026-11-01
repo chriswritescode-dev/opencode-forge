@@ -2,7 +2,6 @@ import { describe, test, expect } from 'vitest'
 import { buildArchitectAgent } from '../src/agents/architect'
 import { buildCodeAgent } from '../src/agents/code'
 import { buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
-import { buildArchitectAutoAgent } from '../src/agents/architect-auto'
 import { buildMinionAgent } from '../src/agents/minion'
 import { buildAgents } from '../src/agents'
 
@@ -11,7 +10,6 @@ describe('Agent definitions', () => {
   const codeAgent = buildCodeAgent()
   const auditorAgent = buildAuditorAgent()
   const auditorLoopAgent = buildAuditorLoopAgent()
-  const architectAutoAgent = buildArchitectAutoAgent()
   const minionAgent = buildMinionAgent()
 
   describe('metadata stability', () => {
@@ -92,7 +90,6 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('files changed, behavior implemented, validation run')
       expect(prompt).toContain('execute-plan')
       expect(prompt).toContain('loop-cancel')
-      expect(prompt).toContain('goal-cancel')
       expect(prompt).toContain('unless the user explicitly asks you to')
       expect(prompt).toContain('Never attempt to remove, delete, or clear review findings')
     })
@@ -220,46 +217,9 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('stay open')
     })
 
-    test('architect-auto agent has stable metadata', () => {
-      expect(architectAutoAgent.role).toBe('architect-auto')
-      expect(architectAutoAgent.id).toBe('opencode-architect-auto')
-      expect(architectAutoAgent.displayName).toBe('architect-auto')
-      expect(architectAutoAgent.mode).toBe('primary')
-      expect(architectAutoAgent.hidden).toBe(true)
-    })
-
-    test('architect-auto agent excludes question and execution tools', () => {
-      expect(architectAutoAgent.tools?.exclude).toBeDefined()
-      expect(architectAutoAgent.tools?.exclude).toContain('question')
-      expect(architectAutoAgent.tools?.exclude).toContain('execute-plan')
-    })
-
-    test('architect agents retain plan-authoring tools', () => {
+    test('architect agent retains plan-authoring tools', () => {
       expect(architectAgent.tools?.exclude).not.toContain('plan-write')
       expect(architectAgent.tools?.exclude).not.toContain('plan-edit')
-      expect(architectAutoAgent.tools?.exclude).not.toContain('plan-write')
-      expect(architectAutoAgent.tools?.exclude).not.toContain('plan-edit')
-    })
-
-    test('goal-write is available to the architect and excluded everywhere else', () => {
-      expect(architectAgent.tools?.exclude).not.toContain('goal-write')
-      expect(codeAgent.tools?.exclude).toContain('goal-write')
-      expect(auditorAgent.tools?.exclude).toContain('goal-write')
-      expect(auditorLoopAgent.tools?.exclude).toContain('goal-write')
-      expect(architectAutoAgent.tools?.exclude).toContain('goal-write')
-    })
-
-    test('goal-status and goal-cancel are excluded from architect-auto and auditors but kept by code', () => {
-      for (const agent of [auditorAgent, auditorLoopAgent, architectAutoAgent, minionAgent]) {
-        expect(agent.tools?.exclude).toContain('goal-status')
-        expect(agent.tools?.exclude).toContain('goal-cancel')
-      }
-      expect(codeAgent.tools?.exclude).not.toContain('goal-status')
-      expect(codeAgent.tools?.exclude).not.toContain('goal-cancel')
-    })
-
-    test('architect-auto agent preserves overlap-aware planning guidance', () => {
-      expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
     })
 
     test('minion agent has stable metadata', () => {
@@ -284,13 +244,10 @@ describe('Agent definitions', () => {
       for (const tool of [
         'plan-write',
         'plan-edit',
-        'goal-write',
         'execute-plan',
         'question',
         'loop-cancel',
         'loop-status',
-        'goal-cancel',
-        'goal-status',
         'loop-handoff',
         'loop-complete',
         'review-write',
@@ -314,15 +271,14 @@ describe('Agent definitions', () => {
       expect(variantOnly.variant).toBeUndefined()
     })
 
-    test('buildAgents returns all 6 agent roles', () => {
+    test('buildAgents returns all 5 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)
-      expect(roles).toHaveLength(6)
+      expect(roles).toHaveLength(5)
       expect(roles).toContain('code')
       expect(roles).toContain('architect')
       expect(roles).toContain('auditor')
       expect(roles).toContain('auditor-loop')
-      expect(roles).toContain('architect-auto')
       expect(roles).toContain('minion')
     })
   })
@@ -387,35 +343,34 @@ describe('Agent definitions', () => {
       expect(prompt).not.toContain('<!-- forge-plan:end -->')
     })
 
-    test('architect prompts require source-backed impact planning contracts', () => {
-      for (const prompt of [architectAgent.systemPrompt, architectAutoAgent.systemPrompt]) {
-        for (const contract of [
-          'existing helpers, utilities, types, constants, and platform features',
-          'all callers and references',
-          'Name the one existing or planned owner for each shared behavior',
-          'prohibit parallel implementations across phases',
-          'every affected caller and companion update',
-          'every obsolete or superseded code path to remove, with exact files/symbols',
-          'never a vague "update related code"',
-          'callers converge on the single point of truth',
-          'targeted reference/search assertions',
-          'searching for a stale symbol',
-          'current repository directory as the complete execution boundary',
-          'execution sandbox will not expose them',
-          'unattended coding agent inside an isolated sandbox',
-          'Docker for local services',
-          '`chromium` headless browser (Playwright)',
-          'Not available: host environment variables, API keys, credentials, secrets, cloud or SaaS accounts',
-          'authenticates to or mutates a system outside the sandbox',
-          'applying Terraform or other infrastructure-as-code against a cloud provider',
-          'never as an acceptance criterion or verification command',
-          'Never include manual checks or commands that depend on external services, credentials, or host environment variables',
-        ]) {
-          expect(prompt).toContain(contract)
-        }
-        expect(prompt).not.toContain('unless the task explicitly requires them')
-        expect(prompt).not.toContain('unless explicitly required')
+    test('architect prompt requires source-backed impact planning contracts', () => {
+      const prompt = architectAgent.systemPrompt
+      for (const contract of [
+        'existing helpers, utilities, types, constants, and platform features',
+        'all callers and references',
+        'Name the one existing or planned owner for each shared behavior',
+        'prohibit parallel implementations across phases',
+        'every affected caller and companion update',
+        'every obsolete or superseded code path to remove, with exact files/symbols',
+        'never a vague "update related code"',
+        'callers converge on the single point of truth',
+        'targeted reference/search assertions',
+        'searching for a stale symbol',
+        'current repository directory as the complete execution boundary',
+        'execution sandbox will not expose them',
+        'unattended coding agent inside an isolated sandbox',
+        'Docker for local services',
+        '`chromium` headless browser (Playwright)',
+        'Not available: host environment variables, API keys, credentials, secrets, cloud or SaaS accounts',
+        'authenticates to or mutates a system outside the sandbox',
+        'applying Terraform or other infrastructure-as-code against a cloud provider',
+        'never as an acceptance criterion or verification command',
+        'Never include manual checks or commands that depend on external services, credentials, or host environment variables',
+      ]) {
+        expect(prompt).toContain(contract)
       }
+      expect(prompt).not.toContain('unless the task explicitly requires them')
+      expect(prompt).not.toContain('unless explicitly required')
     })
 
     test('architect.systemPrompt concludes without dispatching execution', () => {
@@ -447,40 +402,6 @@ describe('Agent definitions', () => {
       }
       expect(prompt.indexOf('**Research**')).toBeLessThan(prompt.indexOf('**Narrow**'))
       expect(prompt.indexOf('**Narrow**')).toBeLessThan(prompt.indexOf('**Design**'))
-      expect(architectAutoAgent.systemPrompt).not.toContain('one grouped set of questions')
-      expect(architectAutoAgent.systemPrompt).toContain('Treat route decisions recorded in the brief')
-      expect(architectAutoAgent.systemPrompt).toContain('Never call the `question` tool')
-    })
-
-    test('architect-auto.systemPrompt keeps autonomous plan contracts aligned', () => {
-      const prompt = architectAutoAgent.systemPrompt
-      for (const contract of [
-        'Never call the `question` tool',
-        'non-trivial implementation coupling',
-        '<!-- forge-plan:none -->',
-        'at most 24 executable phases',
-        'repo-relative paths',
-        'repository-mandated full check',
-        'use `plan-read` like Read',
-        '`plan-edit` like Edit',
-        'one phase or a small related phase group per call',
-        'Do not send the entire multi-phase plan in one tool call',
-        '### Files',
-        '### Edits',
-        '### Acceptance Criteria',
-        '### Verification',
-        '## Decisions',
-        '## Conventions',
-        '## Key Context',
-        'Write the complete plan before ending',
-        'final report is warning-free',
-      ]) {
-        expect(prompt).toContain(contract)
-      }
-      expect(prompt).not.toContain('marked plan')
-      expect(prompt).not.toContain('<!-- forge-plan:start -->')
-      expect(prompt).not.toContain('<!-- forge-plan:end -->')
-      expect(prompt).not.toContain('Do NOT use `pnpm build`')
     })
   })
 
@@ -498,7 +419,7 @@ describe('Agent definitions', () => {
     })
 
     test('agent prompts avoid deprecated graph tooling names', () => {
-      for (const agent of [architectAgent, auditorAgent, auditorLoopAgent, architectAutoAgent, minionAgent]) {
+      for (const agent of [architectAgent, auditorAgent, auditorLoopAgent, minionAgent]) {
         expect(agent.systemPrompt).not.toContain('graph-query')
         expect(agent.systemPrompt).not.toContain('graph-symbols')
         expect(agent.systemPrompt).not.toContain('graph-analyze')

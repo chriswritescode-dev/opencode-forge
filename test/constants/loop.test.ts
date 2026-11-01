@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildPostActionPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS, AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS, LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildPostActionPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS, LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
 
 describe('MAX_TOTAL_SECTIONS', () => {
   it('is the single canonical section cap', () => {
@@ -9,15 +9,7 @@ describe('MAX_TOTAL_SECTIONS', () => {
 
 describe('PLAN_AUTHORING_TOOL_NAMES', () => {
   it('is the single list of plan-authoring tools every deny path derives from', () => {
-    expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit', 'goal-write'])
-  })
-})
-
-describe('AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS', () => {
-  it('is every shared structural deny except the plan-of-record tools the autonomous architect keeps', () => {
-    expect([...AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS].sort()).toEqual(
-      ['execute-plan', 'goal-cancel', 'goal-status', 'goal-write', 'loop-cancel', 'loop-status', 'question'],
-    )
+    expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit'])
   })
 })
 
@@ -38,13 +30,10 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan-write', pattern: '*', action: 'deny' },
       { permission: 'plan-edit', pattern: '*', action: 'deny' },
-      { permission: 'goal-write', pattern: '*', action: 'deny' },
       { permission: 'execute-plan', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
-      { permission: 'goal-cancel', pattern: '*', action: 'deny' },
-      { permission: 'goal-status', pattern: '*', action: 'deny' },
       { permission: 'loop-complete', pattern: '*', action: 'deny' },
     ])
   })
@@ -67,12 +56,6 @@ describe('buildLoopPermissionRuleset', () => {
     })
   })
 
-  it('denies the goal management tools', () => {
-    const rules = buildLoopPermissionRuleset()
-    for (const tool of ['goal-status', 'goal-cancel']) {
-      expect(rules.some(r => r.permission === tool && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    }
-  })
 })
 
 describe('buildAuditSessionPermissionRuleset', () => {
@@ -89,18 +72,6 @@ describe('buildAuditSessionPermissionRuleset', () => {
   it('emits no sh or bash permission rules', () => {
     const rules = buildAuditSessionPermissionRuleset()
     expect(rules.some(r => r.permission === 'sh' || r.permission === 'bash')).toBe(false)
-  })
-
-  it('denies goal-write, so the auditor can never author a goal', () => {
-    const rules = buildAuditSessionPermissionRuleset()
-    expect(rules.some(r => r.permission === 'goal-write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-  })
-
-  it('denies the goal management tools, so the auditor can never manage goals', () => {
-    const rules = buildAuditSessionPermissionRuleset()
-    for (const tool of ['goal-status', 'goal-cancel']) {
-      expect(rules.some(r => r.permission === tool && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    }
   })
 
   it('denies loop-complete but keeps loop-handoff for the auditor', () => {

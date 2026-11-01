@@ -39,12 +39,10 @@ describe('per-agent tools.exclude (regression guard)', () => {
     }
   })
 
-  test('architect and architect-auto retain plan-authoring tools', () => {
-    for (const role of ['architect', 'architect-auto'] as const) {
-      const excluded = agents[role].tools?.exclude ?? []
-      expect(excluded).not.toContain('plan-write')
-      expect(excluded).not.toContain('plan-edit')
-    }
+  test('architect retains plan-authoring tools', () => {
+    const excluded = agents.architect.tools?.exclude ?? []
+    expect(excluded).not.toContain('plan-write')
+    expect(excluded).not.toContain('plan-edit')
   })
 
   test('auditor-loop shares plan-authoring exclusions with auditor', () => {
@@ -64,7 +62,7 @@ describe('per-agent tools.exclude (regression guard)', () => {
     expect(allowed('auditor-loop', 'loop-handoff')).toBe(true)
     expect(allowed('auditor-loop', 'loop-complete')).toBe(false)
 
-    for (const role of ['auditor', 'architect', 'architect-auto'] as const) {
+    for (const role of ['auditor', 'architect'] as const) {
       expect(allowed(role, 'loop-handoff')).toBe(false)
       expect(allowed(role, 'loop-complete')).toBe(false)
     }
