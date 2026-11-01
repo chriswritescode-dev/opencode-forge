@@ -10,9 +10,9 @@ const STATE_DEFAULTS = {
 
 describe('nextTransition', () => {
   describe('coding phase', () => {
-    it('rotates to auditing on idle-complete', () => {
+    it('rotates to auditing on coder-handoff', () => {
       const state = makeLoopState({ ...STATE_DEFAULTS, phase: 'coding' })
-      const transition = nextTransition(state, { type: 'coding-idle-complete' })
+      const transition = nextTransition(state, { type: 'coder-handoff' })
       expect(transition).toEqual({ kind: 'rotate' })
     })
 
@@ -28,10 +28,10 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'session_creation_failed' } })
     })
 
-    it('terminates with coding_no_assistant', () => {
+    it('terminates with handoff_missing', () => {
       const state = makeLoopState({ ...STATE_DEFAULTS, phase: 'coding' })
-      const transition = nextTransition(state, { type: 'coding-no-assistant' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'coding_no_assistant' } })
+      const transition = nextTransition(state, { type: 'handoff-missing' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'handoff_missing' } })
     })
 
     it('terminates with max_iterations on iteration-cap', () => {
@@ -155,10 +155,10 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'missing_worktree_dir' } })
     })
 
-    it('terminates with audit_retry_exhausted', () => {
+    it('terminates with handoff_missing', () => {
       const state = makeLoopState({ ...STATE_DEFAULTS, phase: 'auditing' })
-      const transition = nextTransition(state, { type: 'audit-retry-exhausted' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'audit_retry_exhausted' } })
+      const transition = nextTransition(state, { type: 'handoff-missing' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'handoff_missing' } })
     })
   })
 
@@ -166,6 +166,12 @@ describe('nextTransition', () => {
     it('terminates with completed on post-action-complete', () => {
       const state = makeLoopState({ ...STATE_DEFAULTS, phase: 'post_action' })
       const transition = nextTransition(state, { type: 'post-action-complete' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
+    })
+
+    it('stays best-effort and completes on handoff_missing', () => {
+      const state = makeLoopState({ ...STATE_DEFAULTS, phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'handoff-missing' })
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
     })
 
@@ -238,7 +244,7 @@ describe('nextTransition', () => {
     it('does not modify the input state', () => {
       const state = makeLoopState({ ...STATE_DEFAULTS, phase: 'coding' })
       const original = JSON.stringify(state)
-      nextTransition(state, { type: 'coding-idle-complete' })
+      nextTransition(state, { type: 'coder-handoff' })
       expect(JSON.stringify(state)).toBe(original)
     })
   })

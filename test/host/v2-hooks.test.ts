@@ -8,6 +8,7 @@ import { buildArchitectReminder, createForgeCore, type ForgeCore } from '../../s
 import { closeDatabase, createLoopsRepo, initializeDatabase } from '../../src/storage'
 import { registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../../src/host/v2-hooks'
 import { createSessionHooks } from '../../src/hooks/session'
+import { resolvePromptsDir } from '../../src/install/paths'
 import {
   ensureShellShim,
   SHIM_ENV_CONTAINER,
@@ -41,6 +42,7 @@ interface StubCoreOptions {
   isUnattendedGoalPlannerSession?: ForgeHooksV2Core['isUnattendedGoalPlannerSession']
   autoApproveDenyRules?: ForgeHooksV2Core['autoApproveDenyRules']
   architectReminderFor?: ForgeHooksV2Core['architectReminderFor']
+  systemAddendumFor?: ForgeHooksV2Core['systemAddendumFor']
   toolBefore?: ForgeHooksV2Core['toolBefore']
   toolAfter?: ForgeHooksV2Core['toolAfter']
   chatMessage?: ForgeHooksV2Core['chatMessage']
@@ -83,6 +85,7 @@ function createStubCore(options: StubCoreOptions = {}): StubCore {
     },
     architectReminderFor:
       options.architectReminderFor ?? ((agent) => (agent === 'architect' ? buildArchitectReminder() : null)),
+    systemAddendumFor: options.systemAddendumFor ?? (() => null),
     resolveSandboxForDirectory: options.resolveSandboxForDirectory ?? (async () => null),
     resolveShellSandbox: options.resolveShellSandbox ?? (async () => null),
     autoApprovesPermissions: options.autoApprovesPermissions ?? (async () => false),
@@ -347,6 +350,195 @@ describe('registerForgeHooksV2 tool hooks', () => {
   })
 })
 
+describe('registerForgeHooksV2 subagent default model', () => {
+  function subagentEvent(input: Record<string, unknown> = {}, tool = 'subagent') {
+    return {
+      tool,
+      sessionID: 'ses_1',
+      agent: 'code',
+      messageID: 'msg_1',
+      id: 'call_1',
+      input: { agent: 'minion', prompt: 'do work', ...input },
+    }
+  }
+
+  function agentLookup(model?: { id: string; providerID: string }) {
+    return async () => ({
+      location: { directory: WORKTREE },
+      data: {
+        id: 'minion',
+        name: 'minion',
+        mode: 'subagent',
+        hidden: false,
+        request: { settings: {}, headers: {}, body: {} },
+        permissions: [],
+        ...(model ? { model } : {}),
+      },
+    })
+  }
+
+  const defaultModel = async () => ({
+    location: { directory: WORKTREE },
+    data: { id: 'default-model', modelID: 'default-model', providerID: 'default-provider' },
+  })
+
+  test('sets the default model for a new minion launch whose agent has no model', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls).toContainEqual({ method: 'agent.get', args: [{ agentID: 'minion' }] })
+    expect(calls.map((call) => call.method)).toContain('model.default')
+    expect(event.input).toEqual({
+      agent: 'minion',
+      prompt: 'do work',
+      model: 'default-provider/default-model',
+    })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+  })
+
+  test('leaves the input alone when the resolved agent has a model', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup({ id: 'pinned-model', providerID: 'pinned-provider' }) },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('model.default')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+  })
+
+  test('leaves the input alone for an agent outside the default-model list', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({ agent: 'other' })
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(calls.map((call) => call.method)).not.toContain('model.default')
+    expect(event.input).toEqual({ agent: 'other', prompt: 'do work' })
+  })
+
+  test('leaves the input alone when the caller passed a model', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({ model: 'other-provider/other-model' })
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work', model: 'other-provider/other-model' })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+  })
+
+  test('leaves a continuation of an existing child alone', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({ sessionID: 'ses_child' })
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work', sessionID: 'ses_child' })
+  })
+
+  test('leaves the input alone for other tools', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: defaultModel },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent({}, 'grep')
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+  })
+
+  test('leaves the input alone when the agent lookup fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, hooks } = createFakeV2Context({
+      agent: {
+        get: async () => {
+          throw new Error('agent lookup failed')
+        },
+      },
+      model: { default: defaultModel },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+    expect(errorSpy).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  test('leaves the input alone when resolving the default model fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, hooks } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: {
+        default: async () => {
+          throw new Error('model lookup failed')
+        },
+      },
+    })
+    const { core, before } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+    expect(before).toEqual([{ tool: 'task', args: event.input }])
+    expect(errorSpy).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  test('leaves the input alone when no default model is configured', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      agent: { get: agentLookup() },
+      model: { default: async () => ({ location: { directory: WORKTREE }, data: null }) },
+    })
+    const { core } = createStubCore()
+    await registerForgeHooksV2(ctx, core)
+
+    const event = subagentEvent()
+    await invokeHook(hooks, 'tool', 'execute.before', event)
+
+    expect(event.input).toEqual({ agent: 'minion', prompt: 'do work' })
+  })
+})
+
 describe('registerForgeHooksV2 shell hook', () => {
   test('create.before routes a sandboxed loop worktree through the shim', async () => {
     const { ctx, hooks } = createFakeV2Context({
@@ -531,6 +723,21 @@ describe('registerForgeHooksV2 shell tool sandbox routing', () => {
 })
 
 describe('registerForgeHooksV2 session hooks', () => {
+  function contextAgentLookup(system?: string) {
+    return async () => ({
+      location: { directory: PROJECT },
+      data: {
+        id: 'code',
+        name: 'code',
+        mode: 'primary',
+        hidden: false,
+        request: { settings: {}, headers: {}, body: {} },
+        permissions: [],
+        ...(system === undefined ? {} : { system }),
+      },
+    })
+  }
+
   test('prompt forwards the session, message, and text to the core', async () => {
     const { ctx, hooks } = createFakeV2Context()
     const { core, prompts } = createStubCore()
@@ -576,6 +783,100 @@ describe('registerForgeHooksV2 session hooks', () => {
     await invokeHook(hooks, 'session', 'context', event)
 
     expect(messages[0]!.content).toEqual([{ type: 'text', text: 'implement this' }])
+  })
+
+  test('context inserts the agent system addendum after the base prompt', async () => {
+    const { ctx, hooks } = createFakeV2Context({ agent: { get: contextAgentLookup() } })
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = {
+      sessionID: 'ses_1',
+      agent: 'code',
+      system: [
+        { type: 'text', text: 'base' },
+        { type: 'text', text: 'instructions' },
+      ],
+      messages: [],
+    }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'ADDENDUM' },
+      { type: 'text', text: 'instructions' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+  })
+
+  test('context omits the agent system addendum when the user configured a system prompt', async () => {
+    const { ctx, hooks } = createFakeV2Context({ agent: { get: contextAgentLookup('user prompt') } })
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = {
+      sessionID: 'ses_1',
+      agent: 'code',
+      system: [
+        { type: 'text', text: 'base' },
+        { type: 'text', text: 'instructions' },
+      ],
+      messages: [],
+    }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'instructions' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+  })
+
+  test('context keeps the agent system addendum when the agent lookup fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { ctx, hooks } = createFakeV2Context({
+      agent: {
+        get: async () => {
+          throw new Error('agent lookup failed')
+        },
+      },
+    })
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = { sessionID: 'ses_1', agent: 'code', system: [{ type: 'text', text: 'base' }], messages: [] }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'ADDENDUM' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+    expect(errorSpy).toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  test('context inserts no addendum for an agent without one', async () => {
+    const { ctx, hooks, calls } = createFakeV2Context({ agent: { get: contextAgentLookup() } })
+    const { core } = createStubCore({
+      systemAddendumFor: (agent) => (agent === 'code' ? 'ADDENDUM' : null),
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = { sessionID: 'ses_1', agent: 'auditor', system: [{ type: 'text', text: 'base' }], messages: [] }
+    await invokeHook(hooks, 'session', 'context', event)
+
+    expect(event.system).toEqual([
+      { type: 'text', text: 'base' },
+      { type: 'text', text: 'sandbox context note' },
+    ])
+    expect(calls.map((call) => call.method)).not.toContain('agent.get')
   })
 
   test('compaction appends the context to the system parts', async () => {
@@ -691,6 +992,14 @@ describe('createForgeCore integration', () => {
     expect(built.architectReminderFor(architect)).toBe(buildArchitectReminder())
     expect(built.architectReminderFor('code')).toBeNull()
     expect(built.architectReminderFor(undefined)).toBeNull()
+  })
+
+  test('resolves the system addendum for the code agent only', async () => {
+    const built = await buildCore()
+
+    expect(built.systemAddendumFor('code')).toBe(buildAgents(resolvePromptsDir()).code.systemAddendum)
+    expect(built.systemAddendumFor('architect')).toBeNull()
+    expect(built.systemAddendumFor(undefined)).toBeNull()
   })
 
   test('architect reminder narrows with grouped question rounds before storing', () => {

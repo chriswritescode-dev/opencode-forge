@@ -23,7 +23,7 @@ describe('attachLoopToSession', () => {
     const LOOP_NAME = 'orphan-loop'
 
     // Seed orphaned section_plans for the loop (no loops row exists)
-    db.exec('PRAGMA foreign_keys=OFF')
+    db.run('PRAGMA foreign_keys=OFF')
     sectionPlansRepo.bulkInsert({
       projectId: PROJECT_ID,
       loopName: LOOP_NAME,
@@ -45,7 +45,7 @@ describe('attachLoopToSession', () => {
       severity: 'bug' as const,
       description: 'stale finding',
     })
-    db.exec('PRAGMA foreign_keys=ON')
+    db.run('PRAGMA foreign_keys=ON')
 
     // Verify seed data is present before attach
     expect(sectionPlansRepo.count(PROJECT_ID, LOOP_NAME)).toBe(1)

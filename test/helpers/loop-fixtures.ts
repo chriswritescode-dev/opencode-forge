@@ -14,7 +14,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopConfig, PluginConfig } from '../../src/types'
 import { createPendingTeardownRegistry } from '../../src/workspace/pending-teardown'
-import { createFakeForgeClient, type RecordedCall } from './fake-client'
+import { createFakeForgeClient } from './fake-client'
 import { createCapturingLogger, createMockLogger } from './logger'
 
 /** Creates a LoopState with the standard test defaults; overrides replace any default. */
@@ -83,6 +83,11 @@ export function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     findPartial: vi.fn(),
     setCurrentSectionIndex: vi.fn(),
     setTotalSections: vi.fn(),
+    upsertPendingHandoff: vi.fn(),
+    getPendingHandoff: vi.fn().mockReturnValue(null),
+    applyPendingHandoff: vi.fn().mockReturnValue(null),
+    discardPendingHandoff: vi.fn(),
+    listHandoffs: vi.fn().mockReturnValue([]),
     ...overrides,
   } as LoopsRepo
 }
@@ -92,8 +97,8 @@ export function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
  *
  * Every call gets its own repositories, capturing logger and fake client, so a
  * test can drive the loop through the returned handles without hand-wiring
- * `createLoop`. Passing `client` keeps the caller's fake; its `calls` are not
- * mirrored here.
+ * `createLoop`. Passing `client` keeps the caller's fake, so assert on that
+ * fake's own `calls`.
  */
 export function buildLoopRuntime(
   db: Database,
@@ -118,9 +123,7 @@ export function buildLoopRuntime(
   const loopTransitionsRepo = createLoopTransitionsRepo(db)
   const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
   const { logger, logs } = createCapturingLogger()
-  const forge = options.client
-    ? { client: options.client, calls: [] as RecordedCall[] }
-    : createFakeForgeClient()
+  const client = options.client ?? createFakeForgeClient().client
   const config = options.config ?? {}
 
   const loop = createLoop({
@@ -130,7 +133,7 @@ export function buildLoopRuntime(
     sectionPlansRepo,
     loopTransitionsRepo,
     projectId,
-    client: forge.client,
+    client,
     logger,
     getConfig: () => config,
     sandboxManager: undefined,
@@ -146,8 +149,8 @@ export function buildLoopRuntime(
   return {
     loop,
     logs,
-    calls: forge.calls,
     loopService: loop.service,
+    loopsRepo,
     plansRepo,
     reviewFindingsRepo,
     sectionPlansRepo,

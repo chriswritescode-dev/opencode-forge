@@ -3,6 +3,7 @@ import { buildArchitectAgent } from '../src/agents/architect'
 import { buildCodeAgent } from '../src/agents/code'
 import { buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
 import { buildArchitectAutoAgent } from '../src/agents/architect-auto'
+import { buildMinionAgent } from '../src/agents/minion'
 import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
@@ -11,6 +12,7 @@ describe('Agent definitions', () => {
   const auditorAgent = buildAuditorAgent()
   const auditorLoopAgent = buildAuditorLoopAgent()
   const architectAutoAgent = buildArchitectAutoAgent()
+  const minionAgent = buildMinionAgent()
 
   describe('metadata stability', () => {
     test('architect agent has stable metadata', () => {
@@ -21,7 +23,7 @@ describe('Agent definitions', () => {
     })
 
     test('architect agent excludes mutation and subagent tools', () => {
-      expect(architectAgent.tools?.exclude).toEqual(['edit', 'write', 'patch', 'task'])
+      expect(architectAgent.tools?.exclude).toEqual(['edit', 'write', 'patch', 'task', 'loop-handoff', 'loop-complete'])
       expect(architectAgent.tools?.exclude).not.toContain('execute-plan')
     })
 
@@ -52,6 +54,8 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toContain('question')
       expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
       expect(auditorAgent.tools?.exclude).toContain('loop-status')
+      expect(auditorAgent.tools?.exclude).toContain('loop-complete')
+      expect(auditorAgent.tools?.exclude).toContain('loop-handoff')
     })
 
     test('code agent has expected tool exclusions', () => {
@@ -64,22 +68,25 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
     })
 
-    test('code agent prompt uses the generic harness baseline and current tool names', () => {
-      const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('You are an AI agent running in OpenCode')
-      expect(prompt).not.toContain('TodoWrite')
-      expect(prompt).not.toContain('Task tool')
-      expect(prompt).not.toContain('Bash')
-      expect(prompt).not.toContain('${OPENCODE_TOOL_GUIDANCE}')
+    test("code agent appends to OpenCode's default prompt instead of replacing it", () => {
+      expect(codeAgent.systemPrompt).toBeUndefined()
+      const addendum = codeAgent.systemAddendum ?? ''
+      expect(codeAgent.systemAddendum).toBeDefined()
+      expect(addendum).not.toContain('You are an AI agent running in OpenCode')
+      expect(addendum).not.toContain('# Harness')
+      expect(addendum).not.toContain('${OPENCODE_TOOL_GUIDANCE}')
+      expect(addendum).not.toContain('TodoWrite')
+      expect(addendum).not.toContain('Task tool')
+      expect(addendum).not.toContain('Bash')
     })
 
     test('code agent prompt preserves scope, minion, and Forge protections', () => {
-      const prompt = codeAgent.systemPrompt
+      const prompt = codeAgent.systemAddendum
       expect(prompt).toContain('completing the requested scope')
-      expect(prompt).toContain('Treat unfamiliar files or changes as potential user work')
       expect(prompt).toContain('minion')
-      expect(prompt).toContain('permitted by the applicable instructions')
-      expect(prompt).toContain('at most three minions concurrently')
+      expect(prompt).toContain('explicit instruction to delegate')
+      expect(prompt).toContain('every piece of work that can run in parallel')
+      expect(prompt).toContain('up to four minions concurrently')
       expect(prompt).toContain('target files do not overlap')
       expect(prompt).toContain('inspect and reconcile')
       expect(prompt).toContain('files changed, behavior implemented, validation run')
@@ -107,8 +114,16 @@ describe('Agent definitions', () => {
       expect(auditorLoopAgent.hidden).toBe(true)
     })
 
-    test('auditor-loop agent shares tool exclusions with auditor', () => {
-      expect(auditorLoopAgent.tools?.exclude).toEqual(auditorAgent.tools?.exclude)
+    test('auditor-loop shares the base auditor exclusions but keeps loop-handoff', () => {
+      const loopExcluded = auditorLoopAgent.tools?.exclude ?? []
+      const auditorExcluded = auditorAgent.tools?.exclude ?? []
+      for (const tool of auditorExcluded) {
+        if (tool === 'loop-handoff') continue
+        expect(loopExcluded).toContain(tool)
+      }
+      expect(loopExcluded).not.toContain('loop-handoff')
+      expect(auditorExcluded).toContain('loop-handoff')
+      expect(loopExcluded).toContain('loop-complete')
     })
 
     test('auditor-loop prompt extends the base auditor prompt with loop context', () => {
@@ -132,15 +147,14 @@ describe('Agent definitions', () => {
     test('auditor-loop prompt includes the loop addendum content', () => {
       const prompt = auditorLoopAgent.systemPrompt
       expect(prompt).toContain('<!-- forge-section -->')
-      expect(prompt).toContain('section-summary block')
-      expect(prompt).toContain('### Done')
-      expect(prompt).toContain('### Deviations')
-      expect(prompt).toContain('### Follow-ups')
+      expect(prompt).toContain('loop-handoff')
+      expect(prompt).toContain('summary` { done, deviations, followUps }')
+      expect(prompt).toContain('never parses your response text')
       expect(prompt.toLowerCase()).toContain('deviation acceptance')
     })
 
-    test('auditor-loop system prompt does not duplicate the summary marker template (owned by buildSectionAuditPrompt)', () => {
-      expect(auditorLoopAgent.systemPrompt).not.toContain('section-summary:start')
+    test('auditor-loop system prompt does not hand-roll a section marker protocol', () => {
+      expect(auditorLoopAgent.systemPrompt).not.toContain('<!-- section')
     })
 
     test('auditor-loop prompt blocks a section on bugs at or before it, uniformly for every section', () => {
@@ -236,7 +250,7 @@ describe('Agent definitions', () => {
     })
 
     test('goal-status and goal-cancel are excluded from architect-auto and auditors but kept by code', () => {
-      for (const agent of [auditorAgent, auditorLoopAgent, architectAutoAgent]) {
+      for (const agent of [auditorAgent, auditorLoopAgent, architectAutoAgent, minionAgent]) {
         expect(agent.tools?.exclude).toContain('goal-status')
         expect(agent.tools?.exclude).toContain('goal-cancel')
       }
@@ -248,15 +262,68 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
     })
 
-    test('buildAgents returns all 5 agent roles', () => {
+    test('minion agent has stable metadata', () => {
+      expect(minionAgent.role).toBe('minion')
+      expect(minionAgent.id).toBe('opencode-minion')
+      expect(minionAgent.displayName).toBe('minion')
+      expect(minionAgent.mode).toBe('subagent')
+      expect(minionAgent.description).toContain('batches of up to four')
+    })
+
+    test('minion agent replaces the default prompt with a full system prompt', () => {
+      const prompt = minionAgent.systemPrompt ?? ''
+      expect(minionAgent.systemPrompt).toBeDefined()
+      expect(minionAgent.systemAddendum).toBeUndefined()
+      expect(prompt).toContain('You are Minion')
+      expect(prompt).toContain('Preserve unrelated worktree changes: leave every file outside your scope')
+      expect(prompt).not.toContain('Other work is in progress')
+    })
+
+    test('minion agent excludes plan, loop, review, question, and nested subagent tools', () => {
+      const excluded = minionAgent.tools?.exclude ?? []
+      for (const tool of [
+        'plan-write',
+        'plan-edit',
+        'goal-write',
+        'execute-plan',
+        'question',
+        'loop-cancel',
+        'loop-status',
+        'goal-cancel',
+        'goal-status',
+        'loop-handoff',
+        'loop-complete',
+        'review-write',
+        'review-delete',
+        'task',
+      ]) {
+        expect(excluded).toContain(tool)
+      }
+    })
+
+    test('minion agent runs on the configured execution model and variant', () => {
+      const configured = buildAgents(undefined, { model: 'p/m', variant: 'max' }).minion
+      expect(configured.defaultModel).toBe('p/m')
+      expect(configured.variant).toBe('max')
+
+      const unconfigured = buildAgents().minion
+      expect(unconfigured.defaultModel).toBeUndefined()
+      expect(unconfigured.variant).toBeUndefined()
+
+      const variantOnly = buildAgents(undefined, { variant: 'max' }).minion
+      expect(variantOnly.variant).toBeUndefined()
+    })
+
+    test('buildAgents returns all 6 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)
-      expect(roles).toHaveLength(5)
+      expect(roles).toHaveLength(6)
       expect(roles).toContain('code')
       expect(roles).toContain('architect')
       expect(roles).toContain('auditor')
       expect(roles).toContain('auditor-loop')
       expect(roles).toContain('architect-auto')
+      expect(roles).toContain('minion')
     })
   })
 
@@ -422,16 +489,16 @@ describe('Agent definitions', () => {
       expect(architectAgent.systemPrompt).not.toContain('graph-query')
       expect(architectAgent.systemPrompt).not.toContain('graph-symbols')
       expect(architectAgent.systemPrompt).not.toContain('graph-analyze')
-      expect(codeAgent.systemPrompt).not.toContain('graph-query')
-      expect(codeAgent.systemPrompt).not.toContain('graph-symbols')
-      expect(codeAgent.systemPrompt).not.toContain('graph-analyze')
+      expect(codeAgent.systemAddendum).not.toContain('graph-query')
+      expect(codeAgent.systemAddendum).not.toContain('graph-symbols')
+      expect(codeAgent.systemAddendum).not.toContain('graph-analyze')
       expect(auditorAgent.systemPrompt).not.toContain('graph-query')
       expect(auditorAgent.systemPrompt).not.toContain('graph-symbols')
       expect(auditorAgent.systemPrompt).not.toContain('graph-analyze')
     })
 
     test('agent prompts avoid deprecated graph tooling names', () => {
-      for (const agent of [architectAgent, codeAgent, auditorAgent, auditorLoopAgent, architectAutoAgent]) {
+      for (const agent of [architectAgent, auditorAgent, auditorLoopAgent, architectAutoAgent, minionAgent]) {
         expect(agent.systemPrompt).not.toContain('graph-query')
         expect(agent.systemPrompt).not.toContain('graph-symbols')
         expect(agent.systemPrompt).not.toContain('graph-analyze')

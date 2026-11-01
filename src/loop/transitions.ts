@@ -10,7 +10,7 @@ export type Transition =
   | { kind: 'noop' }
 
 export type TransitionEvent =
-  | { type: 'coding-idle-complete' }
+  | { type: 'coder-handoff' }
   | { type: 'section-clean'; isLastOpenSection: boolean }
   | { type: 'section-dirty' }
   | { type: 'audit-clear' }
@@ -22,8 +22,7 @@ export type TransitionEvent =
   | { type: 'error-max-retries'; context?: string }
   | { type: 'missing-worktree-dir' }
   | { type: 'session-creation-failed' }
-  | { type: 'audit-retry-exhausted' }
-  | { type: 'coding-no-assistant' }
+  | { type: 'handoff-missing' }
   | { type: 'post-action-complete' }
 
 /**
@@ -47,14 +46,14 @@ export function nextTransition(state: LoopState, event: TransitionEvent): Transi
 
 function handleCodingEvent(event: TransitionEvent): Transition {
   switch (event.type) {
-    case 'coding-idle-complete':
+    case 'coder-handoff':
       return { kind: 'rotate' }
     case 'missing-worktree-dir':
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
     case 'session-creation-failed':
       return { kind: 'terminate', reason: { kind: 'session_creation_failed' } }
-    case 'coding-no-assistant':
-      return { kind: 'terminate', reason: { kind: 'coding_no_assistant' } }
+    case 'handoff-missing':
+      return { kind: 'terminate', reason: { kind: 'handoff_missing' } }
     case 'iteration-cap':
       return { kind: 'terminate', reason: { kind: 'max_iterations' } }
     case 'user-abort':
@@ -93,8 +92,8 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
     case 'missing-worktree-dir':
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
-    case 'audit-retry-exhausted':
-      return { kind: 'terminate', reason: { kind: 'audit_retry_exhausted' } }
+    case 'handoff-missing':
+      return { kind: 'terminate', reason: { kind: 'handoff_missing' } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:
@@ -105,6 +104,8 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
 function handlePostActionEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'post-action-complete':
+      return { kind: 'terminate', reason: { kind: 'completed' } }
+    case 'handoff-missing':
       return { kind: 'terminate', reason: { kind: 'completed' } }
     case 'iteration-cap':
       return { kind: 'terminate', reason: { kind: 'max_iterations' } }

@@ -14,6 +14,7 @@ import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
 import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 import { makeLoopState } from '../helpers/loop-fixtures'
+import { recordCoderHandoff } from '../helpers/loop-handoff'
 
 const PROJECT_ID = 'test-project'
 
@@ -174,6 +175,7 @@ describe('Loop Event Idle Gate', () => {
 
       expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
 
+      await recordCoderHandoff(handler.loop, 'S1')
       await handler.onEvent({
         event: {
           type: 'session.status',
@@ -198,6 +200,7 @@ describe('Loop Event Idle Gate', () => {
 
         vi.setSystemTime(Date.now() + AWAITING_BUSY_TIMEOUT_MS + 1)
 
+        await recordCoderHandoff(handler.loop, 'S2')
         await handler.onEvent({
           event: {
             type: 'session.status',
@@ -247,6 +250,7 @@ describe('Loop Event Idle Gate', () => {
 
       expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
 
+      await recordCoderHandoff(handler.loop, 'S1')
       await handler.onEvent({
         event: {
           type: 'session.status',

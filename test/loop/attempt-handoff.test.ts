@@ -7,7 +7,7 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopService, type LoopService } from '../../src/loop/service'
 import { createLoop, type Loop } from '../../src/loop/runtime'
-import { POST_ACTION_COMPLETE_MARKER } from '../../src/loop/prompts'
+import { LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import type { PluginConfig } from '../../src/types'
@@ -15,6 +15,7 @@ import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client
 import { createTestDb } from '../helpers/test-db'
 import { makeLoopState } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
+import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 
 vi.mock('../../src/utils/audit-snapshot', () => ({
@@ -48,10 +49,6 @@ interface FakeMessage {
 
 function assistantMessage(id: string, text: string): FakeMessage {
   return { info: { id, role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text }] }
-}
-
-function coderDecisionsBlock(notes: string): string {
-  return `<!-- coder-decisions:start -->\n### Decisions\n- ${notes}\n### Verification\n- pnpm test --project node — pass\n### Notes for auditor\n- none\n<!-- coder-decisions:end -->`
 }
 
 const STATE_DEFAULTS = {
@@ -167,8 +164,11 @@ describe('durable attempt handoff', () => {
     const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'coder-a' })
     harness.service.setState(loopName, state)
     harness.messagesBySession.set('coder-a', [
-      assistantMessage('msg-a1', `Implemented the ledger.\n${coderDecisionsBlock('chose the append-only ledger approach')}`),
+      assistantMessage('msg-a1', 'Implemented the ledger.'),
     ])
+    await recordCoderHandoff(harness.loop, 'coder-a', {
+      changes: [{ summary: 'chose the append-only ledger approach', reason: 'keeps the audit trail append-only' }],
+    })
     await idleTick(harness.loop, 'coder-a')
 
     const auditSessionId = harness.service.getActiveState(loopName)!.sessionId
@@ -184,6 +184,7 @@ describe('durable attempt handoff', () => {
       severity: 'bug',
       description: 'Retry handler drops the second event',
     })
+    await recordAuditorHandoff(harness.loop, auditSessionId)
     await busyTick(harness.loop, auditSessionId)
     await idleTick(harness.loop, auditSessionId)
 
@@ -231,14 +232,17 @@ describe('durable attempt handoff', () => {
       const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'coder-a' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('coder-a', [
-        assistantMessage('msg-a1', `Implemented the ledger.\n${coderDecisionsBlock('chose the append-only ledger approach')}`),
+        assistantMessage('msg-a1', 'Implemented the ledger.'),
       ])
+      await recordCoderHandoff(harness.loop, 'coder-a', {
+        changes: [{ summary: 'chose the append-only ledger approach', reason: 'keeps the audit trail append-only' }],
+      })
       await idleTick(harness.loop, 'coder-a')
 
       const rows = harness.service.getAttemptHistory(loopName, 'plan')
       expect(rows.length).toBe(1)
       const row1 = rows[0]
-      expect(row1.completionKey).toBe('coder-a:msg-a1')
+      expect(row1.completionKey).toMatch(/^handoff:\d+$/)
       expect(row1.sourceSessionId).toBe('coder-a')
       expect(row1.scope).toBe('plan')
       expect(row1.attemptNumber).toBe(1)
@@ -273,6 +277,7 @@ describe('durable attempt handoff', () => {
         severity: 'bug',
         description: 'Retry handler drops the second event',
       })
+      await recordAuditorHandoff(harness.loop, auditSessionId)
       await busyTick(harness.loop, auditSessionId)
       await idleTick(harness.loop, auditSessionId)
 
@@ -304,8 +309,11 @@ describe('durable attempt handoff', () => {
       const { coderBId, auditSessionId } = await drivePlanLoopThroughDirtyAudit(harness, loopName)
 
       harness.messagesBySession.set(coderBId, [
-        assistantMessage('msg-b1', `Patched the retry handler.\n${coderDecisionsBlock('second pass guards replay idempotency')}`),
+        assistantMessage('msg-b1', 'Patched the retry handler.'),
       ])
+      await recordCoderHandoff(harness.loop, coderBId, {
+        changes: [{ summary: 'second pass guards replay idempotency', reason: 'prevents duplicate replays' }],
+      })
       await busyTick(harness.loop, coderBId)
       await idleTick(harness.loop, coderBId)
 
@@ -344,13 +352,16 @@ describe('durable attempt handoff', () => {
       const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'q-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('q-coder', [
-        assistantMessage('msg-q1', `work done\n${coderDecisionsBlock('quiescent capture decisions')}`),
+        assistantMessage('msg-q1', 'work done'),
       ])
+      await recordCoderHandoff(harness.loop, 'q-coder', {
+        changes: [{ summary: 'quiescent capture decisions', reason: 'captures only once children settle' }],
+      })
       await idleTick(harness.loop, 'q-coder')
 
       const rows = harness.service.getAttemptHistory(loopName, 'plan')
       expect(rows.length).toBe(1)
-      expect(rows[0].completionKey).toBe('q-coder:msg-q1')
+      expect(rows[0].completionKey).toMatch(/^handoff:\d+$/)
       expect(rows[0].coderDecisions).toContain('quiescent capture decisions')
       expect(harness.service.getActiveState(loopName)!.phase).toBe('auditing')
       expect(auditorPrompts(harness.calls).length).toBe(1)
@@ -361,15 +372,18 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-quiesce-child'
       queueSnapshotCommits([COMMIT_A])
       const harness = createRuntimeHarness({
-        statuses: { 'child-q': { type: 'busy' } },
         getParentSessionId: async (sessionId) => (sessionId === 'child-q' ? 'q-coder' : null),
       })
 
       const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'q-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('q-coder', [
-        assistantMessage('msg-q1', `work done\n${coderDecisionsBlock('quiescent capture decisions')}`),
+        assistantMessage('msg-q1', 'work done'),
       ])
+      await recordCoderHandoff(harness.loop, 'q-coder', {
+        changes: [{ summary: 'quiescent capture decisions', reason: 'captures only once children settle' }],
+      })
+      harness.statuses['child-q'] = { type: 'busy' }
       await idleTick(harness.loop, 'q-coder')
 
       expect(harness.service.getAttemptHistory(loopName)).toHaveLength(0)
@@ -383,17 +397,16 @@ describe('durable attempt handoff', () => {
 
       const rows = harness.service.getAttemptHistory(loopName, 'plan')
       expect(rows.length).toBe(1)
-      expect(rows[0].completionKey).toBe('q-coder:msg-q1')
+      expect(rows[0].completionKey).toMatch(/^handoff:\d+$/)
       expect(rows[0].coderDecisions).toContain('quiescent capture decisions')
       expect(harness.service.getActiveState(loopName)!.phase).toBe('auditing')
       expect(auditorPrompts(harness.calls).length).toBe(1)
     })
 
-    test('post-action waits for a busy background subagent before completing the loop', async () => {
+    test('a loop-complete record whose child session became busy is applied only after the child session is idle', async () => {
       vi.useFakeTimers()
       const loopName = 'handoff-post-action-subagent'
       const harness = createRuntimeHarness({
-        statuses: { 'reviewer-ses': { type: 'busy' } },
         getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
       })
 
@@ -404,9 +417,8 @@ describe('durable attempt handoff', () => {
         phase: 'post_action',
       }))
       harness.service.registerLoopSession('pa-ses', loopName)
-      harness.messagesBySession.set('pa-ses', [
-        assistantMessage('msg-pa1', `Reviewers launched; merging when they report.\n${POST_ACTION_COMPLETE_MARKER}`),
-      ])
+      await recordPostActionComplete(harness.loop, 'pa-ses')
+      harness.statuses['reviewer-ses'] = { type: 'busy' }
       await idleTick(harness.loop, 'pa-ses')
       await vi.advanceTimersByTimeAsync(1700)
 
@@ -421,9 +433,8 @@ describe('durable attempt handoff', () => {
       expect(finalState.terminationReason).toBe('completed')
     })
 
-    test('post-action keeps deferring for a long-running busy subagent without terminating', async () => {
-      vi.useFakeTimers()
-      const loopName = 'handoff-post-action-subagent-long'
+    test('rejects loop-complete while a post-action subagent session is busy', async () => {
+      const loopName = 'handoff-post-action-busy-reject'
       const harness = createRuntimeHarness({
         statuses: { 'reviewer-ses': { type: 'busy' } },
         getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
@@ -436,12 +447,36 @@ describe('durable attempt handoff', () => {
         phase: 'post_action',
       }))
       harness.service.registerLoopSession('pa-ses', loopName)
-      harness.messagesBySession.set('pa-ses', [
-        assistantMessage('msg-pa1', `Reviewers launched; merging when they report.\n${POST_ACTION_COMPLETE_MARKER}`),
-      ])
+
+      const result = await harness.loop.recordHandoff({
+        sessionId: 'pa-ses',
+        tool: LOOP_COMPLETE_TOOL_NAME,
+        args: { outcome: 'completed', steps: [{ name: 'merge', status: 'done' }], followUps: [] },
+      })
+
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.error).toContain('Wait for these subagent sessions to finish')
+      expect(result.error).toContain('reviewer-ses')
+      expect(harness.service.listHandoffs(loopName)).toHaveLength(0)
+    })
+
+    test('post-action keeps deferring for a long-running busy subagent without terminating', async () => {
+      vi.useFakeTimers()
+      const loopName = 'handoff-post-action-subagent-long'
+      const harness = createRuntimeHarness({
+        getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
+      })
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'pa-ses', phase: 'post_action' }))
+      harness.service.registerLoopSession('pa-ses', loopName)
+      await recordPostActionComplete(harness.loop, 'pa-ses')
+      harness.statuses['reviewer-ses'] = { type: 'busy' }
       await idleTick(harness.loop, 'pa-ses')
 
-      await vi.advanceTimersByTimeAsync(16 * 60 * 1000)
+      // Stay below the 15-minute busy-stall ceiling: a stall nudge aborts the turn and
+      // discards its handoff, which is a different scenario from this deferral check.
+      await vi.advanceTimersByTimeAsync(14 * 60 * 1000)
 
       expect(harness.service.getActiveState(loopName)?.active).toBe(true)
       expect(harness.service.getActiveState(loopName)?.phase).toBe('post_action')
@@ -457,17 +492,23 @@ describe('durable attempt handoff', () => {
     test('defers capture when the session status query fails and keeps deferring while it keeps failing', async () => {
       vi.useFakeTimers()
       const loopName = 'handoff-quiesce-status-failure'
+      let statusFails = false
       const harness = createRuntimeHarness({
         statusImpl: async () => {
-          throw new Error('status endpoint down')
+          if (statusFails) throw new Error('status endpoint down')
+          return {}
         },
       })
 
       const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'f-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('f-coder', [
-        assistantMessage('msg-f1', `work done\n${coderDecisionsBlock('status failure decisions')}`),
+        assistantMessage('msg-f1', 'work done'),
       ])
+      await recordCoderHandoff(harness.loop, 'f-coder', {
+        changes: [{ summary: 'status failure decisions', reason: 'records after quiescence' }],
+      })
+      statusFails = true
       await idleTick(harness.loop, 'f-coder')
 
       expect(harness.service.getAttemptHistory(loopName)).toHaveLength(0)
@@ -487,15 +528,17 @@ describe('durable attempt handoff', () => {
       vi.useFakeTimers()
       const loopName = 'handoff-quiesce-unknown-ancestry'
       queueSnapshotCommits([COMMIT_A])
-      const harness = createRuntimeHarness({
-        statuses: { 'stranger-ses': { type: 'busy' } },
-      })
+      const harness = createRuntimeHarness({})
 
       const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'u-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('u-coder', [
-        assistantMessage('msg-u1', `work done\n${coderDecisionsBlock('unknown ancestry decisions')}`),
+        assistantMessage('msg-u1', 'work done'),
       ])
+      await recordCoderHandoff(harness.loop, 'u-coder', {
+        changes: [{ summary: 'unknown ancestry decisions', reason: 'records after quiescence' }],
+      })
+      harness.statuses['stranger-ses'] = { type: 'busy' }
       await idleTick(harness.loop, 'u-coder')
 
       expect(harness.service.getAttemptHistory(loopName)).toHaveLength(0)
@@ -507,29 +550,256 @@ describe('durable attempt handoff', () => {
 
       const rows = harness.service.getAttemptHistory(loopName, 'plan')
       expect(rows.length).toBe(1)
-      expect(rows[0].completionKey).toBe('u-coder:msg-u1')
+      expect(rows[0].completionKey).toMatch(/^handoff:\d+$/)
       expect(harness.service.getActiveState(loopName)!.phase).toBe('auditing')
     })
 
-    test('loops without the attempts repo keep the legacy flow and never consult session status', async () => {
+    test('loops without the attempts repo still apply handoffs and consult session status', async () => {
       const loopName = 'handoff-legacy-runtime'
-      const harness = createRuntimeHarness({
-        statuses: { 'stranger-ses': { type: 'busy' } },
-        withAttemptsRepo: false,
-      })
+      const harness = createRuntimeHarness({ withAttemptsRepo: false })
 
       const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'legacy-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('legacy-coder', [
-        assistantMessage('msg-l1', `done\n${coderDecisionsBlock('legacy path decisions')}`),
+        assistantMessage('msg-l1', 'done'),
       ])
+      await recordCoderHandoff(harness.loop, 'legacy-coder', {
+        changes: [{ summary: 'legacy path decisions', reason: 'the in-memory decisions fallback still carries them' }],
+      })
       await idleTick(harness.loop, 'legacy-coder')
 
-      expect(harness.calls.filter(c => c.method === 'session.status')).toHaveLength(0)
+      expect(harness.calls.filter(c => c.method === 'session.status').length).toBeGreaterThan(0)
       const afterState = harness.service.getActiveState(loopName)!
       expect(afterState.phase).toBe('auditing')
       const auditPrompt = auditorPrompts(harness.calls).at(-1)!
       expect(auditPrompt).toContain('legacy path decisions')
+    })
+  })
+
+  describe('coder handoff turn end', () => {
+    test('a coding idle without a handoff nudges the same session and keeps the phase', async () => {
+      const loopName = 'handoff-nudge-single'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'nudge-coder' }))
+      harness.messagesBySession.set('nudge-coder', [
+        assistantMessage('msg-n1', 'work done'),
+      ])
+      await idleTick(harness.loop, 'nudge-coder')
+
+      const state = harness.service.getActiveState(loopName)!
+      expect(state.active).toBe(true)
+      expect(state.phase).toBe('coding')
+      expect(state.sessionId).toBe('nudge-coder')
+      expect(harness.service.getAttemptHistory(loopName)).toHaveLength(0)
+      expect(auditorPrompts(harness.calls)).toHaveLength(0)
+
+      const codePrompts = promptsTo(harness.calls, 'nudge-coder', 'code')
+      expect(codePrompts).toHaveLength(1)
+      expect(codePrompts[0]).toContain('You ended your turn without calling `loop-handoff`.')
+    })
+
+    test('three handoff nudges then a fourth idle terminate with handoff_missing', async () => {
+      const loopName = 'handoff-nudge-exhausted'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'exhausted-coder' }))
+      harness.messagesBySession.set('exhausted-coder', [
+        assistantMessage('msg-x1', 'work done'),
+      ])
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await idleTick(harness.loop, 'exhausted-coder')
+        expect(promptsTo(harness.calls, 'exhausted-coder', 'code')).toHaveLength(attempt)
+        await busyTick(harness.loop, 'exhausted-coder')
+      }
+
+      await idleTick(harness.loop, 'exhausted-coder')
+
+      const finished = harness.service.getAnyState(loopName)!
+      expect(finished.active).toBe(false)
+      expect(finished.status).toBe('errored')
+      expect(finished.terminationReason).toBe('handoff_missing')
+      expect(promptsTo(harness.calls, 'exhausted-coder', 'code')).toHaveLength(3)
+    })
+
+    test('a detected assistant error rotates to audit without a handoff nudge', async () => {
+      const loopName = 'handoff-assistant-error'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'error-coder' }))
+      harness.messagesBySession.set('error-coder', [
+        {
+          info: { id: 'msg-e1', role: 'assistant', finish: 'stop', error: { name: 'UnknownError', data: { message: 'harness crashed' } } },
+          parts: [],
+        },
+      ])
+      await idleTick(harness.loop, 'error-coder')
+
+      const state = harness.service.getActiveState(loopName)!
+      expect(state.active).toBe(true)
+      expect(state.phase).toBe('auditing')
+
+      const rows = harness.service.getAttemptHistory(loopName, 'plan')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].coderDecisions).toBeNull()
+
+      expect(promptsTo(harness.calls, 'error-coder', 'code').some(prompt => prompt.includes('loop-handoff'))).toBe(false)
+    })
+
+    test('a second idle after an applied coder handoff does not run the audit again', async () => {
+      const loopName = 'handoff-second-idle'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'repeat-coder' }))
+      harness.messagesBySession.set('repeat-coder', [
+        assistantMessage('msg-r1', 'work done'),
+      ])
+      await recordCoderHandoff(harness.loop, 'repeat-coder')
+      await idleTick(harness.loop, 'repeat-coder')
+
+      const auditPromptCount = auditorPrompts(harness.calls).length
+      const attemptCount = harness.service.getAttemptHistory(loopName, 'plan').length
+      expect(auditPromptCount).toBe(1)
+      expect(attemptCount).toBe(1)
+      expect(harness.service.getActiveState(loopName)!.phase).toBe('auditing')
+
+      await idleTick(harness.loop, 'repeat-coder')
+
+      expect(auditorPrompts(harness.calls).length).toBe(auditPromptCount)
+      expect(harness.service.getAttemptHistory(loopName, 'plan').length).toBe(attemptCount)
+    })
+  })
+
+  describe('auditor handoff turn end', () => {
+    test('an audit idle without a handoff nudges the same audit session and stays auditing, then three nudges and a fourth idle terminate with handoff_missing', async () => {
+      const loopName = 'handoff-audit-nudge-exhausted'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-nudge', phase: 'auditing', auditCount: 1 }))
+      harness.messagesBySession.set('audit-nudge', [
+        assistantMessage('msg-an1', 'The audit is complete.'),
+      ])
+
+      await idleTick(harness.loop, 'audit-nudge')
+
+      const nudged = harness.service.getActiveState(loopName)!
+      expect(nudged.active).toBe(true)
+      expect(nudged.phase).toBe('auditing')
+      expect(nudged.sessionId).toBe('audit-nudge')
+      const firstNudge = promptsTo(harness.calls, 'audit-nudge', 'auditor-loop')
+      expect(firstNudge).toHaveLength(1)
+      expect(firstNudge[0]).toContain('You ended your turn without calling `loop-handoff`.')
+
+      for (let attempt = 2; attempt <= 3; attempt++) {
+        await busyTick(harness.loop, 'audit-nudge')
+        await idleTick(harness.loop, 'audit-nudge')
+        expect(promptsTo(harness.calls, 'audit-nudge', 'auditor-loop')).toHaveLength(attempt)
+      }
+
+      await busyTick(harness.loop, 'audit-nudge')
+      await idleTick(harness.loop, 'audit-nudge')
+
+      const finished = harness.service.getAnyState(loopName)!
+      expect(finished.active).toBe(false)
+      expect(finished.status).toBe('errored')
+      expect(finished.terminationReason).toBe('handoff_missing')
+      expect(promptsTo(harness.calls, 'audit-nudge', 'auditor-loop')).toHaveLength(3)
+    })
+
+    test('an audit turn with a detected assistant error rotates to coding without a handoff nudge', async () => {
+      const loopName = 'handoff-audit-assistant-error'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-error', phase: 'auditing', auditCount: 1 }))
+      harness.messagesBySession.set('audit-error', [
+        {
+          info: { id: 'msg-ae1', role: 'assistant', finish: 'stop', error: { name: 'UnknownError', data: { message: 'auditor crashed' } } },
+          parts: [],
+        },
+      ])
+
+      await idleTick(harness.loop, 'audit-error')
+
+      const state = harness.service.getActiveState(loopName)!
+      expect(state.active).toBe(true)
+      expect(state.phase).toBe('coding')
+      expect(promptsTo(harness.calls, 'audit-error', 'auditor-loop').some(prompt => prompt.includes('You ended your turn without calling `loop-handoff`.'))).toBe(false)
+
+      const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+      expect(rows.some(row => row.eventType === 'audit-error' && row.fromPhase === 'auditing' && row.toPhase === 'coding')).toBe(true)
+    })
+
+    test('a duplicate audit idle after the applied handoff changes nothing and does not terminate the loop', async () => {
+      const loopName = 'handoff-audit-duplicate-idle'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-dup', phase: 'auditing', auditCount: 1 }))
+      harness.messagesBySession.set('audit-dup', [
+        assistantMessage('msg-ad1', 'Still missing phase two.'),
+      ])
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/plan.ts',
+        line: 9,
+        severity: 'bug',
+        description: 'Plan phase two is missing',
+      })
+
+      await recordAuditorHandoff(harness.loop, 'audit-dup')
+      await busyTick(harness.loop, 'audit-dup')
+      await idleTick(harness.loop, 'audit-dup')
+
+      const afterFirst = harness.service.getActiveState(loopName)!
+      expect(afterFirst.phase).toBe('coding')
+      const promptCount = harness.calls.filter(call => call.method === 'session.promptAsync').length
+      const createCount = harness.calls.filter(call => call.method === 'session.create').length
+      const transitionCount = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName).length
+
+      await idleTick(harness.loop, 'audit-dup')
+
+      const stillActive = harness.service.getActiveState(loopName)!
+      expect(stillActive.phase).toBe('coding')
+      expect(stillActive.sessionId).toBe(afterFirst.sessionId)
+      expect(harness.calls.filter(call => call.method === 'session.promptAsync')).toHaveLength(promptCount)
+      expect(harness.calls.filter(call => call.method === 'session.create')).toHaveLength(createCount)
+      expect(loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)).toHaveLength(transitionCount)
+    })
+
+    test('a clean auditor handoff with a summary stays listed as applied after the section completes', async () => {
+      const loopName = 'handoff-audit-clean-record'
+      const harness = createRuntimeHarness({})
+
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-clean',
+        phase: 'auditing',
+        auditCount: 1,
+        totalSections: 1,
+        currentSectionIndex: 0,
+      }))
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [{ index: 0, title: 'Only section', content: 'Only section content' }],
+      })
+      harness.service.startSection(loopName, 0)
+      harness.messagesBySession.set('audit-clean', [
+        assistantMessage('msg-ac1', 'Section is clean.'),
+      ])
+
+      await recordAuditorHandoff(harness.loop, 'audit-clean', {
+        summary: { done: ['Implemented the section'], deviations: [], followUps: [] },
+      })
+      await idleTick(harness.loop, 'audit-clean')
+
+      const handoffs = harness.service.listHandoffs(loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0].role).toBe('auditor')
+      expect(handoffs[0].status).toBe('applied')
+      expect(handoffs[0].payload.summary?.done).toEqual(['Implemented the section'])
+
+      const section = harness.service.getSectionPlan(harness.service.getAnyState(loopName)!, 0)!
+      expect(section.status).toBe('completed')
     })
   })
 

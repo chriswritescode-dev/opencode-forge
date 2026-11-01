@@ -205,6 +205,27 @@ describe('createGoalOrchestrator', () => {
       expect(h.goalsRepo.listChunks(PROJECT, GOAL)[0].summary).toHaveLength(GOAL_CHUNK_SUMMARY_MAX_CHARS)
     })
 
+    test('prefers the post-action report over the completion summary when both exist', async () => {
+      h = createHarness()
+      h.seedRunningGoal()
+      h.loopStates.set(
+        'chunk-0-loop',
+        makeLoopState({
+          ...GOAL_LOOP_STATE_DEFAULTS,
+          status: 'completed',
+          completionSummary: 'completed — 3/4 steps done, 0 skipped, 1 failed',
+          postActionReport: 'Outcome: partial\n\nSteps:\n  ...\n\nFollow-ups:\n  - fix the failing step',
+        }),
+      )
+
+      await h.orchestrator.onLoopSettled('chunk-0-loop')
+
+      const summary = h.goalsRepo.listChunks(PROJECT, GOAL)[0].summary
+      expect(summary).toContain('Follow-ups:')
+      expect(summary).toContain('fix the failing step')
+      expect(summary).not.toContain('3/4 steps done')
+    })
+
     test('falls back to the post-action report when no completion summary exists', async () => {
       h = createHarness()
       h.seedRunningGoal()

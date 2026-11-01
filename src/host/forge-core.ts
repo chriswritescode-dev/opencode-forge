@@ -85,6 +85,8 @@ export interface ForgeCore {
   toolAfter(input: ToolAfterInput, output: ToolAfterOutput): Promise<void>
   compacting(input: { sessionID: string }, output: { context: string[]; prompt?: string }): Promise<void>
   architectReminderFor(agent: string | undefined): string | null
+  /** Prompt appended after OpenCode's default system prompt for the named Forge agent, or null. */
+  systemAddendumFor(agent: string | undefined): string | null
   executeTuiPlan(input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput>
   /** Server-side loop-setting defaults the execution dialog shows before a loop is launched. */
   loopDefaults(): ForgeLoopDefaults
@@ -624,7 +626,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     }
   }
 
-  const loopsRepo = createLoopsRepo(db)
+  const loopsRepo = createLoopsRepo(db, logger)
   const sandboxPreferences = createSessionSandboxPreferencesRepo(db)
   const plansRepo = createPlansRepo(db)
   const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -652,7 +654,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo, directory, defaultGitService, loopAttemptsRepo)
 
   const promptsDir = resolvePromptsDir()
-  const agents = buildAgents(promptsDir)
+  const agents = buildAgents(promptsDir, { model: config.executionModel, variant: config.executionVariant })
 
   const compactionConfig: CompactionConfig | undefined = config.compaction
   const messagesTransformConfig = config.messagesTransform
@@ -1020,6 +1022,14 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     return buildArchitectReminder()
   }
 
+  const systemAddendumFor = (agent: string | undefined): string | null => {
+    if (!agent) return null
+    for (const definition of Object.values(agents)) {
+      if (definition.displayName === agent) return definition.systemAddendum ?? null
+    }
+    return null
+  }
+
   const executeTuiPlan = async (input: ForgeExecutePlanInput): Promise<ForgeExecutePlanOutput> => {
     const execCtx: ForgeExecutionRequestContext = {
       surface: 'tui',
@@ -1218,6 +1228,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       )
     },
     architectReminderFor,
+    systemAddendumFor,
     executeTuiPlan,
     loopDefaults,
     resolveSandboxForDirectory,

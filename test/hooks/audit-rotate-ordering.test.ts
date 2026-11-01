@@ -8,8 +8,9 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createLoopService } from '../../src/loop/service'
 import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { makeLoopState } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
+import { makeLoopState } from '../helpers/loop-fixtures'
+import { recordAuditorHandoff } from '../helpers/loop-handoff'
 import { createTestDb } from '../helpers/test-db'
 
 /**
@@ -119,6 +120,10 @@ describe('audit→code rotation ordering', () => {
       undefined,
       tempDir,
     )
+
+    // The outstanding finding makes the section dirty, so the auditor hands
+    // off without a summary.
+    await recordAuditorHandoff(handler.loop, 'audit-1')
 
     await handler.onEvent({
       event: {

@@ -39,12 +39,8 @@ describe('terminationStatusFor', () => {
     expect(terminationStatusFor({ kind: 'session_creation_failed' })).toBe('errored')
   })
 
-  it('maps audit_retry_exhausted to errored', () => {
-    expect(terminationStatusFor({ kind: 'audit_retry_exhausted' })).toBe('errored')
-  })
-
-  it('maps coding_no_assistant to errored', () => {
-    expect(terminationStatusFor({ kind: 'coding_no_assistant' })).toBe('errored')
+  it('maps handoff_missing to errored', () => {
+    expect(terminationStatusFor({ kind: 'handoff_missing' })).toBe('errored')
   })
 
   it('maps worktree_failed with message to errored', () => {
@@ -103,12 +99,8 @@ describe('terminationReasonToString', () => {
     expect(terminationReasonToString({ kind: 'session_creation_failed' })).toBe('session_creation_failed')
   })
 
-  it('preserves audit_retry_exhausted string exactly', () => {
-    expect(terminationReasonToString({ kind: 'audit_retry_exhausted' })).toBe('audit_retry_exhausted')
-  })
-
-  it('preserves coding_no_assistant string exactly', () => {
-    expect(terminationReasonToString({ kind: 'coding_no_assistant' })).toBe('coding_no_assistant')
+  it('preserves handoff_missing string exactly', () => {
+    expect(terminationReasonToString({ kind: 'handoff_missing' })).toBe('handoff_missing')
   })
 
   it('stringifies provider_limit with message', () => {
@@ -122,5 +114,14 @@ describe('parseTerminationReasonString', () => {
     const reason: TerminationReason = { kind: 'provider_limit', message: 'usage limit hit' }
     const str = terminationReasonToString(reason)
     expect(parseTerminationReasonString(str)).toEqual(reason)
+  })
+
+  it('parses handoff_missing', () => {
+    expect(parseTerminationReasonString('handoff_missing')).toEqual({ kind: 'handoff_missing' })
+  })
+
+  it('parses retired reason strings as error_max_retries', () => {
+    expect(parseTerminationReasonString('audit_retry_exhausted')).toEqual({ kind: 'error_max_retries', message: 'audit_retry_exhausted' })
+    expect(parseTerminationReasonString('coding_no_assistant')).toEqual({ kind: 'error_max_retries', message: 'coding_no_assistant' })
   })
 })

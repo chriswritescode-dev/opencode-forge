@@ -1889,3 +1889,83 @@ test('migration 153 is a no-op when applied twice', () => {
 
   db.close()
 })
+
+test('migration 156 creates loop_handoffs with its indexes on fresh databases', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loop_handoffs)').all() as Array<{ name: string; notnull: number }>
+  expect(cols.map((c) => c.name)).toEqual([
+    'id', 'project_id', 'loop_name', 'session_id', 'role', 'phase',
+    'section_index', 'iteration', 'payload', 'status', 'created_at', 'resolved_at',
+  ])
+
+  expect(indexExists(db, 'idx_loop_handoffs_pending')).toBe(true)
+  expect(indexExists(db, 'idx_loop_handoffs_loop')).toBe(true)
+  const pendingIdx = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loop_handoffs_pending'",
+  ).get() as { sql: string }
+  expect(pendingIdx.sql).toContain('UNIQUE')
+  expect(pendingIdx.sql).toContain("status = 'pending'")
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-handoff', 'running', 'sess-handoff', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at)
+    VALUES ('proj-1', 'loop-handoff', 'sess-handoff', 'coder', 'coding', 0, 1, '{}', 'applied', 1)
+  `).run()
+
+  expect(() => {
+    db.prepare(`
+      INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, iteration, payload, status, created_at)
+      VALUES ('proj-1', 'loop-handoff', 'sess-handoff', 'bogus', 'coding', 1, '{}', 'pending', 1)
+    `).run()
+  }).toThrow(/CHECK constraint failed/)
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('156') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 156 applies to a database migrated through 155 and is idempotent', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '155')
+
+  const tablesBefore = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_handoffs'").all()
+  expect(tablesBefore).toHaveLength(0)
+
+  applySingleMigration(db, '156')
+  applySingleMigration(db, '156')
+
+  expect(indexExists(db, 'idx_loop_handoffs_pending')).toBe(true)
+  expect(indexExists(db, 'idx_loop_handoffs_loop')).toBe(true)
+
+  db.close()
+})
+
+test('deleting a loop cascades its handoff rows away', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-cascade', 'running', 'sess-cascade', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at)
+    VALUES ('proj-1', 'loop-cascade', 'sess-cascade', 'coder', 'coding', 0, 1, '{}', 'applied', 1)
+  `).run()
+
+  db.prepare("DELETE FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-cascade'").run()
+
+  const remaining = db.prepare(
+    "SELECT COUNT(*) AS c FROM loop_handoffs WHERE project_id = 'proj-1' AND loop_name = 'loop-cascade'",
+  ).get() as { c: number }
+  expect(remaining.c).toBe(0)
+
+  db.close()
+})

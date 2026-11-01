@@ -64,6 +64,34 @@ describe('Loop Runtime cancel()', () => {
       expect(terminatedState!.terminationReason).toBe('user_aborted')
     })
 
+    test('cancel discards the pending handoff', async () => {
+      const { loop, loopsRepo } = buildRuntime()
+      const state = makeLoopState({ ...CANCEL_STATE_DEFAULTS, loopName: 'cancel-handoff-loop' })
+      loop.start({ state })
+      const pending = loopsRepo.upsertPendingHandoff({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sessionId: state.sessionId,
+        role: 'coder',
+        phase: 'coding',
+        sectionIndex: 0,
+        iteration: state.iteration,
+        payload: {
+          changes: [{ summary: 'Pending change', reason: 'Pending reason' }],
+          deviations: [],
+          verification: [{ command: 'pnpm test', cwd: '.', outcome: 'pass', changedAfter: false }],
+        },
+      })
+
+      await loop.cancel(state.loopName)
+
+      expect(loopsRepo.getPendingHandoff(PROJECT_ID, state.loopName)).toBeNull()
+      const history = loopsRepo.listHandoffs(PROJECT_ID, state.loopName)
+      expect(history).toHaveLength(1)
+      expect(history[0].id).toBe(pending.record.id)
+      expect(history[0].status).toBe('discarded')
+    })
+
   })
 
   describe('cancel fires termination callbacks', () => {

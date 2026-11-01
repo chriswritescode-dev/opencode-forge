@@ -10,6 +10,7 @@ import type { PluginConfig } from '../src/types'
 import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { buildLoopRuntime, makeLoopState } from './helpers/loop-fixtures'
+import { recordCoderHandoff } from './helpers/loop-handoff'
 
 const PROJECT_ID = 'test-project'
 const AUDIT_PERMISSION_STATE_DEFAULTS = {
@@ -93,6 +94,8 @@ describe('Audit session permissions', () => {
     })
     loopService.setState(state.loopName, state)
 
+    await recordCoderHandoff(loop, state.sessionId)
+
     await loop.tick({
       type: 'session.status',
       properties: {
@@ -164,6 +167,8 @@ describe('Audit session permissions', () => {
       worktree: true,
     })
     loopService.setState(state.loopName, state)
+
+    await recordCoderHandoff(loop, state.sessionId)
 
     await loop.tick({
       type: 'session.status',
@@ -249,6 +254,8 @@ describe('Audit session permissions', () => {
       worktree: true,
     })
     loopService.setState(state.loopName, state)
+
+    await recordCoderHandoff(loop, state.sessionId)
 
     await loop.tick({
       type: 'session.status',

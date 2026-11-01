@@ -213,6 +213,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     const buildSectionInitialPromptSpy = vi.fn()
 
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -223,6 +224,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: noopFn,
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -290,6 +292,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     const noopFn = () => {}
 
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -299,6 +302,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -356,6 +360,150 @@ describe('handleLoopRestart from stall_timeout', () => {
       calls.some((call) => call.method === 'session.delete' && (call.params as any).sessionID === 'session-standby'),
     ).toBe(true)
     expect(loopsRepo.get(PROJECT_ID, 'standby-restart-loop')!.standbySessionId).toBeNull()
+  })
+
+  test('restart clears a pending handoff', async () => {
+    insertLoop({
+      loopName: 'handoff-restart-loop',
+      phase: 'coding',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+    })
+
+    const pending = loopsRepo.upsertPendingHandoff({
+      projectId: PROJECT_ID,
+      loopName: 'handoff-restart-loop',
+      sessionId: 'session-old',
+      role: 'coder',
+      phase: 'coding',
+      sectionIndex: 0,
+      iteration: 1,
+      payload: {
+        changes: [{ summary: 'Old change', reason: 'Old reason' }],
+        deviations: [],
+        verification: [{ command: 'pnpm test', cwd: '.', outcome: 'pass', changedAfter: false }],
+      },
+    })
+
+    const noopFn = () => {}
+
+    const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session-handoff' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      toast: async () => {},
+    })
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'handoff-restart-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(loopsRepo.getPendingHandoff(PROJECT_ID, 'handoff-restart-loop')).toBeNull()
+    const history = loopsRepo.listHandoffs(PROJECT_ID, 'handoff-restart-loop')
+    expect(history).toHaveLength(1)
+    expect(history[0].id).toBe(pending.record.id)
+    expect(history[0].status).toBe('discarded')
+    expect((client.session.promptAsync as any).mock.calls).toHaveLength(1)
+  })
+
+  test('restart of a non-sectioned loop sends the plan with the coder handoff instruction exactly once', async () => {
+    insertLoop({
+      loopName: 'plan-restart-loop',
+      phase: 'coding',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+    })
+
+    const planText = '# Plan Restart\n\nImplement the change.'
+    plansRepo.writeForLoop(PROJECT_ID, 'plan-restart-loop', planText)
+
+    const noopFn = () => {}
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'plan-restart-session' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      toast: async () => {},
+    })
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'plan-restart-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect((client.session.promptAsync as any).mock.calls).toHaveLength(1)
+    const promptText = (client.session.promptAsync as any).mock.calls[0][0].parts[0].text as string
+    expect(promptText.startsWith(planText)).toBe(true)
+    expect(promptText.match(/## Required: coder handoff/g)).toHaveLength(1)
   })
 
   test('restart with persisted current-section bug findings uses continuation prompt with remediation policy and full finding detail', async () => {
@@ -438,6 +586,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     const buildSectionInitialPromptSpy = vi.fn()
 
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -449,6 +598,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildSectionContinuationPrompt: (state, notice, bugs) => loopService.buildSectionContinuationPrompt(state, notice, bugs),
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -532,6 +682,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     const noopFn = () => {}
 
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -544,6 +695,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -600,6 +752,7 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -611,6 +764,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -673,6 +827,7 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -684,6 +839,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -739,6 +895,7 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -750,6 +907,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -816,6 +974,7 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -827,6 +986,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -915,6 +1075,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     const buildSectionInitialPromptSpy = vi.fn()
 
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -926,6 +1087,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildPostActionPrompt: buildPostActionPromptSpy,
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -1010,6 +1172,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     })
 
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -1021,6 +1184,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -1097,6 +1261,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     let capturedPhase: string | null | undefined
 
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -1108,6 +1273,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -1178,6 +1344,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     // the terminal row is persisted through the same shared path used by the
     // runtime.
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -1188,6 +1355,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: noopFn,
       terminate: (name, opts) => loopService.terminate(name, opts),
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -1248,6 +1416,7 @@ describe('handleLoopRestart from stall_timeout', () => {
   async function createRestartOverrideService(promptImpl?: () => Promise<void>, abortImpl?: () => Promise<void>) {
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -1259,6 +1428,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildPostActionPrompt: () => 'post action prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -1321,7 +1491,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     if (!result.ok) return
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
-    expect(promptCall.agent).toBe('auditor-loop')
+    expect(promptCall.agent).toBe('code')
     expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'newaud' })
     expect(promptCall.variant).toBe('max')
 
@@ -1716,6 +1886,7 @@ describe('handleLoopRestart restartability rules', () => {
   async function createMockService(opts?: { sandboxManager?: unknown; terminate?: (name: string, reason: any) => Promise<boolean>; config?: Record<string, any>; runExclusive?: (name: string, fn: () => Promise<any>) => Promise<any> }) {
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -1729,6 +1900,7 @@ describe('handleLoopRestart restartability rules', () => {
       buildPostActionPrompt: () => 'post action prompt',
       buildContinuationPrompt: () => 'continuation prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
@@ -2568,6 +2740,7 @@ describe('handleLoopRestart restartability rules', () => {
 
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
+      buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
       listActive: () => loopService.listActive(),
       listRecent: () => loopService.listRecent(),
       getActiveState: (name) => loopService.getActiveState(name),
@@ -2581,6 +2754,7 @@ describe('handleLoopRestart restartability rules', () => {
       buildPostActionPrompt: () => 'post action prompt',
       buildContinuationPrompt: () => 'continuation prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),

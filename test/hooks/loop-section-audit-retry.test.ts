@@ -4,12 +4,14 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
+import { formatAuditHandoffResult } from '../../src/loop/handoff'
 import type { PluginConfig } from '../../src/types'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
 import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 import { makeLoopState } from '../helpers/loop-fixtures'
+import { recordAuditorHandoff } from '../helpers/loop-handoff'
 
 const mockLogger = createMockLogger()
 
@@ -96,6 +98,7 @@ describe('Loop Section Audit Retry', () => {
       const getConfig = () => mockConfig as PluginConfig
 
       const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      await recordAuditorHandoff(handler.loop, state.sessionId)
 
       await handler.onEvent({
         event: {
@@ -119,7 +122,11 @@ describe('Loop Section Audit Retry', () => {
       expect(hasContinuationPrompt).toBe(true)
 
       const afterAuditResult = loopService.getActiveState(state.loopName)!
-      expect(afterAuditResult.lastAuditResult).toBe('dirty audit: found issues')
+      expect(afterAuditResult.lastAuditResult).toBe(formatAuditHandoffResult({}, {
+        clean: false,
+        blockingBugs: 1,
+        sectionIndex: 0,
+      }))
     })
 
     test('two dirty audits via idle events keep loop on section 0 with attempts === 2', async () => {
@@ -159,6 +166,7 @@ describe('Loop Section Audit Retry', () => {
       const getConfig = () => mockConfig as PluginConfig
 
       const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      await recordAuditorHandoff(handler.loop, state.sessionId)
 
       await handler.onEvent({
         event: {
@@ -179,11 +187,9 @@ describe('Loop Section Audit Retry', () => {
     })
   })
 
-  describe('clean-but-no-summary re-prompt guard', () => {
-    test('audit with zero section bug findings and no summary block re-prompts the auditor instead of rotating', async () => {
-      // Unique loop/session: the re-prompt marks the module-global idle-gate
-      // awaiting-busy for this loop, which must not leak into other tests.
-      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'reprompt-loop-1', sessionId: 'reprompt-session-1', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+  describe('auditor handoff turn end', () => {
+    test('an audit idle without a handoff nudges the same session and keeps the phase auditing', async () => {
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'audit-nudge-loop', sessionId: 'audit-nudge-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -213,23 +219,24 @@ describe('Loop Section Audit Retry', () => {
         },
       })
 
-      // Re-prompted the same audit session for the summary block; no rotation.
-      const repromptCall = (forgeClient.session.promptAsync as any).mock.calls.find(
-        (call: any) => call[0]?.parts?.some((p: any) => typeof p.text === 'string' && p.text.includes('section-summary block'))
+      const nudgeCall = (forgeClient.session.promptAsync as any).mock.calls.find(
+        (call: any) => call[0]?.parts?.some((p: any) => typeof p.text === 'string' && p.text.includes('You ended your turn without calling `loop-handoff`.'))
       )
-      expect(repromptCall).toBeDefined()
-      expect(repromptCall[0].sessionID).toBe(state.sessionId)
+      expect(nudgeCall).toBeDefined()
+      expect(nudgeCall[0].sessionID).toBe(state.sessionId)
 
       const plan = loopService.getSectionPlan(state, 0)!
       expect(plan.attempts).toBe(0)
+      expect(plan.status).toBe('in_progress')
       const after = loopService.getActiveState(state.loopName)!
       expect(after.phase).toBe('auditing')
+      expect(after.sessionId).toBe(state.sessionId)
       expect(after.currentSectionIndex).toBe(0)
       expect(after.iteration).toBe(1)
     })
 
-    test('second summary-less audit response falls back to dirty rotation (one re-prompt per round)', async () => {
-      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'reprompt-loop-2', sessionId: 'reprompt-session-2', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+    test('three audit handoff nudges then a fourth idle terminate with handoff_missing', async () => {
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'audit-nudge-exhausted', sessionId: 'audit-exhausted-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -245,7 +252,7 @@ describe('Loop Section Audit Retry', () => {
       const { logger } = createCapturingLogger()
       const { client: forgeClient } = createFakeForgeClient({
         session: {
-          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Still no summary block.' }] }],
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Still no handoff.' }] }],
         },
       })
       const getConfig = () => mockConfig as PluginConfig
@@ -258,24 +265,26 @@ describe('Loop Section Audit Retry', () => {
           properties: { sessionID: state.sessionId, status: { type: 'idle' } },
         },
       }
-
-      // First idle → re-prompt. Busy clears the awaiting-busy gate, then the
-      // re-prompted response comes back idle without a summary again.
-      await handler.onEvent(idleEvent)
-      await handler.onEvent({
+      const busyEvent = {
         event: {
           type: 'session.status',
           properties: { sessionID: state.sessionId, status: { type: 'busy' } },
         },
-      })
+      }
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await handler.onEvent(idleEvent)
+        expect(forgeClient.session.promptAsync).toHaveBeenCalledTimes(attempt)
+        await handler.onEvent(busyEvent)
+      }
+
       await handler.onEvent(idleEvent)
 
-      // Fallback: dirty rotation consumed an iteration and incremented attempts.
-      const plan = loopService.getSectionPlan(state, 0)!
-      expect(plan.attempts).toBe(1)
-      const after = loopService.getActiveState(state.loopName)!
-      expect(after.phase).toBe('coding')
-      expect(after.currentSectionIndex).toBe(0)
+      const finished = loopService.getAnyState(state.loopName)!
+      expect(finished.active).toBe(false)
+      expect(finished.status).toBe('errored')
+      expect(finished.terminationReason).toBe('handoff_missing')
+      expect(forgeClient.session.promptAsync).toHaveBeenCalledTimes(3)
     })
   })
 
@@ -296,16 +305,21 @@ describe('Loop Section Audit Retry', () => {
 
       const { logger } = createCapturingLogger()
 
-      const summaryText = 'OK\n<!-- section-summary:start -->\n### Done\n- Implemented feature X\n### Deviations\n- None\n### Follow-ups\n- Handled in section 2\n<!-- section-summary:end -->'
-
       const { client: forgeClient } = createFakeForgeClient({
         session: {
-          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: summaryText }] }],
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Audit complete.' }] }],
         },
       })
       const getConfig = () => mockConfig as PluginConfig
 
       const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      await recordAuditorHandoff(handler.loop, state.sessionId, {
+        summary: {
+          done: ['Implemented feature X'],
+          deviations: [],
+          followUps: ['Handled in section 2'],
+        },
+      })
 
       await handler.onEvent({
         event: {
@@ -357,12 +371,10 @@ describe('Loop Section Audit Retry', () => {
 
       const { logger } = createCapturingLogger()
 
-      const summaryText = 'OK\n<!-- section-summary:start -->\n### Done\n- Implemented section 4\n### Deviations\n- None\n### Follow-ups\n- None\n<!-- section-summary:end -->'
-
       const createTitleCalls: string[] = []
       const { client: forgeClient } = createFakeForgeClient({
         session: {
-          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: summaryText }] }],
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Audit complete.' }] }],
           create: async (opts: any) => {
             if (opts?.title) createTitleCalls.push(opts.title)
             return { id: `rotated-sess-${createTitleCalls.length}` }
@@ -372,6 +384,9 @@ describe('Loop Section Audit Retry', () => {
       const getConfig = () => mockConfig as PluginConfig
 
       const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      await recordAuditorHandoff(handler.loop, state.sessionId, {
+        summary: { done: ['Implemented section 4'], deviations: [], followUps: [] },
+      })
 
       await handler.onEvent({
         event: {
@@ -430,6 +445,7 @@ describe('Loop Section Audit Retry', () => {
       const getConfig = () => mockConfig as PluginConfig
 
       const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      await recordAuditorHandoff(handler.loop, state.sessionId)
 
       await handler.onEvent({
         event: {
@@ -490,6 +506,7 @@ describe('Loop Section Audit Retry', () => {
       const getConfig = () => mockConfig as PluginConfig
 
       const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      await recordAuditorHandoff(handler.loop, state.sessionId)
 
       await handler.onEvent({
         event: {

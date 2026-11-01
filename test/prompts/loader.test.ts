@@ -2,7 +2,6 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { loadPrompt } from '../../src/prompts/loader'
-import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/utils/section-summary'
 import { buildAgents } from '../../src/agents'
 
 describe('loadPrompt', () => {
@@ -21,7 +20,8 @@ describe('loadPrompt', () => {
 
   test('loads code prompt from bundled markdown', () => {
     const prompt = loadPrompt(['agents', 'code.md'])
-    expect(prompt).toContain('You are an AI agent running in OpenCode')
+    expect(prompt).toContain('# Forge code agent')
+    expect(prompt).toContain('Minimal implementation discipline')
   })
 
   test('uses user-provided prompts dir when file exists', () => {
@@ -40,16 +40,17 @@ describe('loadPrompt', () => {
     mkdirSync(tmpDir, { recursive: true })
 
     const prompt = loadPrompt(['agents', 'code.md'], tmpDir)
-    expect(prompt).toContain('coding agent')
+    expect(prompt).toContain('# Forge code agent')
+    expect(prompt).toContain('Minimal implementation discipline')
 
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  test('auditor-loop-addendum references the summary block without hand-writing the markers (single template owner is prompts.ts)', () => {
+  test('auditor-loop-addendum describes the loop-handoff protocol without hand-written markers', () => {
     const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
-    expect(prompt).toContain('section-summary block')
-    expect(prompt).not.toContain(SECTION_SUMMARY_START_MARKER)
-    expect(prompt).not.toContain(SECTION_SUMMARY_END_MARKER)
+    expect(prompt).toContain('loop-handoff')
+    expect(prompt).toContain('never parses your response text')
+    expect(prompt).not.toContain('<!-- section')
   })
 
   test('auditor-loop-addendum requires remediation guidance for blocking findings', () => {

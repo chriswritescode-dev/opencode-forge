@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS, AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildPostActionPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS, AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS, LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
 
 describe('MAX_TOTAL_SECTIONS', () => {
   it('is the single canonical section cap', () => {
@@ -23,7 +23,7 @@ describe('AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS', () => {
 
 describe('FORGE_MANAGED_PERMISSIONS', () => {
   it('contains the blanket allow, external_directory, and every structural deny name', () => {
-    for (const permission of ['*', 'external_directory', ...PLAN_AUTHORING_TOOL_NAMES, 'question', 'review-write', 'edit']) {
+    for (const permission of ['*', 'external_directory', ...PLAN_AUTHORING_TOOL_NAMES, 'question', 'review-write', 'edit', LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME]) {
       expect(FORGE_MANAGED_PERMISSIONS.has(permission)).toBe(true)
     }
   })
@@ -45,6 +45,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'loop-status', pattern: '*', action: 'deny' },
       { permission: 'goal-cancel', pattern: '*', action: 'deny' },
       { permission: 'goal-status', pattern: '*', action: 'deny' },
+      { permission: 'loop-complete', pattern: '*', action: 'deny' },
     ])
   })
 
@@ -100,6 +101,52 @@ describe('buildAuditSessionPermissionRuleset', () => {
     for (const tool of ['goal-status', 'goal-cancel']) {
       expect(rules.some(r => r.permission === tool && r.pattern === '*' && r.action === 'deny')).toBe(true)
     }
+  })
+
+  it('denies loop-complete but keeps loop-handoff for the auditor', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    expect(rules).toContainEqual({ permission: LOOP_COMPLETE_TOOL_NAME, pattern: '*', action: 'deny' })
+    expect(rules.some(r => r.permission === LOOP_HANDOFF_TOOL_NAME && r.action === 'deny')).toBe(false)
+  })
+})
+
+describe('buildPostActionPermissionRuleset', () => {
+  it('emits the loop ruleset with loop-handoff denied instead of loop-complete', () => {
+    const postAction = buildPostActionPermissionRuleset()
+    const rules = buildLoopPermissionRuleset()
+    expect(postAction).toEqual([
+      ...rules.filter(r => r.permission !== LOOP_COMPLETE_TOOL_NAME),
+      { permission: LOOP_HANDOFF_TOOL_NAME, pattern: '*', action: 'deny' },
+    ])
+    expect(postAction.some(r => r.permission === LOOP_COMPLETE_TOOL_NAME && r.action === 'deny')).toBe(false)
+    expect(postAction.some(r => r.permission === LOOP_HANDOFF_TOOL_NAME && r.action === 'deny')).toBe(true)
+  })
+
+  it('layers configured rules before the structural denies', () => {
+    const configured = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    const rules = buildPostActionPermissionRuleset({ extraRules: [configured] })
+    const configuredIdx = rules.findIndex(r => r.permission === 'webfetch')
+    const firstStructuralIdx = rules.findIndex(r => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission))
+    expect(configuredIdx).toBeGreaterThan(0)
+    expect(configuredIdx).toBeLessThan(firstStructuralIdx)
+  })
+})
+
+describe('buildPermissionRulesetForPhase', () => {
+  it('selects the post-action ruleset for post_action and the loop ruleset for every other phase', () => {
+    const options = { extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' as const }] }
+    expect(buildPermissionRulesetForPhase('post_action', options)).toEqual(buildPostActionPermissionRuleset(options))
+    expect(buildPermissionRulesetForPhase('coding', options)).toEqual(buildLoopPermissionRuleset(options))
+    expect(buildPermissionRulesetForPhase('auditing', options)).toEqual(buildLoopPermissionRuleset(options))
+  })
+
+  it('denies exactly one phase tool per phase', () => {
+    const coding = buildPermissionRulesetForPhase('coding')
+    const postAction = buildPermissionRulesetForPhase('post_action')
+    expect(coding).toContainEqual({ permission: LOOP_COMPLETE_TOOL_NAME, pattern: '*', action: 'deny' })
+    expect(coding.some(r => r.permission === LOOP_HANDOFF_TOOL_NAME && r.action === 'deny')).toBe(false)
+    expect(postAction).toContainEqual({ permission: LOOP_HANDOFF_TOOL_NAME, pattern: '*', action: 'deny' })
+    expect(postAction.some(r => r.permission === LOOP_COMPLETE_TOOL_NAME && r.action === 'deny')).toBe(false)
   })
 })
 

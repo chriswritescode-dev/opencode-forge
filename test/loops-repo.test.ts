@@ -905,4 +905,118 @@ describe('LoopsRepo', () => {
       expect(repo.get(testRow.projectId, testRow.loopName)!.baseCommit).toBe(SHA)
     })
   })
+
+  describe('handoffs', () => {
+    const coderPayload = (summary: string) => ({
+      changes: [{ summary, reason: 'because the plan said so' }],
+      deviations: [],
+      verification: [{ command: 'pnpm test', cwd: 'repo', outcome: 'pass' as const, changedAfter: false }],
+    })
+
+    const handoffInput = (overrides: Partial<Parameters<typeof repo.upsertPendingHandoff>[0]> = {}) => ({
+      projectId: testRow.projectId,
+      loopName: testRow.loopName,
+      sessionId: testRow.currentSessionId,
+      role: 'coder' as const,
+      phase: 'coding' as const,
+      sectionIndex: 0,
+      iteration: 1,
+      payload: coderPayload('first change'),
+      ...overrides,
+    })
+
+    test('a second upsert replaces the pending row and reports replaced', () => {
+      repo.insert(testRow, testLarge)
+
+      const first = repo.upsertPendingHandoff(handoffInput())
+      expect(first.replaced).toBe(false)
+      expect(first.record.role).toBe('coder')
+
+      const second = repo.upsertPendingHandoff(handoffInput({
+        sessionId: 'session-2',
+        payload: coderPayload('second change'),
+      }))
+      expect(second.replaced).toBe(true)
+      expect(second.record.id).toBe(first.record.id)
+      if (second.record.role !== 'coder') throw new Error('expected coder handoff')
+      expect(second.record.payload.changes[0].summary).toBe('second change')
+
+      const pending = repo.getPendingHandoff(testRow.projectId, testRow.loopName)
+      expect(pending?.sessionId).toBe('session-2')
+      if (pending?.role !== 'coder') throw new Error('expected coder handoff')
+      expect(pending.payload.changes[0].summary).toBe('second change')
+
+      const count = db.prepare(
+        "SELECT COUNT(*) AS c FROM loop_handoffs WHERE project_id = ? AND loop_name = ? AND status = 'pending'",
+      ).get(testRow.projectId, testRow.loopName) as { c: number }
+      expect(count.c).toBe(1)
+    })
+
+    test('apply returns the record once and then null, and a wrong session leaves it pending', () => {
+      repo.insert(testRow, testLarge)
+      repo.upsertPendingHandoff(handoffInput())
+
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'other-session', 'coder')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)?.status).toBe('pending')
+
+      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
+      expect(applied?.status).toBe('applied')
+      expect(applied?.resolvedAt).not.toBeNull()
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+    })
+
+    test('apply with a mismatched role returns null and leaves the row pending', () => {
+      repo.insert(testRow, testLarge)
+      repo.upsertPendingHandoff(handoffInput())
+
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'auditor')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)?.status).toBe('pending')
+
+      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
+      expect(applied?.role).toBe('coder')
+      expect(applied?.payload.changes[0].summary).toBe('first change')
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+    })
+
+    test('a post-apply upsert creates a new pending row while the applied row stays in history', () => {
+      repo.insert(testRow, testLarge)
+      const first = repo.upsertPendingHandoff(handoffInput())
+      repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
+
+      const second = repo.upsertPendingHandoff(handoffInput({ iteration: 2, payload: coderPayload('next iteration') }))
+      expect(second.record.id).toBeGreaterThan(first.record.id)
+      expect(second.replaced).toBe(false)
+
+      const history = repo.listHandoffs(testRow.projectId, testRow.loopName)
+      expect(history.map((record) => record.status)).toEqual(['applied', 'pending'])
+      expect(history.map((record) => record.id)).toEqual([first.record.id, second.record.id])
+    })
+
+    test('discard resolves the pending row without returning it as pending', () => {
+      repo.insert(testRow, testLarge)
+      const pending = repo.upsertPendingHandoff(handoffInput())
+
+      repo.discardPendingHandoff(testRow.projectId, testRow.loopName)
+
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+      const history = repo.listHandoffs(testRow.projectId, testRow.loopName)
+      expect(history).toHaveLength(1)
+      expect(history[0].id).toBe(pending.record.id)
+      expect(history[0].status).toBe('discarded')
+      expect(history[0].resolvedAt).not.toBeNull()
+    })
+
+    test('a row whose payload fails its role schema is never returned as a valid record', () => {
+      repo.insert(testRow, testLarge)
+      db.prepare(`
+        INSERT INTO loop_handoffs (
+          project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at, resolved_at
+        ) VALUES (?, ?, ?, 'coder', 'coding', 0, 1, ?, 'pending', ?, NULL)
+      `).run(testRow.projectId, testRow.loopName, testRow.currentSessionId, JSON.stringify({ changes: [] }), Date.now())
+
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+      expect(repo.listHandoffs(testRow.projectId, testRow.loopName)).toEqual([])
+    })
+  })
 })

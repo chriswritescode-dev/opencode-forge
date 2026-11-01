@@ -34,24 +34,12 @@ describe('Tool Blocking Logic', () => {
   describe('Loop state lookup', () => {
     test('getActiveState returns active state when loop is active', () => {
       const loopName = 'test-worktree'
-      const state = {
-        active: true,
+      const state = makeLoopState({
         sessionId: sessionID,
         loopName,
         worktreeDir: '/test/worktree',
         worktreeBranch: 'opencode/loop-test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        prompt: 'Test prompt',
-        phase: 'coding' as const,
-        status: 'running' as const,
-        errorCount: 0,
-        auditCount: 0,
-        worktree: true,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      }
+      })
       loopService.setState(loopName, state)
 
       const retrieved = loopService.getActiveState(loopName)
@@ -66,24 +54,14 @@ describe('Tool Blocking Logic', () => {
 
     test('getActiveState returns null when loop is inactive', () => {
       const loopName = 'test-worktree-inactive'
-      const inactiveState = {
+      const inactiveState = makeLoopState({
         active: false,
+        status: 'completed',
         sessionId: sessionID,
         loopName,
         worktreeDir: '/test/worktree',
         worktreeBranch: 'opencode/loop-test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        prompt: 'Test prompt',
-        phase: 'coding' as const,
-        status: 'completed' as const,
-        errorCount: 0,
-        auditCount: 0,
-        worktree: true,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      }
+      })
       loopService.setState(loopName, inactiveState)
 
       const retrieved = loopService.getActiveState(loopName)

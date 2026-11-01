@@ -12,6 +12,7 @@ import type { LoopAttemptsRepo, LoopAttemptRow } from '../storage/repos/loop-att
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../utils/audit-snapshot'
 import {
   buildContinuationPrompt as _buildContinuationPrompt,
+  buildPlanInitialPrompt as _buildPlanInitialPrompt,
   buildAuditPrompt as _buildAuditPrompt,
   buildSectionInitialPrompt as _buildSectionInitialPrompt,
   buildSectionAuditPrompt as _buildSectionAuditPrompt,
@@ -22,12 +23,12 @@ import {
   type PostActionPromptOptions,
   type PromptContext,
 } from './prompts'
-import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
+import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -130,8 +131,8 @@ export interface LoopService {
   getSectionPlans(state: LoopState): SectionPlanRow[]
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
-  parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
 
+  buildPlanInitialPrompt(planText: string): string
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
   buildSectionContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
@@ -166,6 +167,12 @@ export interface LoopService {
     sectionIndex: number | null
     eventType?: string
   }): void
+  recordPendingHandoff(input: LoopHandoffWriteInput): { record: LoopHandoffRecord; replaced: boolean }
+  getPendingHandoff(loopName: string): LoopHandoffRecord | null
+  /** Applies the session's pending handoff only when its role matches; any other pending row is left untouched. */
+  applyPendingHandoff<R extends LoopHandoffRole>(loopName: string, sessionId: string, role: R): LoopHandoffRecordFor<R> | null
+  discardPendingHandoff(loopName: string): void
+  listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[]
   adjustRemainingSections(name: string, args: {
     sections?: { title: string; content: string }[]
     currentSection?: { title: string; content: string }
@@ -721,8 +728,8 @@ export function createLoopService(
     }))
   }
 
-  function parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null {
-    return _parseSectionSummary(text)
+  function buildPlanInitialPrompt(planText: string): string {
+    return _buildPlanInitialPrompt(planText)
   }
 
   function buildSectionInitialPrompt(state: LoopState): string {
@@ -799,6 +806,30 @@ export function createLoopService(
         loopsRepo.setCurrentSectionIndex(projectId, loopName, total - 1)
       }
     }
+  }
+
+  function recordPendingHandoff(input: LoopHandoffWriteInput): { record: LoopHandoffRecord; replaced: boolean } {
+    return loopsRepo.upsertPendingHandoff({ projectId, ...input })
+  }
+
+  function getPendingHandoff(loopName: string): LoopHandoffRecord | null {
+    return loopsRepo.getPendingHandoff(projectId, loopName)
+  }
+
+  function applyPendingHandoff<R extends LoopHandoffRole>(
+    loopName: string,
+    sessionId: string,
+    role: R,
+  ): LoopHandoffRecordFor<R> | null {
+    return loopsRepo.applyPendingHandoff(projectId, loopName, sessionId, role)
+  }
+
+  function discardPendingHandoff(loopName: string): void {
+    loopsRepo.discardPendingHandoff(projectId, loopName)
+  }
+
+  function listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[] {
+    return loopsRepo.listHandoffs(projectId, loopName, limit)
   }
 
   function recordTransition(name: string, entry: {
@@ -1099,8 +1130,8 @@ export function createLoopService(
     getSectionPlans,
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
-    parseSectionSummary,
 
+    buildPlanInitialPrompt,
     buildSectionInitialPrompt,
     buildSectionAuditPrompt,
     buildSectionContinuationPrompt,
@@ -1115,6 +1146,11 @@ export function createLoopService(
     setTotalSections,
     recordTransition,
     recordTerminalTransition,
+    recordPendingHandoff,
+    getPendingHandoff,
+    applyPendingHandoff,
+    discardPendingHandoff,
+    listHandoffs,
     adjustRemainingSections,
   }
 }

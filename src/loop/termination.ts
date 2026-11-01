@@ -9,8 +9,7 @@ export type TerminationReason =
   | { kind: 'stall_timeout' }
   | { kind: 'missing_worktree_dir' }
   | { kind: 'session_creation_failed' }
-  | { kind: 'audit_retry_exhausted' }
-  | { kind: 'coding_no_assistant' }
+  | { kind: 'handoff_missing' }
   | { kind: 'restart_prompt_failed' }
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
@@ -58,8 +57,7 @@ export function parseTerminationReasonString(str: string): TerminationReason {
   const knownKinds = [
     'completed', 'cancelled', 'user_aborted', 'shutdown',
     'max_iterations', 'stall_timeout', 'missing_worktree_dir',
-    'session_creation_failed', 'audit_retry_exhausted',
-    'coding_no_assistant',
+    'session_creation_failed', 'handoff_missing',
     'restart_prompt_failed',
   ] as const
 

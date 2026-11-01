@@ -305,12 +305,9 @@ describe('Loop', () => {
       const findings = loop.service.getOutstandingFindings('test-loop', 'bug')
       expect(findings.length).toBe(1)
 
-      const state = {
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 2,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any
+      const state = makeLoopState({
+        sessionId: 's1', worktreeDir: '/tmp/test', projectDir: '/tmp/test', iteration: 3, auditCount: 2,
+      })
 
       // First bump → count=1, resolved through the repository.
       loop.service.bumpFindingRecurrence('test-loop', findings)
