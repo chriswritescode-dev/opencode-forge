@@ -67,7 +67,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
       client: ctx.client,
       plansRepo: ctx.plansRepo,
       loopsRepo: ctx.loopsRepo,
-      goalsRepo: ctx.goalsRepo,
       loopHandler: ctx.loopHandler,
       loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
@@ -181,9 +180,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
         lines.push(`Loop name: ${result.data.loopName}`)
         lines.push(`Worktree: ${result.data.worktreeDir}`)
         lines.push(`Branch: ${result.data.worktreeBranch ?? 'unknown'}`)
-        if (result.data.goalId) {
-          lines.push(`Goal: ${result.data.goalId} — this loop is chunk 1; later chunks start automatically.`)
-        }
 
         lines.push(
           `Model: ${modelInfo}`,

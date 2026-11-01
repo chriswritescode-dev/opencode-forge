@@ -49,8 +49,8 @@ describe('FORGE_RPC', () => {
   test('readForgeExecutePlanOutput keeps a launch result and surfaces errors', () => {
     expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'loop-a', worktreeDir: '/wt' }))
       .toEqual({ sessionId: 'ses_1', loopName: 'loop-a', worktreeDir: '/wt' })
-    expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'chunk-1-loop', goalId: 'goal-1' }))
-      .toEqual({ sessionId: 'ses_1', loopName: 'chunk-1-loop', goalId: 'goal-1' })
+    expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'loop-b', workspaceId: 'ws-1' }))
+      .toEqual({ sessionId: 'ses_1', loopName: 'loop-b', workspaceId: 'ws-1' })
     expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'loop-a', branch: 'pm-61-export' }))
       .toEqual({ sessionId: 'ses_1', loopName: 'loop-a', branch: 'pm-61-export' })
     expect(readForgeExecutePlanOutput({ error: 'Loops are disabled' })).toEqual({ error: 'Loops are disabled' })

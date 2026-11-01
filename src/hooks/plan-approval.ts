@@ -57,9 +57,6 @@ function scheduleApprovalDispatch(
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
   question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
   'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
-  'goal-write': 'The goal-write tool is not available during a loop. Focus on executing the current plan.',
-  'goal-status': 'The goal-status tool is not available during a loop. Focus on executing the current plan.',
-  'goal-cancel': 'The goal-cancel tool is not available during a loop. Focus on executing the current plan.',
 }
 
 interface PendingExecution {
@@ -258,7 +255,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             client: ctx.client,
             plansRepo: ctx.plansRepo,
             loopsRepo: ctx.loopsRepo,
-            goalsRepo: ctx.goalsRepo,
             loopHandler: ctx.loopHandler,
             loop,
             sandboxManager: ctx.sandboxManager,

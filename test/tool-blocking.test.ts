@@ -153,46 +153,6 @@ describe('Tool Blocking Logic', () => {
         .resolves.toBeUndefined()
     })
 
-    test('resolver-backed before hook blocks goal-write inside a loop session', async () => {
-      setStateAuditing(loopService)
-      const resolver = createSessionLoopResolver({
-        loop: {
-          service: loopService,
-        },
-        getParentSessionId: async () => null,
-        logger: createMockLogger(),
-      })
-      const hook = createToolExecuteBeforeHook(makeCtx(loopService), {
-        resolveActiveLoopForSession: resolver.resolveActiveLoopForSession,
-      })!
-
-      await expect(hook({ tool: 'goal-write', sessionID: auditorSessionId, callID: 'c-goal' }, { args: {} }))
-        .rejects.toThrow('goal-write tool is not available')
-      await expect(hook({ tool: 'goal-write', sessionID: unrelatedSessionId, callID: 'c-goal-unrel' }, { args: {} }))
-        .resolves.toBeUndefined()
-    })
-
-    test('resolver-backed before hook blocks the goal management tools inside a loop session', async () => {
-      setStateAuditing(loopService)
-      const resolver = createSessionLoopResolver({
-        loop: {
-          service: loopService,
-        },
-        getParentSessionId: async () => null,
-        logger: createMockLogger(),
-      })
-      const hook = createToolExecuteBeforeHook(makeCtx(loopService), {
-        resolveActiveLoopForSession: resolver.resolveActiveLoopForSession,
-      })!
-
-      await expect(hook({ tool: 'goal-status', sessionID: auditorSessionId, callID: 'c-goal-status' }, { args: {} }))
-        .rejects.toThrow('goal-status tool is not available')
-      await expect(hook({ tool: 'goal-cancel', sessionID: auditorSessionId, callID: 'c-goal-cancel' }, { args: {} }))
-        .rejects.toThrow('goal-cancel tool is not available')
-      await expect(hook({ tool: 'goal-status', sessionID: unrelatedSessionId, callID: 'c-goal-status-unrel' }, { args: {} }))
-        .resolves.toBeUndefined()
-    })
-
     test('fallback before hook blocks only the current auditor session', async () => {
       setStateAuditing(loopService)
       const hook = createToolExecuteBeforeHook(makeCtx(loopService))!

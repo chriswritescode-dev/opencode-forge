@@ -5,7 +5,6 @@ import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 import {
   closeDatabase,
-  createGoalsRepo,
   createLoopsRepo,
   createSessionAutoApproveRepo,
   initializeDatabase,
@@ -14,7 +13,6 @@ import {
 } from '../../src/storage'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 import type { AutoApproveDenyRule, PluginConfig } from '../../src/types'
-import { acquireGoalOrchestratorDb } from '../../src/services/goal-orchestrator'
 import { resolveSessionAutoApproveFlag } from '../../src/utils/session-auto-approve-flag'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 
@@ -61,40 +59,6 @@ describe('createForgeCore', () => {
       },
     )
     return { core, calls, adapters, projectId }
-  }
-
-  /**
-   * Seeds a running goal with a planning chunk whose planner session is `ses_planner`, and returns the goals repo.
-   */
-  function seedGoalPlannerChunk(projectId: string, goalId: string): ReturnType<typeof createGoalsRepo> {
-    const goalsRepo = createGoalsRepo(acquireGoalOrchestratorDb(join(testDir, 'memory')))
-    const hostSessionId = 'ses_host_1'
-    goalsRepo.saveDraft({
-      projectId,
-      goalId,
-      title: 'Ship it',
-      objective: 'Deliver the feature',
-      tasks: [],
-      hostSessionId,
-      maxChunks: 2,
-    })
-    goalsRepo.attachFirstChunk(
-      projectId,
-      hostSessionId,
-      {
-        projectDir: testDir,
-        executionModel: null,
-        auditorModel: null,
-        executionVariant: null,
-        auditorVariant: null,
-        sandboxSettings: null,
-        maxIterations: null,
-      },
-      { loopName: 'goal-loop', branch: null, title: 'Chunk 0', baseCommit: null },
-    )
-    goalsRepo.insertPlanningChunk(projectId, goalId, 1, { planningDir: testDir, baseCommit: 'sha-1' })
-    goalsRepo.setChunkPlanner(projectId, goalId, 1, 'ses_planner')
-    return goalsRepo
   }
 
   function autoApproveExpiresAt(db: ReturnType<typeof initializeDatabase>, projectId: string, sessionId: string): number | null {
@@ -165,26 +129,6 @@ describe('createForgeCore', () => {
 
     await expect(built.core.autoApprovesPermissions('ses_host_1')).resolves.toBe(true)
     await expect(built.core.autoApprovesPermissions('ses_other')).resolves.toBe(false)
-  })
-
-  test('isUnattendedGoalPlannerSession recognizes a recorded goal chunk planner session', async () => {
-    const built = await buildCore()
-    const goalsRepo = seedGoalPlannerChunk(built.projectId, 'goal-planner')
-
-    expect(built.core.isUnattendedGoalPlannerSession('ses_planner')).toBe(true)
-    expect(built.core.isUnattendedGoalPlannerSession('ses_other')).toBe(false)
-
-    goalsRepo.updateStatus(built.projectId, 'goal-planner', ['running'], 'paused', { error: 'paused' })
-    expect(built.core.isUnattendedGoalPlannerSession('ses_planner')).toBe(false)
-  })
-
-  test('isUnattendedGoalPlannerSession answers false when the planner chunk is no longer planning', async () => {
-    const built = await buildCore()
-    const goalsRepo = seedGoalPlannerChunk(built.projectId, 'goal-launching')
-
-    goalsRepo.claimChunkStage(built.projectId, 'goal-launching', 1, 'planning', 'launching')
-
-    expect(built.core.isUnattendedGoalPlannerSession('ses_planner')).toBe(false)
   })
 
   test('getSessionAutoApproveState reports own, inherited, and disabled states', async () => {
@@ -405,60 +349,6 @@ describe('createForgeCore', () => {
         allowLan: false,
       },
     })
-  })
-
-  test('routes a chunk planner idle event to the goal orchestrator', async () => {
-    const built = await buildCore({}, {
-      session: {
-        get: async () => ({ id: 'ses_host_1', projectID: 'ignored', directory: testDir, parentID: null }),
-        messages: async () => ([
-          { info: { role: 'assistant' }, parts: [{ type: 'text', text: '<!-- forge-goal:complete --> every task is done' }] },
-        ]),
-      },
-    })
-
-    const dataDir = join(testDir, 'memory')
-    const db = initializeDatabase(dataDir)
-    const goalsRepo = createGoalsRepo(db)
-    goalsRepo.saveDraft({
-      projectId: built.projectId,
-      goalId: 'goal-1',
-      title: 'Ship it',
-      objective: 'Ship the whole feature',
-      tasks: [],
-      hostSessionId: 'ses-host',
-      maxChunks: 3,
-    })
-    goalsRepo.attachFirstChunk(
-      built.projectId,
-      'ses-host',
-      {
-        projectDir: testDir,
-        executionModel: null,
-        auditorModel: null,
-        executionVariant: null,
-        auditorVariant: null,
-        sandboxSettings: null,
-        maxIterations: null,
-      },
-      { loopName: 'chunk-0-loop', branch: 'forge/chunk-0', title: 'Chunk 0', baseCommit: 'sha-0' },
-    )
-    goalsRepo.insertPlanningChunk(built.projectId, 'goal-1', 1, {
-      planningDir: join(testDir, 'planning'),
-      baseCommit: 'sha-1',
-    })
-    goalsRepo.setChunkPlanner(built.projectId, 'goal-1', 1, 'ses-planner')
-    closeDatabase(db)
-
-    await built.core.onEvent({
-      event: { type: 'session.status', properties: { sessionID: 'ses-planner', status: { type: 'idle' } } },
-    })
-
-    const verifyDb = initializeDatabase(dataDir)
-    const verifyRepo = createGoalsRepo(verifyDb)
-    expect(verifyRepo.getGoal(built.projectId, 'goal-1')?.status).toBe('completed')
-    expect(verifyRepo.listChunks(built.projectId, 'goal-1').some((chunk) => chunk.chunkIndex === 1)).toBe(false)
-    closeDatabase(verifyDb)
   })
 })
 

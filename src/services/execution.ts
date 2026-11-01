@@ -322,8 +322,6 @@ export interface LoopStartedResult {
   hostSessionId?: string
   modelUsed: string | null
   maxIterations: number
-  /** Set when this loop became chunk 1 of a goal the host session had drafted. */
-  goalId?: string
   deduped?: boolean
 }
 
@@ -438,7 +436,6 @@ export interface ForgeExecutionServiceDeps {
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
   reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
   loopSessionUsageRepo?: import('../storage/repos/loop-session-usage-repo').LoopSessionUsageRepo
-  goalsRepo?: import('../storage/repos/goals-repo').GoalsRepo
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
   /** Inject a custom GitService (defaults to real git if omitted). */
   gitService?: GitService
@@ -963,9 +960,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     const uniqueLoopName = deps.loop.generateUniqueLoopName(
       command.loopName ?? executionName,
-      (name) =>
-        deps.goalsRepo?.isChunkLoopName(ctx.projectId, name) === true ||
-        git.branchExists(ctx.directory, forgeBranchName(name)),
+      (name) => git.branchExists(ctx.directory, forgeBranchName(name)),
     )
 
     // In-flight dedupe: suppress concurrent starts for the same source
@@ -1196,38 +1191,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
       }
 
-      let goalId: string | undefined
-      if (deps.goalsRepo && hostSessionId) {
-        try {
-          const persistedState = deps.loop.service.getActiveState(uniqueLoopName)
-          const goal = deps.goalsRepo.attachFirstChunk(
-            ctx.projectId,
-            hostSessionId,
-            {
-              projectDir: persistedState?.projectDir ?? ctx.directory,
-              executionModel: resolvedExecutionModel ?? null,
-              auditorModel: resolvedAuditorModel ?? null,
-              executionVariant: resolvedExecutionVariant ?? null,
-              auditorVariant: resolvedAuditorVariant ?? null,
-              sandboxSettings: command.sandbox ?? null,
-              maxIterations,
-            },
-            {
-              loopName: uniqueLoopName,
-              branch: worktreeBranch ?? null,
-              title: displayName ?? null,
-              baseCommit: resolvedBaseCommit,
-            },
-          )
-          if (goal) {
-            goalId = goal.goalId
-            deps.logger.log(`handleStartLoop: attached goal ${goal.goalId} chunk 1 to loop ${uniqueLoopName}`)
-          }
-        } catch (err) {
-          deps.logger.error('handleStartLoop: failed to attach first goal chunk', err)
-        }
-      }
-
       const parsedExec = parseModelString(resolvedExecutionModel)
       const modelUsed = parsedExec
         ? `${parsedExec.providerID}/${parsedExec.modelID}`
@@ -1245,7 +1208,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId,
         modelUsed,
         maxIterations,
-        ...(goalId ? { goalId } : {}),
       })
       
     } catch (err) {
