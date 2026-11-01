@@ -42,7 +42,13 @@ import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-wo
 import { loopRegistry } from '../utils/loop-registry'
 import { processShared, projectLoopKey } from '../utils/process-shared'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
-import { createCodeGraphSnapshotter, resolveLoopCodeGraphTarget } from './code-graph'
+import {
+  attemptCodeGraphReportPath,
+  createCodeGraphSnapshotter,
+  resolveLoopCodeGraphTarget,
+  sectionCodeGraphReportPath,
+  type CodeGraphTarget,
+} from './code-graph'
 import { listSnapshotChangedFiles } from '../utils/audit-snapshot'
 import { extractSectionFiles } from '../utils/plan-structure'
 
@@ -1994,6 +2000,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return pendingCodeGraphSnapshots.get(stateLockKey(state.loopName)) === codeGraphTransitionToken(state)
   }
 
+  /** The report once it is written inside the sandbox, or null so no prompt points at a missing file. */
+  async function writtenCodeGraphReport(target: CodeGraphTarget, relPath: string, text: string | null): Promise<string | null> {
+    if (!text) return null
+    return (await codeGraphSnapshotter.writeReport(target, relPath, text)) ? text : null
+  }
+
   /** One planned snapshot: `compute` runs the sandbox work, `record` persists its report. */
   interface CodeGraphSnapshotPlan {
     compute(): Promise<string | null>
@@ -2013,11 +2025,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const target = resolveLoopCodeGraphTarget(deps.sandboxManager, state, getConfig())
     if (!target) return null
     return {
-      compute: () =>
-        codeGraphSnapshotter.snapshotFiles(target, {
+      compute: async () => {
+        const text = await codeGraphSnapshotter.snapshotFiles(target, {
           title: `section ${index + 1}: ${section.title}`,
           files: extractSectionFiles(section.content),
-        }),
+        })
+        return writtenCodeGraphReport(target, sectionCodeGraphReportPath(index), text)
+      },
       record: (text) => loopService.recordSectionCodeGraph(state, index, text),
     }
   }
@@ -2038,10 +2052,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const from = attempt.previousCommit ?? `${snapshotCommit}^`
         const files = await listSnapshotChangedFiles(state.worktreeDir, from, snapshotCommit, logger)
         if (files.length === 0) return null
-        return codeGraphSnapshotter.snapshotFiles(target, {
+        const text = await codeGraphSnapshotter.snapshotFiles(target, {
           title: `audit attempt ${attempt.attemptNumber} (${attempt.scope})`,
           files,
         })
+        return writtenCodeGraphReport(target, attemptCodeGraphReportPath(attempt), text)
       },
       record: (text) => loopService.recordAttemptCodeGraph(state, attempt, text),
     }

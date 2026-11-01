@@ -28,7 +28,7 @@ import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './fi
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
-import { buildCodeGraphPromptBlock, codeGraphReportPath, ensureCodeGraphReportFile } from './code-graph'
+import { attemptCodeGraphReportPath, buildCodeGraphPromptBlock, sectionCodeGraphReportPath } from './code-graph'
 import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
 
 export const MAX_RETRIES = 3
@@ -715,61 +715,39 @@ export function createLoopService(
     return sectionPlansRepo.list(projectId, state.loopName)
   }
 
-  function sectionReportPath(index: number): string {
-    return codeGraphReportPath(`section-${index + 1}`)
-  }
-
-  function attemptReportPath(attempt: LoopAttemptRow): string {
-    return codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
-  }
-
-  function writeCodeGraphReport(state: LoopState, relPath: string, text: string): boolean {
-    if (ensureCodeGraphReportFile(state.worktreeDir, relPath, text)) return true
-    logger.error(`[code-graph] cannot write report ${relPath} for ${state.loopName}`)
-    return false
-  }
-
   function recordSectionCodeGraph(state: LoopState, index: number, text: string): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.setCodeGraph(projectId, state.loopName, index, text)
-    writeCodeGraphReport(state, sectionReportPath(index), text)
   }
 
   /**
-   * The `## Code graph` pointer rendered into this section's coder prompts.
-   * Restarts and reused worktrees rewrite the report from the stored row text so
-   * the pointer never outlives its file. A non-sandboxed loop or a disabled
-   * `codeGraph.enabled` setting drops the pointer entirely.
+   * The `## Code graph` pointer rendered into this section's coder prompts. The
+   * snapshot wrote the report inside the sandbox before the row was stored; the
+   * host never writes it into the agent-writable worktree. A non-sandboxed loop
+   * or a disabled `codeGraph.enabled` setting drops the pointer entirely.
    */
   function getSectionCodeGraphBlock(state: LoopState): string {
     if (!state.sandbox || !codeGraphEnabled) return ''
     const index = state.currentSectionIndex
-    const text = getSectionPlan(state, index)?.codeGraph ?? null
-    if (!text) return ''
-    const reportPath = sectionReportPath(index)
-    if (!writeCodeGraphReport(state, reportPath, text)) return ''
-    return buildCodeGraphPromptBlock(reportPath, 'section start')
+    if (!getSectionPlan(state, index)?.codeGraph) return ''
+    return buildCodeGraphPromptBlock(sectionCodeGraphReportPath(index), 'section start')
   }
 
   function recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void {
     if (!loopAttemptsRepo) return
     loopAttemptsRepo.setCodeGraph(projectId, state.loopName, attempt.id, text)
-    writeCodeGraphReport(state, attemptReportPath(attempt), text)
   }
 
   /**
    * The `## Code graph` pointer rendered into this scope's audit and coder
-   * prompts. Restarts and reused worktrees rewrite the report from the stored
-   * attempt row so the pointer never outlives its file. A non-sandboxed loop or
-   * a disabled `codeGraph.enabled` setting drops the pointer entirely.
+   * prompts, for the report snapshot B wrote inside the sandbox. A non-sandboxed
+   * loop or a disabled `codeGraph.enabled` setting drops the pointer entirely.
    */
   function getAttemptCodeGraphBlock(state: LoopState): string {
     if (!state.sandbox || !codeGraphEnabled) return ''
     const attempt = getLatestAttempt(state)
     if (!attempt?.codeGraph) return ''
-    const reportPath = attemptReportPath(attempt)
-    if (!writeCodeGraphReport(state, reportPath, attempt.codeGraph)) return ''
-    return buildCodeGraphPromptBlock(reportPath, 'audit checkpoint')
+    return buildCodeGraphPromptBlock(attemptCodeGraphReportPath(attempt), 'audit checkpoint')
   }
 
   function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {

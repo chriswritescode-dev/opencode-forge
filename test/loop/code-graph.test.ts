@@ -1,16 +1,5 @@
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  symlinkSync,
-  unlinkSync,
-  writeFileSync,
-} from 'fs'
+import { execSync } from 'child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,7 +7,6 @@ import {
   CODE_GRAPH_PROBE_COMMAND,
   codeGraphReportPath,
   createCodeGraphSnapshotter,
-  ensureCodeGraphReportFile,
   resolveLoopCodeGraphTarget,
   type CodeGraphTarget,
 } from '../../src/loop/code-graph'
@@ -66,6 +54,7 @@ function runnerInputOf(command: string): CodeGraphRunnerInput {
 const FAKE_DEPENDENTS: Record<string, string[]> = {
   'a.ts': ['b.ts'],
   'b.ts': ['test/a.test.ts'],
+  'c.ts': ['test/c.test.ts'],
 }
 
 interface FakeIndexOptions {
@@ -82,7 +71,7 @@ function fakeLibraryLoader(options: FakeIndexOptions = {}): (path: string) => un
     },
     getNodesInFile: (file: string) => [
       { name: file, kind: 'file', startLine: 1 },
-      { name: `symbolOf_${file}`, kind: 'function', signature: '()', startLine: 3 },
+      ...(file.startsWith('test/') ? [] : [{ name: `symbolOf_${file}`, kind: 'function', signature: '()', startLine: 3 }]),
     ],
     getFileDependents: (file: string) => FAKE_DEPENDENTS[file] ?? [],
     destroy: () => {},
@@ -166,7 +155,7 @@ describe('createCodeGraphSnapshotter', () => {
 
     expect(report).toContain('# Code graph: section 1')
     expect(report).toContain('## Changed or planned files\n\n- a.ts')
-    expect(report).toContain('## Affected test files\n\n- test/a.test.ts')
+    expect(report).toContain('## Tests that import these files\n\n_None found._')
     expect(report).toContain('## a.ts\n\nUsed by: b.ts')
     expect(report).toContain('- `symbolOf_a.ts` (function) () — line 3')
     expect(report).not.toContain('(file)')
@@ -178,7 +167,7 @@ describe('createCodeGraphSnapshotter', () => {
         projectRoot: worktreeDir,
         indexDir: '/opt/forge/cache/codegraph',
         files: ['a.ts'],
-        maxDepth: 5,
+        maxDepth: 1,
         deadlineMs: 540000,
       },
     ])
@@ -369,6 +358,24 @@ describe('createCodeGraphSnapshotter', () => {
     expect(await snapshotter.snapshotFiles(target, { title: 'boom', files: ['a.ts'] })).toBeNull()
   })
 
+  it('lists only the tests that import a changed file directly and drops empty file sections', async () => {
+    const worktreeDir = createWorktree()
+    mkdirSync(join(worktreeDir, 'test'))
+    for (const file of ['a.ts', 'c.ts', 'test/c.test.ts']) writeFileSync(join(worktreeDir, file), 'export {}\n')
+    const target = createTarget(worktreeDir)
+
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(target, {
+      title: 'direct',
+      files: ['a.ts', 'c.ts', 'test/c.test.ts'],
+    })
+
+    expect(report).toContain('## Tests that import these files\n\n- test/c.test.ts\n\nFor tests that reach these files indirectly')
+    expect(report).not.toContain('test/a.test.ts')
+    expect(report).toContain('## c.ts\n\nUsed by: test/c.test.ts')
+    expect(report).not.toContain('## test/c.test.ts')
+    expect(report).not.toContain('No dependents')
+  })
+
   it('drops missing files, queries the rest in one exec, and never truncates the report', async () => {
     const worktreeDir = createWorktree()
     mkdirSync(join(worktreeDir, 'f'))
@@ -483,40 +490,46 @@ describe('codeGraphReportPath', () => {
   })
 })
 
-describe('ensureCodeGraphReportFile', () => {
-  it('rewrites a deleted report file', () => {
-    const worktreeDir = createWorktree()
-    const relPath = codeGraphReportPath('section 1')
-    expect(ensureCodeGraphReportFile(worktreeDir, relPath, '# report\n')).toBe(true)
-    const absolute = join(worktreeDir, relPath)
-    expect(existsSync(absolute)).toBe(true)
+describe('writeReport', () => {
+  function shellTarget(worktreeDir: string, commands: string[]): CodeGraphTarget {
+    return {
+      key: 'forge-test-container',
+      worktreeDir,
+      required: false,
+      async exec(command) {
+        commands.push(command)
+        try {
+          return ok(execSync(command, { cwd: worktreeDir, encoding: 'utf8', shell: '/bin/sh' }))
+        } catch (err) {
+          return fail(String((err as { stderr?: string }).stderr ?? err))
+        }
+      },
+    }
+  }
 
-    unlinkSync(absolute)
-    expect(ensureCodeGraphReportFile(worktreeDir, relPath, '# report\n')).toBe(true)
-    expect(existsSync(absolute)).toBe(true)
+  it('writes the report through sandbox execs, in chunks that each stay a small shell argument', async () => {
+    const worktreeDir = createWorktree()
+    const commands: string[] = []
+    const text = `# Code graph: big — ünïcode\n${'- test/some/long/path.test.ts\n'.repeat(4000)}`
+    const relPath = codeGraphReportPath('section 1')
+
+    expect(await createCodeGraphSnapshotter({ logger: createLogger() }).writeReport(shellTarget(worktreeDir, commands), relPath, text)).toBe(true)
+
+    expect(readFileSync(join(worktreeDir, relPath), 'utf8')).toBe(text)
+    expect(commands.length).toBeGreaterThan(1)
+    for (const command of commands) expect(command.length).toBeLessThan(70 * 1024)
   })
 
-  it('replaces a symlink planted at the report path instead of writing through it', () => {
+  it('reports a failed write without throwing', async () => {
     const worktreeDir = createWorktree()
-    const outside = createWorktree()
-    const victim = join(outside, 'victim.txt')
-    writeFileSync(victim, 'original\n')
-    const relPath = codeGraphReportPath('section 1')
-    mkdirSync(join(worktreeDir, '.forge/codegraph'), { recursive: true })
-    symlinkSync(victim, join(worktreeDir, relPath))
+    const errors: unknown[][] = []
+    const logger = createLogger()
+    logger.error = (...args: unknown[]) => {
+      errors.push(args)
+    }
+    const target = createTarget(worktreeDir, () => fail('read-only file system'))
 
-    expect(ensureCodeGraphReportFile(worktreeDir, relPath, '# report\n')).toBe(true)
-    expect(readFileSync(victim, 'utf8')).toBe('original\n')
-    expect(lstatSync(join(worktreeDir, relPath)).isSymbolicLink()).toBe(false)
-    expect(readFileSync(join(worktreeDir, relPath), 'utf8')).toBe('# report\n')
-  })
-
-  it('refuses a report directory that is a symlink out of the worktree', () => {
-    const worktreeDir = createWorktree()
-    const outside = createWorktree()
-    symlinkSync(outside, join(worktreeDir, '.forge'))
-
-    expect(ensureCodeGraphReportFile(worktreeDir, codeGraphReportPath('section 1'), '# report\n')).toBe(false)
-    expect(readdirSync(outside)).toEqual([])
+    expect(await createCodeGraphSnapshotter({ logger }).writeReport(target, codeGraphReportPath('section 1'), '# report\n')).toBe(false)
+    expect(String(errors[0]?.[0])).toContain('read-only file system')
   })
 })

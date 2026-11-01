@@ -4589,7 +4589,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     function fakeSandboxManager(exec: (command: string) => Promise<ExecResult>): LoopRuntimeDeps['sandboxManager'] {
       return {
         getActive: () => ({ containerName: 'codegraph-container' }),
-        runtime: { exec: (_container: string, command: string) => exec(command) },
+        runtime: {
+          exec: (_container: string, command: string, opts?: { cwd?: string }) =>
+            command.includes('| base64 -d ') && opts?.cwd
+              ? Promise.resolve({ exitCode: 0, stdout: execSync(command, { cwd: opts.cwd, encoding: 'utf-8', shell: '/bin/sh' }), stderr: '' })
+              : exec(command),
+        },
       } as unknown as LoopRuntimeDeps['sandboxManager']
     }
 
@@ -4724,6 +4729,31 @@ describe('stall handling terminates with stall timeout when configured cap is re
       await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
 
       expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
+      expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
+    })
+
+    test('a report the sandbox cannot write stores nothing and leaves the prompt without a pointer', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-nowrite-'))
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const sandboxManager = {
+        getActive: () => ({ containerName: 'codegraph-container' }),
+        runtime: {
+          exec: async (_container: string, command: string) =>
+            command.includes('| base64 -d ')
+              ? { exitCode: 1, stdout: '', stderr: 'read-only file system' }
+              : successfulExec(command),
+        },
+      } as unknown as LoopRuntimeDeps['sandboxManager']
+      const { loop } = buildRuntime({ client, sandboxManager })
+
+      const loopName = 'codegraph-nowrite'
+      seedSectionedAudit(loopName, 'codegraph-nowrite-audit', worktreeDir)
+      await advanceToSectionTwo(loop, 'codegraph-nowrite-audit')
+      await vi.waitFor(() => expect(codePrompts(calls).at(-1) ?? '').toContain('[Loop section 2/2'))
+
       expect(codePrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
       expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.codeGraph).toBeNull()
     })

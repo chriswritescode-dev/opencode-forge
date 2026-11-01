@@ -1,18 +1,5 @@
-import { randomUUID } from 'crypto'
-import {
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from 'fs'
+import { lstatSync, readlinkSync, statSync, symlinkSync } from 'fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
-import { canonicalizeExistingPath, isSameOrDescendantPath } from '../sandbox/path'
 import { CODE_GRAPH_LINK_NAME, isCodeGraphEnabled } from '../constants/loop'
 import { SANDBOX_CACHE_DIR } from '../sandbox/msb'
 import { quoteShellArg } from '../sandbox/exec-fs'
@@ -36,11 +23,15 @@ const CODE_GRAPH_ENV = 'CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO
 /** Succeeds only when the bundled Node and the library the runner loads both exist. */
 export const CODE_GRAPH_PROBE_COMMAND = `test -x ${CODE_GRAPH_NODE} && test -f ${CODE_GRAPH_LIB_DIR}/dist/index.js && echo present`
 const BINARY_PROBE_TIMEOUT_MS = 30000
+const REPORT_WRITE_TIMEOUT_MS = 30000
+/** Base64 characters per report-write exec, a multiple of 4 that keeps each `sh -c` argument far below Linux's 128 KiB per-argument limit. */
+const REPORT_WRITE_CHUNK_LENGTH = 64 * 1024
 /** The runner's own deadline: one exec may build a full index for a loop's first snapshot. */
 const RUNNER_DEADLINE_MS = 540000
 /** Host-side exec timeout, a margin past the runner's deadline so the runner normally reports it itself. */
 const SNAPSHOT_TIMEOUT_MS = 600000
-const AFFECTED_MAX_DEPTH = 5
+/** Only tests that import a changed file directly: each extra level pulls in most of the suite once a widely imported module changes. */
+const AFFECTED_MAX_DEPTH = 1
 const PROBED_CONTAINER_LIMIT = 100
 
 export interface CodeGraphTarget {
@@ -58,6 +49,13 @@ export interface CodeGraphSnapshotInput {
 
 export interface CodeGraphSnapshotter {
   snapshotFiles(target: CodeGraphTarget, input: CodeGraphSnapshotInput): Promise<string | null>
+  /**
+   * Writes a report to `relPath` in the worktree from inside the sandbox. The host never writes
+   * into the agent-writable worktree: a path check there cannot pin a parent directory the agent
+   * may swap for a symlink, while a write inside the sandbox can only reach what the agent can
+   * already write.
+   */
+  writeReport(target: CodeGraphTarget, relPath: string, text: string): Promise<boolean>
 }
 
 export interface LoopCodeGraphState {
@@ -93,33 +91,14 @@ export function codeGraphReportPath(name: string): string {
   return `.forge/codegraph/${sanitized || 'snapshot'}.md`
 }
 
-/**
- * Writes a report into the worktree from the host. The sandboxed agent can write the same tree,
- * so a symlinked parent that resolves outside the worktree is refused, and the report is written
- * to a fresh temp file and renamed over the target so a symlink planted at the target is
- * replaced, never followed.
- */
-export function ensureCodeGraphReportFile(worktreeDir: string, relPath: string, text: string): boolean {
-  const absolute = join(worktreeDir, relPath)
-  const parent = dirname(absolute)
-  try {
-    const root = realpathSync(worktreeDir)
-    if (!isSameOrDescendantPath(canonicalizeExistingPath(parent), root)) return false
-    mkdirSync(parent, { recursive: true })
-    if (!isSameOrDescendantPath(realpathSync(parent), root)) return false
-    if (lstatSync(absolute, { throwIfNoEntry: false })?.isFile() && readFileSync(absolute, 'utf8') === text) return true
-    const temp = `${absolute}.${randomUUID()}.tmp`
-    writeFileSync(temp, text, { encoding: 'utf8', flag: 'wx' })
-    try {
-      renameSync(temp, absolute)
-    } catch (err) {
-      rmSync(temp, { force: true })
-      throw err
-    }
-    return true
-  } catch {
-    return false
-  }
+/** Where snapshot A of section `index` (0-based) is written. */
+export function sectionCodeGraphReportPath(index: number): string {
+  return codeGraphReportPath(`section-${index + 1}`)
+}
+
+/** Where snapshot B of an audit attempt is written. */
+export function attemptCodeGraphReportPath(attempt: { scope: string; attemptNumber: number }): string {
+  return codeGraphReportPath(`audit-${attempt.scope}-attempt-${attempt.attemptNumber}`)
 }
 
 export function buildCodeGraphPromptBlock(relPath: string, point: 'section start' | 'audit checkpoint'): string {
@@ -129,9 +108,11 @@ export function buildCodeGraphPromptBlock(relPath: string, point: 'section start
     '---',
     '## Code graph',
     '',
-    `Forge ran \`codegraph\` at the ${point}; the full output (affected tests and the dependents of each file) is in \`${relPath}\`; read it in parts or grep it.`,
+    `Forge ran \`codegraph\` at the ${point}; the full output (the tests that import each file, its dependents, and its symbols) is in \`${relPath}\`; read it in parts or grep it.`,
     '',
-    'The index at `.codegraph` reflects that snapshot. Run `codegraph explore <query>`, `codegraph node <symbol|--file path>`, `codegraph callers|callees|impact <symbol>`, or `codegraph affected <files>` in bash, and prefer them over grep-driven exploration.',
+    'The index at `.codegraph` reflects that snapshot. Run `codegraph explore <query>`, `codegraph node <symbol|--file path>`, `codegraph callers|callees|impact <symbol>`, or `codegraph affected <files> -d 2` (tests that reach the files indirectly) in bash, and prefer them over grep-driven exploration.',
+    '',
+    'The `codegraph_*` MCP tools are unavailable here. When `codegraph` output suggests one (for example `codegraph_node`), run the matching command (`codegraph node`) instead.',
     '',
     'Files edited since the snapshot must be read directly.',
     '',
@@ -204,15 +185,19 @@ function filterCodeGraphFiles(worktreeDir: string, files: string[]): string[] {
 }
 
 function formatFileSection(file: CodeGraphFileReport): string[] {
-  const usedBy = file.dependents.length > 0 ? `Used by: ${file.dependents.join(', ')}` : 'No dependents in the index.'
-  const symbols =
-    file.symbols.length > 0
-      ? file.symbols.map((symbol) => {
-          const signature = symbol.signature ? ` ${symbol.signature}` : ''
-          return `- \`${symbol.name}\` (${symbol.kind})${signature} — line ${symbol.startLine}`
-        })
-      : ['_No symbols in the index._']
-  return ['', `## ${file.path}`, '', usedBy, '', ...symbols]
+  if (file.dependents.length === 0 && file.symbols.length === 0) return []
+  const lines = ['', `## ${file.path}`]
+  if (file.dependents.length > 0) lines.push('', `Used by: ${file.dependents.join(', ')}`)
+  if (file.symbols.length > 0) {
+    lines.push(
+      '',
+      ...file.symbols.map((symbol) => {
+        const signature = symbol.signature ? ` ${symbol.signature}` : ''
+        return `- \`${symbol.name}\` (${symbol.kind})${signature} — line ${symbol.startLine}`
+      }),
+    )
+  }
+  return lines
 }
 
 function formatCodeGraphReport(input: {
@@ -231,9 +216,11 @@ function formatCodeGraphReport(input: {
     '',
     ...input.files.map((file) => `- ${file.path}`),
     '',
-    '## Affected test files',
+    '## Tests that import these files',
     '',
-    ...(input.affectedTests.length > 0 ? input.affectedTests.map((test) => `- ${test}`) : ['_None reported._']),
+    ...(input.affectedTests.length > 0 ? input.affectedTests.map((test) => `- ${test}`) : ['_None found._']),
+    '',
+    'For tests that reach these files indirectly, run `codegraph affected <files> -d 2`.',
   ]
   for (const file of input.files) lines.push(...formatFileSection(file))
   lines.push('')
@@ -316,6 +303,29 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
       } catch (err) {
         logger.error(`[code-graph] snapshot failed for ${target.key}`, err)
         return null
+      }
+    },
+
+    async writeReport(target, relPath, text) {
+      try {
+        const encoded = Buffer.from(text, 'utf8').toString('base64')
+        const path = quoteShellArg(relPath)
+        for (let offset = 0; offset === 0 || offset < encoded.length; offset += REPORT_WRITE_CHUNK_LENGTH) {
+          const chunk = quoteShellArg(encoded.slice(offset, offset + REPORT_WRITE_CHUNK_LENGTH))
+          const command =
+            offset === 0
+              ? `mkdir -p ${quoteShellArg(dirname(relPath))} && printf %s ${chunk} | base64 -d > ${path}`
+              : `printf %s ${chunk} | base64 -d >> ${path}`
+          const result = await target.exec(command, REPORT_WRITE_TIMEOUT_MS)
+          if (result.exitCode !== 0) {
+            logger.error(`[code-graph] cannot write report ${relPath} in ${target.key}: ${describeExecFailure(result)}`)
+            return false
+          }
+        }
+        return true
+      } catch (err) {
+        logger.error(`[code-graph] cannot write report ${relPath} in ${target.key}`, err)
+        return false
       }
     },
   }
