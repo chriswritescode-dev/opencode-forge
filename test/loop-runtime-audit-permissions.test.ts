@@ -14,8 +14,15 @@ import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolve
 import type { Logger, PluginConfig } from '../src/types'
 import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
+import { makeLoopState } from './helpers/loop-fixtures'
 
 const PROJECT_ID = 'test-project'
+const AUDIT_PERMISSION_STATE_DEFAULTS = {
+  sessionId: 'code-session-id',
+  worktreeDir: '/tmp/test-worktree',
+  projectDir: '/tmp/host-project',
+  totalSections: 1,
+} satisfies Partial<LoopState>
 
 describe('Audit session permissions', () => {
   let db: DB
@@ -43,33 +50,6 @@ describe('Audit session permissions', () => {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {}
   })
-
-  function makeState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: 'code-session-id',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/test-worktree',
-      projectDir: '/tmp/host-project',
-      worktreeBranch: 'test/branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running',
-      worktree: true,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      currentSectionIndex: 0,
-      totalSections: 1,
-      ...overrides,
-    }
-  }
 
   test('audit session includes buildAuditSessionPermissionRuleset()', async () => {
     const createCalls: Array<Record<string, unknown>> = []
@@ -139,7 +119,8 @@ describe('Audit session permissions', () => {
       dataDir: tempDir,
     })
 
-    const state = makeState({
+    const state = makeLoopState({
+      ...AUDIT_PERMISSION_STATE_DEFAULTS,
       phase: 'coding',
       sessionId: 'code-session-id',
       totalSections: 1,
@@ -235,7 +216,8 @@ describe('Audit session permissions', () => {
       dataDir: tempDir,
     })
 
-    const state = makeState({
+    const state = makeLoopState({
+      ...AUDIT_PERMISSION_STATE_DEFAULTS,
       phase: 'coding',
       sessionId: 'code-session-id',
       totalSections: 1,
@@ -344,7 +326,8 @@ describe('Audit session permissions', () => {
       dataDir: tempDir,
     })
 
-    const state = makeState({
+    const state = makeLoopState({
+      ...AUDIT_PERMISSION_STATE_DEFAULTS,
       phase: 'coding',
       sessionId: 'code-session-id',
       totalSections: 1,

@@ -9,10 +9,10 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import { createPlanAmendmentsRepo } from '../src/storage/repos/plan-amendments-repo'
 import { createLoopService } from '../src/loop/service'
-import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
 import type { Logger } from '../src/types'
 import { createTestDb } from './helpers/test-db'
+import { makeLoopState } from './helpers/loop-fixtures'
 
 describe('Loop', () => {
   let db: Database
@@ -544,21 +544,12 @@ describe('Loop', () => {
         loopsRepo, plansRepo, reviewFindingsRepo, 'test-project-2', mockLogger,
       )
 
-      const state: LoopState = {
-        active: true,
+      const state = makeLoopState({
         sessionId: 's1',
         loopName: 'test-loop-cd',
         worktreeDir: '/tmp/test',
         projectDir: '/tmp/test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        phase: 'coding',
-        errorCount: 0,
-        auditCount: 0,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      } as LoopState
+      })
 
       // Set coder decisions
       service.setCoderDecisions('test-loop-cd', '### Decisions\n- Chose X')
@@ -583,21 +574,12 @@ describe('Loop', () => {
       service.setCoderDecisions('test-loop-cd2', 'some decisions')
       service.setCoderDecisions('test-loop-cd2', '')
 
-      const state: LoopState = {
-        active: true,
+      const state = makeLoopState({
         sessionId: 's2',
         loopName: 'test-loop-cd2',
         worktreeDir: '/tmp/test',
         projectDir: '/tmp/test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        phase: 'coding',
-        errorCount: 0,
-        auditCount: 0,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      } as LoopState
+      })
 
       const prompt = service.buildAuditPrompt(state)
       expect(prompt).not.toContain('Coder decisions & verification notes')

@@ -10,9 +10,20 @@ import { __resetIdleGate } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
+import { makeLoopState } from '../helpers/loop-fixtures'
 import { createCapturingLogger, createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
+const CANCEL_STATE_DEFAULTS = {
+  sessionId: 'session-abc',
+  loopName: 'cancel-test-loop',
+  worktreeDir: '/tmp/cancel-worktree',
+  worktreeBranch: 'feature/cancel-test',
+  iteration: 2,
+  maxIterations: 10,
+  prompt: 'Test cancellation prompt',
+  worktree: false,
+} satisfies Partial<LoopState>
 
 const mockConfig: PluginConfig = {
   executionModel: 'test/model',
@@ -86,33 +97,6 @@ describe('Loop Runtime cancel()', () => {
     __resetIdleGate()
   })
 
-  function makeActiveState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: 'session-abc',
-      loopName: 'cancel-test-loop',
-      worktreeDir: '/tmp/cancel-worktree',
-      projectDir: '/tmp/host-project-dir',
-      worktreeBranch: 'feature/cancel-test',
-      iteration: 2,
-      maxIterations: 10,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test cancellation prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running',
-      worktree: false,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      ...overrides,
-    }
-  }
-
   function createRuntime(overrides: {
     loopConfig?: Partial<PluginConfig>
     notify?: LoopChangeNotifier
@@ -140,7 +124,7 @@ describe('Loop Runtime cancel()', () => {
   describe('cancel terminates with cancelled reason', () => {
     test('cancel marks the loop as inactive with user_aborted termination', async () => {
       const { loop } = createRuntime()
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
       await loop.cancel(state.loopName)
@@ -175,7 +159,7 @@ describe('Loop Runtime cancel()', () => {
         },
       })
 
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
       await loop.cancel(state.loopName)
 
@@ -202,7 +186,7 @@ describe('Loop Runtime cancel()', () => {
         },
       })
 
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
       events.length = 0
 
@@ -229,7 +213,7 @@ describe('Loop Runtime cancel()', () => {
         },
       })
 
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
       await expect(loop.cancel(state.loopName)).rejects.toThrow('teardown failed')
@@ -248,7 +232,7 @@ describe('Loop Runtime cancel()', () => {
         },
       })
 
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
       await Promise.all([
@@ -276,7 +260,7 @@ describe('Loop Runtime cancel()', () => {
   describe('cancel clears timers', () => {
     test('after cancel, the loop is no longer active', async () => {
       const { loop } = createRuntime()
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
       await loop.cancel(state.loopName)
@@ -287,7 +271,7 @@ describe('Loop Runtime cancel()', () => {
 
     test('calling cancel on already cancelled loop does not throw', async () => {
       const { loop } = createRuntime()
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
       await loop.cancel(state.loopName)
@@ -298,7 +282,7 @@ describe('Loop Runtime cancel()', () => {
   describe('cancelBySessionId works for sessions registered via start', () => {
     test('cancels by session ID when loop is started via start()', async () => {
       const { loop } = createRuntime()
-      const state = makeActiveState()
+      const state = makeLoopState(CANCEL_STATE_DEFAULTS)
       loop.start({ state })
 
       const result = await loop.cancelBySessionId(state.sessionId)

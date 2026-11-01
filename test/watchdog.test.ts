@@ -2,24 +2,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { createLoopWatchdog } from '../src/hooks/watchdog'
 import type { LoopState } from '../src/loop/state'
 import { createFakeForgeClient } from './helpers/fake-client'
+import { makeLoopState } from './helpers/loop-fixtures'
 
-function createState(overrides?: Partial<LoopState>): LoopState {
-  return {
-    active: true,
-    sessionId: 'coding-session',
-    loopName: 'test-loop',
-    worktreeDir: '/tmp/test-worktree',
-    iteration: 1,
-    maxIterations: 0,
-    startedAt: new Date().toISOString(),
-    phase: 'coding',
-    errorCount: 0,
-    auditCount: 0,
-    status: 'running',
-    currentSectionIndex: 0,
-    totalSections: 0,
-    ...overrides,
-  }
+const WATCHDOG_STATE_DEFAULTS = {
+  sessionId: 'coding-session',
+  worktreeDir: '/tmp/test-worktree',
+  maxIterations: 0,
 }
 
 function createLogger() {
@@ -40,18 +28,15 @@ function createMockLoopService(overrides?: {
   getActiveState?: () => LoopState | null
   resolveLoopName?: (sessionId: string) => string | null
   getBusyStallTimeoutMs?: () => number
+  getStallTimeoutMs?: () => number
 }) {
   return {
-    getActiveState: overrides?.getActiveState ?? (() => getState()),
-    getStallTimeoutMs: () => 10,
+    getActiveState: overrides?.getActiveState ?? (() => makeLoopState(WATCHDOG_STATE_DEFAULTS)),
+    getStallTimeoutMs: overrides?.getStallTimeoutMs ?? (() => 10),
     getMaxConsecutiveStalls: () => 3,
     getBusyStallTimeoutMs: overrides?.getBusyStallTimeoutMs ?? (() => 900_000),
     resolveLoopName: overrides?.resolveLoopName ?? ((sessionId: string) =>
       sessionId === 'coding-session' || sessionId === 'audit-session' ? 'test-loop' : null),
-  }
-
-  function getState(): LoopState {
-    return createState()
   }
 }
 
@@ -61,7 +46,7 @@ function createMockClient(statusImpl: () => Promise<any>) {
 
 describe('createLoopWatchdog', () => {
   it('resets while current session remains busy', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -75,7 +60,7 @@ describe('createLoopWatchdog', () => {
       client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
       logger,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async (ln, _s, reason) => {
@@ -96,7 +81,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('treats busy child/subagent sessions as loop being busy', async () => {
-    const stateRef = { current: createState({ sessionId: 'coding-session' }) }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sessionId: 'coding-session' }) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -113,7 +98,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async (ln, _s, reason) => {
@@ -135,7 +120,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('does NOT treat busy session from another loop as this loop being busy', async () => {
-    const stateRef = { current: createState({ sessionId: 'coding-session' }) }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sessionId: 'coding-session' }) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -154,7 +139,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async (ln, _s, reason) => {
@@ -175,7 +160,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('resets activity for generic retry without usage-limit message', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -191,10 +176,10 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
-      terminate: async (ln, _s, reason) => {
+      terminate: async (_ln, _s, reason) => {
         terminateCalls.push(reason)
       },
     })
@@ -211,7 +196,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('terminates with provider_limit when retry snapshot has usage-limit message', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -227,7 +212,7 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async (ln, _s, reason) => {
@@ -251,9 +236,8 @@ describe('createLoopWatchdog', () => {
   })
 
   it('terminates with fresh state (not stale snapshot) when usage limit detected', async () => {
-    // Start with an old state, then swap to a new state before terminate is called.
-    const oldState = createState({ sessionId: 'old-session' })
-    const newState = createState({ sessionId: 'new-session' })
+    // The active state is the fresh one at terminate time.
+    const newState = makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sessionId: 'new-session' })
     const terminateCalls: unknown[] = []
     const terminateStates: unknown[] = []
 
@@ -296,7 +280,7 @@ describe('createLoopWatchdog', () => {
     // Simulate the race: state is active when the poll starts, but becomes
     // inactive (cancelled/restarted) before the terminate call.
     let stateActive = true
-    const getState = () => stateActive ? createState() : null
+    const getState = () => stateActive ? makeLoopState(WATCHDOG_STATE_DEFAULTS) : null
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -337,7 +321,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('treats generic retry snapshot as activity (no stall, no recover)', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -353,10 +337,10 @@ describe('createLoopWatchdog', () => {
       })),
       logger,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
-      terminate: async (ln, _s, reason) => {
+      terminate: async (_ln, _s, reason) => {
         terminateCalls.push(reason)
       },
     })
@@ -373,7 +357,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('records status API failures and recovers before stall timeout', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -391,7 +375,7 @@ describe('createLoopWatchdog', () => {
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async (ln, _s, reason) => {
@@ -419,7 +403,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('records falsy status API failures', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
 
@@ -437,7 +421,7 @@ describe('createLoopWatchdog', () => {
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async (ln, _s, reason) => {
@@ -457,7 +441,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('recordActivity resets stall count and clears reason', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
 
     const logger = createLogger()
@@ -470,7 +454,7 @@ describe('createLoopWatchdog', () => {
       client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
       nudge: vi.fn(),
-      recover: async (ln, _s, ctx) => {
+      recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async () => {},
@@ -490,7 +474,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('absorbs provider-limit retry in auditing when fallback returns true and resets activity', async () => {
-    const stateRef = { current: createState({ phase: 'auditing', sessionId: 'audit-session' }) }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, phase: 'auditing', sessionId: 'audit-session' }) }
     const terminateCalls: unknown[] = []
     const fallbackCalls: unknown[] = []
 
@@ -531,7 +515,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('terminates with provider_limit in auditing when fallback returns false', async () => {
-    const stateRef = { current: createState({ phase: 'auditing', sessionId: 'audit-session' }) }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, phase: 'auditing', sessionId: 'audit-session' }) }
     const terminateCalls: unknown[] = []
     const fallbackCalls: unknown[] = []
 
@@ -573,7 +557,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('terminates with provider_limit when fallback absent (backwards compatible)', async () => {
-    const stateRef = { current: createState({ phase: 'auditing', sessionId: 'audit-session' }) }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, phase: 'auditing', sessionId: 'audit-session' }) }
     const terminateCalls: unknown[] = []
 
     const logger = createLogger()
@@ -609,7 +593,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('does not absorb provider-limit retry in a non-auditor phase', async () => {
-    const stateRef = { current: createState({ phase: 'coding' }) }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, phase: 'coding' }) }
     const terminateCalls: unknown[] = []
     let fallbackCalls = 0
 
@@ -651,7 +635,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('terminates when child session has provider-limit retry via resolveSessionLoopName', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const terminateCalls: unknown[] = []
 
     const logger = createLogger()
@@ -697,7 +681,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('nudges a session stuck busy with no activity past busyStallTimeoutMs', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
@@ -739,7 +723,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('does not nudge while busy stays under busyStallTimeoutMs', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
     const recoverCalls: unknown[] = []
 
@@ -774,7 +758,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('recordActivity during a busy stretch resets the busy ceiling', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
     let recording = true
 
@@ -814,7 +798,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('streamed content (thinking) during a busy stretch resets the busy ceiling', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
     let streaming = true
 
@@ -854,7 +838,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('counts streamed content from a child session of the same loop', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
     let streaming = true
 
@@ -896,7 +880,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('honors a busyStallTimeoutMs lower than stallTimeoutMs instead of coarsening it', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
 
     const logger = createLogger()
@@ -931,7 +915,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('ignores streamed content from a session outside the loop', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
 
     const logger = createLogger()
@@ -965,7 +949,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('disables nudging when busyStallTimeoutMs is 0', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
@@ -1005,7 +989,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('escalates repeated busy_no_progress stalls to termination', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const nudgeCalls: unknown[] = []
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
@@ -1047,7 +1031,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('does not count a stall while the current session has a queued prompt', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
 
     const logger = createLogger()
@@ -1078,7 +1062,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('does not reset activity or the stall count while a prompt is queued', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     let queued = false
 
@@ -1124,7 +1108,7 @@ describe('createLoopWatchdog', () => {
   })
 
   it('counts a non-busy stall again once no prompt is queued', async () => {
-    const stateRef = { current: createState() }
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
     const recoverCalls: unknown[] = []
     let queued = true
 

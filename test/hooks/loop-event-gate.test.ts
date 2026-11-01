@@ -7,13 +7,13 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
-import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { markPromptSent, isAwaitingBusy, AWAITING_BUSY_TIMEOUT_MS, __resetIdleGate } from '../../src/loop/idle-gate'
 import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
 import { createCapturingLogger, createMockLogger } from '../helpers/logger'
+import { makeLoopState } from '../helpers/loop-fixtures'
 
 const PROJECT_ID = 'test-project'
 
@@ -69,31 +69,8 @@ describe('Loop Event Idle Gate', () => {
     handler = null
   })
 
-  function makeState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: 'loop-session-id',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/nonexistent-worktree-for-test',
-      projectDir: '/tmp/host-project-dir',
-      worktreeBranch: 'test/branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running',
-      worktree: true,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      currentSectionIndex: 0,
-      totalSections: 2,
-      ...overrides,
-    }
+  const EVENT_GATE_STATE_DEFAULTS = {
+    totalSections: 2,
   }
 
   function createHandler() {
@@ -117,7 +94,7 @@ describe('Loop Event Idle Gate', () => {
   describe('busy event clears pending gate', () => {
     test('busy event for awaiting session clears pending entry', async () => {
       const handler = createHandler()
-      const state = makeState({ sessionId: 'S1' })
+      const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
       markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
@@ -138,7 +115,7 @@ describe('Loop Event Idle Gate', () => {
 
     test('busy event for non-awaiting session does not clear pending', async () => {
       const handler = createHandler()
-      const state = makeState({ sessionId: 'S1' })
+      const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
       markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
@@ -160,7 +137,7 @@ describe('Loop Event Idle Gate', () => {
   describe('idle event gating', () => {
     test('premature idle is suppressed when awaiting busy', async () => {
       const handler = createHandler()
-      const state = makeState({ sessionId: 'S1' })
+      const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
       markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
@@ -180,7 +157,7 @@ describe('Loop Event Idle Gate', () => {
 
     test('idle event is processed after busy clears the gate', async () => {
       const handler = createHandler()
-      const state = makeState({ sessionId: 'S1', phase: 'coding' })
+      const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1', phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
@@ -214,7 +191,7 @@ describe('Loop Event Idle Gate', () => {
       vi.useFakeTimers()
       try {
         const handler = createHandler()
-        const state = makeState({ sessionId: 'S2', phase: 'coding' })
+        const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S2', phase: 'coding' })
         loopService.setState(state.loopName, state)
 
         markPromptSent(PROJECT_ID, state.loopName, 'S2', createMockLogger())
@@ -241,7 +218,7 @@ describe('Loop Event Idle Gate', () => {
   describe('event sequence simulation', () => {
     test('given rotate -> mark prompt sent -> idle (S1) -> busy (S1) -> idle (S1), first idle is suppressed, second is processed', async () => {
       const handler = createHandler()
-      const state = makeState({ sessionId: 'S1', phase: 'coding' })
+      const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1', phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())

@@ -6,9 +6,9 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
-import type { LoopState } from '../../src/loop/state'
+import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { makeLoopState } from '../helpers/loop-fixtures'
 
 interface Database {
   run: (sql: string) => void
@@ -227,7 +227,7 @@ function createMockDatabase(): Database {
       // DELETE FROM review_findings WHERE project_id = ? AND file = ? AND line = ?
       if (sql.includes('DELETE FROM review_findings')) {
         return {
-          run: vi.fn((...args: any[]) => {
+          run: vi.fn(() => {
             return { changes: 0 }
           }),
           get: vi.fn(),
@@ -338,29 +338,19 @@ describe('audit→code rotation ordering', () => {
     const loopName = 'test-rotate-order'
     const worktreeDir = join(tempDir, 'worktree')
     
-    const state: LoopState = {
-      active: true,
+    const state = makeLoopState({
       sessionId: 'audit-1',
       loopName,
       worktreeDir,
       projectDir: '/tmp/project',
       worktreeBranch: 'feature-branch',
-      iteration: 1,
       maxIterations: 10,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
       phase: 'auditing',
-      status: 'running',
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
       executionModel: 'test/test-model',
       auditorModel: 'test/test-auditor',
       workspaceId: 'ws-1',
-      currentSectionIndex: 0,
       totalSections: 1,
-    }
+    })
 
     loopService.setState(loopName, state)
     loopService.registerLoopSession('audit-1', loopName)
@@ -390,7 +380,7 @@ describe('audit→code rotation ordering', () => {
       projectId,
       client,
       mockLogger,
-      () => ({ loop: { model: 'test/test-model' } }),
+      () => ({ loop: { model: 'test/test-model' } } as PluginConfig),
       undefined,
       tempDir,
     )
@@ -432,29 +422,19 @@ describe('audit→code rotation ordering', () => {
     const loopName = 'test-rotate-failure-order'
     const worktreeDir = join(tempDir, 'worktree')
     
-    const state: LoopState = {
-      active: true,
+    const state = makeLoopState({
       sessionId: 'audit-fail-1',
       loopName,
       worktreeDir,
       projectDir: '/tmp/project',
       worktreeBranch: 'feature-branch',
-      iteration: 1,
       maxIterations: 10,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
       phase: 'auditing',
-      status: 'running',
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
       executionModel: 'test/test-model',
       auditorModel: 'test/test-auditor',
       workspaceId: 'ws-1',
-      currentSectionIndex: 0,
       totalSections: 1,
-    }
+    })
 
     loopService.setState(loopName, state)
     loopService.registerLoopSession('audit-fail-1', loopName)
@@ -470,7 +450,7 @@ describe('audit→code rotation ordering', () => {
       projectId,
       client,
       mockLogger,
-      () => ({ loop: { model: 'test/test-model' } }),
+      () => ({ loop: { model: 'test/test-model' } } as PluginConfig),
       undefined,
       tempDir,
     )

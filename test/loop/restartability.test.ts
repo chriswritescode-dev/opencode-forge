@@ -1,33 +1,22 @@
 import { describe, it, expect } from 'vitest'
 import { getRestartability } from '../../src/loop/restartability'
-import type { LoopState } from '../../src/loop/state'
+import { makeLoopState } from '../helpers/loop-fixtures'
 
-function makeState(overrides: Partial<LoopState> = {}): LoopState {
-  return {
-    phase: 'coding',
-    active: false,
-    sessionId: 'session-1',
-    loopName: 'test-loop',
-    worktreeDir: '/tmp/forge/worktrees/test-loop',
-    projectDir: '/tmp/project',
-    worktreeBranch: 'forge/test-loop',
-    iteration: 5,
-    maxIterations: 10,
-    startedAt: new Date().toISOString(),
-    errorCount: 0,
-    auditCount: 0,
-    currentSectionIndex: 0,
-    totalSections: 0,
-    status: 'cancelled',
-    terminationReason: 'user_aborted',
-    worktree: true,
-    ...overrides,
-  }
-}
+const STATE_DEFAULTS = {
+  active: false,
+  sessionId: 'session-1',
+  worktreeDir: '/tmp/forge/worktrees/test-loop',
+  projectDir: '/tmp/project',
+  worktreeBranch: 'forge/test-loop',
+  iteration: 5,
+  maxIterations: 10,
+  status: 'cancelled',
+  terminationReason: 'user_aborted',
+} as const
 
 describe('getRestartability', () => {
   it('blocks completed loops regardless of branch/worktree', () => {
-    const state = makeState({ status: 'completed', terminationReason: 'completed' })
+    const state = makeLoopState({ ...STATE_DEFAULTS, status: 'completed', terminationReason: 'completed' })
     const result = getRestartability(state, {
       worktreeExists: () => true,
       branchExists: () => true,
@@ -37,14 +26,14 @@ describe('getRestartability', () => {
   })
 
   it('restarts a cancelled loop when the worktree directory exists', () => {
-    const state = makeState()
+    const state = makeLoopState({ ...STATE_DEFAULTS })
     const result = getRestartability(state, { worktreeExists: () => true })
     expect(result.restartable).toBe(true)
     expect(result.restartRequiresForce).toBe(false)
   })
 
   it('allows restart when the worktree dir is missing but the branch survives', () => {
-    const state = makeState()
+    const state = makeLoopState({ ...STATE_DEFAULTS })
     const result = getRestartability(state, {
       worktreeExists: () => false,
       branchExists: () => true,
@@ -54,7 +43,7 @@ describe('getRestartability', () => {
   })
 
   it('blocks restart when both the worktree dir and the branch are gone', () => {
-    const state = makeState()
+    const state = makeLoopState({ ...STATE_DEFAULTS })
     const result = getRestartability(state, {
       worktreeExists: () => false,
       branchExists: () => false,
@@ -65,14 +54,14 @@ describe('getRestartability', () => {
   })
 
   it('blocks restart when the worktree dir is missing and no branch predicate is provided', () => {
-    const state = makeState()
+    const state = makeLoopState({ ...STATE_DEFAULTS })
     const result = getRestartability(state, { worktreeExists: () => false })
     expect(result.restartable).toBe(false)
     expect(result.restartBlockedReason).toBe('missing_worktree')
   })
 
   it('does not probe the branch when the worktree directory still exists', () => {
-    const state = makeState()
+    const state = makeLoopState({ ...STATE_DEFAULTS })
     let probed = false
     const result = getRestartability(state, {
       worktreeExists: () => true,
@@ -86,7 +75,7 @@ describe('getRestartability', () => {
   })
 
   it('requires force for active loops even when restartable', () => {
-    const state = makeState({ active: true, status: 'running', terminationReason: undefined })
+    const state = makeLoopState({ ...STATE_DEFAULTS, active: true, status: 'running', terminationReason: undefined })
     const result = getRestartability(state, { worktreeExists: () => true })
     expect(result.restartable).toBe(true)
     expect(result.restartRequiresForce).toBe(true)

@@ -2,41 +2,9 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { sweepStaleForgeWorkspaces } from '../../src/workspace/sweep-stale'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createMockLogger } from '../helpers/logger'
+import { createMockLoopsRepo } from '../helpers/loop-fixtures'
 import type { ForgeClient } from '../../src/client/port'
-import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PendingTeardownRegistry } from '../../src/workspace/pending-teardown'
-
-function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
-  return {
-    insert: vi.fn(),
-    get: vi.fn().mockReturnValue(null),
-    getLarge: vi.fn(),
-    getBySessionId: vi.fn(),
-    listByStatus: vi.fn(),
-    listAll: vi.fn(),
-    updatePhase: vi.fn(),
-    updateIteration: vi.fn(),
-    incrementError: vi.fn(),
-    resetError: vi.fn(),
-    setCurrentSessionId: vi.fn(),
-    setWorkspaceId: vi.fn(),
-    clearWorkspaceId: vi.fn(),
-    setModelFailed: vi.fn(),
-    setLastAuditResult: vi.fn(),
-    clearLastAuditResult: vi.fn(),
-    setSandboxContainer: vi.fn(),
-    setStatus: vi.fn(),
-    setPhaseAndResetError: vi.fn(),
-    replaceSession: vi.fn(),
-    restart: vi.fn(),
-    terminate: vi.fn(),
-    delete: vi.fn(),
-    findPartial: vi.fn(),
-    setCurrentSectionIndex: vi.fn(),
-    setTotalSections: vi.fn(),
-    ...overrides,
-  } as LoopsRepo
-}
 
 function createMockPendingTeardowns(): PendingTeardownRegistry & { set: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn> } {
   const setFn = vi.fn()

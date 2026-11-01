@@ -5,6 +5,7 @@ import type { LoopState } from '../../src/loop/state'
 import type { ForgeClient } from '../../src/client/port'
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { makeLoopState } from '../helpers/loop-fixtures'
 import { blockingBugFindings } from '../../src/loop/section-scope'
 
 /**
@@ -24,14 +25,18 @@ function makeFakeLoopService(): LoopService {
     resolveActiveLoopForSession: vi.fn(() => null),
     buildContinuationPrompt: vi.fn(() => ''),
     buildAuditPrompt: vi.fn(() => ''),
+    buildCoderFollowUpPrompt: vi.fn(() => ''),
+    buildAuditFollowUpPrompt: vi.fn(() => ''),
     listActive: vi.fn(() => []),
     listRecent: vi.fn(() => []),
     findMatchByName: vi.fn(() => ({ match: null, candidates: [] })),
+    findActiveByWorktreeDir: vi.fn(() => null),
     getStallTimeoutMs: vi.fn(() => 60_000),
     getMaxConsecutiveStalls: vi.fn(() => 5),
     getBusyStallTimeoutMs: vi.fn(() => 900_000),
     terminateAll: vi.fn(() => Promise.resolve()),
     hasOutstandingFindings: vi.fn(() => false),
+    hasEscalatedBugFindings: vi.fn(() => false),
     getOutstandingFindings: vi.fn(() => []),
     getBlockingBugFindings: vi.fn(() => []),
     setCoderDecisions: vi.fn(),
@@ -55,6 +60,7 @@ function makeFakeLoopService(): LoopService {
     setStatus: vi.fn(),
     clearWorkspaceId: vi.fn(),
     setWorkspaceId: vi.fn(),
+    setStandbySessionId: vi.fn(),
     terminate: vi.fn(),
     replaceSession: vi.fn(),
     getSectionPlan: vi.fn(() => null),
@@ -91,12 +97,16 @@ function makeFakeForgeClient(): ForgeClient {
       promptAsync: vi.fn(async () => {}),
       abort: vi.fn(async () => {}),
       delete: vi.fn(async () => {}),
+      compact: vi.fn(async () => {}),
     },
     workspace: {
       create: vi.fn(async () => ({ id: 'w' }) as any),
       list: vi.fn(async () => []),
       remove: vi.fn(async () => {}),
       warp: vi.fn(async () => {}),
+    },
+    model: {
+      contextLimit: vi.fn(async () => undefined),
     },
     toast: vi.fn(async () => {}),
   }
@@ -124,21 +134,7 @@ describe('LoopService seam', () => {
       loopService: fakeService,
     })
 
-    const state = {
-      active: true,
-      sessionId: 'sess-1',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/wt',
-      iteration: 0,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running' as const,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      phase: 'coding' as const,
-    }
+    const state = makeLoopState({ sessionId: 'sess-1', worktreeDir: '/tmp/wt', iteration: 0 })
 
     loop.start({ state })
 
@@ -192,21 +188,15 @@ function makeStatefulFakeLoopService(initialState: LoopState): LoopService {
 
 describe('LoopService seam — sectioned dirty audit max-iterations safety net', () => {
   it('terminates with max_iterations when a sectioned dirty audit reaches maxIterations', async () => {
-    const initialState: LoopState = {
-      active: true,
+    const initialState = makeLoopState({
       sessionId: 'audit-session',
       loopName: 'section-dirty-maxiter',
       worktreeDir: '/tmp/worktree',
       iteration: 5,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      errorCount: 0,
       auditCount: 1,
-      status: 'running',
       phase: 'auditing',
-      currentSectionIndex: 0,
       totalSections: 2,
-    }
+    })
     const fakeService = makeStatefulFakeLoopService(initialState)
     // An outstanding bug finding makes the audit genuinely dirty; a summary-less
     // audit with zero findings would take the summary re-prompt path instead.
