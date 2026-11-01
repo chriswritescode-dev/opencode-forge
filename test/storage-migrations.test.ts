@@ -1796,7 +1796,8 @@ test('migration 155 is a no-op when applied twice', () => {
 
 test('migration 153 creates goals and goal_chunks tables with indexes', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '153')
 
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
   const names = tables.map((t) => t.name)
@@ -1837,7 +1838,8 @@ test('migration 153 creates goals and goal_chunks tables with indexes', () => {
 
 test('migration 153 rejects goal and chunk rows with an unknown status or stage', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '153')
 
   expect(() => {
     db.prepare(`
@@ -1864,10 +1866,12 @@ test('migration 153 rejects goal and chunk rows with an unknown status or stage'
 test('migration 153 is idempotent on re-opened databases', () => {
   const dbPath = createTempDb()
 
-  const db1 = openForgeDatabase(dbPath)
+  const db1 = new Database(dbPath)
+  applyMigrationsThrough(db1, '153')
   db1.close()
 
-  const db2 = openForgeDatabase(dbPath)
+  const db2 = new Database(dbPath)
+  applyMigrationsThrough(db2, '153')
   const tables = db2.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
   const names = tables.map((t) => t.name)
   expect(names.filter((n) => n === 'goals').length).toBe(1)
@@ -2005,6 +2009,43 @@ test('deleting a loop cascades its handoff rows away', () => {
     "SELECT COUNT(*) AS c FROM loop_handoffs WHERE project_id = 'proj-1' AND loop_name = 'loop-cascade'",
   ).get() as { c: number }
   expect(remaining.c).toBe(0)
+
+  db.close()
+})
+
+test('migration 157 drops goals and goal_chunks on a fully migrated database', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('goals', 'goal_chunks')").all() as Array<{ name: string }>
+  expect(tables).toHaveLength(0)
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('157') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 157 drops both goal tables and their rows', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '156')
+
+  db.prepare(`
+    INSERT INTO goals (project_id, goal_id, title, objective, host_session_id, status, max_chunks, created_at, updated_at)
+    VALUES ('p1', 'g1', 'title', 'objective', 'sess', 'draft', 1, 1, 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO goal_chunks (project_id, goal_id, chunk_index, stage, created_at, updated_at)
+    VALUES ('p1', 'g1', 0, 'planning', 1, 1)
+  `).run()
+
+  applySingleMigration(db, '157')
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('goals', 'goal_chunks')").all() as Array<{ name: string }>
+  expect(tables).toHaveLength(0)
+
+  expect(() => applySingleMigration(db, '157')).not.toThrow()
 
   db.close()
 })

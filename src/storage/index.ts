@@ -29,14 +29,3 @@ export type { SessionAutoApproveRepo } from './repos/session-auto-approve-repo'
 
 export { createLoopAttemptsRepo } from './repos/loop-attempts-repo'
 export type { LoopAttemptRow, LoopAttemptRecordInput, LoopAttemptOutcome, LoopAttemptsRepo } from './repos/loop-attempts-repo'
-
-export { createGoalsRepo } from './repos/goals-repo'
-export type {
-  GoalStatus,
-  GoalChunkStage,
-  GoalTask,
-  GoalRow,
-  GoalChunkRow,
-  GoalLaunchSnapshot,
-  GoalsRepo,
-} from './repos/goals-repo'

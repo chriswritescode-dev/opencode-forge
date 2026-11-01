@@ -1,11 +1,10 @@
 import { test, expect, afterAll } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { openForgeDatabase } from '../src/storage/database'
-import { sweepExpiredGoals, sweepExpiredLoops } from '../src/storage/sweep'
+import { sweepExpiredLoops } from '../src/storage/sweep'
 
 const tempDir = mkdtempSync(join(tmpdir(), 'forge-sweep-'))
 
@@ -144,105 +143,6 @@ test('sweepExpiredLoops does not delete plans from other projects with same loop
   // Project A's loop should be deleted
   const loops = db.prepare('SELECT COUNT(*) as count FROM loops WHERE project_id = ? AND loop_name = ?').get('projA', 'shared-loop-name') as { count: number }
   expect(loops.count).toBe(0)
-
-  db.close()
-})
-
-function insertGoal(
-  db: Database,
-  input: {
-    projectId: string
-    goalId: string
-    status: string
-    createdAt: number
-    updatedAt: number
-    completedAt: number | null
-  },
-): void {
-  db.run(
-    `INSERT INTO goals (project_id, goal_id, title, objective, host_session_id, status, max_chunks, created_at, updated_at, completed_at)
-     VALUES (?, ?, 'title', 'objective', ?, ?, 3, ?, ?, ?)`,
-    [input.projectId, input.goalId, input.goalId, input.status, input.createdAt, input.updatedAt, input.completedAt],
-  )
-}
-
-function insertChunk(db: Database, projectId: string, goalId: string, chunkIndex: number): void {
-  db.run(
-    `INSERT INTO goal_chunks (project_id, goal_id, chunk_index, stage, created_at, updated_at)
-     VALUES (?, ?, ?, 'running', 1, 1)`,
-    [projectId, goalId, chunkIndex],
-  )
-}
-
-test('sweepExpiredGoals deletes old terminal goals and stale drafts but keeps running and paused goals', () => {
-  const db = openForgeDatabase(createTempDb())
-
-  const now = Date.now()
-  const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000)
-  const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
-  const oneDayAgo = now - (24 * 60 * 60 * 1000)
-
-  insertGoal(db, { projectId: 'p1', goalId: 'completed-old', status: 'completed', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: eightDaysAgo })
-  insertGoal(db, { projectId: 'p1', goalId: 'cancelled-old', status: 'cancelled', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: eightDaysAgo })
-  insertGoal(db, { projectId: 'p1', goalId: 'completed-recent', status: 'completed', createdAt: oneDayAgo, updatedAt: oneDayAgo, completedAt: oneDayAgo })
-  insertGoal(db, { projectId: 'p1', goalId: 'running-old', status: 'running', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: null })
-  insertGoal(db, { projectId: 'p1', goalId: 'paused-old', status: 'paused', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: null })
-  insertGoal(db, { projectId: 'p1', goalId: 'draft-stale', status: 'draft', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: null })
-  insertGoal(db, { projectId: 'p1', goalId: 'draft-fresh', status: 'draft', createdAt: oneDayAgo, updatedAt: oneDayAgo, completedAt: null })
-  insertGoal(db, { projectId: 'p1', goalId: 'completed-no-timestamp', status: 'completed', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: null })
-
-  const ttlMs = 7 * 24 * 60 * 60 * 1000
-  const deleted = sweepExpiredGoals(db, ttlMs)
-
-  expect(deleted).toBe(3)
-  const remaining = (db.prepare('SELECT goal_id FROM goals WHERE project_id = ?').all('p1') as Array<{ goal_id: string }>).map((r) => r.goal_id).sort()
-  expect(remaining).toEqual([
-    'completed-no-timestamp',
-    'completed-recent',
-    'draft-fresh',
-    'paused-old',
-    'running-old',
-  ])
-
-  db.close()
-})
-
-test('sweepExpiredGoals removes the chunks of the goals it deletes', () => {
-  const db = openForgeDatabase(createTempDb())
-
-  const now = Date.now()
-  const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
-
-  insertGoal(db, { projectId: 'p1', goalId: 'completed-old', status: 'completed', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: eightDaysAgo })
-  insertChunk(db, 'p1', 'completed-old', 0)
-  insertChunk(db, 'p1', 'completed-old', 1)
-  insertGoal(db, { projectId: 'p1', goalId: 'running-old', status: 'running', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: null })
-  insertChunk(db, 'p1', 'running-old', 0)
-
-  sweepExpiredGoals(db, 7 * 24 * 60 * 60 * 1000)
-
-  const chunks = db.prepare('SELECT goal_id FROM goal_chunks WHERE project_id = ?').all('p1') as Array<{ goal_id: string }>
-  expect(chunks.map((c) => c.goal_id)).toEqual(['running-old'])
-
-  db.close()
-})
-
-test('sweepExpiredGoals removes chunks explicitly when foreign keys are disabled', () => {
-  const db = openForgeDatabase(createTempDb())
-  db.exec('PRAGMA foreign_keys=OFF')
-
-  const now = Date.now()
-  const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
-
-  insertGoal(db, { projectId: 'p1', goalId: 'completed-old', status: 'completed', createdAt: eightDaysAgo, updatedAt: eightDaysAgo, completedAt: eightDaysAgo })
-  insertChunk(db, 'p1', 'completed-old', 0)
-
-  sweepExpiredGoals(db, 7 * 24 * 60 * 60 * 1000)
-
-  const goals = db.prepare('SELECT COUNT(*) as count FROM goals WHERE project_id = ?').get('p1') as { count: number }
-  const chunks = db.prepare('SELECT COUNT(*) as count FROM goal_chunks WHERE project_id = ?').get('p1') as { count: number }
-  expect(goals.count).toBe(0)
-  expect(chunks.count).toBe(0)
 
   db.close()
 })
