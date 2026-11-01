@@ -20,7 +20,7 @@ import { createUsageCapture } from '../loop/runtime-usage'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset, buildPostActionPermissionRuleset, resolveLoopPermissionOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopPermissionOptions } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -641,7 +641,7 @@ export async function attachLoopToSession(
       const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
       promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
     } else {
-      promptText = planText
+      promptText = deps.loop.service.buildPlanInitialPrompt(planText)
     }
 
     // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
@@ -1649,9 +1649,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
-      const permissionRuleset = stoppedState.phase === 'post_action'
-        ? buildPostActionPermissionRuleset(permissionOptions)
-        : buildLoopPermissionRuleset(permissionOptions)
+      const permissionRuleset = buildPermissionRulesetForPhase(stoppedState.phase, permissionOptions)
 
       stoppedState.iteration = 1
 
@@ -1782,7 +1780,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       } else {
         // Legacy non-sectioned prompt
-        promptText = stoppedState.prompt ?? ''
+        promptText = deps.loop.service.buildPlanInitialPrompt(stoppedState.prompt ?? '')
       }
 
       const restartAuditorState = {
@@ -1806,8 +1804,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Restart sends the persisted phase's prompt as the code agent: the post-action
       // session must be able to call `loop-complete`, which the auditor agent excludes.
-      const promptAgent = 'code' as const
-
       deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
         sessionId: newState.sessionId,
         phase: newState.phase,
@@ -1846,19 +1842,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         })
       }
 
-      const restartVariant = stoppedState.executionVariant
-
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
         markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
         const variant = stoppedState.phase === 'post_action'
           ? (postActionCfg?.model && model === loopModel ? undefined : restartAuditorChoice.variant)
-          : restartVariant
+          : stoppedState.executionVariant
         try {
           await deps.client.session.promptAsync({
             sessionID: effectiveSessionId,
             directory: stoppedState.worktreeDir,
             parts: [{ type: 'text' as const, text: promptText }],
-            agent: promptAgent,
+            agent: 'code',
             ...(model ? { model, ...(variant ? { variant } : {}) } : {}),
             ...workspaceParam,
           })
@@ -1878,7 +1872,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           projectId: ctx.projectId,
           loopName: stoppedState.loopName,
           sessionId: effectiveSessionId,
-          agent: promptAgent,
+          agent: 'code',
           logger: deps.logger,
           primaryModel: loopModel,
           fallbackModel: loopFallbackModel,

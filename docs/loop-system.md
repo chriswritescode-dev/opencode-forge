@@ -119,9 +119,9 @@ A phase turn ends only through a persisted handoff row written by `loop-handoff`
 | `status` | text | `pending`, `applied`, or `discarded` (`CHECK` constraint) |
 | `created_at`, `resolved_at` | integer | Write and resolution timestamps; `resolved_at` is `null` while pending |
 
-A partial unique index (`idx_loop_handoffs_pending`) allows at most one `pending` row per loop, and a history index (`idx_loop_handoffs_loop`) keeps every resolved row in id order. Resolution is a single guarded update: marking a row `applied` matches on the recording `session_id` and `status = 'pending'`, and discarding matches `status = 'pending'`, so a record resolves exactly once.
+A partial unique index (`idx_loop_handoffs_pending`) allows at most one `pending` row per loop, and a history index (`idx_loop_handoffs_loop`) keeps every resolved row in id order. Resolution is a single guarded update: marking a row `applied` matches on the recording `session_id`, the expected `role`, and `status = 'pending'`, and discarding matches `status = 'pending'`, so a record resolves exactly once.
 
-Every payload is validated strictly against its role schema on write (`recordHandoff` before the insert, and the repository again inside `upsertPendingHandoff`) and on every read (`mapHandoffRow`). An invalid row is logged and skipped; its payload is never coerced or partially applied.
+Every payload is validated strictly against its role schema once on write, by `parseHandoffWriteInput` inside `recordHandoff` (the repository stores the already-validated payload and does not validate again before the insert), and on every read (`mapHandoffRow`). An invalid row is logged and skipped; its payload is never coerced or partially applied.
 
 - **Coder payload** — `changes` (`{ summary, reason }`, at least one), `deviations` (`{ planItem, actual, reason }`), `verification` (`{ command, cwd, outcome: 'pass' | 'fail' | 'not-run', changedAfter }`, at least one), and optional `notes`.
 - **Auditor payload** — optional `summary` (`{ done, deviations, followUps }`) and optional `notes`. `summary` is required for a clean section audit, forbidden while blocking bug findings remain, and forbidden in non-sectioned loops.
@@ -138,21 +138,23 @@ Recording rules:
 Turn-end sequence:
 
 1. In coding and auditing, a persisted provider-limit error is classified first and either terminates the loop or advances the auditor fallback chain.
-2. The persisted assistant result is handled for the phase; in post-action an assistant error applies any pending record and completes best-effort.
-3. The turn waits while another loop session, subagents included, is busy or retrying, or a prompt is still queued in the session inbox.
-4. `applyPendingHandoff` runs scoped to the current session and applies the record atomically, once.
+2. The persisted assistant error is charged to the phase's error budget next: a model error marks the model as failed, and the third consecutive error terminates with `error_max_retries`. The turn then defers while any loop session other than the standby — the current session included — is busy or retrying, or a prompt is still queued in the session inbox. The deferral fails closed: a session status that cannot be verified keeps the turn deferred. In coding and auditing this wait runs before the phase acts on an assistant error, so an errored turn rotates only after every other loop session has settled. Post-action is the exception: an assistant error applies any pending record and completes best-effort before the wait.
+3. `applyPendingHandoff` runs scoped to the current session and role and applies the record atomically, once, only while it is `pending`.
 
-With a record the runner proceeds to `nextTransition`; a repeat resolution or a row recorded by a different session yields nothing. Without a record:
+With a record the runner proceeds to `nextTransition`; a repeat resolution or a row recorded by a different session yields nothing. A pending row recorded by this session for the other role is left pending and logged, so the role that wrote it stays the one to apply it. Without a record:
 
-- A turn that was never answered is re-sent the full phase prompt.
-- An answered turn receives the short nudge "You ended your turn without calling `loop-handoff`/`loop-complete`. Finish the work, then call it."
-- After 3 nudges (`MAX_HANDOFF_NUDGES`) the next idle ends the turn: coding and auditing terminate with `terminationReason: 'handoff_missing'` and status `errored`, while post-action completes as `completed`.
+- A turn with no reply at all — its last message role is `none` or `user` — is re-sent the full phase prompt.
+- Any other turn receives the short nudge "You ended your turn without calling `loop-handoff`/`loop-complete`. Finish the work, then call it.", including one whose assistant reply was cut off (`finish` reason `length` or `tool-calls`).
+- Each phase turn gets 3 nudges (`MAX_HANDOFF_NUDGES`); the count resets whenever a session is activated or the phase changes, including when a reused standby session is activated, so a previous turn's spent nudges never shorten the new turn's budget.
+- After the third nudge the next idle ends the turn: coding and auditing terminate with `terminationReason: 'handoff_missing'` and status `errored`, while post-action completes as `completed`.
+
+An abort-and-resend the loop itself initiates — auditor model fallback after a provider limit, or the busy-stall continue nudge — discards the pending handoff recorded in the aborted turn, so the resent turn starts with no record.
 
 **Coding.** A `coder` record is stored as the attempt's decisions through `handoffCompletionKey(record)` and its rendered `formatCoderHandoff` output, then the `coder-handoff` transition rotates to auditing. An assistant error still rotates to audit, with no decisions recorded and no nudge.
 
-**Auditing.** An assistant error discards the pending handoff and rotates back to coding without incrementing the audit count. With an `auditor` record the verdict comes only from the findings store, never from the payload; `lastAuditResult` is rendered from the payload and the verdict for display, and transition rows are logged as `auditor-handoff`: advancing to the next section, returning to the same dirty section, continuing a dirty non-sectioned audit, or entering post-action.
+**Auditing.** A non-abort audit session error discards the pending auditor handoff before rotating back to coding, without incrementing the audit count; an aborted audit turn that already holds an `auditor` record for the session is processed as a handoff instead. A clean section audit whose pending record carries no `summary` is discarded and the auditor is nudged rather than completing the section. With an `auditor` record the verdict comes only from the findings store, never from the payload; `lastAuditResult` is rendered from the payload and the verdict for display, and transition rows are logged as `auditor-handoff`: advancing to the next section, returning to the same dirty section, continuing a dirty non-sectioned audit, or entering post-action.
 
-**Post-action.** A `post_action` record sets `postActionReport` from `formatPostActionReport` and `completionSummary` from `formatPostActionSummary`, then completes the loop. An assistant error applies any pending record best-effort and completes. The loop status is always `completed` regardless of the reported outcome.
+**Post-action.** A `post_action` record sets `postActionReport` from `formatPostActionReport` and `completionSummary` from `formatPostActionSummary`, then completes the loop. An assistant error applies any pending record best-effort and completes. The loop status is always `completed` regardless of the reported outcome, but a failed send of a post-action nudge goes through the normal prompt-error handling, so it can end the loop with `provider_limit` or count toward `error_max_retries`.
 
 ## Session Rotation
 
@@ -177,7 +179,7 @@ Each phase switch runs in a **fresh session** to keep context small and prioriti
 
 Rotated and released sessions are deleted from the OpenCode server right after their usage is captured, so a running loop keeps only the sessions it is still using — the active one plus the standby. When a loop completes and its worktree is removed, its final session is deleted too, and the TUI removes any loop session whose worktree directory no longer exists. Loop sessions therefore drop out of OpenCode's session list once the loop moves on; loop history lives in `loop-status` and the [Dashboard](dashboard.md). A TUI can briefly keep showing deleted loop sessions from its local cache or tabs until it next refreshes the list from the server.
 
-Continuation prompts are built by `buildContinuationPrompt` in `src/loop/prompts.ts`, which routes sectioned loops to the section continuation prompt and non-sectioned plan loops to the generic iteration prompt. Each variant composes the loop notice, the persisted attempt history, the outstanding review findings read from the review store (the blocking bug findings for sectioned loops), and any recurring-findings block. Findings are inlined in full through the shared finding renderer; the auditor's response prose is never injected into a coder prompt.
+Continuation prompts are built by `buildContinuationPrompt` in `src/loop/prompts.ts`, which routes sectioned loops to the section continuation prompt and non-sectioned plan loops to the generic iteration prompt. Each variant composes the loop notice, the persisted attempt history, the outstanding review findings read from the review store (the blocking bug findings for sectioned loops), and any recurring-findings block. Findings are inlined in full through the shared finding renderer; the auditor's response prose is never injected into a coder prompt. A non-sectioned plan loop's first prompt — at start and after a restart — is `buildPlanInitialPrompt`, the plan text followed by the coder handoff instruction; a sectioned loop starts on `buildSectionInitialPrompt` instead.
 
 ## Usage Tracking
 
@@ -337,7 +339,7 @@ After a clean audit (the clean section audit that completes a sectioned loop, `a
 - Runs only after a clean audit completes (the clean section audit that completes a sectioned loop, `audit-clear` for non-sectioned plan loops).
 - Runs **inside the worktree** as the `code` agent, with access to the full worktree state (including uncommitted changes).
 - **Best-effort:** The post-action result is not re-audited. When a skill is configured, that skill's unattended workflow governs the fixes and validation; without one, the phase applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
-- **Completion record:** The prompt requires the agent to finish every step (subagents, merges, saved records) and then call `loop-complete` with `outcome`, one `steps` entry per workflow step, `followUps`, and optional `notes`. When the session goes idle, Forge first waits until every loop session, subagents included, is not busy or retrying and no prompt is queued in the session inbox, then applies the pending record; a session that stays busy is left to the watchdog's stall handling. Without a record it nudges up to 3 times, then completes best-effort.
+- **Completion record:** The prompt requires the agent to finish every step (subagents, merges, saved records) and then call `loop-complete` with `outcome`, one `steps` entry per workflow step, `followUps`, and optional `notes`. When the session goes idle, Forge first waits until every loop session, subagents included, is not busy or retrying and no prompt is queued in the session inbox, then applies the pending record; a session that stays busy is left to the watchdog's stall handling. An assistant error skips that wait: it applies any pending record and completes best-effort. Without a record it nudges up to 3 times, then completes best-effort; a post-action nudge that cannot be sent goes through the normal prompt-error handling rather than completing.
 - An applied record completes the loop normally, including one recorded in response to a nudge.
 - An aborted post-action session with a pending record processes that record; without one, the loop completes with no report.
 - If the post-action session fails to create, the loop completes as `completed` without retrying, and no record is applied.

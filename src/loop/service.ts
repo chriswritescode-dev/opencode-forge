@@ -12,6 +12,7 @@ import type { LoopAttemptsRepo, LoopAttemptRow } from '../storage/repos/loop-att
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../utils/audit-snapshot'
 import {
   buildContinuationPrompt as _buildContinuationPrompt,
+  buildPlanInitialPrompt as _buildPlanInitialPrompt,
   buildAuditPrompt as _buildAuditPrompt,
   buildSectionInitialPrompt as _buildSectionInitialPrompt,
   buildSectionAuditPrompt as _buildSectionAuditPrompt,
@@ -27,7 +28,7 @@ import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './fi
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
-import type { LoopHandoffRecord, LoopHandoffWriteInput } from './handoff'
+import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -131,6 +132,7 @@ export interface LoopService {
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
 
+  buildPlanInitialPrompt(planText: string): string
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
   buildSectionContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string
@@ -167,7 +169,8 @@ export interface LoopService {
   }): void
   recordPendingHandoff(input: LoopHandoffWriteInput): { record: LoopHandoffRecord; replaced: boolean }
   getPendingHandoff(loopName: string): LoopHandoffRecord | null
-  applyPendingHandoff(loopName: string, sessionId: string): LoopHandoffRecord | null
+  /** Applies the session's pending handoff only when its role matches; any other pending row is left untouched. */
+  applyPendingHandoff<R extends LoopHandoffRole>(loopName: string, sessionId: string, role: R): LoopHandoffRecordFor<R> | null
   discardPendingHandoff(loopName: string): void
   listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[]
   adjustRemainingSections(name: string, args: {
@@ -725,6 +728,10 @@ export function createLoopService(
     }))
   }
 
+  function buildPlanInitialPrompt(planText: string): string {
+    return _buildPlanInitialPrompt(planText)
+  }
+
   function buildSectionInitialPrompt(state: LoopState): string {
     return _buildSectionInitialPrompt(_promptCtx, state)
   }
@@ -809,8 +816,12 @@ export function createLoopService(
     return loopsRepo.getPendingHandoff(projectId, loopName)
   }
 
-  function applyPendingHandoff(loopName: string, sessionId: string): LoopHandoffRecord | null {
-    return loopsRepo.applyPendingHandoff(projectId, loopName, sessionId)
+  function applyPendingHandoff<R extends LoopHandoffRole>(
+    loopName: string,
+    sessionId: string,
+    role: R,
+  ): LoopHandoffRecordFor<R> | null {
+    return loopsRepo.applyPendingHandoff(projectId, loopName, sessionId, role)
   }
 
   function discardPendingHandoff(loopName: string): void {
@@ -1120,6 +1131,7 @@ export function createLoopService(
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
 
+    buildPlanInitialPrompt,
     buildSectionInitialPrompt,
     buildSectionAuditPrompt,
     buildSectionContinuationPrompt,

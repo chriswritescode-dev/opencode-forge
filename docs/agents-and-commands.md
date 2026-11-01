@@ -37,6 +37,7 @@ Excluded tools:
 - `loop-status`
 - `goal-cancel`
 - `goal-status`
+- `loop-complete`
 
 Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 

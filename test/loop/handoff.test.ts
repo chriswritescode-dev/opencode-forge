@@ -14,7 +14,6 @@ import {
   handoffCompletionKey,
   handoffRoleForPhase,
   postActionCompleteSchema,
-  type CoderHandoffPayload,
   type PostActionCompletePayload,
 } from '../../src/loop/handoff'
 import { createLoopService } from '../../src/loop/service'
@@ -22,30 +21,19 @@ import { createLoopsRepo, type LoopRow } from '../../src/storage/repos/loops-rep
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { coderPayload, postActionPayload } from '../helpers/loop-handoff'
 import type { Logger } from '../../src/types'
 
 const silentLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
 
-function coderPayload(overrides: Partial<CoderHandoffPayload> = {}): CoderHandoffPayload {
-  return {
-    changes: [{ summary: 'Serialized the handoff write', reason: 'prevents duplicate pending rows' }],
-    deviations: [],
-    verification: [{ command: 'pnpm test --project node', cwd: 'worktree root', outcome: 'pass', changedAfter: false }],
-    ...overrides,
-  }
-}
-
-function postActionPayload(overrides: Partial<PostActionCompletePayload> = {}): PostActionCompletePayload {
-  return {
-    outcome: 'completed_with_issues',
-    steps: [
-      { name: 'open-pr', status: 'done', detail: 'PR #12' },
-      { name: 'merge', status: 'skipped' },
-      { name: 'notify', status: 'failed', detail: 'webhook missing' },
-    ],
-    followUps: [],
-    ...overrides,
-  }
+const mixedOutcomePayload: PostActionCompletePayload = {
+  outcome: 'completed_with_issues',
+  steps: [
+    { name: 'open-pr', status: 'done', detail: 'PR #12' },
+    { name: 'merge', status: 'skipped' },
+    { name: 'notify', status: 'failed', detail: 'webhook missing' },
+  ],
+  followUps: [],
 }
 
 describe('handoff schemas', () => {
@@ -101,7 +89,7 @@ describe('handoff renderers', () => {
     }))
 
     expect(text).toContain('### Decisions')
-    expect(text).toContain('- Serialized the handoff write — prevents duplicate pending rows')
+    expect(text).toContain('- Implemented the requested change — Satisfies the section acceptance criteria')
     expect(text).toContain('### Deviations')
     expect(text).toContain('- use a queue — used a lock (one process only)')
     expect(text).toContain('### Verification')
@@ -149,7 +137,7 @@ describe('handoff renderers', () => {
   })
 
   test('formatPostActionReport renders the outcome, steps table, and follow-ups', () => {
-    const text = formatPostActionReport(postActionPayload({ followUps: ['rerun the release job'] }))
+    const text = formatPostActionReport(postActionPayload({ ...mixedOutcomePayload, followUps: ['rerun the release job'] }))
 
     expect(text).toContain('Outcome: completed_with_issues')
     expect(text).toContain('| Step | Status | Detail |')
@@ -160,7 +148,7 @@ describe('handoff renderers', () => {
   })
 
   test('formatPostActionSummary reports outcome and step counts on one line', () => {
-    expect(formatPostActionSummary(postActionPayload())).toBe(
+    expect(formatPostActionSummary(postActionPayload(mixedOutcomePayload))).toBe(
       'completed_with_issues — 1/3 steps done, 1 skipped, 1 failed',
     )
   })
@@ -243,8 +231,8 @@ describe('LoopService handoff store', () => {
     expect(first.record.projectId).toBe(loopRow.projectId)
 
     expect(service.getPendingHandoff(loopRow.loopName)?.id).toBe(first.record.id)
-    expect(service.applyPendingHandoff(loopRow.loopName, 'other-session')).toBeNull()
-    expect(service.applyPendingHandoff(loopRow.loopName, 'coder-session')?.status).toBe('applied')
+    expect(service.applyPendingHandoff(loopRow.loopName, 'other-session', 'coder')).toBeNull()
+    expect(service.applyPendingHandoff(loopRow.loopName, 'coder-session', 'coder')?.status).toBe('applied')
 
     const second = service.recordPendingHandoff({
       loopName: loopRow.loopName,

@@ -498,7 +498,9 @@ describe('durable attempt handoff', () => {
       harness.statuses['reviewer-ses'] = { type: 'busy' }
       await idleTick(harness.loop, 'pa-ses')
 
-      await vi.advanceTimersByTimeAsync(16 * 60 * 1000)
+      // Stay below the 15-minute busy-stall ceiling: a stall nudge aborts the turn and
+      // discards its handoff, which is a different scenario from this deferral check.
+      await vi.advanceTimersByTimeAsync(14 * 60 * 1000)
 
       expect(harness.service.getActiveState(loopName)?.active).toBe(true)
       expect(harness.service.getActiveState(loopName)?.phase).toBe('post_action')

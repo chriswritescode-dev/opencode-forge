@@ -14,10 +14,11 @@ import type { LoopState } from '../../src/loop/state'
 import { createLoopHandoffTools } from '../../src/tools/loop-handoff'
 import type { ToolDefinition } from '../../src/tools/tool'
 import { LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
-import { coderHandoffSchema, type CoderHandoffPayload, type PostActionCompletePayload } from '../../src/loop/handoff'
+import { coderHandoffSchema } from '../../src/loop/handoff'
 import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { coderPayload, postActionPayload } from '../helpers/loop-handoff'
 
 const PROJECT_ID = 'loop-handoff-project'
 const LOOP_NAME = 'handoff-loop'
@@ -32,24 +33,6 @@ const config: PluginConfig = {
 }
 
 const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
-
-function coderPayload(overrides: Partial<CoderHandoffPayload> = {}): CoderHandoffPayload {
-  return {
-    changes: [{ summary: 'Added the handoff writer', reason: 'it is required by the phase protocol' }],
-    deviations: [],
-    verification: [{ command: 'pnpm typecheck', cwd: 'worktree root', outcome: 'pass', changedAfter: false }],
-    ...overrides,
-  }
-}
-
-function postActionPayload(overrides: Partial<PostActionCompletePayload> = {}): PostActionCompletePayload {
-  return {
-    outcome: 'completed',
-    steps: [{ name: 'open-pr', status: 'done', detail: 'PR #1' }],
-    followUps: [],
-    ...overrides,
-  }
-}
 
 describe('loop handoff tools', () => {
   let db: Database

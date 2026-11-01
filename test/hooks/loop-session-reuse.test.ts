@@ -891,7 +891,9 @@ describe('Loop session reuse', () => {
       expect(logs.some((line) => line.includes('last message role: compaction'))).toBe(true)
       const coderPrompts = promptsTo(calls, 'coder-1')
       expect(coderPrompts).toHaveLength(2)
-      expect(coderPrompts[1]).toContain(FULL_PROMPT_MARKER)
+      // Only an unanswered turn (no message, or a user message) re-sends the full prompt;
+      // a reused session whose last message is a compaction record is nudged for its handoff.
+      expect(coderPrompts[1]).toContain('You ended your turn without calling `loop-handoff`.')
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('coding')
       expect(after.sessionId).toBe('coder-1')

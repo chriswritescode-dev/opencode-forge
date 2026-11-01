@@ -191,6 +191,6 @@ export function formatCompletionSummary(summary: string): string[] {
 }
 
 /** Full, untruncated rendered report of the applied `loop-complete` payload: outcome, steps, follow-ups, and notes. */
-export function formatPostActionReport(report: string): string[] {
+export function formatPostActionReportLines(report: string): string[] {
   return ['', 'Post-Action Report:', report]
 }

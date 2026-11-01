@@ -20,7 +20,7 @@ import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, buildPostActionPermissionRuleset, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopPhaseToolName, type LoopSessionReuseRole } from '../constants/loop'
+import { buildPermissionRulesetForPhase, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopPhaseToolName, type LoopSessionReuseRole } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
@@ -48,7 +48,7 @@ import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
 import { buildHandoffNudgePrompt } from './prompts'
-import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, handoffSchemaForRole, type AuditorHandoffPayload, type LoopHandoffWriteInput } from './handoff'
+import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, parseHandoffWriteInput, type LoopHandoffRecordFor, type LoopHandoffRole } from './handoff'
 import type { ZodError } from 'zod'
 
 export interface LoopEvent {
@@ -207,7 +207,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const { sendPromptWithFallback, getLastAssistantInfo } = createPromptDispatch({ client, logger, getConfig, loopService, projectId })
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
-  const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
+  const handoffDeferTimers = new Map<string, NodeJS.Timeout>()
   /** Handoff nudges sent in the current phase turn (loopName → owner and count). */
   const handoffNudges = new Map<string, HandoffNudgeState>()
 
@@ -449,47 +449,65 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Session ids of every loop session that is busy or retrying, including the current and
-   * standby sessions. Throws when the status query fails or ancestry cannot be resolved: callers
-   * must never treat an unverifiable status as quiescent.
+   * Session ids of every loop session that is busy or retrying, excluding the standby
+   * sibling, which is idle by construction until the next rotation reuses it. Throws when
+   * the status query fails or ancestry cannot be resolved: callers must never treat an
+   * unverifiable status as quiescent.
    */
-  async function findBusyLoopSessionIds(state: LoopState): Promise<string[]> {
+  async function findBusyLoopSessions(state: LoopState): Promise<string[]> {
     const statuses = await fetchSessionStatuses(state.worktreeDir)
     if (!statuses) throw new Error('Session status is unavailable')
     const active = await activeLoopSessions(statuses, state.loopName, sessionId => resolveSessionLoopName(sessionId, true))
-    return active.map(([sessionId]) => sessionId)
-  }
-
-  /** Busy loop sessions other than the session recording a handoff and its standby sibling. */
-  async function findBusyChildSessions(state: LoopState): Promise<string[]> {
-    const busy = await findBusyLoopSessionIds(state)
-    return busy.filter((sessionId) => sessionId !== state.sessionId && sessionId !== state.standbySessionId)
+    return active
+      .map(([sessionId]) => sessionId)
+      .filter((sessionId) => sessionId !== state.standbySessionId)
   }
 
   /**
-   * Defers a phase handoff indefinitely while another loop session (subagents included) is
-   * busy or retrying, or a prompt is still queued in the session inbox, re-checking on the
-   * existing 1.5s retry timer. Genuinely wedged sessions are left to the watchdog's
+   * Busy loop sessions other than the session recording a handoff. That session is the
+   * caller and is necessarily busy while the tool runs, so it never counts itself.
+   */
+  async function findBusyChildSessions(state: LoopState): Promise<string[]> {
+    const busy = await findBusyLoopSessions(state)
+    return busy.filter((sessionId) => sessionId !== state.sessionId)
+  }
+
+  /** Cancels any scheduled handoff deferral re-check for a loop. */
+  function clearHandoffDeferTimer(loopName: string): void {
+    const pending = handoffDeferTimers.get(loopName)
+    if (!pending) return
+    clearTimeout(pending)
+    handoffDeferTimers.delete(loopName)
+  }
+
+  /**
+   * Defers a phase handoff indefinitely while any loop session (the current turn's session,
+   * its subagents, and the other role's session) is busy or retrying, or a prompt is still
+   * queued in the session inbox, re-checking on the existing 1.5s retry timer. Only the
+   * standby sibling is exempt. Genuinely wedged sessions are left to the watchdog's
    * progress-aware stall handling rather than a wall-clock cutoff here.
    */
-  async function deferWhileChildSessionsBusy(state: LoopState): Promise<boolean> {
+  async function deferWhileLoopSessionsBusy(state: LoopState): Promise<boolean> {
     const loopName = state.loopName
     let reason: string | null = null
     try {
-      const busyChildren = await findBusyChildSessions(state)
-      if (busyChildren.length > 0) reason = `Child sessions are still busy or retrying: ${busyChildren.join(', ')}`
+      const busySessions = await findBusyLoopSessions(state)
+      if (busySessions.length > 0) reason = `Loop sessions are still busy or retrying: ${busySessions.join(', ')}`
       else if (isPromptQueued(state.sessionId)) reason = 'A prompt is still queued in the session inbox'
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err)
     }
     const fresh = loopService.getActiveState(loopName)
     if (!fresh || fresh.sessionId !== state.sessionId || fresh.phase !== state.phase) return true
-    if (!reason) return false
+    if (!reason) {
+      clearHandoffDeferTimer(loopName)
+      return false
+    }
     logger.debug(`Loop: deferring ${state.phase} handoff for ${loopName}: ${reason}`)
-    const pending = idleRetryTimeouts.get(loopName)
+    const pending = handoffDeferTimers.get(loopName)
     if (pending) clearTimeout(pending)
     const timer = setTimeout(() => {
-      idleRetryTimeouts.delete(loopName)
+      handoffDeferTimers.delete(loopName)
       void withStateLock(loopName, async () => {
         const current = loopService.getActiveState(loopName)
         if (!current || current.sessionId !== state.sessionId || current.phase !== state.phase) return
@@ -500,25 +518,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
       })
     }, 1500)
-    idleRetryTimeouts.set(loopName, timer)
+    handoffDeferTimers.set(loopName, timer)
     return true
-  }
-
-  /**
-   * Whether the loop's current session is still busy or retrying. Used to suppress
-   * no-assistant idle handling while the session is still working. Any error or
-   * unexpected status shape returns false so the existing retry/recovery behavior
-   * (and the watchdog backstop) stays in charge.
-   */
-  async function isSessionActive(state: LoopState): Promise<boolean> {
-    try {
-      const statuses = await fetchSessionStatuses(state.worktreeDir)
-      if (!statuses) return false
-      const active = await activeLoopSessions(statuses, state.loopName, sessionId => (sessionId === state.sessionId ? state.loopName : null))
-      return active.length > 0
-    } catch {
-      return false
-    }
   }
 
   const NOT_CURRENT_SESSION_ERROR = 'Not the current session of an active loop; only the loop\'s current coder, auditor or post-action session may call this tool.'
@@ -563,11 +564,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return { ok: false, error: `Wait for these subagent sessions to finish, then call the tool again: ${busyChildren.join(', ')}` }
       }
 
-      const parsed = handoffSchemaForRole(role).safeParse(input.args)
-      if (!parsed.success) return { ok: false, error: formatHandoffValidationError(parsed.error) }
+      const parsed = parseHandoffWriteInput(role, {
+        loopName: state.loopName,
+        sessionId: input.sessionId,
+        phase: state.phase,
+        sectionIndex: state.totalSections > 0 ? state.currentSectionIndex : null,
+        iteration: state.iteration,
+      }, input.args)
+      if (!parsed.ok) return { ok: false, error: formatHandoffValidationError(parsed.error) }
 
-      if (role === 'auditor') {
-        const payload = parsed.data as AuditorHandoffPayload
+      if (parsed.input.role === 'auditor') {
+        const payload = parsed.input.payload
         if (state.totalSections > 0) {
           const blocking = loopService.getBlockingBugFindings(state)
           if (blocking.length === 0 && !payload.summary) {
@@ -582,53 +589,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
       }
 
-      const record = loopService.recordPendingHandoff({
-        loopName: state.loopName,
-        sessionId: input.sessionId,
-        role,
-        phase: state.phase,
-        sectionIndex: state.totalSections > 0 ? state.currentSectionIndex : null,
-        iteration: state.iteration,
-        payload: parsed.data,
-      } as LoopHandoffWriteInput)
+      const record = loopService.recordPendingHandoff(parsed.input)
       watchdog.recordActivity(state.loopName, 'handoff-recorded')
       return { ok: true, replaced: record.replaced }
     })
   }
 
   /**
-   * Shared no-assistant idle gate. Returns true when the caller must wait for a
-   * later idle instead of retrying or recovering: a prompt is still queued in the
-   * session inbox, or the session is still busy/retrying. A queued-prompt wait
-   * records the suppressed idle so a later cancel can replay it.
-   */
-  async function shouldDeferNoAssistantIdle(loopName: string, state: LoopState, phaseLabel: string): Promise<boolean> {
-    if (isPromptQueued(state.sessionId)) {
-      recordSuppressedIdle(state.sessionId)
-      logger.debug(`[idle-gate] ${phaseLabel} idle ignored for ${loopName}; a prompt is still queued in the session inbox`)
-      return true
-    }
-    if (await isSessionActive(state)) {
-      logger.debug(`Loop: ${phaseLabel} has no assistant reply yet for ${loopName} but session ${state.sessionId} is still active; waiting for its idle`)
-      return true
-    }
-    return false
-  }
-
-  /**
-   * Ends a phase turn that produced no handoff. Re-sends the full phase prompt when the
-   * turn was never answered, otherwise sends the short handoff nudge, on the phase's own
-   * agent and model. After MAX_HANDOFF_NUDGES the turn is abandoned through the
+   * Ends a phase turn that produced no handoff. Re-sends the full phase prompt only when the
+   * turn was never answered at all, otherwise sends the short handoff nudge, on the phase's
+   * own agent and model. After MAX_HANDOFF_NUDGES the turn is abandoned through the
    * `handoff-missing` transition: coding and auditing error out, post-action stays
    * best-effort and completes.
    */
   async function nudgeForMissingHandoff(
     loopName: string,
     state: LoopState,
+    lastMessageRole: string,
     phasePrompt: () => string,
   ): Promise<void> {
-    if (await shouldDeferNoAssistantIdle(loopName, state, `${state.phase} handoff`)) return
-
     const role = handoffRoleForPhase(state.phase)
     if (!role) return
 
@@ -649,8 +628,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     handoffNudges.set(loopName, { ...owner, count: nudges + 1 })
-    const info = await getLastAssistantInfo(state.sessionId, state.worktreeDir)
-    const unanswered = info.lastMessageRole !== 'assistant'
+    const unanswered = lastMessageRole === 'none' || lastMessageRole === 'user'
     const promptText = unanswered ? phasePrompt() : buildHandoffNudgePrompt(role)
     logger.log(`Loop: ${state.phase} turn ended without a handoff for ${loopName}; sending ${unanswered ? 'the full phase prompt' : 'a handoff nudge'} (${nudges + 1}/${MAX_HANDOFF_NUDGES})`)
 
@@ -672,7 +650,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       variant: choice ? choice.variant : state.executionVariant,
       errorContext: 'handoff nudge',
       errorState: state,
+      isRetryValid: (fresh) => fresh.sessionId === state.sessionId && fresh.phase === state.phase,
     })
+  }
+
+  /**
+   * Reports a pending handoff that the current phase could not apply because it belongs to
+   * another role. The row is left pending for the role that wrote it. A row whose payload no
+   * longer parses is reported by the repository's row mapper instead.
+   */
+  function reportUnappliedPendingHandoff(loopName: string, sessionId: string, expectedRole: LoopHandoffRole): void {
+    const pending = loopService.getPendingHandoff(loopName)
+    if (!pending || pending.sessionId !== sessionId || pending.role === expectedRole) return
+    logger.error(
+      `Loop: pending ${pending.role} handoff for session ${sessionId} in ${loopName} does not match the ${expectedRole} phase; leaving it pending`,
+    )
   }
 
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
@@ -796,7 +788,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * Shared session-activation bookkeeping for a freshly created session and a
    * reused standby session: clears the old prompt lifecycle and retry timer,
    * registers the new session, keeps the retired session resolvable for delayed
-   * errors, and restarts the watchdog.
+   * errors, starts a fresh handoff nudge budget for the new phase turn, and
+   * restarts the watchdog.
    */
   function activateLoopSession(loopName: string, previousSessionId: string | null, newSessionId: string): void {
     clearPromptPending(projectId, loopName, logger)
@@ -805,11 +798,27 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       clearTimeout(oldRetryTimeout)
       retryTimeouts.delete(loopName)
     }
+    clearHandoffDeferTimer(loopName)
+    handoffNudges.delete(loopName)
     loopService.registerLoopSession(newSessionId, loopName)
     sessionToLoop.set(newSessionId, loopName)
     if (previousSessionId) sessionToLoop.set(previousSessionId, loopName)
     watchdog.stop(loopName)
     watchdog.start(loopName)
+  }
+
+  /**
+   * Persists a session/phase replacement and, when the phase changes, starts a fresh
+   * handoff nudge budget for the new phase turn. A reused session keeps its conversation,
+   * so the previous turn's spent nudges must never shorten the new turn's budget.
+   */
+  function replaceLoopSession(
+    loopName: string,
+    update: Parameters<LoopService['replaceSession']>[1],
+  ): void {
+    const prior = loopService.getActiveState(loopName)
+    loopService.replaceSession(loopName, update)
+    if (prior && prior.phase !== update.phase) handoffNudges.delete(loopName)
   }
 
   /**
@@ -871,7 +880,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     )
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
-    const permissionRuleset = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(state))
+    const permissionRuleset = buildPermissionRulesetForPhase('coding', await resolveLoopPermissionOptionsForLoop(state))
 
     const createResult = await createLoopSessionWithWorkspace({
       client: client,
@@ -1038,7 +1047,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!currentState.worktreeDir) return false
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
-    const permission = buildPostActionPermissionRuleset(await resolveLoopPermissionOptionsForLoop(currentState))
+    const permission = buildPermissionRulesetForPhase('post_action', await resolveLoopPermissionOptionsForLoop(currentState))
     const created = await createLoopSessionWithWorkspace({
       client,
       title: formatPostActionSessionTitle(loopName),
@@ -1062,7 +1071,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Retain the old session in the reverse index so delayed errors from the
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(currentState.sessionId, loopName)
-    loopService.replaceSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
+    replaceLoopSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
 
     // Record the *entry* into post_action here — after the persisted phase commit
     // AND before sending the post-action prompt. If the prompt send fails below,
@@ -1156,7 +1165,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
     }
 
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId: activeSessionId,
       phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
@@ -1262,7 +1271,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId: standby.sessionId,
       phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
@@ -1347,7 +1356,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await discardStandbySession(loopName, state, 'before coder rotation')
     const newSessionId = await rotateSession(loopName, state)
 
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId,
       phase: 'coding',
       resetError: false,
@@ -1479,11 +1488,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       retryTimeouts.delete(loopName)
     }
 
-    const idleRetryTimeout = idleRetryTimeouts.get(loopName)
-    if (idleRetryTimeout) {
-      clearTimeout(idleRetryTimeout)
-      idleRetryTimeouts.delete(loopName)
-    }
+    clearHandoffDeferTimer(loopName)
     handoffNudges.delete(loopName)
     loopService.discardPendingHandoff(loopName)
     coalescedLimitSessions.delete(loopName)
@@ -1587,9 +1592,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * abort. The marker is added only once the abort succeeds: a rejected abort
    * (session already idle) emits no AbortError, so leaving a marker would suppress a
    * later genuine abort of the replacement prompt. After settling, the idle-gate and
-   * in-flight guard are cleared because they must not reject the resend.
+   * in-flight guard are cleared because they must not reject the resend. Any handoff
+   * recorded during the aborted turn belongs to that turn and is discarded so it can
+   * never be applied to the re-sent one.
    */
   async function abortForInternalResend(loopName: string, sessionId: string): Promise<void> {
+    loopService.discardPendingHandoff(loopName)
     try {
       await client.session.abort({ sessionID: sessionId })
       internalFallbackAborts.set(sessionId, (internalFallbackAborts.get(sessionId) ?? 0) + 1)
@@ -2043,7 +2051,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const codeSessionId = currentState.sessionId
     const auditSessionId = standby.sessionId
 
-    loopService.replaceSession(loopName, { newSessionId: auditSessionId, phase: 'auditing' })
+    replaceLoopSession(loopName, { newSessionId: auditSessionId, phase: 'auditing' })
     activateLoopSession(loopName, codeSessionId, auditSessionId)
     loopService.setStandbySessionId(loopName, codeSessionId)
     logTransition(loopName, currentState, { type: 'coder-handoff' }, idleTrans, 'auditing')
@@ -2103,13 +2111,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
-    if (await deferWhileChildSessionsBusy(currentState)) return
+    if (await deferWhileLoopSessionsBusy(currentState)) return
 
     const nudgeState = currentState
-    const appliedHandoff = loopService.applyPendingHandoff(loopName, currentState.sessionId)
-    const record = appliedHandoff?.role === 'coder' ? appliedHandoff : null
+    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'coder')
+    if (!record) reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'coder')
     if (!record && !assistantErrorDetected) {
-      await nudgeForMissingHandoff(loopName, nudgeState, () => buildCodingPromptForCurrentState(nudgeState))
+      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => buildCodingPromptForCurrentState(nudgeState))
       return
     }
 
@@ -2182,7 +2190,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopService.resetError(loopName)
       try {
         const rotatedSessionId = await rotateSession(loopName, currentState)
-        loopService.replaceSession(loopName, {
+        replaceLoopSession(loopName, {
           newSessionId: rotatedSessionId,
           phase: 'coding',
           resetError: false,
@@ -2219,7 +2227,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     await discardStandbySession(loopName, currentState, 'after audit creation')
     const retainCoderAsStandby = !loopService.hasEscalatedBugFindings(currentState)
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
     })
@@ -2245,6 +2253,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     )
   }
 
+  /**
+   * A clean section audit must carry a summary, so a pending auditor record that would
+   * finish a section without one is discarded before it is applied: the auditor can record
+   * a dirty handoff and then resolve its last blocking bug in the same turn, which leaves a
+   * summary-less record behind. Discarding it lets the turn take the missing-handoff path and
+   * ask the auditor to hand off again. Returns true when a record was discarded.
+   */
+  function discardCleanSectionHandoffWithoutSummary(loopName: string, state: LoopState): boolean {
+    if (!(state.totalSections > 0)) return false
+    const pending = loopService.getPendingHandoff(loopName)
+    if (!pending || pending.role !== 'auditor' || pending.sessionId !== state.sessionId) return false
+    if (pending.payload.summary) return false
+    if (loopService.getBlockingBugFindings(state).length > 0) return false
+    loopService.discardPendingHandoff(loopName)
+    logger.log(`Loop: section ${state.currentSectionIndex} audit is clean but its handoff carried no summary for ${loopName}; discarding the record and asking the auditor to hand off again`)
+    return true
+  }
+
   async function runAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
     let currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
@@ -2265,7 +2291,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const auditSessionId = currentState.sessionId
 
-    const { error: assistantError, errorSignal: auditErrorSignal } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+    const { error: assistantError, errorSignal: auditErrorSignal, lastMessageRole: auditLastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
 
     // Classify persisted provider-limit errors first so finish:'error'
     // assistant messages terminate immediately.
@@ -2297,6 +2323,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
+
+    if (await deferWhileLoopSessionsBusy(currentState)) return
 
     if (assistantErrorDetected) {
       loopService.discardPendingHandoff(loopName)
@@ -2330,13 +2358,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    if (await deferWhileChildSessionsBusy(currentState)) return
-
     const nudgeState = currentState
-    const applied = loopService.applyPendingHandoff(loopName, currentState.sessionId)
-    const record = applied?.role === 'auditor' ? applied : null
+    if (discardCleanSectionHandoffWithoutSummary(loopName, currentState)) {
+      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
+      return
+    }
+    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'auditor')
     if (!record) {
-      await nudgeForMissingHandoff(loopName, nudgeState, () => loopService.buildAuditPrompt(nudgeState))
+      reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'auditor')
+      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
       return
     }
     handoffNudges.delete(loopName)
@@ -2397,7 +2427,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         await discardStandbySession(loopName, currentState, 'after section advance')
 
-        loopService.replaceSession(loopName, {
+        replaceLoopSession(loopName, {
           newSessionId: currentState.sessionId,
           phase: 'coding',
           iteration: nextIter,
@@ -2517,6 +2547,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
+   * Applies the post-action `loop-complete` record, stores its report, and terminates the loop.
+   * A null record completes without a report or summary, which is the best-effort outcome of
+   * the assistant-error and exhausted-nudge paths.
+   */
+  async function completePostAction(
+    loopName: string,
+    state: LoopState,
+    record: LoopHandoffRecordFor<'post_action'> | null,
+    reason: TerminationReason,
+  ): Promise<void> {
+    if (record) loopService.setPostActionReport(loopName, formatPostActionReport(record.payload))
+    await terminateLoop(loopName, state, reason, record ? formatPostActionSummary(record.payload) : undefined)
+  }
+
+  /**
    * Completes the post-action phase once its session is idle. Assistant errors complete
    * best-effort. Otherwise it waits for every loop session, subagents included, to settle,
    * then applies the pending `loop-complete` record and renders the post-action report. A
@@ -2544,26 +2589,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (assistantInfo.error) {
       logger.error(`Loop: post-action assistant error for ${loopName}: ${assistantInfo.error}, completing best-effort`)
-      const applied = loopService.applyPendingHandoff(loopName, currentState.sessionId)
-      const record = applied?.role === 'post_action' ? applied : null
-      if (record) loopService.setPostActionReport(loopName, formatPostActionReport(record.payload))
-      await terminateLoop(
-        loopName,
-        currentState,
-        { kind: 'completed' },
-        record ? formatPostActionSummary(record.payload) : undefined,
-      )
+      const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'post_action')
+      if (!record) reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'post_action')
+      await completePostAction(loopName, currentState, record, { kind: 'completed' })
       return
     }
 
-    if (await deferWhileChildSessionsBusy(currentState)) return
+    if (await deferWhileLoopSessionsBusy(currentState)) return
 
     const nudgeState = currentState
-    const applied = loopService.applyPendingHandoff(loopName, currentState.sessionId)
-    const record = applied?.role === 'post_action' ? applied : null
+    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'post_action')
     if (!record) {
+      reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'post_action')
       const cfg = resolvePostActionConfig(getConfig())
-      await nudgeForMissingHandoff(loopName, nudgeState, () => loopService.buildPostActionPrompt(nudgeState, { skill: cfg.skill, prompt: cfg.prompt }))
+      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => loopService.buildPostActionPrompt(nudgeState, { skill: cfg.skill, prompt: cfg.prompt }))
       return
     }
     handoffNudges.delete(loopName)
@@ -2571,8 +2610,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     logger.log(`Loop: post-action complete for ${loopName}, terminating`)
     const trans = nextTransition(currentState, { type: 'post-action-complete' })
     if (trans.kind !== 'terminate') return
-    loopService.setPostActionReport(loopName, formatPostActionReport(record.payload))
-    await terminateLoop(loopName, currentState, trans.reason, formatPostActionSummary(record.payload))
+    await completePostAction(loopName, currentState, record, trans.reason)
   }
 
   // Single source of truth for idle/watchdog dispatch. Every persisted phase maps to
@@ -2694,6 +2732,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (state.phase === 'auditing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
+          loopService.discardPendingHandoff(loopName)
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage, 'audit-session-error')
           return
         }
@@ -3032,9 +3071,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       clearTimeout(timeout)
       retryTimeouts.delete(worktreeName)
     }
-    for (const [worktreeName, timeout] of idleRetryTimeouts.entries()) {
+    for (const [worktreeName, timeout] of handoffDeferTimers.entries()) {
       clearTimeout(timeout)
-      idleRetryTimeouts.delete(worktreeName)
+      handoffDeferTimers.delete(worktreeName)
     }
     handoffNudges.clear()
     coalescedLimitSessions.clear()
@@ -3086,11 +3125,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       retryTimeouts.delete(loopName)
     }
 
-    const idleRetryTimeout = idleRetryTimeouts.get(loopName)
-    if (idleRetryTimeout) {
-      clearTimeout(idleRetryTimeout)
-      idleRetryTimeouts.delete(loopName)
-    }
+    clearHandoffDeferTimer(loopName)
     handoffNudges.delete(loopName)
     coalescedLimitSessions.delete(loopName)
 

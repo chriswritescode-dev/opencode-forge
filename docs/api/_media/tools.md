@@ -179,7 +179,7 @@ Completed loops are history-only and cannot be restarted. See [Loop System](loop
 
 ## Loop Handoff Tools
 
-Two tools end a loop phase turn. `loop-handoff` covers the `coding` (coder) and `auditing` (auditor) phases; `loop-complete` covers `post_action`. Both accept only the fields of the phase's role, validate a strict schema that rejects unknown keys, and persist a pending record for the loop's current session. See [Loop System](loop-system.md#handoff-driven-turn-ends) for how a recorded handoff advances the loop.
+Two tools end a loop phase turn. `loop-handoff` covers the `coding` (coder) and `auditing` (auditor) phases; `loop-complete` covers `post_action`. Both declare only the fields of the phase's role and persist a pending record for the loop's current session. The V2 tool registrar parses call arguments with a non-strict object, so unknown keys are dropped before the definition runs; the phase role's strict schema then validates the payload and rejects the other role's fields. See [Loop System](loop-system.md#handoff-driven-turn-ends) for how a recorded handoff advances the loop.
 
 ### `loop-handoff`
 
@@ -212,7 +212,7 @@ Both tools share these rules:
 
 - Only the loop's current session may call them. A call is rejected outside an active loop and from any other session, including subagent sessions.
 - A call is rejected while any other loop session (a subagent) is busy or retrying. The error names the busy sessions and asks the caller to retry after they finish.
-- A successful call returns `Handoff recorded — end your turn now; make no further changes.` The call does not advance the loop by itself: the loop applies the pending record when the session's turn ends, after any queued prompt and busy child sessions have settled.
+- A successful call returns `Handoff recorded — end your turn now; make no further changes.` The call does not advance the loop by itself: the loop applies the pending record when the session's turn ends, after every other loop session has settled and any queued prompt has run.
 - The last call wins: a second call in the same turn replaces the earlier pending record, and the reply says so.
 - A record is applied once and only by the session that wrote it. The loop never parses assistant text to decide that a turn ended.
 - `loop-handoff` is rejected in `post_action` with an error that says to use `loop-complete`; `loop-complete` is rejected outside `post_action`.

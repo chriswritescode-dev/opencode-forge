@@ -25,6 +25,8 @@ import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
+import { buildHandoffNudgePrompt } from '../../src/loop/prompts'
+import { LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
 
 const PROJECT_ID = 'test-project'
 
@@ -3664,7 +3666,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'a' } })
     })
 
-    test('concurrent fallback dispatch, busy, then idle runs the audit phase exactly once', async () => {
+    test('concurrent fallback dispatch discards the aborted turn handoff, then busy and idle run the audit phase exactly once', async () => {
       let releaseSend!: () => void
       const sendGate = new Promise<void>((resolve) => { releaseSend = resolve })
       let markSendStarted!: () => void
@@ -3705,17 +3707,26 @@ describe('stall handling terminates with stall timeout when configured cap is re
       releaseSend()
       await Promise.all([retryP, busyP, idleP])
 
-      // The idle must NOT be discarded: the audit phase runs, processes the
-      // fallback's clean audit result, and completes the loop.
-      const afterState = loopService.getAnyState(state.loopName)
+      // The idle must NOT be discarded: the audit phase runs exactly once. The
+      // handoff recorded before the abort belonged to the aborted turn, so the
+      // internal resend discarded it and this run nudges the auditor for a new one
+      // instead of completing the loop with a stale record.
+      const afterState = loopService.getActiveState(state.loopName)
       expect(afterState).not.toBeNull()
-      expect(afterState!.active).toBe(false)
-      expect(afterState!.terminationReason).toBe('completed')
-      expect(afterState!.auditorFallbackIndex).toBe(0)
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('auditing')
+      expect(afterState!.auditorFallbackIndex).toBe(1)
+
+      const handoffs = loopService.listHandoffs(state.loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0].status).toBe('discarded')
 
       const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
-      expect(auditorCalls).toHaveLength(1)
+      expect(auditorCalls).toHaveLength(2)
       expect(auditorCalls[0].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+      expect(auditorCalls[1].params).toMatchObject({ model: { providerID: 'fb', modelID: 'auditor-2' } })
+      const nudgeText = ((auditorCalls[1].params as any).parts as Array<{ text: string }>).map(part => part.text).join('\n')
+      expect(nudgeText).toContain('You ended your turn without calling `loop-handoff`.')
     })
 
     test('persisted provider-limit in auditing assistant error attempts the configured fallback', async () => {
@@ -4409,7 +4420,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState!.active).toBe(true)
       expect(afterState!.phase).toBe('coding')
       expect(calls.filter(c => c.method === 'session.promptAsync').length).toBe(0)
-      expect(logs.some(l => l.message.includes('is still active; waiting for its idle'))).toBe(true)
+      expect(logs.some(l => l.message.includes('Loop sessions are still busy or retrying'))).toBe(true)
     })
 
     test('coding idle sends the full prompt nudge once the session reports idle', async () => {
@@ -4447,6 +4458,276 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(codePrompts.length).toBe(1)
+    })
+  })
+
+  describe('handoff turn-end gates', () => {
+    function promptTexts(calls: RecordedCall[], sessionID: string, agent?: 'code' | 'auditor-loop'): string[] {
+      return calls
+        .filter(c => c.method === 'session.promptAsync'
+          && (c.params as any)?.sessionID === sessionID
+          && (agent === undefined || (c.params as any)?.agent === agent))
+        .map(c => ((c.params as any)?.parts as Array<{ text?: string }> | undefined)?.[0]?.text ?? '')
+    }
+
+    function handoffNudgeTexts(calls: RecordedCall[], sessionID: string, agent?: 'code' | 'auditor-loop'): string[] {
+      return promptTexts(calls, sessionID, agent).filter(text => text.includes('You ended your turn without calling `loop-handoff`.'))
+    }
+
+    test('a rotation that reuses the same coder session and iteration starts a fresh nudge budget of three', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'turn reply' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0, iteration: 1, maxIterations: 5 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('coder-1', state.loopName)
+
+      const runTurn = async (sessionID: string): Promise<void> => {
+        await loop.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID } })
+        await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID } })
+      }
+
+      await runTurn('coder-1')
+      await runTurn('coder-1')
+      expect(handoffNudgeTexts(calls, 'coder-1', 'code')).toHaveLength(2)
+
+      // Rotate to the auditor at the same iteration and hand the coder back as the
+      // standby, so the audit-failure recovery reuses that same session and iteration.
+      loopService.replaceSession(state.loopName, { newSessionId: 'audit-1', phase: 'auditing' })
+      loopService.registerLoopSession('audit-1', state.loopName)
+      loopService.setStandbySessionId(state.loopName, 'coder-1')
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: 'audit-1', error: { name: 'UnknownError', data: { message: 'auditor crashed' } } },
+      })
+
+      const rotated = loopService.getActiveState(state.loopName)!
+      expect(rotated.phase).toBe('coding')
+      expect(rotated.sessionId).toBe('coder-1')
+      expect(rotated.iteration).toBe(1)
+
+      for (let turn = 0; turn < 3; turn++) await runTurn('coder-1')
+      expect(loopService.getActiveState(state.loopName)!.phase).toBe('coding')
+      expect(handoffNudgeTexts(calls, 'coder-1', 'code')).toHaveLength(5)
+
+      await runTurn('coder-1')
+
+      const finished = loopService.getAnyState(state.loopName)!
+      expect(finished.active).toBe(false)
+      expect(finished.terminationReason).toBe('handoff_missing')
+    })
+
+    test('a post-action turn whose last assistant message is unfinished gets the short nudge, not the full workflow prompt', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'length' }, parts: [{ type: 'text', text: 'Merge steps: ' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'post_action' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+      const prompts = promptTexts(calls, state.sessionId)
+      expect(prompts).toHaveLength(1)
+      expect(prompts[0]).toBe(buildHandoffNudgePrompt('post_action'))
+
+      const afterState = loopService.getActiveState(state.loopName)!
+      expect(afterState.active).toBe(true)
+      expect(afterState.phase).toBe('post_action')
+    })
+
+    test('an audit session error discards a pending auditor handoff so the next coder handoff is not a replacement', async () => {
+      const { client } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 1 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await recordAuditorHandoff(loop, state.sessionId)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: state.sessionId, error: { name: 'UnknownError', data: { message: 'auditor crashed' } } },
+      })
+
+      const handoffs = loopService.listHandoffs(state.loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0]).toMatchObject({ role: 'auditor', sessionId: state.sessionId, status: 'discarded' })
+
+      const coderSessionId = loopService.getActiveState(state.loopName)!.sessionId
+      expect(coderSessionId).not.toBe(state.sessionId)
+      const result = await loop.recordHandoff({
+        sessionId: coderSessionId,
+        tool: LOOP_HANDOFF_TOOL_NAME,
+        args: {
+          changes: [{ summary: 'Fixed the auditor failure', reason: 'Restores green checks' }],
+          verification: [{ command: 'pnpm test', cwd: '.', outcome: 'pass', changedAfter: false }],
+        },
+      })
+      expect(result).toEqual({ ok: true, replaced: false })
+    })
+
+    test('an internal auditor resend for a provider limit discards the aborted turn handoff', async () => {
+      const { client } = createFakeForgeClient()
+      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+
+      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 1 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await recordAuditorHandoff(loop, state.sessionId)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 } },
+      })
+
+      const handoffs = loopService.listHandoffs(state.loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0].status).toBe('discarded')
+      expect(loopService.getActiveState(state.loopName)!.auditorFallbackIndex).toBe(1)
+    })
+
+    test('a clean section audit whose pending handoff has no summary is discarded and the auditor is nudged instead of completing the section', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section reviewed.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'auditing', totalSections: 1, currentSectionIndex: 0, auditCount: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: [{ index: 0, title: 'Section one', content: 'Section one content' }],
+      })
+      loopService.startSection(state.loopName, 0)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/section.ts',
+        line: 3,
+        severity: 'bug',
+        description: 'Section bug',
+        sectionIndex: 0,
+      })
+      await recordAuditorHandoff(loop, state.sessionId)
+      // The auditor resolves its last blocking bug after recording the dirty handoff,
+      // leaving a clean section with a summary-less record behind.
+      reviewFindingsRepo.delete(PROJECT_ID, 'src/section.ts', 3)
+
+      await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: state.sessionId } })
+
+      const handoffs = loopService.listHandoffs(state.loopName)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0].status).toBe('discarded')
+
+      const afterState = loopService.getActiveState(state.loopName)!
+      expect(afterState.active).toBe(true)
+      expect(afterState.phase).toBe('auditing')
+      const section = loopService.getSectionPlan(afterState, 0)!
+      expect(section.status).not.toBe('completed')
+
+      const auditorPrompts = promptTexts(calls, state.sessionId, 'auditor-loop')
+      expect(auditorPrompts).toHaveLength(1)
+      expect(auditorPrompts[0]).toContain('You ended your turn without calling `loop-handoff`.')
+    })
+
+    test('a failed nudge retry is abandoned when the phase turned over before it fired', async () => {
+      vi.useFakeTimers()
+      try {
+        const { client, calls } = createFakeForgeClient({
+          session: {
+            messages: async () => [
+              { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'turn reply' }] },
+            ],
+            promptAsync: async (params: any) => {
+              if (params?.agent === 'code') throw new Error('send failed')
+            },
+          },
+        })
+        const { loop } = createRuntime({ client })
+
+        const state = makeState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0 })
+        loopService.setState(state.loopName, state)
+        loopService.registerLoopSession('coder-1', state.loopName)
+
+        await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: 'coder-1' } })
+        const attemptsAfterNudge = promptTexts(calls, 'coder-1', 'code').length
+        expect(attemptsAfterNudge).toBeGreaterThan(0)
+
+        loopService.replaceSession(state.loopName, { newSessionId: 'audit-1', phase: 'auditing' })
+        loopService.registerLoopSession('audit-1', state.loopName)
+        await vi.advanceTimersByTimeAsync(2500)
+
+        expect(promptTexts(calls, 'coder-1', 'code')).toHaveLength(attemptsAfterNudge)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    test('an errored audit defers while a child session is still busy', async () => {
+      vi.useFakeTimers()
+      try {
+        let statuses: Record<string, { type?: string }> = { 'child-1': { type: 'busy' } }
+        const { client } = createFakeForgeClient({
+          session: {
+            status: async () => statuses,
+            messages: async (params: any) => (params?.sessionID === 'audit-1'
+              ? [{
+                  info: { role: 'assistant', finish: 'stop', error: { name: 'UnknownError', data: { message: 'auditor crashed' } } },
+                  parts: [],
+                }]
+              : []),
+          },
+        })
+        const { loop } = createRuntime({
+          client,
+          getParentSessionId: async (sessionId) => (sessionId === 'child-1' ? 'audit-1' : null),
+        })
+
+        const state = makeState({ phase: 'auditing', sessionId: 'audit-1', totalSections: 0, auditCount: 1 })
+        loopService.setState(state.loopName, state)
+        loopService.registerLoopSession('audit-1', state.loopName)
+
+        await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: 'audit-1' } })
+
+        const deferred = loopService.getActiveState(state.loopName)!
+        expect(deferred.active).toBe(true)
+        expect(deferred.phase).toBe('auditing')
+        expect(deferred.sessionId).toBe('audit-1')
+        expect(loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName).some(row => row.eventType === 'audit-error')).toBe(false)
+
+        statuses = {}
+        await vi.advanceTimersByTimeAsync(1700)
+
+        const rotated = loopService.getActiveState(state.loopName)!
+        expect(rotated.phase).toBe('coding')
+        const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, state.loopName)
+        expect(rows.some(row => row.eventType === 'audit-error' && row.fromPhase === 'auditing' && row.toPhase === 'coding')).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 })

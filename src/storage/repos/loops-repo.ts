@@ -4,8 +4,12 @@ import { readLoopSandboxSettings } from '../../sandbox/loop-settings'
 import { findPartialMatch } from '../../utils/partial-match'
 import {
   handoffSchemaForRole,
+  LOOP_HANDOFF_PHASES,
+  LOOP_HANDOFF_ROLES,
+  LOOP_HANDOFF_STATUSES,
   type LoopHandoffPhase,
   type LoopHandoffRecord,
+  type LoopHandoffRecordFor,
   type LoopHandoffRole,
   type LoopHandoffStatus,
   type LoopHandoffWriteInput,
@@ -165,9 +169,16 @@ export interface LoopsRepo {
   findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] }
   setCurrentSectionIndex(projectId: string, loopName: string, index: number): void
   setTotalSections(projectId: string, loopName: string, total: number): void
+  /** Record the parsed handoff write as the loop's single pending handoff. */
   upsertPendingHandoff(input: LoopHandoffWriteInput & { projectId: string }): { record: LoopHandoffRecord; replaced: boolean }
   getPendingHandoff(projectId: string, loopName: string): LoopHandoffRecord | null
-  applyPendingHandoff(projectId: string, loopName: string, sessionId: string): LoopHandoffRecord | null
+  /** Mark the session's pending handoff of `role` applied; a pending row for any other role stays pending. */
+  applyPendingHandoff<R extends LoopHandoffRole>(
+    projectId: string,
+    loopName: string,
+    sessionId: string,
+    role: R,
+  ): LoopHandoffRecordFor<R> | null
   discardPendingHandoff(projectId: string, loopName: string): void
   listHandoffs(projectId: string, loopName: string, limit?: number): LoopHandoffRecord[]
 }
@@ -289,15 +300,15 @@ interface LoopHandoffRowRaw {
 }
 
 function parseHandoffRole(value: string): LoopHandoffRole | null {
-  return value === 'coder' || value === 'auditor' || value === 'post_action' ? value : null
+  return LOOP_HANDOFF_ROLES.find((role) => role === value) ?? null
 }
 
 function parseHandoffPhase(value: string): LoopHandoffPhase | null {
-  return value === 'coding' || value === 'auditing' || value === 'post_action' ? value : null
+  return LOOP_HANDOFF_PHASES.find((phase) => phase === value) ?? null
 }
 
 function parseHandoffStatus(value: string): LoopHandoffStatus | null {
-  return value === 'pending' || value === 'applied' || value === 'discarded' ? value : null
+  return LOOP_HANDOFF_STATUSES.find((status) => status === value) ?? null
 }
 
 function mapHandoffRow(raw: LoopHandoffRowRaw, logger?: Logger): LoopHandoffRecord | null {
@@ -335,32 +346,20 @@ function mapHandoffRow(raw: LoopHandoffRowRaw, logger?: Logger): LoopHandoffReco
     createdAt: raw.created_at,
     resolvedAt: raw.resolved_at,
   }
-  switch (role) {
-    case 'coder': {
-      const parsed = handoffSchemaForRole('coder').safeParse(parsedPayload)
-      if (!parsed.success) {
-        logger?.error(`LoopsRepo: invalid coder handoff payload for handoff ${String(raw.id)}`, parsed.error)
-        return null
-      }
-      return { ...base, role, payload: parsed.data }
-    }
-    case 'auditor': {
-      const parsed = handoffSchemaForRole('auditor').safeParse(parsedPayload)
-      if (!parsed.success) {
-        logger?.error(`LoopsRepo: invalid auditor handoff payload for handoff ${String(raw.id)}`, parsed.error)
-        return null
-      }
-      return { ...base, role, payload: parsed.data }
-    }
-    case 'post_action': {
-      const parsed = handoffSchemaForRole('post_action').safeParse(parsedPayload)
-      if (!parsed.success) {
-        logger?.error(`LoopsRepo: invalid post-action handoff payload for handoff ${String(raw.id)}`, parsed.error)
-        return null
-      }
-      return { ...base, role, payload: parsed.data }
-    }
+  const parsed = handoffSchemaForRole(role).safeParse(parsedPayload)
+  if (!parsed.success) {
+    const roleLabel = role === 'post_action' ? 'post-action' : role
+    logger?.error(`LoopsRepo: invalid ${roleLabel} handoff payload for handoff ${String(raw.id)}`, parsed.error)
+    return null
   }
+  return { ...base, role, payload: parsed.data } as LoopHandoffRecord
+}
+
+function handoffRecordForRole<R extends LoopHandoffRole>(
+  record: LoopHandoffRecord,
+  role: R,
+): LoopHandoffRecordFor<R> | null {
+  return record.role === role ? record as LoopHandoffRecordFor<R> : null
 }
 
 export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
@@ -618,7 +617,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   const applyPendingHandoffStmt = db.prepare(`
     UPDATE loop_handoffs
     SET status = 'applied', resolved_at = ?
-    WHERE project_id = ? AND loop_name = ? AND session_id = ? AND status = 'pending'
+    WHERE project_id = ? AND loop_name = ? AND session_id = ? AND role = ? AND status = 'pending'
     RETURNING ${HANDOFF_COLUMNS}
   `)
 
@@ -950,12 +949,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     upsertPendingHandoff(input: LoopHandoffWriteInput & { projectId: string }): { record: LoopHandoffRecord; replaced: boolean } {
-      const schema = handoffSchemaForRole(input.role)
-      const parsed = schema.safeParse(input.payload)
-      if (!parsed.success) {
-        throw new Error(`LoopsRepo: invalid ${input.role} handoff payload`, { cause: parsed.error })
-      }
-      const payload = JSON.stringify(parsed.data)
+      const payload = JSON.stringify(input.payload)
       const runUpsert = db.transaction(() => {
         const now = Date.now()
         const updated = updatePendingHandoffStmt.run(
@@ -998,9 +992,15 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       return row ? mapHandoffRow(row, logger) : null
     },
 
-    applyPendingHandoff(projectId: string, loopName: string, sessionId: string): LoopHandoffRecord | null {
-      const row = applyPendingHandoffStmt.get(Date.now(), projectId, loopName, sessionId) as LoopHandoffRowRaw | undefined
-      return row ? mapHandoffRow(row, logger) : null
+    applyPendingHandoff<R extends LoopHandoffRole>(
+      projectId: string,
+      loopName: string,
+      sessionId: string,
+      role: R,
+    ): LoopHandoffRecordFor<R> | null {
+      const row = applyPendingHandoffStmt.get(Date.now(), projectId, loopName, sessionId, role) as LoopHandoffRowRaw | undefined
+      const record = row ? mapHandoffRow(row, logger) : null
+      return record ? handoffRecordForRole(record, role) : null
     },
 
     discardPendingHandoff(projectId: string, loopName: string): void {

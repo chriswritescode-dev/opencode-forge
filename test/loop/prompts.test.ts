@@ -2,6 +2,7 @@ import { describe, test, expect, vi } from 'vitest'
 import {
   buildContinuationPrompt,
   buildAuditPrompt,
+  buildPlanInitialPrompt,
   buildSectionInitialPrompt,
   buildSectionInitialPromptText,
   buildSectionAuditPrompt,
@@ -64,6 +65,22 @@ function makeSectionPlanRow(index: number, title: string, content: string) {
 }
 
 describe('prompt builders (src/loop/prompts)', () => {
+
+  describe('buildPlanInitialPrompt', () => {
+    const planText = '# Plan\n\nDo the work.'
+
+    test('appends the coder handoff instruction to the raw plan', () => {
+      const result = buildPlanInitialPrompt(planText)
+      expect(result.startsWith(planText)).toBe(true)
+      expect(result.match(/## Required: coder handoff/g)).toHaveLength(1)
+      expect(result).toContain('call `loop-handoff` with')
+    })
+
+    test('does not append the instruction twice when the stored prompt already ends with it', () => {
+      const once = buildPlanInitialPrompt(planText)
+      expect(buildPlanInitialPrompt(once)).toBe(once)
+    })
+  })
 
   describe('buildContinuationPrompt', () => {
     test('continuation without findings - basic iteration info', () => {

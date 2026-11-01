@@ -1036,20 +1036,33 @@ describe('LoopsRepo', () => {
       repo.insert(testRow, testLarge)
       repo.upsertPendingHandoff(handoffInput())
 
-      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'other-session')).toBeNull()
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'other-session', 'coder')).toBeNull()
       expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)?.status).toBe('pending')
 
-      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId)
+      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
       expect(applied?.status).toBe('applied')
       expect(applied?.resolvedAt).not.toBeNull()
-      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId)).toBeNull()
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+    })
+
+    test('apply with a mismatched role returns null and leaves the row pending', () => {
+      repo.insert(testRow, testLarge)
+      repo.upsertPendingHandoff(handoffInput())
+
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'auditor')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)?.status).toBe('pending')
+
+      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
+      expect(applied?.role).toBe('coder')
+      expect(applied?.payload.changes[0].summary).toBe('first change')
       expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
     })
 
     test('a post-apply upsert creates a new pending row while the applied row stays in history', () => {
       repo.insert(testRow, testLarge)
       const first = repo.upsertPendingHandoff(handoffInput())
-      repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId)
+      repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
 
       const second = repo.upsertPendingHandoff(handoffInput({ iteration: 2, payload: coderPayload('next iteration') }))
       expect(second.record.id).toBeGreaterThan(first.record.id)

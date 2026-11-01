@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildPostActionPermissionRuleset, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS, AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS, LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildPostActionPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopAllowedDirectories, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, FORGE_MANAGED_PERMISSIONS, AUTONOMOUS_ARCHITECT_STRUCTURAL_DENY_PERMISSIONS, LOOP_HANDOFF_TOOL_NAME, LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
 
 describe('MAX_TOTAL_SECTIONS', () => {
   it('is the single canonical section cap', () => {
@@ -129,6 +129,24 @@ describe('buildPostActionPermissionRuleset', () => {
     const firstStructuralIdx = rules.findIndex(r => r.action === 'deny' && FORGE_MANAGED_PERMISSIONS.has(r.permission))
     expect(configuredIdx).toBeGreaterThan(0)
     expect(configuredIdx).toBeLessThan(firstStructuralIdx)
+  })
+})
+
+describe('buildPermissionRulesetForPhase', () => {
+  it('selects the post-action ruleset for post_action and the loop ruleset for every other phase', () => {
+    const options = { extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' as const }] }
+    expect(buildPermissionRulesetForPhase('post_action', options)).toEqual(buildPostActionPermissionRuleset(options))
+    expect(buildPermissionRulesetForPhase('coding', options)).toEqual(buildLoopPermissionRuleset(options))
+    expect(buildPermissionRulesetForPhase('auditing', options)).toEqual(buildLoopPermissionRuleset(options))
+  })
+
+  it('denies exactly one phase tool per phase', () => {
+    const coding = buildPermissionRulesetForPhase('coding')
+    const postAction = buildPermissionRulesetForPhase('post_action')
+    expect(coding).toContainEqual({ permission: LOOP_COMPLETE_TOOL_NAME, pattern: '*', action: 'deny' })
+    expect(coding.some(r => r.permission === LOOP_HANDOFF_TOOL_NAME && r.action === 'deny')).toBe(false)
+    expect(postAction).toContainEqual({ permission: LOOP_HANDOFF_TOOL_NAME, pattern: '*', action: 'deny' })
+    expect(postAction.some(r => r.permission === LOOP_COMPLETE_TOOL_NAME && r.action === 'deny')).toBe(false)
   })
 })
 

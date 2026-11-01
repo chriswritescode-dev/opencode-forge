@@ -194,8 +194,8 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `post_action`), row↔state converters |
 | `transitions.ts` | Pure `nextTransition()` table — no side effects; includes `'post-action-complete'` event and `handlePostActionEvent` |
 | `termination.ts` | `TerminationReason` union, `terminationStatusFor()` |
-| `handoff.ts` | Per-role handoff schemas (`coderHandoffSchema`, `auditorHandoffSchema`, `postActionCompleteSchema`), record types, renderers (`formatCoderHandoff`, `formatSectionSummary`, `formatAuditHandoffResult`, `formatPostActionReport`, `formatPostActionSummary`), `handoffSchemaForRole()`, `handoffRoleForPhase()`, `handoffCompletionKey()` |
-| `prompts.ts` | Prompt builders for each loop phase, including `buildPostActionPrompt()` and the reused-session follow-ups `buildCoderFollowUpPrompt()` / `buildAuditFollowUpPrompt()` |
+| `handoff.ts` | Per-role handoff schemas (`coderHandoffSchema`, `auditorHandoffSchema`, `postActionCompleteSchema`), record types, renderers (`formatCoderHandoff`, `formatSectionSummary`, `formatAuditHandoffResult`, `formatPostActionReport`, `formatPostActionSummary`), `parseHandoffWriteInput()`, `handoffSchemaForRole()`, `handoffRoleForPhase()`, `handoffCompletionKey()` |
+| `prompts.ts` | Prompt builders for each loop phase, including `buildPlanInitialPrompt()`, `buildPostActionPrompt()`, and the reused-session follow-ups `buildCoderFollowUpPrompt()` / `buildAuditFollowUpPrompt()` |
 | `section-scope.ts` | `blockingBugFindings()` / `isFindingInSectionScope()` — the single rule for which findings block a section |
 | `finding-recurrence.ts` | Recurrence keys and `RECURRENCE_ESCALATION_THRESHOLD`, shared by prompt escalation and the session-reuse predicate |
 | `post-action-config.ts` | `ResolvedPostActionConfig` interface and `resolvePostActionConfig()` resolver |
@@ -248,6 +248,7 @@ MAX_RETRIES: number
 nextTransition(state, event): Transition
 
 // Prompts
+buildPlanInitialPrompt(planText): string
 buildContinuationPrompt(ctx, state, notice?, outstandingBugs?): string
 buildAuditPrompt(ctx, state): string
 buildSectionInitialPrompt(ctx, state): string
@@ -266,6 +267,7 @@ parseTerminationReasonString(str): TerminationReason
 coderHandoffSchema, auditorHandoffSchema, postActionCompleteSchema: z.ZodType
 CoderHandoffPayload, AuditorHandoffPayload, PostActionCompletePayload: types
 LoopHandoffRole, LoopHandoffPhase, LoopHandoffStatus, LoopHandoffRecord: types
+parseHandoffWriteInput(role, base, raw): ParsedHandoffWriteInput
 handoffSchemaForRole(role: LoopHandoffRole): z.ZodType
 handoffRoleForPhase(phase: string): LoopHandoffRole | null
 formatCoderHandoff(payload): string
@@ -554,8 +556,10 @@ Cross-cutting helpers (~40 files) organized by concern:
 Security rules for loop and audit sessions.
 
 ```typescript
+buildPermissionRulesetForPhase(phase, options?): PermissionRule[] // Per-phase ruleset; denies the phase tool the phase must not use (loop-handoff in post_action, loop-complete otherwise)
 buildLoopPermissionRuleset(options?): PermissionRule[]  // Allow-all, then configured rules, then review/plan/loop structural denies
-buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, configured rules, then structural denies for the direct mutation tools edit/write plus the shared plan/loop denies
+buildAuditSessionPermissionRuleset(options?): PermissionRule[] // Allow-all, configured rules, then AUDIT_SESSION_DENIED_TOOL_NAMES: audit-only structural denies for edit/write plus the shared plan/loop denies and loop-complete
+AUDIT_SESSION_DENIED_TOOL_NAMES: readonly string[]        // Every tool an audit session denies
 resolveLoopPermissionOptions(config?): LoopPermissionRulesetOptions // Local resolver: configured loop.permissions deny rules
 resolveSessionReuseContextPercent(config?, role): number        // loop.sessionReuse percent for 'code' | 'auditor', defaulting invalid values to 50
 parseSessionReuseConfig(raw): ParsedSessionReuseConfig          // Validates loop.sessionReuse; returns warnings for ignored values

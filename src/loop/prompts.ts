@@ -33,7 +33,7 @@ export interface PromptContext {
  * attempt hands its decisions and verification evidence to the auditor through
  * `loop-handoff` instead of free-text prose.
  */
-export const CODER_HANDOFF_INSTRUCTION: string = `\n\n---
+const CODER_HANDOFF_INSTRUCTION: string = `\n\n---
 ## Required: coder handoff
 When this attempt is done, call \`${LOOP_HANDOFF_TOOL_NAME}\` with \`changes\` (each change and why), \`deviations\` (plan item, what you did instead, why), \`verification\` (each check: exact command, worktree-relative \`cwd\`, pass/fail/not-run, whether code changed afterwards), and optional \`notes\`, then end your turn.`
 
@@ -212,6 +212,16 @@ export function buildAttemptHistoryBlock(ctx: PromptContext, state: LoopState, r
   lines.push('', `For full notes and historical findings use review-read with {attempts: true}. For older records use {attempts: true, beforeId: ${history[history.length - 1].id}, limit: 20}.`)
 
   return lines.join('\n')
+}
+
+/**
+ * The first coder prompt of a non-sectioned loop: the raw plan followed by the
+ * coder handoff instruction. Idempotent, so a stored prompt that already ends
+ * with the instruction is never sent with it twice.
+ */
+export function buildPlanInitialPrompt(planText: string): string {
+  if (planText.endsWith(CODER_HANDOFF_INSTRUCTION)) return planText
+  return planText + CODER_HANDOFF_INSTRUCTION
 }
 
 export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {

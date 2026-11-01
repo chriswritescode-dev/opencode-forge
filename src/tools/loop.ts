@@ -2,7 +2,7 @@ import { tool, type ToolDefinition } from './tool'
 import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
-import { formatSessionOutput, formatAuditResult, formatCompletionSummary, formatPostActionReport } from '../utils/loop-format'
+import { formatSessionOutput, formatAuditResult, formatCompletionSummary, formatPostActionReportLines } from '../utils/loop-format'
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES, type LoopState } from '../loop'
 import { formatDuration, computeElapsedSeconds, resolveUsageFallbackModelLabel, buildAuditorModelChain, auditorModelChoiceAt, usageRoleForPhase } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
@@ -394,7 +394,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ToolDefinition
           )
 
           if (state.postActionReport) {
-            statusLines.push(...formatPostActionReport(state.postActionReport))
+            statusLines.push(...formatPostActionReportLines(state.postActionReport))
           } else if (state.completionSummary) {
             statusLines.push(...formatCompletionSummary(state.completionSummary))
           }

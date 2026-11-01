@@ -21,7 +21,7 @@ export const coderHandoffSchema = z.object({
   notes: z.string().optional(),
 }).strict()
 
-export const auditorHandoffSummarySchema = z.object({
+const auditorHandoffSummarySchema = z.object({
   done: z.array(nonBlank).min(1),
   deviations: z.array(nonBlank).default([]),
   followUps: z.array(nonBlank).default([]),
@@ -44,13 +44,17 @@ export const postActionCompleteSchema = z.object({
 }).strict()
 
 export type CoderHandoffPayload = z.infer<typeof coderHandoffSchema>
-export type AuditorHandoffSummary = z.infer<typeof auditorHandoffSummarySchema>
+type AuditorHandoffSummary = z.infer<typeof auditorHandoffSummarySchema>
 export type AuditorHandoffPayload = z.infer<typeof auditorHandoffSchema>
 export type PostActionCompletePayload = z.infer<typeof postActionCompleteSchema>
 
-export type LoopHandoffRole = 'coder' | 'auditor' | 'post_action'
-export type LoopHandoffPhase = 'coding' | 'auditing' | 'post_action'
-export type LoopHandoffStatus = 'pending' | 'applied' | 'discarded'
+export const LOOP_HANDOFF_ROLES = ['coder', 'auditor', 'post_action'] as const
+export const LOOP_HANDOFF_PHASES = ['coding', 'auditing', 'post_action'] as const
+export const LOOP_HANDOFF_STATUSES = ['pending', 'applied', 'discarded'] as const
+
+export type LoopHandoffRole = (typeof LOOP_HANDOFF_ROLES)[number]
+export type LoopHandoffPhase = (typeof LOOP_HANDOFF_PHASES)[number]
+export type LoopHandoffStatus = (typeof LOOP_HANDOFF_STATUSES)[number]
 
 const handoffSchemas = {
   coder: coderHandoffSchema,
@@ -75,14 +79,15 @@ interface LoopHandoffRecordBase {
   resolvedAt: number | null
 }
 
-export type LoopHandoffRecord = {
-  [R in LoopHandoffRole]: LoopHandoffRecordBase & {
-    role: R
-    payload: LoopHandoffPayloadByRole[R]
-  }
-}[LoopHandoffRole]
+/** A handoff record whose role and payload are known to match. */
+export type LoopHandoffRecordFor<R extends LoopHandoffRole> = LoopHandoffRecordBase & {
+  role: R
+  payload: LoopHandoffPayloadByRole[R]
+}
 
-interface LoopHandoffInputBase {
+export type LoopHandoffRecord = { [R in LoopHandoffRole]: LoopHandoffRecordFor<R> }[LoopHandoffRole]
+
+export interface LoopHandoffInputBase {
   loopName: string
   sessionId: string
   phase: LoopHandoffPhase
@@ -90,15 +95,55 @@ interface LoopHandoffInputBase {
   iteration: number
 }
 
-export type LoopHandoffWriteInput = {
-  [R in LoopHandoffRole]: LoopHandoffInputBase & {
-    role: R
-    payload: LoopHandoffPayloadByRole[R]
-  }
-}[LoopHandoffRole]
+/** A handoff write whose role and payload are known to match. */
+export type LoopHandoffWriteInputFor<R extends LoopHandoffRole> = LoopHandoffInputBase & {
+  role: R
+  payload: LoopHandoffPayloadByRole[R]
+}
+
+export type LoopHandoffWriteInput = { [R in LoopHandoffRole]: LoopHandoffWriteInputFor<R> }[LoopHandoffRole]
+
+export type ParsedHandoffWriteInput =
+  | { ok: true; input: LoopHandoffWriteInputFor<'coder'> }
+  | { ok: true; input: LoopHandoffWriteInputFor<'auditor'> }
+  | { ok: true; input: LoopHandoffWriteInputFor<'post_action'> }
+  | { ok: false; error: z.ZodError }
 
 export function handoffSchemaForRole<R extends LoopHandoffRole>(role: R): (typeof handoffSchemas)[R] {
   return handoffSchemas[role]
+}
+
+/**
+ * Parses a raw tool payload with the role's strict schema and returns the
+ * matching write input. The single write-side validation point: a stored
+ * handoff is only ever built from the parsed payload, so its role and payload
+ * type cannot diverge at the type level either.
+ */
+export function parseHandoffWriteInput(
+  role: LoopHandoffRole,
+  base: LoopHandoffInputBase,
+  raw: unknown,
+): ParsedHandoffWriteInput {
+  switch (role) {
+    case 'coder': {
+      const parsed = coderHandoffSchema.safeParse(raw)
+      return parsed.success
+        ? { ok: true, input: { ...base, role, payload: parsed.data } }
+        : { ok: false, error: parsed.error }
+    }
+    case 'auditor': {
+      const parsed = auditorHandoffSchema.safeParse(raw)
+      return parsed.success
+        ? { ok: true, input: { ...base, role, payload: parsed.data } }
+        : { ok: false, error: parsed.error }
+    }
+    case 'post_action': {
+      const parsed = postActionCompleteSchema.safeParse(raw)
+      return parsed.success
+        ? { ok: true, input: { ...base, role, payload: parsed.data } }
+        : { ok: false, error: parsed.error }
+    }
+  }
 }
 
 export function handoffRoleForPhase(phase: string): LoopHandoffRole | null {
