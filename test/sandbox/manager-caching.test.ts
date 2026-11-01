@@ -27,8 +27,8 @@ describe('SandboxManager caching', () => {
 
   it('should cache checkAvailable and latch templateExists across two start() calls', async () => {
     mockRuntime.getSandboxState = vi.fn()
-      .mockImplementationOnce(async () => false)
-      .mockImplementationOnce(async () => true)
+      .mockImplementationOnce(async () => 'missing' as const)
+      .mockImplementationOnce(async () => 'running' as const)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)

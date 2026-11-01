@@ -79,7 +79,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -107,7 +106,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -166,7 +164,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'proj-test',
         logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify: () => {},
       })
@@ -194,7 +191,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -222,7 +218,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -250,7 +245,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -278,7 +272,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -306,7 +299,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -334,7 +326,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -362,7 +353,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -390,7 +380,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -420,7 +409,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -448,7 +436,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -476,7 +463,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -504,7 +490,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -532,7 +517,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -574,6 +558,12 @@ describe('LoopChangeNotifier', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        executionVariant: null,
+        auditorVariant: null,
+        baseCommit: null,
+        standbySessionId: null,
         loopId: 1,
         projectId: 'test-project',
       }
@@ -602,7 +592,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -629,7 +618,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify: undefined,
       })
