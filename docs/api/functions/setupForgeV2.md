@@ -8,7 +8,7 @@
 
 > **setupForgeV2**(`ctx`): `Promise`\<() => `Promise`\<`void`\>\>
 
-Defined in: [host/v2.ts:80](https://github.com/chriswritescode-dev/opencode-forge/blob/97e0dfb512f2bbce213d7dc25d77dd1f478ee2f9/src/host/v2.ts#L80)
+Defined in: [host/v2.ts:80](https://github.com/chriswritescode-dev/opencode-forge/blob/21c3d43aed91bed67ed8a5cd85f8bea9d5ad6c21/src/host/v2.ts#L80)
 
 ## Parameters
 

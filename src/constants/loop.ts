@@ -11,6 +11,9 @@ export const DEFAULT_AUDITOR_SESSION_REUSE_CONTEXT_PERCENT = 50
 /** Loop session role that owns a retained standby session. */
 export type LoopSessionReuseRole = 'code' | 'auditor'
 
+/** Worktree path of the code-graph index link Forge writes for sandboxed loops. */
+export const CODE_GRAPH_LINK_NAME = '.codegraph'
+
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 /** Maximum number of plan sections a loop may execute. Shared by the
@@ -274,6 +277,11 @@ export function resolveSessionReuseContextPercent(
 /** Collects warnings produced while parsing `loop.sessionReuse`. */
 export function collectSessionReuseConfigWarnings(config: PluginConfig | undefined): string[] {
   return parseSessionReuseConfig(config?.loop?.sessionReuse).warnings
+}
+
+/** Whether Forge code-graph snapshots run in loop worktrees. Default: true. */
+export function isLoopCodeGraphEnabled(config: PluginConfig | undefined): boolean {
+  return config?.loop?.codeGraph?.enabled !== false
 }
 
 export interface LoopPermissionRulesetOptions {

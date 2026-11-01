@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'fs'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import type { Logger } from '../types'
+import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
 import { runCommand } from '../sandbox/process'
 import { WORKTREE_OPENCODE_CONFIG_FILENAME } from '../workspace/worktree-opencode-config'
 
@@ -38,8 +39,13 @@ function isSecretLikePath(path: string): boolean {
   return SECRET_EXTENSIONS.has(base.slice(dotIndex).toLowerCase())
 }
 
-function isForgeTransientPath(path: string): boolean {
-  return path === '.forge' || path.startsWith('.forge/')
+function isForgeManagedPath(path: string): boolean {
+  return (
+    path === '.forge' ||
+    path.startsWith('.forge/') ||
+    path === CODE_GRAPH_LINK_NAME ||
+    path.startsWith(`${CODE_GRAPH_LINK_NAME}/`)
+  )
 }
 
 function validateAuditRef(ref: string): string {
@@ -120,7 +126,7 @@ async function listUntrackedNonIgnoredFiles(toplevel: string, logger: Logger): P
 
 async function assertNoUntrackedSecrets(toplevel: string, logger: Logger): Promise<void> {
   const untracked = await listUntrackedNonIgnoredFiles(toplevel, logger)
-  const secrets = untracked.filter((path) => !isForgeTransientPath(path) && isSecretLikePath(path))
+  const secrets = untracked.filter((path) => !isForgeManagedPath(path) && isSecretLikePath(path))
   if (secrets.length > 0) {
     const preview = secrets.slice(0, 5).join(', ')
     const suffix = secrets.length > 5 ? `, and ${secrets.length - 5} more` : ''
@@ -212,7 +218,7 @@ async function buildSnapshotTree(
   }
   const indexEnv = gitEnv({ GIT_INDEX_FILE: altIndex })
   await assertNoUntrackedSecrets(toplevel, logger)
-  const excludedPaths = ['.forge']
+  const excludedPaths = ['.forge', CODE_GRAPH_LINK_NAME]
   if (!originalTracked.has(WORKTREE_OPENCODE_CONFIG_FILENAME)) excludedPaths.push(WORKTREE_OPENCODE_CONFIG_FILENAME)
   const pathspecs = ['.']
   for (const path of excludedPaths) {
@@ -223,7 +229,7 @@ async function buildSnapshotTree(
     .split('\0')
     .filter((entry) => entry.length > 0)
   const racedSecrets = entries.filter(
-    (entry) => isSecretLikePath(entry) && !isForgeTransientPath(entry) && !originalTracked.has(entry),
+    (entry) => isSecretLikePath(entry) && !isForgeManagedPath(entry) && !originalTracked.has(entry),
   )
   if (racedSecrets.length > 0) {
     const preview = racedSecrets.slice(0, 5).join(', ')
@@ -237,7 +243,7 @@ async function buildSnapshotTree(
   }
   await assertSubmodulesClean(toplevel, stagedGitlinks, logger)
   const removals = entries.filter(
-    (entry) => isForgeTransientPath(entry) || (entry === WORKTREE_OPENCODE_CONFIG_FILENAME && !originalTracked.has(entry)),
+    (entry) => isForgeManagedPath(entry) || (entry === WORKTREE_OPENCODE_CONFIG_FILENAME && !originalTracked.has(entry)),
   )
   await removeIndexEntries(toplevel, removals, indexEnv, logger)
   const tree = (await runGitCommand(toplevel, ['write-tree'], indexEnv, logger, 'write-tree')).trim()

@@ -41,6 +41,12 @@ export interface PostActionConfig {
   model?: string
 }
 
+/** Forge code-graph snapshots inside loop worktrees. */
+export interface LoopCodeGraphConfig {
+  /** Run Forge code-graph snapshots in sandboxed loops. Default: true. */
+  enabled?: boolean
+}
+
 /**
  * Session reuse on same-section retries: a retained standby session is resumed
  * across a phase switch. When its last assistant turn reached the role's
@@ -88,6 +94,8 @@ export interface LoopConfig {
   busyStallTimeoutMs?: number
   /** Session reuse on same-section retries. */
   sessionReuse?: LoopSessionReuseConfig
+  /** Forge code-graph snapshots in sandboxed loop worktrees. */
+  codeGraph?: LoopCodeGraphConfig
   /**
    * Absolute directory paths bind-mounted read-only into loop sandboxes (e.g. an Obsidian vault),
    * so in-container `bash`/`glob`/`grep` resolve the same tree host `read` does. The sandbox mounts

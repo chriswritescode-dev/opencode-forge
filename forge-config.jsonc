@@ -56,6 +56,10 @@
       "coderContextPercent": 50,
       "auditorContextPercent": 50
     },
+    // Forge code-graph snapshots for sandboxed loops (default: true)
+    "codeGraph": {
+      "enabled": true
+    },
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
       "enabled": false,

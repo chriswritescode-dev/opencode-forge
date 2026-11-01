@@ -122,7 +122,7 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  it('create adds .forge/ to git exclude in the worktree', async () => {
+  it('create adds .forge/ and .codegraph to git exclude in the worktree idempotently', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-exclude-'))
     try {
       execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
@@ -133,6 +133,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const configured = adapter.configure(makeInfo('exclude-loop', tmpRepo))
 
       await adapter.create(configured)
+      await adapter.create(configured)
 
       let excludePath = execSync(`git -C "${configured.directory!}" rev-parse --git-path info/exclude`, {
         encoding: 'utf-8',
@@ -142,8 +143,11 @@ describe('createForgeWorkspaceAdapter', () => {
       if (!isAbsolute(excludePath)) {
         excludePath = join(configured.directory!, excludePath)
       }
-      const content = readFileSync(excludePath, 'utf-8')
-      expect(content).toContain('.forge/')
+      const lines = readFileSync(excludePath, 'utf-8')
+        .split('\n')
+        .map((line) => line.trim())
+      expect(lines.filter((line) => line === '.forge/')).toHaveLength(1)
+      expect(lines.filter((line) => line === '.codegraph')).toHaveLength(1)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

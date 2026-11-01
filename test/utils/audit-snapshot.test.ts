@@ -3,7 +3,7 @@ import { execSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 import type { Logger } from '../../src/types'
 
@@ -145,6 +145,32 @@ describe('captureAuditSnapshot', () => {
     expect(paths).toContain('base.txt')
     expect(paths.some((path) => path.startsWith('.forge/'))).toBe(false)
     expect(paths).not.toContain('opencode.jsonc')
+  })
+
+  it('excludes a dangling .codegraph symlink that is not git-ignored', async () => {
+    const repo = initRepo('audit-snapshot-codegraph-')
+    symlinkSync('/nonexistent', join(repo, '.codegraph'))
+    writeFileSync(join(repo, 'changed.txt'), 'changed\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const paths = treePaths(repo, snapshot.commit)
+    expect(paths).toContain('changed.txt')
+    expect(paths).not.toContain('.codegraph')
+  })
+
+  it('captures a worktree whose info/exclude lists a dangling .codegraph symlink', async () => {
+    const repo = initRepo('audit-snapshot-codegraph-exclude-')
+    const excludePath = gitOut(repo, 'rev-parse --git-path info/exclude').trim()
+    appendFileSync(isAbsolute(excludePath) ? excludePath : join(repo, excludePath), '.codegraph\n', 'utf-8')
+    symlinkSync('/nonexistent', join(repo, '.codegraph'))
+    writeFileSync(join(repo, 'changed.txt'), 'changed\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    const paths = treePaths(repo, snapshot.commit)
+    expect(paths).toContain('changed.txt')
+    expect(paths).not.toContain('.codegraph')
   })
 
   it('excludes an opencode.jsonc that escapes the initial untracked listing', async () => {
