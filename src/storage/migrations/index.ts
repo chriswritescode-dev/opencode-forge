@@ -21,6 +21,14 @@ function createLoopAttemptsTable(db: Database): void {
   db.run(loadSql('145_create_loop_attempts.sql'))
 }
 
+function addColumnIfMissing(db: Database, table: string, column: string, filename: string): void {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").all(table)
+  if (tables.length === 0) return
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  if (cols.some((c) => c.name === column)) return
+  db.run(loadSql(filename))
+}
+
 export const migrations: Migration[] = [
   {
     id: '100',
@@ -537,6 +545,14 @@ export const migrations: Migration[] = [
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_handoffs'").all()
       if (tables.length > 0) return
       db.run(loadSql('156_create_loop_handoffs.sql'))
+    },
+  },
+  {
+    id: '157',
+    description: 'Add nullable code_graph reports to section_plans and loop_attempts',
+    apply: (db: Database) => {
+      addColumnIfMissing(db, 'section_plans', 'code_graph', '157_add_code_graph_to_section_plans.sql')
+      addColumnIfMissing(db, 'loop_attempts', 'code_graph', '157_add_code_graph_to_loop_attempts.sql')
     },
   },
 ]

@@ -401,6 +401,28 @@ describe('LoopAttemptsRepo', () => {
     })
   })
 
+  describe('setCodeGraph', () => {
+    test('round-trips the report through latest and list and leaves other attempts untouched', () => {
+      const first = repo.record(baseRecord({ completionKey: 'k1' }))!
+      const second = repo.record(baseRecord({ completionKey: 'k2' }))!
+
+      repo.setCodeGraph(projectId, loopName, second.id, '# report')
+
+      expect(repo.latest(projectId, loopName, 'section:0')!.codeGraph).toBe('# report')
+      const rows = repo.list(projectId, loopName)
+      expect(rows.map(r => r.codeGraph)).toEqual([null, '# report'])
+      expect(rows.map(r => r.id)).toEqual([first.id, second.id])
+    })
+
+    test('does not write to an attempt from another loop or project', () => {
+      const row = repo.record(baseRecord())!
+
+      repo.setCodeGraph('other-project', loopName, row.id, 'leaked report')
+
+      expect(repo.latest(projectId, loopName, 'section:0')!.codeGraph).toBeNull()
+    })
+  })
+
   describe('invalidateSnapshot', () => {
     test('nulls previous commit and diff summary, sets fallback reason, keeps current snapshot', () => {
       const row = repo.record(baseRecord())!

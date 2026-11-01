@@ -6,7 +6,7 @@ export type LoopAttemptOutcome = 'clean' | 'dirty'
 
 export type LoopAttemptRecordInput = Omit<
   LoopAttemptRow,
-  'id' | 'attemptNumber' | 'auditorSessionId' | 'findingsAfter' | 'outcome' | 'createdAt' | 'auditedAt'
+  'id' | 'attemptNumber' | 'auditorSessionId' | 'findingsAfter' | 'outcome' | 'codeGraph' | 'createdAt' | 'auditedAt'
 >
 
 export interface LoopAttemptRow {
@@ -30,6 +30,7 @@ export interface LoopAttemptRow {
   findingsBefore: ReviewFindingRow[]
   findingsAfter: ReviewFindingRow[] | null
   outcome: LoopAttemptOutcome | null
+  codeGraph: string | null
   createdAt: number
   auditedAt: number | null
 }
@@ -40,6 +41,7 @@ export interface LoopAttemptsRepo {
   latest(projectId: string, loopName: string, scope: string): LoopAttemptRow | null
   bindAudit(projectId: string, loopName: string, scope: string, sourceSessionId: string, auditorSessionId: string, replaceSession?: () => void): void
   finishAudit(projectId: string, loopName: string, scope: string, auditorSessionId: string, outcome: LoopAttemptOutcome, findings: ReviewFindingRow[]): boolean
+  setCodeGraph(projectId: string, loopName: string, id: number, text: string | null): void
   invalidateSnapshot(projectId: string, loopName: string, id: number, reason: string): void
 }
 
@@ -64,6 +66,7 @@ interface LoopAttemptRowRaw {
   findings_before: string | null
   findings_after: string | null
   outcome: string | null
+  code_graph: string | null
   created_at: number
   audited_at: number | null
 }
@@ -71,7 +74,7 @@ interface LoopAttemptRowRaw {
 const ATTEMPT_COLUMNS = `id, project_id, loop_name, scope, attempt_number, source_session_id,
   completion_key, auditor_session_id, iteration, worktree_dir, plan_hash, coder_decisions,
   snapshot_commit, snapshot_ref, previous_commit, diff_summary, fallback_reason,
-  findings_before, findings_after, outcome, created_at, audited_at`
+  findings_before, findings_after, outcome, code_graph, created_at, audited_at`
 
 function parseFinding(value: unknown): ReviewFindingRow | null {
   if (typeof value !== 'object' || value === null) return null
@@ -133,6 +136,7 @@ function mapRow(raw: LoopAttemptRowRaw): LoopAttemptRow {
     findingsBefore: raw.findings_before === null ? [] : parseFindings(raw.findings_before) ?? [],
     findingsAfter: raw.findings_after === null ? null : parseFindings(raw.findings_after),
     outcome: parseOutcome(raw.outcome),
+    codeGraph: raw.code_graph,
     createdAt: raw.created_at,
     auditedAt: raw.audited_at,
   }
@@ -198,6 +202,12 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
       ORDER BY id DESC
       LIMIT 1
     )
+  `)
+
+  const stmtSetCodeGraph = db.prepare(`
+    UPDATE loop_attempts
+    SET code_graph = ?
+    WHERE id = ? AND project_id = ? AND loop_name = ?
   `)
 
   const stmtInvalidate = db.prepare(`
@@ -289,6 +299,10 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
     })()
   }
 
+  function setCodeGraph(projectId: string, loopName: string, id: number, text: string | null): void {
+    stmtSetCodeGraph.run(text, id, projectId, loopName)
+  }
+
   function invalidateSnapshot(projectId: string, loopName: string, id: number, reason: string): void {
     db.transaction(() => {
       stmtInvalidate.run(reason, projectId, loopName, id)
@@ -320,6 +334,7 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
     },
     bindAudit,
     finishAudit,
+    setCodeGraph,
     invalidateSnapshot,
   }
 }

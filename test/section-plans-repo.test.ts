@@ -286,6 +286,57 @@ describe('SectionPlansRepo', () => {
       expect(row?.summaryFollowUps).toBeNull()
       expect(row?.completedAt).toBeNull()
     })
+
+    test('clears the stored code graph report so the section is snapshotted again', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCodeGraph(projectId, loopName, 0, '{"changed":["src/a.ts"]}')
+
+      repo.resetForRewind(projectId, loopName, 0)
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBeNull()
+    })
+  })
+
+  describe('setCodeGraph', () => {
+    test('round-trips the report through get and list', () => {
+      const sections: ParsedSection[] = [
+        { index: 0, title: 'A', content: 'A content' },
+        { index: 1, title: 'B', content: 'B content' },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections })
+
+      repo.setCodeGraph(projectId, loopName, 0, '# Code graph\n\nchanged: src/a.ts')
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+      expect(repo.list(projectId, loopName)[0].codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+      expect(repo.list(projectId, loopName)[1].codeGraph).toBeNull()
+      expect(repo.getNextIncomplete(projectId, loopName)?.codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+    })
+
+    test('clears a stored report when set to null', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCodeGraph(projectId, loopName, 0, 'report')
+
+      repo.setCodeGraph(projectId, loopName, 0, null)
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBeNull()
+    })
+  })
+
+  describe('restoreAll', () => {
+    test('preserves the stored code graph report', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCodeGraph(projectId, loopName, 0, '# report')
+      const saved = repo.list(projectId, loopName)
+
+      repo.deleteAll(projectId, loopName)
+      repo.restoreAll(saved)
+
+      expect(repo.get(projectId, loopName, 0)?.codeGraph).toBe('# report')
+    })
   })
 
   describe('getNextIncomplete', () => {
