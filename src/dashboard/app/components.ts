@@ -1330,7 +1330,6 @@ function FindingRows(props: { rows: DashboardLoop['findings'] }) {
 // deep-link hash and the modifier-key guard that lets browser-native
 // open-in-new-tab keep working.
 function LoopLink(props: {
-  className: string
   projectId: () => string | null
   loopName: string
   onOpen: (loopName: string) => void
@@ -1344,7 +1343,7 @@ function LoopLink(props: {
       statuses: [],
       query: '',
     })
-  return html`<a class=${props.className} href=${href} onclick=${(e: MouseEvent) => {
+  return html`<a class="findings-loop-link" href=${href} onclick=${(e: MouseEvent) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
     e.preventDefault()
     props.onOpen(props.loopName)
@@ -1531,7 +1530,7 @@ export function FindingsPanel(props: {
       return html`<div class="findings-panel-list">
         ${gs.map(g => html`<div class="findings-loop-block" data-loop=${() => g.loopName}>
           <div class="findings-loop-head">
-            ${LoopLink({ className: 'findings-loop-link', projectId: props.projectId, loopName: g.loopName, onOpen: props.onOpenLoop })}
+            ${LoopLink({ projectId: props.projectId, loopName: g.loopName, onOpen: props.onOpenLoop })}
             <span class="findings-loop-meta">${() => g.rows.length}</span>
           </div>
           ${FindingRows({ rows: g.rows })}

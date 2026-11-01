@@ -191,26 +191,4 @@ describe('GitService', () => {
     })
   })
 
-  describe('worktreeAddDetached', () => {
-    it('creates a detached worktree checked out at the given commit', () => {
-      const rand = String(Math.random()).slice(2)
-      const wtDir = join(repo, '..', `wt-detached-${rand}`)
-      try {
-        writeFileSync(join(repo, 'detached.txt'), 'x', 'utf-8')
-        execSync('git add detached.txt && git commit -m detached-base', { cwd: repo, encoding: 'utf-8' })
-        const commit = git.revParseHead(repo).stdout.trim()
-
-        const result = git.worktreeAddDetached(repo, wtDir, commit)
-        expect(result.ok).toBe(true)
-        expect(existsSync(wtDir)).toBe(true)
-
-        const wtHead = execSync('git rev-parse HEAD', { cwd: wtDir, encoding: 'utf-8' }).trim()
-        expect(wtHead).toBe(commit)
-        const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: wtDir, encoding: 'utf-8' }).trim()
-        expect(branch).toBe('HEAD')
-      } finally {
-        if (existsSync(wtDir)) rmSync(wtDir, { recursive: true, force: true })
-      }
-    })
-  })
 })

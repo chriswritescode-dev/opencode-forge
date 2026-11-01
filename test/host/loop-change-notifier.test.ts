@@ -4,14 +4,7 @@ import type { Logger } from '../../src/types'
 
 function createHarness() {
   const publishLoopsChanged = vi.fn()
-  const errors: unknown[] = []
-  const logger: Logger = {
-    log: () => {},
-    error: (_message: string, err?: unknown) => {
-      errors.push(err)
-    },
-    debug: () => {},
-  }
+  const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
 
   const notify = createLoopChangeNotifier({
     directory: '/tmp/project',
@@ -20,7 +13,7 @@ function createHarness() {
     logger,
   })
 
-  return { notify, publishLoopsChanged, errors }
+  return { notify, publishLoopsChanged }
 }
 
 describe('createLoopChangeNotifier', () => {
