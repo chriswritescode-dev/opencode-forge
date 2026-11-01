@@ -915,6 +915,7 @@ describe('generated shim', () => {
     const env = { ...process.env }
     delete env[SHIM_ENV_CONTAINER]
     const result = spawnSync(shim!, ['-c', 'echo ok'], { env, encoding: 'utf-8' })
+    rmSync(dir, { recursive: true, force: true })
 
     expect(result.status).toBe(0)
     expect(result.stdout.trim()).toBe('ok')
