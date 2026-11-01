@@ -60,7 +60,7 @@ Loop worktrees use OpenCode 2's native worktree and location model: no environme
 
 ### Upgrading
 
-Migration 157 drops the `goals` and `goal_chunks` tables: goals and the `architect-auto` agent are removed. A goal in progress stops after its current chunk loop, which finishes as an ordinary loop. Cancel running goals with `goal-cancel` before upgrading. Forge does not remove a leftover `.goal-plan-*` planning checkout under `<dataDir>/worktrees`; remove it from the project repository with `git worktree remove --force <dir>` (or delete the directory and run `git worktree prune`), and delete any kept chunk planner session in OpenCode.
+Migration 157 drops the `goals` and `goal_chunks` tables: goals and the `architect-auto` agent are removed. A goal in progress stops after its current chunk loop, which finishes as an ordinary loop. On the version you are upgrading from, cancel running goals with `goal-cancel`. Forge does not remove a leftover `.goal-plan-*` planning checkout under `<dataDir>/worktrees`; remove it from the project repository with `git worktree remove --force <dir>` (or delete the directory and run `git worktree prune`), and delete any kept chunk planner session in OpenCode.
 
 ## What Forge Adds
 

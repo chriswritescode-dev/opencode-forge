@@ -1,16 +1,14 @@
 import { describe, test, expect, vi } from 'vitest'
 import { createLoopChangeNotifier } from '../../src/host/forge-core'
-import type { Logger } from '../../src/types'
+import { createMockLogger } from '../helpers/logger'
 
 function createHarness() {
   const publishLoopsChanged = vi.fn()
-  const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
-
   const notify = createLoopChangeNotifier({
     directory: '/tmp/project',
     projectId: 'test-project',
     publishLoopsChanged,
-    logger,
+    logger: createMockLogger(),
   })
 
   return { notify, publishLoopsChanged }
