@@ -3,7 +3,6 @@ import { existsSync, readFileSync, appendFileSync, realpathSync } from 'fs'
 import type { Logger, LoopSandboxSettings } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { LOOP_SANDBOX_EXTRA_KEY, readLoopSandboxSettings } from '../sandbox/loop-settings'
-import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
 import { getForgeWorkspaceBaseRef, getForgeWorkspaceBranch } from './forge-worktree'
 import { describeBranchInUse, describeBranchReuseConflict } from './loop-branch'
 import { forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot, resolveLoopBranchName } from './forge-naming'
@@ -337,7 +336,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
 
       // Idempotently add .forge/ (overflow/scratch) and any forge-written
       // opencode config to git exclude so they never enter loop commits.
-      const excludePatterns = ['.forge/', CODE_GRAPH_LINK_NAME]
+      const excludePatterns = ['.forge/']
       const sandboxProvisioned = Boolean(sandboxManager) && !isLoopSandboxOptedOut(info)
       const cfgResult = writeWorktreeOpencodeConfig({
         directory: info.directory,

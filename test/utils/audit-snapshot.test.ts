@@ -159,6 +159,19 @@ describe('captureAuditSnapshot', () => {
     expect(paths).not.toContain('.codegraph')
   })
 
+  it('keeps a .codegraph directory the repository tracks, including its changes', async () => {
+    const repo = initRepo('audit-snapshot-codegraph-tracked-')
+    mkdirSync(join(repo, '.codegraph'))
+    writeFileSync(join(repo, '.codegraph', 'config.json'), '{}\n', 'utf-8')
+    execSync('git add -A && git commit -m "track codegraph"', { cwd: repo, encoding: 'utf-8' })
+    writeFileSync(join(repo, '.codegraph', 'config.json'), '{"changed":true}\n', 'utf-8')
+
+    const snapshot = await captureAuditSnapshot(repo, auditRef(), logger)
+
+    expect(treePaths(repo, snapshot.commit)).toContain('.codegraph/config.json')
+    expect(gitOut(repo, `show ${snapshot.commit}:.codegraph/config.json`)).toBe('{"changed":true}\n')
+  })
+
   it('captures a worktree whose info/exclude lists a dangling .codegraph symlink', async () => {
     const repo = initRepo('audit-snapshot-codegraph-exclude-')
     const excludePath = gitOut(repo, 'rev-parse --git-path info/exclude').trim()

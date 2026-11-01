@@ -9,6 +9,8 @@ export interface GitResult {
 
 export interface GitService {
   addAll(cwd: string): GitResult
+  /** Drops `path` from the index without touching the working tree (`git rm --cached --ignore-unmatch`). */
+  removeFromIndex(cwd: string, path: string): GitResult
   /** True when `path` (file or directory) is tracked by git in `cwd`. */
   isPathTracked(cwd: string, path: string): boolean
   statusPorcelain(cwd: string): GitResult
@@ -58,6 +60,10 @@ export function createGitService(): GitService {
   return {
     addAll(cwd: string): GitResult {
       return runGit(['add', '-A'], cwd)
+    },
+
+    removeFromIndex(cwd: string, path: string): GitResult {
+      return runGit(['rm', '--cached', '-q', '--ignore-unmatch', '--', path], cwd)
     },
 
     isPathTracked(cwd: string, path: string): boolean {

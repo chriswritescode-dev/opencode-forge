@@ -524,7 +524,7 @@ Creates and manages git worktrees for isolated loop execution, registered throug
 | `forge-workspace-metadata.ts` | `<worktree>/.forge/workspace.json` read/write/list |
 | `loop-branch.ts` | `describeBranchInUse()`, `describeBranchReuseConflict()`, `validateLoopBranchRequest()` — branch reuse and `execute-plan` branch/base-ref validation |
 | `pending-teardown.ts` | Registry of pending teardown contexts for commit message building |
-| `worktree-commit.ts` | Teardown commit building |
+| `worktree-commit.ts` | `commitWorktreeChanges`: the teardown and section checkpoint commits; strips the forge-written `opencode.jsonc`, unstages Forge's `.codegraph` cache link (`isForgeCodeGraphLink`), and commits only when something is staged |
 | `worktree-opencode-config.ts` | Writes `opencode.jsonc` into a fresh worktree |
 | `classify-stale.ts` | Decision function for stale forge workspace handling |
 | `remove-with-context.ts` | Workspace removal with teardown context |

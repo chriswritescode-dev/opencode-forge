@@ -109,6 +109,19 @@ export function buildCodeGraphPromptBlock(relPath: string, point: 'section start
   ].join('\n')
 }
 
+/**
+ * Whether `worktreeDir/.codegraph` is the link Forge creates to the sandbox cache disk, as
+ * opposed to a `.codegraph` the repository itself provides.
+ */
+export function isForgeCodeGraphLink(worktreeDir: string): boolean {
+  const linkPath = join(worktreeDir, CODE_GRAPH_LINK_NAME)
+  try {
+    return lstatSync(linkPath).isSymbolicLink() && readlinkSync(linkPath) === CODE_GRAPH_CACHE_DIR
+  } catch {
+    return false
+  }
+}
+
 function ensureCacheLink(worktreeDir: string, logger: Logger): boolean {
   const linkPath = join(worktreeDir, CODE_GRAPH_LINK_NAME)
   try {

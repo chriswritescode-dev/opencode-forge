@@ -122,7 +122,7 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  it('create adds .forge/ and .codegraph to git exclude in the worktree idempotently', async () => {
+  it('create adds .forge/ to git exclude idempotently and leaves .codegraph out of it', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-exclude-'))
     try {
       execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
@@ -147,7 +147,7 @@ describe('createForgeWorkspaceAdapter', () => {
         .split('\n')
         .map((line) => line.trim())
       expect(lines.filter((line) => line === '.forge/')).toHaveLength(1)
-      expect(lines.filter((line) => line === '.codegraph')).toHaveLength(1)
+      expect(lines.some((line) => line.startsWith('.codegraph'))).toBe(false)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }
