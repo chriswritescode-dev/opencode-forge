@@ -203,10 +203,12 @@ function restrictCodeGraphRanges(
   return Object.fromEntries(Object.entries(ranges).filter(([file]) => kept.has(file)))
 }
 
-function formatFileSection(file: CodeGraphFileReport): string[] {
-  if (file.dependents.length === 0 && file.symbols.length === 0) return []
+function formatFileSection(file: CodeGraphFileReport, tests: Set<string>): string[] {
+  if (tests.has(file.path)) return []
+  const dependents = file.dependents.filter((dependent) => !tests.has(dependent))
+  if (dependents.length === 0 && file.symbols.length === 0) return []
   const lines = ['', `## ${file.path}`]
-  if (file.dependents.length > 0) lines.push('', `Used by: ${file.dependents.join(', ')}`)
+  if (dependents.length > 0) lines.push('', `Used by: ${dependents.join(', ')}`)
   if (file.symbols.length > 0) {
     lines.push(
       '',
@@ -259,6 +261,23 @@ function formatRemovedSymbolSections(removedSymbols: CodeGraphImpactReport['remo
   return lines
 }
 
+function formatAffectedTestSections(files: CodeGraphFileReport[], tests: Set<string>): string[] {
+  if (tests.size === 0) return ['', '_None found._']
+  const lines: string[] = []
+  const listed = new Set<string>()
+  const pushGroup = (heading: string, group: string[]) => {
+    if (group.length === 0) return
+    lines.push('', `### ${heading}`, '', ...group.map((test) => `- ${test}`))
+    for (const test of group) listed.add(test)
+  }
+  for (const file of files) {
+    if (!tests.has(file.path)) pushGroup(file.path, file.dependents.filter((dependent) => tests.has(dependent)))
+  }
+  pushGroup('Changed test files', files.map((file) => file.path).filter((path) => tests.has(path) && !listed.has(path)))
+  pushGroup('Through other imports', [...tests].filter((test) => !listed.has(test)))
+  return lines
+}
+
 function formatCodeGraphReport(input: {
   title: string
   takenAt: Date
@@ -267,6 +286,7 @@ function formatCodeGraphReport(input: {
   impact?: CodeGraphImpactReport
 }): string {
   const title = input.title.replace(/\s+/g, ' ').trim() || 'snapshot'
+  const tests = new Set(input.affectedTests)
   const lines = [
     `# Code graph: ${title}`,
     '',
@@ -277,13 +297,12 @@ function formatCodeGraphReport(input: {
     ...input.files.map((file) => `- ${file.path}`),
     '',
     '## Tests that import these files',
-    '',
-    ...(input.affectedTests.length > 0 ? input.affectedTests.map((test) => `- ${test}`) : ['_None found._']),
+    ...formatAffectedTestSections(input.files, tests),
     '',
     'For tests that reach these files indirectly, run `codegraph affected <files> -d 2`.',
   ]
   if (input.impact) lines.push(...formatCallerSections(input.impact), ...formatRemovedSymbolSections(input.impact.removedSymbols))
-  for (const file of input.files) lines.push(...formatFileSection(file))
+  for (const file of input.files) lines.push(...formatFileSection(file, tests))
   lines.push('')
   return lines.join('\n')
 }

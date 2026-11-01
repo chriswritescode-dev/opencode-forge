@@ -1,15 +1,20 @@
-import { test, expect } from 'vitest'
+import { test, expect, afterAll } from 'vitest'
 import { Database } from 'bun:sqlite'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { openForgeDatabase } from '../src/storage/database'
 import { sweepExpiredGoals, sweepExpiredLoops } from '../src/storage/sweep'
 
+const tempDir = mkdtempSync(join(tmpdir(), 'forge-sweep-'))
+
+afterAll(() => {
+  rmSync(tempDir, { recursive: true, force: true })
+})
+
 function createTempDb(): string {
-  const dir = tmpdir()
-  const dbPath = join(dir, `forge-test-${randomUUID()}.db`)
-  return dbPath
+  return join(tempDir, `forge-test-${randomUUID()}.db`)
 }
 
 test('sweepExpiredLoops deletes only non-running rows older than ttl', () => {

@@ -1,5 +1,6 @@
-import { test, expect, beforeEach } from 'vitest'
+import { test, expect, beforeEach, afterAll } from 'vitest'
 import { Database } from 'bun:sqlite'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
@@ -8,10 +9,14 @@ import { migrations } from '../src/storage/migrations'
 import { createLoopAttemptsRepo } from '../src/storage/repos/loop-attempts-repo'
 import type { LoopAttemptRecordInput } from '../src/storage/repos/loop-attempts-repo'
 
+const tempDir = mkdtempSync(join(tmpdir(), 'forge-migrations-'))
+
+afterAll(() => {
+  rmSync(tempDir, { recursive: true, force: true })
+})
+
 function createTempDb(): string {
-  const dir = tmpdir()
-  const dbPath = join(dir, `forge-test-${randomUUID()}.db`)
-  return dbPath
+  return join(tempDir, `forge-test-${randomUUID()}.db`)
 }
 
 /**

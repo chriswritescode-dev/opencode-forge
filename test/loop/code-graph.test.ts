@@ -499,11 +499,59 @@ describe('createCodeGraphSnapshotter', () => {
       files: ['a.ts', 'c.ts', 'test/c.test.ts'],
     })
 
-    expect(report).toContain('## Tests that import these files\n\n- test/c.test.ts\n\nFor tests that reach these files indirectly')
+    expect(report).toContain('## Tests that import these files\n\n### c.ts\n\n- test/c.test.ts\n\nFor tests that reach these files indirectly')
     expect(report).not.toContain('test/a.test.ts')
-    expect(report).toContain('## c.ts\n\nUsed by: test/c.test.ts')
+    expect(report).toContain('## c.ts\n\n- `symbolOf_c.ts`')
+    expect(report).not.toContain('Used by: test/c.test.ts')
     expect(report).not.toContain('## test/c.test.ts')
     expect(report).not.toContain('No dependents')
+  })
+
+  it('groups affected tests by the changed file they import and omits test-file symbols', async () => {
+    const worktreeDir = createWorktree()
+    mkdirSync(join(worktreeDir, 'src'), { recursive: true })
+    for (const file of ['src/schemas.ts', 'src/api.ts', 'src/own.test.ts']) writeFileSync(join(worktreeDir, file), 'export {}\n')
+    const symbol = (name: string) => ({ name, kind: 'function', signature: null, startLine: 1 })
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(
+      scriptedTarget(worktreeDir, {
+        ok: true,
+        index: 'synced',
+        files: [
+          { path: 'src/schemas.ts', symbols: [symbol('schema')], dependents: ['src/api.ts', 'test/a.test.ts', 'test/b.test.ts'] },
+          { path: 'src/api.ts', symbols: [symbol('fetchThing')], dependents: ['test/b.test.ts'] },
+          { path: 'src/own.test.ts', symbols: [symbol('mockHelper')], dependents: [] },
+        ],
+        affectedTests: ['src/own.test.ts', 'test/a.test.ts', 'test/b.test.ts', 'test/deep.test.ts'],
+      }),
+      { title: 'grouped', files: ['src/schemas.ts', 'src/api.ts', 'src/own.test.ts'] },
+    )
+
+    expect(report).toContain(
+      [
+        '## Tests that import these files',
+        '',
+        '### src/schemas.ts',
+        '',
+        '- test/a.test.ts',
+        '- test/b.test.ts',
+        '',
+        '### src/api.ts',
+        '',
+        '- test/b.test.ts',
+        '',
+        '### Changed test files',
+        '',
+        '- src/own.test.ts',
+        '',
+        '### Through other imports',
+        '',
+        '- test/deep.test.ts',
+      ].join('\n'),
+    )
+    expect(report).toContain('## src/schemas.ts\n\nUsed by: src/api.ts\n\n- `schema` (function) — line 1')
+    expect(report).toContain('## src/api.ts\n\n- `fetchThing` (function) — line 1')
+    expect(report).not.toContain('## src/own.test.ts')
+    expect(report).not.toContain('mockHelper')
   })
 
   it('drops missing files, queries the rest in one exec, and never truncates the report', async () => {

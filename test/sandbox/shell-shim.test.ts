@@ -1,6 +1,6 @@
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect, vi, afterEach } from 'vitest'
 import { spawnSync } from 'child_process'
-import { mkdtempSync, statSync, readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'fs'
+import { mkdtempSync, statSync, readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -14,6 +14,18 @@ import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
+const tempDirs: string[] = []
+
+function makeTempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  tempDirs.push(dir)
+  return dir
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
 function cleanEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env }
   delete env[SHIM_ENV_CONTAINER]
@@ -22,7 +34,7 @@ function cleanEnv(): NodeJS.ProcessEnv {
 
 describe('ensureShellShim', () => {
   test('writes an executable shim and is idempotent', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const dir = makeTempDir('forge-shim-')
     const path = ensureShellShim(dir, logger)
 
     expect(path).toBe(join(dir, SHELL_SHIM_FILENAME))
@@ -35,7 +47,7 @@ describe('ensureShellShim', () => {
   })
 
   test('rewrites the shim when content drifts', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const dir = makeTempDir('forge-shim-')
     const path = ensureShellShim(dir, logger)!
     writeFileSync(path, '#!/bin/sh\nexit 3\n')
 
@@ -53,7 +65,7 @@ describe('ensureShellShim', () => {
 
 describe('shim behavior (executed via sh)', () => {
   test('passthrough: runs the command with the baked host shell when no container env is set', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
 
@@ -64,7 +76,7 @@ describe('shim behavior (executed via sh)', () => {
   })
 
   test('fail-closed: when a container is set but msb is unavailable, the command never runs on the host', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
     const marker = join(dir, 'escaped')
@@ -80,7 +92,7 @@ describe('shim behavior (executed via sh)', () => {
   })
 
   test('routes into msb exec with container, flags, and command when container env is set', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
     const binDir = join(dir, 'bin')
@@ -88,7 +100,7 @@ describe('shim behavior (executed via sh)', () => {
     const argsFile = join(dir, 'msb-args')
     writeFileSync(join(binDir, 'msb'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\n`, { mode: 0o755 })
 
-    const cwd = mkdtempSync(join(tmpdir(), 'forge-cwd-'))
+    const cwd = makeTempDir('forge-cwd-')
     const result = spawnSync(shim, ['-c', 'echo in-container'], {
       cwd,
       env: { ...cleanEnv(), PATH: [binDir, process.env.PATH ?? ''].join(':'), [SHIM_ENV_CONTAINER]: 'forge-loop-x' },
@@ -101,7 +113,7 @@ describe('shim behavior (executed via sh)', () => {
   })
 
   test('propagates a non-zero msb exit verbatim', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-shim-'))
+    const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
     const binDir = join(dir, 'bin')

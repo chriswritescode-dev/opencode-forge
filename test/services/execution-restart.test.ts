@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync } from 'fs'
+import { describe, test, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -2192,6 +2192,7 @@ describe('handleLoopRestart restartability rules', () => {
     const loopName = 'branch-survives-loop'
     // Real repo whose forge/<loopName> branch outlives the pruned worktree directory.
     const repoDir = mkdtempSync(join(tmpdir(), 'restart-branch-repo-'))
+    onTestFinished(() => rmSync(repoDir, { recursive: true, force: true }))
     const git = (...args: string[]) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf-8' })
     git('init', '-q')
     git('-c', 'user.email=t@t.co', '-c', 'user.name=test', 'commit', '--allow-empty', '-q', '-m', 'init')
@@ -2231,6 +2232,7 @@ describe('handleLoopRestart restartability rules', () => {
   test('sandbox starts after the worktree is recreated, using the refreshed directory', async () => {
     const loopName = 'sandbox-order-loop'
     const repoDir = mkdtempSync(join(tmpdir(), 'restart-sandbox-repo-'))
+    onTestFinished(() => rmSync(repoDir, { recursive: true, force: true }))
     const git = (...args: string[]) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf-8' })
     git('init', '-q')
     git('-c', 'user.email=t@t.co', '-c', 'user.name=test', 'commit', '--allow-empty', '-q', '-m', 'init')
