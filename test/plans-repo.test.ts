@@ -43,6 +43,19 @@ describe('PlansRepo', () => {
       const row = repo.getForSession(projectId, sessionId)
       expect(row?.content).toBe('Second content')
     })
+
+    test('stores plans for different sessions independently', () => {
+      const plan1 = '# Plan for Session 1'
+      const plan2 = '# Plan for Session 2'
+
+      repo.writeForSession(projectId, 'session-1', plan1)
+      repo.writeForSession(projectId, 'session-2', plan2)
+
+      expect(repo.getForSession(projectId, 'session-1')?.content).toBe(plan1)
+      expect(repo.getForSession(projectId, 'session-2')?.content).toBe(plan2)
+      expect(repo.getForSession(projectId, 'session-1')?.content).not.toBe(plan2)
+      expect(repo.getForSession(projectId, 'session-2')?.content).not.toBe(plan1)
+    })
   })
 
   describe('writeForLoop', () => {
