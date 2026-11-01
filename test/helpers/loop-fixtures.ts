@@ -2,10 +2,11 @@ import { Database } from 'bun:sqlite'
 import { vi } from 'vitest'
 import type { ForgeClient } from '../../src/client/port'
 import type { createLoopEventHandler } from '../../src/hooks'
-import { createLoop, type Loop, type OnTerminatedCallback } from '../../src/loop/runtime'
+import { createLoop, type Loop, type LoopRuntimeDeps, type OnTerminatedCallback } from '../../src/loop/runtime'
 import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import type { ForgeExecutionServiceDeps } from '../../src/services/execution'
+import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopsRepo, type LoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -113,6 +114,8 @@ export function buildLoopRuntime(
     onTerminated?: OnTerminatedCallback
     withUsageRepo?: boolean
     getParentSessionId?: (sessionId: string) => Promise<string | null>
+    sandboxManager?: LoopRuntimeDeps['sandboxManager']
+    loopAttemptsRepo?: LoopAttemptsRepo
   } = {},
 ) {
   const projectId = options.projectId ?? 'test-project'
@@ -136,7 +139,8 @@ export function buildLoopRuntime(
     client,
     logger,
     getConfig: () => config,
-    sandboxManager: undefined,
+    sandboxManager: options.sandboxManager,
+    loopAttemptsRepo: options.loopAttemptsRepo,
     loopConfig: options.loopConfig,
     dataDir: options.dataDir,
     directory: options.directory,

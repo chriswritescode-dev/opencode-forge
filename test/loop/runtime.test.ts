@@ -1,9 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { execSync } from 'child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { LoopState } from '../../src/loop/state'
-import { __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { __resetLoopRuntimeSharedState, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
+import { createLoopService } from '../../src/loop/service'
+import { createLoopAttemptsRepo, type LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
@@ -14,6 +17,7 @@ import type { PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
+import { createMockLogger } from '../helpers/logger'
 import { makeLoopState, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
@@ -76,6 +80,8 @@ describe('Loop Runtime', () => {
       stallConfig?: LoopConfig
       withUsageRepo?: boolean
       getParentSessionId?: (sessionId: string) => Promise<string | null>
+      sandboxManager?: LoopRuntimeDeps['sandboxManager']
+      loopAttemptsRepo?: LoopAttemptsRepo
     } = {},
   ) => {
     const runtime = buildLoopRuntime(db, {
@@ -86,6 +92,8 @@ describe('Loop Runtime', () => {
       dataDir: tempDir,
       withUsageRepo: overrides.withUsageRepo,
       getParentSessionId: overrides.getParentSessionId,
+      sandboxManager: overrides.sandboxManager,
+      loopAttemptsRepo: overrides.loopAttemptsRepo,
     })
 
     loopService = runtime.loopService
@@ -4609,7 +4617,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       mkdirSync(join(worktreeDir, 'src'), { recursive: true })
       writeFileSync(join(worktreeDir, 'src/a.ts'), 'export const a = 1\n')
       writeFileSync(join(worktreeDir, 'src/b.ts'), 'export const b = 1\n')
-      const state = makeState({
+      const state = makeLoopState({
         loopName,
         sessionId,
         phase,
@@ -4652,7 +4660,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
       })
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
       })
@@ -4682,7 +4690,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
       })
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         loopConfig: { codeGraph: { enabled: false } },
         sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
@@ -4702,7 +4710,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
       })
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         sandboxManager: fakeSandboxManager(async () => {
           throw new Error('sandbox unavailable')
@@ -4724,7 +4732,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
       })
-      const { loop, logs } = createRuntime({
+      const { loop, logs } = buildRuntime({
         client,
         sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
       })
@@ -4772,7 +4780,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const worktreeDir = initAttemptWorktree('attempt-cg-')
       const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
       const loopAttemptsRepo = createLoopAttemptsRepo(db)
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         loopAttemptsRepo,
         sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
@@ -4803,7 +4811,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const worktreeDir = initAttemptWorktree('attempt-cg-dirty-')
       const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
       const loopAttemptsRepo = createLoopAttemptsRepo(db)
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         loopAttemptsRepo,
         sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
@@ -4843,7 +4851,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const worktreeDir = initAttemptWorktree('attempt-cg-fail-')
       const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
       const loopAttemptsRepo = createLoopAttemptsRepo(db)
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         loopAttemptsRepo,
         sandboxManager: fakeSandboxManager(async () => {
@@ -4893,7 +4901,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
       const loopAttemptsRepo = createLoopAttemptsRepo(db)
       const gated = gatedSandboxManager()
-      const { loop, logs } = createRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
+      const { loop, logs } = buildRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
 
       const loopName = 'codegraph-cancel'
       const sessionId = 'codegraph-cancel-coder'
@@ -4918,7 +4926,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
       const loopAttemptsRepo = createLoopAttemptsRepo(db)
       const gated = gatedSandboxManager()
-      const { loop } = createRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
+      const { loop } = buildRuntime({ client, loopAttemptsRepo, sandboxManager: gated.manager })
 
       const loopName = 'codegraph-idle-gap'
       const sessionId = 'codegraph-idle-gap-coder'
@@ -4947,7 +4955,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
       })
       const gated = gatedSandboxManager()
-      const { loop } = createRuntime({ client, sandboxManager: gated.manager })
+      const { loop } = buildRuntime({ client, sandboxManager: gated.manager })
 
       const loopName = 'codegraph-section-gap'
       const auditSessionId = 'codegraph-section-gap-audit'
@@ -4967,15 +4975,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     function createServiceWithConfig(codeGraphEnabled: boolean, attemptsRepo?: LoopAttemptsRepo) {
+      const runtime = buildRuntime()
       return createLoopService(
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
+        runtime.loopsRepo,
+        runtime.plansRepo,
+        runtime.reviewFindingsRepo,
         PROJECT_ID,
-        { log: () => {}, error: () => {}, debug: () => {} },
+        createMockLogger(),
         undefined,
         undefined,
-        sectionPlansRepo,
+        runtime.sectionPlansRepo,
         undefined,
         undefined,
         undefined,
@@ -5019,7 +5028,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const attemptsRepo = createLoopAttemptsRepo(db)
       const loopName = 'codegraph-gate-disabled'
       const service = createServiceWithConfig(false, attemptsRepo)
-      const state = makeState({
+      const state = makeLoopState({
         loopName,
         sessionId: 'gate-off-session',
         phase: 'coding',
@@ -5040,7 +5049,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const attemptsRepo = createLoopAttemptsRepo(db)
       const loopName = 'codegraph-gate-sandbox'
       const service = createServiceWithConfig(true, attemptsRepo)
-      const state = makeState({
+      const state = makeLoopState({
         loopName,
         sessionId: 'gate-sandbox-session',
         phase: 'coding',

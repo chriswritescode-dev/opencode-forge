@@ -526,7 +526,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('a loop cancelled during the code-graph snapshot sends no prompt and starts no watchdog', async () => {
-    const { deps, loopsRepo, promptAsyncMock } = buildDeps()
+    const { deps, loopsRepo, promptAsyncMock } = setupAttach()
     const loopName = 'cancelled-during-snapshot'
 
     deps.loop.snapshotSectionCodeGraph = async () => {
