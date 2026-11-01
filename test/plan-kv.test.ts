@@ -3,32 +3,23 @@ import type { Database } from 'bun:sqlite'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlanTools } from '../src/tools/plan-kv'
-import { openForgeDatabase } from '../src/storage/database'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
-import type { Logger } from '../src/types'
+import { createMockLogger } from './helpers/logger'
+import { createTestDb } from './helpers/test-db'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-kv-test-' + Date.now()
 
-function createTestDb(): Database {
-  return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
-}
-
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('plan-read', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     loopsRepo = createLoopsRepo(db)
 
     plansRepo = createPlansRepo(db)
@@ -67,7 +58,7 @@ describe('plan-read', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   test('reads plan with line-numbered output', async () => {
@@ -224,12 +215,14 @@ describe('plan-read', () => {
 
 describe('plan-read with loop session', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     loopsRepo = createLoopsRepo(db)
 
     plansRepo = createPlansRepo(db)
@@ -254,7 +247,7 @@ describe('plan-read with loop session', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   test('resolves plan key to worktree name for loop sessions', async () => {
@@ -281,12 +274,14 @@ describe('plan-read with loop session', () => {
 
 describe('plan-read with recent plans', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     loopsRepo = createLoopsRepo(db)
 
     plansRepo = createPlansRepo(db)
@@ -313,7 +308,7 @@ describe('plan-read with recent plans', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   test('lists recent project plans', async () => {

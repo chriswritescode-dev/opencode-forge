@@ -1,37 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
 import { isWorkspaceNotFoundError } from '../src/hooks/loop'
 import { createWorkspaceLifecycle } from '../src/loop/runtime-workspace'
-import type { LoopState } from '../src/loop/state'
-import type { Logger } from '../src/types'
 import { createFakeForgeClient } from './helpers/fake-client'
+import { makeLoopState } from './helpers/loop-fixtures'
+import { createMockLogger } from './helpers/logger'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
-function makeState(overrides: Partial<LoopState> = {}): LoopState {
-  return {
-    active: true,
-    sessionId: 'sess-1',
-    loopName: 'branch-loop',
-    worktreeDir: '/tmp/wt',
-    projectDir: '/tmp/project',
-    worktreeBranch: 'feature/custom',
-    iteration: 1,
-    maxIterations: 0,
-    startedAt: new Date().toISOString(),
-    errorCount: 0,
-    auditCount: 0,
-    status: 'running',
-    worktree: true,
-    phase: 'coding',
-    currentSectionIndex: 0,
-    totalSections: 0,
-    ...overrides,
-  }
-}
+const STATE_DEFAULTS = {
+  sessionId: 'sess-1',
+  loopName: 'branch-loop',
+  worktreeDir: '/tmp/wt',
+  projectDir: '/tmp/project',
+  worktreeBranch: 'feature/custom',
+  maxIterations: 0,
+} as const
 
 describe('workspace recovery', () => {
   describe('isWorkspaceNotFoundError', () => {
@@ -70,7 +53,7 @@ describe('workspace recovery', () => {
       })
       const loopService = { clearWorkspaceId: vi.fn(), setWorkspaceId: vi.fn() } as any
       const lifecycle = createWorkspaceLifecycle({ client, logger: mockLogger, loopService })
-      const state = makeState({ workspaceId: 'ws_missing' })
+      const state = makeLoopState({ ...STATE_DEFAULTS, workspaceId: 'ws_missing' })
 
       const result = await lifecycle.recoverFromMissingWorkspace('branch-loop', state, 'sess-1', 'test')
 
@@ -89,7 +72,7 @@ describe('workspace recovery', () => {
       })
       const loopService = { clearWorkspaceId: vi.fn(), setWorkspaceId: vi.fn() } as any
       const lifecycle = createWorkspaceLifecycle({ client, logger: mockLogger, loopService })
-      const state = makeState({ workspaceId: undefined })
+      const state = makeLoopState({ ...STATE_DEFAULTS, workspaceId: undefined })
 
       const result = await lifecycle.ensureWorkspaceForLoop('branch-loop', state, 'test')
 

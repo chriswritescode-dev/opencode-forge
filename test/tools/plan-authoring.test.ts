@@ -2,28 +2,12 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createPlanAuthoringTools } from '../../src/tools/plan-authoring'
 import { createPlanTools } from '../../src/tools/plan-kv'
-import { createLoopService } from '../../src/loop/service'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { openForgeDatabase } from '../../src/storage/database'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
-import type { Logger } from '../../src/types'
-import type { ToolContext } from '../../src/tools/types'
+import { buildToolContext } from '../helpers/tool-context'
+import { createTestDb } from '../helpers/test-db'
 
 const TEST_DIR = '/tmp/opencode-plan-write-test-' + Date.now()
-
-function createTestDb(): Database {
-  return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
-}
-
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
 
 function insertRunningLoop(
   loopsRepo: ReturnType<typeof createLoopsRepo>,
@@ -60,39 +44,32 @@ function insertRunningLoop(
       totalSections: 0,
       executionVariant: null,
       auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     },
     { lastAuditResult: null },
   )
 }
 
 function createToolContext(db: Database) {
-  const loopsRepo = createLoopsRepo(db)
-  const plansRepo = createPlansRepo(db)
-  const reviewFindingsRepo = createReviewFindingsRepo(db)
-  const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
+  const ctx = buildToolContext({ db, directory: TEST_DIR })
   return {
-    ctx: {
-      plansRepo,
-      loopsRepo,
-      reviewFindingsRepo,
-      projectId: 'test-project',
-      logger: mockLogger,
-      loop: { service: loopService },
-      directory: TEST_DIR,
-    } as unknown as ToolContext,
-    plansRepo,
-    loopsRepo,
+    ctx,
+    plansRepo: ctx.plansRepo,
+    loopsRepo: ctx.loopsRepo,
   }
 }
 
 describe('plan-write', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let tools: ReturnType<typeof createPlanAuthoringTools>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     const env = createToolContext(db)
     tools = createPlanAuthoringTools(env.ctx)
     plansRepo = env.plansRepo
@@ -100,7 +77,7 @@ describe('plan-write', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   test('describes the same create-or-overwrite interaction as Write', () => {
@@ -219,12 +196,14 @@ ${body}
 
 describe('plan-edit', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let tools: ReturnType<typeof createPlanAuthoringTools>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     const env = createToolContext(db)
     tools = createPlanAuthoringTools(env.ctx)
     plansRepo = env.plansRepo
@@ -232,7 +211,7 @@ describe('plan-edit', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   const BASE_PLAN = `# Plan
@@ -513,16 +492,16 @@ Line B`
 
 describe('createTools registration', () => {
   test('plan-write is registered alongside plan-read', async () => {
-    const db = createTestDb()
+    const testDb = createTestDb()
     try {
-      const env = createToolContext(db)
+      const env = createToolContext(testDb.db)
       // Simulate the full createTools spread by combining plan-kv and plan-authoring
       const tools = { ...createPlanTools(env.ctx), ...createPlanAuthoringTools(env.ctx) }
       expect(tools['plan-read']).toBeDefined()
       expect(tools['plan-write']).toBeDefined()
       expect(tools['plan-edit']).toBeDefined()
     } finally {
-      db.close()
+      testDb.cleanup()
     }
   })
 })

@@ -1,11 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createLoop } from '../../src/loop/runtime'
 import type { LoopService } from '../../src/loop/service'
-import type { LoopState } from '../../src/loop/state'
-import type { ForgeClient } from '../../src/client/port'
-import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { blockingBugFindings } from '../../src/loop/section-scope'
+import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 
 /**
  * Build a minimal fake LoopService that records calls to setState and
@@ -17,6 +15,7 @@ function makeFakeLoopService(): LoopService {
     getActiveState: vi.fn(() => null),
     getAnyState: vi.fn(() => null),
     setState: vi.fn(),
+    buildPlanInitialPrompt: vi.fn(() => ''),
     restoreState: vi.fn(),
     deleteState: vi.fn(),
     registerLoopSession: vi.fn(),
@@ -24,14 +23,18 @@ function makeFakeLoopService(): LoopService {
     resolveActiveLoopForSession: vi.fn(() => null),
     buildContinuationPrompt: vi.fn(() => ''),
     buildAuditPrompt: vi.fn(() => ''),
+    buildCoderFollowUpPrompt: vi.fn(() => ''),
+    buildAuditFollowUpPrompt: vi.fn(() => ''),
     listActive: vi.fn(() => []),
     listRecent: vi.fn(() => []),
     findMatchByName: vi.fn(() => ({ match: null, candidates: [] })),
+    findActiveByWorktreeDir: vi.fn(() => null),
     getStallTimeoutMs: vi.fn(() => 60_000),
     getMaxConsecutiveStalls: vi.fn(() => 5),
     getBusyStallTimeoutMs: vi.fn(() => 900_000),
     terminateAll: vi.fn(() => Promise.resolve()),
     hasOutstandingFindings: vi.fn(() => false),
+    hasEscalatedBugFindings: vi.fn(() => false),
     getOutstandingFindings: vi.fn(() => []),
     getBlockingBugFindings: vi.fn(() => []),
     setCoderDecisions: vi.fn(),
@@ -55,6 +58,7 @@ function makeFakeLoopService(): LoopService {
     setStatus: vi.fn(),
     clearWorkspaceId: vi.fn(),
     setWorkspaceId: vi.fn(),
+    setStandbySessionId: vi.fn(),
     terminate: vi.fn(),
     replaceSession: vi.fn(),
     getSectionPlan: vi.fn(() => null),
@@ -84,38 +88,12 @@ function makeFakeLoopService(): LoopService {
   }
 }
 
-function makeFakeForgeClient(): ForgeClient {
-  return {
-    session: {
-      create: vi.fn(async () => ({ id: 'sess' }) as any),
-      get: vi.fn(async () => ({}) as any),
-      update: vi.fn(async () => {}),
-      messages: vi.fn(async () => []),
-      status: vi.fn(async () => ({}) as any),
-      promptAsync: vi.fn(async () => {}),
-      abort: vi.fn(async () => {}),
-      delete: vi.fn(async () => {}),
-    },
-    workspace: {
-      create: vi.fn(async () => ({ id: 'w' }) as any),
-      list: vi.fn(async () => []),
-      remove: vi.fn(async () => {}),
-      warp: vi.fn(async () => {}),
-    },
-    toast: vi.fn(async () => {}),
-  }
-}
-
-const mockLogger: Logger = {
-  log: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-}
+const mockLogger = createMockLogger()
 
 describe('LoopService seam', () => {
   it('accepts an injected LoopService and delegates start calls to it', () => {
     const fakeService = makeFakeLoopService()
-    const client = makeFakeForgeClient()
+    const { client } = createFakeForgeClient()
 
     const loop = createLoop({
       loopsRepo: {} as any,
@@ -128,21 +106,7 @@ describe('LoopService seam', () => {
       loopService: fakeService,
     })
 
-    const state = {
-      active: true,
-      sessionId: 'sess-1',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/wt',
-      iteration: 0,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running' as const,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      phase: 'coding' as const,
-    }
+    const state = makeLoopState({ sessionId: 'sess-1', worktreeDir: '/tmp/wt', iteration: 0 })
 
     loop.start({ state })
 
@@ -151,120 +115,5 @@ describe('LoopService seam', () => {
 
     expect(fakeService.registerLoopSession).toHaveBeenCalledTimes(1)
     expect(fakeService.registerLoopSession).toHaveBeenCalledWith('sess-1', 'test-loop')
-  })
-})
-
-/**
- * Stateful fake LoopService for behavior tests that drive tick() through the seam.
- * Only the methods touched by the runtime path under test carry real behavior;
- * the rest remain no-op vi.fn() stubs inherited from makeFakeLoopService().
- */
-function makeStatefulFakeLoopService(initialState: LoopState): LoopService {
-  let state: LoopState | null = initialState
-  const sessionIdToLoop = new Map<string, string>([[initialState.sessionId, initialState.loopName]])
-
-  const base = makeFakeLoopService()
-  base.getActiveState = vi.fn(() => (state && state.active ? state : null))
-  base.getAnyState = vi.fn(() => state)
-  base.setState = vi.fn((_name: string, s: LoopState) => {
-    state = s
-    sessionIdToLoop.set(s.sessionId, s.loopName)
-  })
-  base.registerLoopSession = vi.fn((sid: string, ln: string) => {
-    sessionIdToLoop.set(sid, ln)
-  })
-  base.resolveLoopName = vi.fn((sid: string) => sessionIdToLoop.get(sid) ?? null)
-  base.getOutstandingFindings = vi.fn(() => [])
-  base.getBlockingBugFindings = vi.fn((s: LoopState) => blockingBugFindings(base.getOutstandingFindings() as any, s))
-  base.hasOutstandingFindings = vi.fn(() => false)
-  base.terminate = vi.fn(
-    (_name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number }) => {
-      if (state) {
-        state = {
-          ...state,
-          active: false,
-          status: opts.status,
-          terminationReason: opts.reason,
-          completedAt: new Date(opts.completedAt).toISOString(),
-        }
-      }
-    },
-  )
-  return base
-}
-
-describe('LoopService seam — sectioned dirty audit max-iterations safety net', () => {
-  it('terminates with max_iterations when a sectioned dirty audit reaches maxIterations', async () => {
-    const initialState: LoopState = {
-      active: true,
-      sessionId: 'audit-session',
-      loopName: 'section-dirty-maxiter',
-      worktreeDir: '/tmp/worktree',
-      iteration: 5,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      errorCount: 0,
-      auditCount: 1,
-      status: 'running',
-      phase: 'auditing',
-      currentSectionIndex: 0,
-      totalSections: 2,
-    }
-    const fakeService = makeStatefulFakeLoopService(initialState)
-    fakeService.applyPendingHandoff = vi.fn(() => ({
-      id: 1,
-      projectId: 'test-project',
-      loopName: initialState.loopName,
-      sessionId: initialState.sessionId,
-      role: 'auditor',
-      phase: 'auditing',
-      sectionIndex: 0,
-      iteration: initialState.iteration,
-      status: 'applied',
-      payload: {},
-      createdAt: 0,
-      resolvedAt: 0,
-    }) as any)
-    // An outstanding bug finding makes the audit genuinely dirty.
-    fakeService.getOutstandingFindings = vi.fn(() => [
-      {
-        projectId: 'test-project',
-        file: 'src/broken.ts',
-        line: 1,
-        severity: 'bug',
-        description: 'remaining bug',
-        scenario: null,
-        loopName: initialState.loopName,
-        sectionIndex: 0,
-      } as any,
-    ])
-    const { client: fakeClient } = createFakeForgeClient({
-      session: {
-        messages: async () => [
-          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found a remaining bug.' }] },
-        ],
-      },
-    })
-
-    const loop = createLoop({
-      loopsRepo: {} as any,
-      plansRepo: {} as any,
-      reviewFindingsRepo: {} as any,
-      projectId: 'test-project',
-      client: fakeClient,
-      logger: mockLogger,
-      getConfig: () => ({}) as any,
-      loopService: fakeService,
-    })
-
-    await loop.tick({
-      type: 'session.status',
-      properties: { status: { type: 'idle' }, sessionID: 'audit-session' },
-    })
-
-    const afterState = fakeService.getAnyState(initialState.loopName)
-    expect(afterState).not.toBeNull()
-    expect(afterState!.active).toBe(false)
-    expect(afterState!.terminationReason).toBe('max_iterations')
   })
 })

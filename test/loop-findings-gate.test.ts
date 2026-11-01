@@ -4,30 +4,21 @@ import { createLoopService } from '../src/loop/service'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { openForgeDatabase } from '../src/storage/database'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
-import type { Logger } from '../src/types'
+import { createTestDb } from './helpers/test-db'
+import { createMockLogger } from './helpers/logger'
 
-function createTestDb(): Database {
-  return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
-}
-
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('Loop findings gate', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   const projectId = 'test-project'
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -35,7 +26,7 @@ describe('Loop findings gate', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   test('getOutstandingFindings returns bug findings for specific loop', () => {

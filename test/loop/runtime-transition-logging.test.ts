@@ -1,27 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
-import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
-import { createLoopService } from '../../src/loop/service'
 import { createLoop } from '../../src/loop/runtime'
-import type { LoopState } from '../../src/loop/state'
-import type { Logger, PluginConfig } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import type { PluginConfig } from '../../src/types'
+import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff } from '../helpers/loop-handoff'
-
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
 
 const assistantMessage = (text: string) => [
   {
@@ -31,12 +15,9 @@ const assistantMessage = (text: string) => [
 ]
 
 describe('Runtime transition logging', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo>
-  let loopSessionUsageRepo: ReturnType<typeof createLoopSessionUsageRepo>
-  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
-  let tempDir: string
   const projectId = 'test-project'
   const loopName = 'logged-loop'
 
@@ -50,67 +31,38 @@ describe('Runtime transition logging', () => {
     clientTweaks?: Parameters<typeof createFakeForgeClient>[0]
     getConfig?: () => PluginConfig
   }): ReturnType<typeof createLoop> {
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      projectId,
-      mockLogger,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-      loopTransitionsRepo,
-    )
     const { client } = createFakeForgeClient(opts.clientTweaks)
-    return createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
+    return buildLoopRuntime(db, {
       projectId,
       client,
-      logger: mockLogger,
-      getConfig: opts.getConfig ?? (() => ({}) as PluginConfig),
-      loopService,
-      loopSessionUsageRepo,
-    })
+      config: opts.getConfig?.() ?? {},
+      withUsageRepo: true,
+    }).loop
   }
 
-  function buildInitialState(overrides: Partial<LoopState>): LoopState {
-    return {
-      active: true,
-      sessionId: 'audit-sess',
-      loopName,
-      worktreeDir: '/tmp/wt',
-      projectDir: '/tmp/proj',
-      iteration: 1,
-      maxIterations: 10,
-      startedAt: new Date().toISOString(),
-      errorCount: 0,
-      auditCount: 1,
-      status: 'running',
-      phase: 'auditing',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      ...overrides,
-    } as LoopState
-  }
+  const STATE_DEFAULTS = {
+    sessionId: 'audit-sess',
+    worktreeDir: '/tmp/wt',
+    projectDir: '/tmp/proj',
+    worktreeBranch: undefined,
+    maxIterations: 10,
+    prompt: undefined,
+    auditCount: 1,
+    worktree: false,
+    executionModel: undefined,
+    auditorModel: undefined,
+    phase: 'auditing',
+  } as const
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'runtime-transition-logging-'))
-    db = new Database(join(tempDir, 'runtime-transition-logging.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
     loopTransitionsRepo = createLoopTransitionsRepo(db)
-    loopSessionUsageRepo = createLoopSessionUsageRepo(db)
   })
 
   afterEach(() => {
-    db.close()
-    try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    testDb.cleanup()
     vi.useRealTimers()
   })
 
@@ -125,56 +77,11 @@ describe('Runtime transition logging', () => {
     return loopTransitionsRepo.listForLoop(projectId, loopName)
   }
 
-  describe('Bug 1: capped dirty last open section records only the terminate row', () => {
-    test('capped dirty last open section records only the terminate row', async () => {
-      const state = buildInitialState({
-        phase: 'auditing',
-        iteration: 5,
-        maxIterations: 5,
-        currentSectionIndex: 1,
-        totalSections: 2,
-      })
-
-      reviewFindingsRepo.write({
-        projectId,
-        loopName,
-        file: 'src/x.ts',
-        line: 1,
-        severity: 'bug',
-        description: 'unfixed bug',
-        sectionIndex: 1,
-      })
-
-      const loopInstance = buildLoop({
-        clientTweaks: { session: { messages: async () => assistantMessage('last open section still has findings') } },
-      })
-      loopInstance.start({ state })
-
-      db.run(
-        `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [projectId, loopName, 0, 'Section 1', 'Content 1', 'completed', 0, Date.now(), Date.now(), Date.now()],
-      )
-      db.run(
-        `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [projectId, loopName, 1, 'Section 2', 'Content 2', 'in_progress', 0, Date.now(), null, Date.now()],
-      )
-
-      await recordAuditorHandoff(loopInstance, 'audit-sess')
-
-      await tickIdle(loopInstance, 'audit-sess')
-
-      const rows = getRows()
-      expect(rows).toHaveLength(1)
-      expect(rows[0].transitionKind).toBe('terminate')
-      expect(rows[0].fromPhase).toBe('auditing')
-      expect(rows[0].toPhase).toBeNull()
-      expect(rows[0].eventType).toBe('max_iterations')
-    })
-  })
-
   describe('Bug 2a: rewind completion produces exactly one terminal row', () => {
     test('rewind-all-completed clean audit completes the loop with one terminate row', async () => {
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 1,
         maxIterations: 10,
@@ -199,7 +106,7 @@ describe('Runtime transition logging', () => {
       }
 
       await recordAuditorHandoff(loopInstance, 'audit-sess', {
-        summary: { done: ['completed section 1 cleanly'] },
+        summary: { done: ['completed section 1 cleanly'], deviations: [], followUps: [] },
       })
 
       await tickIdle(loopInstance, 'audit-sess')
@@ -217,7 +124,9 @@ describe('Runtime transition logging', () => {
 
   describe('Bug 2b: audit-error continuation records the recovery row', () => {
     test('audit-error branch in runAuditingPhase logs auditing → coding error-recovery row', async () => {
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 1,
         maxIterations: 10,
@@ -255,7 +164,9 @@ describe('Runtime transition logging', () => {
 
   describe('Bug 2c: session-error recovery logs the recovery row', () => {
     test('auditing session.error event rolls back to coding and logs the recovery row', async () => {
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 2,
         maxIterations: 10,
@@ -286,7 +197,9 @@ describe('Runtime transition logging', () => {
 
   describe('Bug 3: post-action entry row precedes the terminal row by id', () => {
     test('audit-clear redirect into post_action logs the phase row before the terminate row', async () => {
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 1,
         maxIterations: 10,
@@ -330,7 +243,9 @@ describe('Runtime transition logging', () => {
 
   describe('Bug 5: audit-error recovery row precedes any prompt-failure terminate row', () => {
     test('audit-error branch with a provider-limit prompt failure logs the recovery row before the terminate row', async () => {
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 1,
         maxIterations: 10,
@@ -389,7 +304,8 @@ describe('Runtime transition logging', () => {
       // loopsService via createLoopEventHandler wiring is unnecessary — start
       // each on the same loopInstance so the parent loops rows exist.
       sharedLoop.start({
-        state: buildInitialState({
+        state: makeLoopState({
+          ...STATE_DEFAULTS,
           loopName: 'loop-A',
           sessionId: 'sess-a',
           phase: 'coding',
@@ -397,7 +313,8 @@ describe('Runtime transition logging', () => {
         }),
       })
       sharedLoop.start({
-        state: buildInitialState({
+        state: makeLoopState({
+          ...STATE_DEFAULTS,
           loopName: 'loop-B',
           sessionId: 'sess-b',
           phase: 'auditing',
@@ -450,7 +367,8 @@ describe('Runtime transition logging', () => {
         },
       })
       loopInstance.start({
-        state: buildInitialState({
+        state: makeLoopState({
+          ...STATE_DEFAULTS,
           loopName: 'race-loop',
           sessionId: 'sess-race',
           phase: 'coding',
@@ -492,7 +410,9 @@ describe('Runtime transition logging', () => {
       // error signal must terminate with fromPhase=auditing. This guards the
       // defensive fix in terminateLoop that adopts the authoritative
       // under-admission-guard state rather than the caller's snapshot.
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         sessionId: 'audit-sess',
         iteration: 2,
@@ -556,7 +476,9 @@ describe('Runtime transition logging', () => {
         releasePrompt = resolve
       })
 
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 1,
         maxIterations: 10,
@@ -629,7 +551,9 @@ describe('Runtime transition logging', () => {
   describe('Bug 10: restart preserves transition history and appends one restart row', () => {
     test('restart into another phase preserves prior rows and records exactly one restart transition', () => {
       const loopInstance = buildLoop({})
-      const initialState = buildInitialState({
+      const initialState = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 2,
         maxIterations: 10,
@@ -671,7 +595,9 @@ describe('Runtime transition logging', () => {
       // Restart into a fresh session in `coding` phase. The previous
       // destructive implementation would have cascade-deleted the seeded rows;
       // the in-place restore path preserves them.
-      const restartedState = buildInitialState({
+      const restartedState = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         sessionId: 'restarted-session',
         phase: 'coding',
         iteration: 3,
@@ -712,7 +638,9 @@ describe('Runtime transition logging', () => {
     test('coding → auditing via Loop.setPhase records exactly one matching row', () => {
       const loopInstance = buildLoop({})
       loopInstance.start({
-        state: buildInitialState({
+        state: makeLoopState({
+          ...STATE_DEFAULTS,
+          loopName,
           phase: 'coding',
           iteration: 4,
           currentSectionIndex: 2,
@@ -743,7 +671,9 @@ describe('Runtime transition logging', () => {
     test('coding → coding via Loop.setPhase records no row', () => {
       const loopInstance = buildLoop({})
       loopInstance.start({
-        state: buildInitialState({
+        state: makeLoopState({
+          ...STATE_DEFAULTS,
+          loopName,
           phase: 'coding',
           iteration: 4,
           totalSections: 0,
@@ -785,7 +715,9 @@ describe('Runtime transition logging', () => {
         releasePrompt = resolve
       })
 
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         iteration: 1,
         maxIterations: 10,
@@ -900,7 +832,9 @@ describe('Runtime transition logging', () => {
         releaseRetry = resolve
       })
 
-      const state = buildInitialState({
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
         phase: 'auditing',
         sessionId: 'audit-sess',
         iteration: 1,
@@ -1046,7 +980,8 @@ describe('Runtime transition logging', () => {
         },
       })
       loopInstance.start({
-        state: buildInitialState({
+        state: makeLoopState({
+          ...STATE_DEFAULTS,
           loopName: 'gap-loop-A',
           sessionId: 'sess-a',
           phase: 'auditing',
@@ -1076,7 +1011,8 @@ describe('Runtime transition logging', () => {
       // Snapshot-gap: loop-B activates after terminateAll's snapshot was taken
       // and while A's contended-pass is still awaiting the lock.
       loopInstance.start({
-        state: buildInitialState({
+        state: makeLoopState({
+          ...STATE_DEFAULTS,
           loopName: 'gap-loop-B',
           sessionId: 'sess-b',
           phase: 'coding',

@@ -1,58 +1,32 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { createLoopTransitionsRepo } from '../src/storage/repos/loop-transitions-repo'
 import type { LoopTransitionRow } from '../src/storage/repos/loop-transitions-repo'
-
-const TEST_DIR = `/tmp/opencode-loop-transitions-test-${Date.now()}`
-
-function createTestDb(): Database {
-  const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
-  db.run('PRAGMA foreign_keys = ON')
-  db.run(`
-    CREATE TABLE loops (
-      project_id TEXT NOT NULL,
-      loop_name  TEXT NOT NULL,
-      PRIMARY KEY (project_id, loop_name)
-    )
-  `)
-  // The unique index on (project_id, loop_name) is required by SQLite for the
-  // composite foreign key from loop_transitions to support ON DELETE CASCADE.
-  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_project_name ON loops(project_id, loop_name)`)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS loop_transitions (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id      TEXT NOT NULL,
-      loop_name       TEXT NOT NULL,
-      event_type      TEXT NOT NULL,
-      transition_kind TEXT NOT NULL,
-      from_phase      TEXT NOT NULL,
-      to_phase        TEXT,
-      status          TEXT,
-      reason          TEXT,
-      iteration       INTEGER NOT NULL DEFAULT 0,
-      section_index   INTEGER,
-      created_at      INTEGER NOT NULL,
-      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-    )
-  `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_loop_transitions_loop ON loop_transitions (project_id, loop_name, id)`)
-  return db
-}
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('LoopTransitionsRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createLoopTransitionsRepo>
+  let testDb: TestDb
   const projectId = 'test-project'
   const loopName = 'test-loop'
 
+  function insertLoop(projectId: string, loopName: string, status: 'running' | 'completed' = 'running'): void {
+    db.prepare(
+      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+       VALUES (?, ?, ?, ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
+    ).run(projectId, loopName, status, `${projectId}-${loopName}-session`, Date.now())
+  }
+
   beforeEach(() => {
-    db = createTestDb()
-    db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, loopName])
+    testDb = createTestDb()
+    db = testDb.db
+    insertLoop(projectId, loopName)
     repo = createLoopTransitionsRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   function baseRow(overrides: Partial<Omit<LoopTransitionRow, 'id' | 'createdAt'>> = {}): Omit<LoopTransitionRow, 'id' | 'createdAt'> {
@@ -103,7 +77,7 @@ describe('LoopTransitionsRepo', () => {
 
     test('scopes rows by projectId + loopName', () => {
       const otherLoop = 'other-loop'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
+      insertLoop(projectId, otherLoop)
 
       repo.insert(baseRow({ eventType: 'a' }))
       repo.insert(baseRow({ loopName: otherLoop, eventType: 'b' }))
@@ -158,8 +132,8 @@ describe('LoopTransitionsRepo', () => {
     test('buckets each loop of the project, keeping the newest rows ascending', () => {
       const otherLoop = 'other-loop'
       const otherProject = 'other-project'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [otherProject, loopName])
+      insertLoop(projectId, otherLoop)
+      insertLoop(otherProject, loopName)
       for (let i = 0; i < 5; i++) {
         repo.insert(baseRow({ iteration: i }))
         repo.insert(baseRow({ loopName: otherLoop, iteration: i * 10 }))
@@ -180,7 +154,7 @@ describe('LoopTransitionsRepo', () => {
     })
 
     test('omits loops with no transitions and returns an empty map for an unknown project', () => {
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, 'silent-loop'])
+      insertLoop(projectId, 'silent-loop')
       repo.insert(baseRow())
 
       const byLoop = repo.listForProject(projectId, 100)

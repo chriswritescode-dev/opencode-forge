@@ -1,7 +1,8 @@
 import { describe, test, expect, afterEach } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import { egressAllowsAll } from '../../src/sandbox/msb'
-import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 function makeConfig(allow?: string[]): SandboxManagerConfig {
   return allow === undefined

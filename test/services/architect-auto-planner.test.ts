@@ -1,13 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createArchitectAutoPlanner, ARCHITECT_AUTO_AGENT } from '../../src/services/architect-auto-planner'
 import type { Logger } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createTestDb } from '../helpers/test-db'
+import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
 
@@ -41,33 +38,21 @@ const INCOMPLETE_PLAN = [
   '## Phase 1: Implement behavior',
 ].join('\n\n')
 
-function createCapturingLogger(): { logger: Logger; logs: string[] } {
-  const logs: string[] = []
-  const logger: Logger = {
-    log: (message: string) => logs.push(message),
-    error: () => {},
-    debug: () => {},
-  }
-  return { logger, logs }
-}
-
 describe('createArchitectAutoPlanner', () => {
-  let db: Database
-  let tempDir: string
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let logger: Logger
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'architect-auto-planner-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     plansRepo = createPlansRepo(db)
-    logger = createCapturingLogger().logger
+    logger = createMockLogger()
   })
 
   afterEach(() => {
-    db.close()
-    rmSync(tempDir, { recursive: true, force: true })
+    testDb.cleanup()
   })
 
   describe('spawn', () => {

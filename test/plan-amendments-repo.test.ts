@@ -1,53 +1,32 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { createPlanAmendmentsRepo } from '../src/storage/repos/plan-amendments-repo'
 import type { PlanAmendmentRow } from '../src/storage/repos/plan-amendments-repo'
-
-const TEST_DIR = `/tmp/opencode-plan-amendments-test-${Date.now()}`
-
-function createTestDb(): Database {
-  const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
-  db.run('PRAGMA foreign_keys = ON')
-  db.run(`
-    CREATE TABLE loops (
-      project_id TEXT NOT NULL,
-      loop_name  TEXT NOT NULL,
-      PRIMARY KEY (project_id, loop_name)
-    )
-  `)
-  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_project_name ON loops(project_id, loop_name)`)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS plan_amendments (
-      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id         TEXT NOT NULL,
-      loop_name          TEXT NOT NULL,
-      source             TEXT NOT NULL DEFAULT 'auditor',
-      rationale          TEXT NOT NULL,
-      applied_at_section INTEGER NOT NULL,
-      sections_before    TEXT NOT NULL,
-      sections_after     TEXT NOT NULL,
-      created_at         INTEGER NOT NULL,
-      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-    )
-  `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_plan_amendments_loop ON plan_amendments (project_id, loop_name, id)`)
-  return db
-}
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('PlanAmendmentsRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createPlanAmendmentsRepo>
+  let testDb: TestDb
   const projectId = 'test-project'
   const loopName = 'test-loop'
 
+  function insertLoop(projectId: string, loopName: string, status: 'running' | 'completed' = 'running'): void {
+    db.prepare(
+      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+       VALUES (?, ?, ?, ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
+    ).run(projectId, loopName, status, `${projectId}-${loopName}-session`, Date.now())
+  }
+
   beforeEach(() => {
-    db = createTestDb()
-    db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, loopName])
+    testDb = createTestDb()
+    db = testDb.db
+    insertLoop(projectId, loopName)
     repo = createPlanAmendmentsRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   function baseRow(overrides: Partial<Omit<PlanAmendmentRow, 'id' | 'createdAt'>> = {}): Omit<PlanAmendmentRow, 'id' | 'createdAt'> {
@@ -101,7 +80,7 @@ describe('PlanAmendmentsRepo', () => {
 
     test('scopes rows by projectId + loopName', () => {
       const otherLoop = 'other-loop'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
+      insertLoop(projectId, otherLoop)
 
       repo.insert(baseRow({ rationale: 'a' }))
       repo.insert(baseRow({ loopName: otherLoop, rationale: 'b' }))
@@ -139,7 +118,7 @@ describe('PlanAmendmentsRepo', () => {
 
     test('does not cross project/loop boundaries', () => {
       const otherLoop = 'other-loop'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
+      insertLoop(projectId, otherLoop)
 
       repo.insert(baseRow({ rationale: 'a' }))
       repo.insert(baseRow({ loopName: otherLoop, rationale: 'b' }))

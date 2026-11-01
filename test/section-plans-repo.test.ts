@@ -1,59 +1,32 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import type { ParsedSection } from '../src/utils/section-capture'
-
-const TEST_DIR = `/tmp/opencode-section-plans-test-${Date.now()}`
-
-function createTestDb(): Database {
-  const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS loops (
-      project_id TEXT NOT NULL,
-      loop_name  TEXT NOT NULL,
-      PRIMARY KEY (project_id, loop_name)
-    )
-  `)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS section_plans (
-      project_id    TEXT    NOT NULL,
-      loop_name     TEXT    NOT NULL,
-      section_index INTEGER NOT NULL,
-      title         TEXT    NOT NULL,
-      content       TEXT    NOT NULL,
-      status        TEXT    NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending','in_progress','completed','failed')),
-      attempts      INTEGER NOT NULL DEFAULT 0,
-      summary_done           TEXT,
-      summary_deviations     TEXT,
-      summary_follow_ups     TEXT,
-      started_at    INTEGER,
-      completed_at  INTEGER,
-      created_at    INTEGER NOT NULL,
-      PRIMARY KEY (project_id, loop_name, section_index),
-      FOREIGN KEY (project_id, loop_name)
-        REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-    )
-  `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_section_plans_status ON section_plans(project_id, loop_name, status)`)
-  return db
-}
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('SectionPlansRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createSectionPlansRepo>
+  let testDb: TestDb
   const projectId = 'test-project'
   const loopName = 'test-loop'
 
+  function insertLoop(projectId: string, loopName: string, status: 'running' | 'completed' = 'running'): void {
+    db.prepare(
+      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+       VALUES (?, ?, ?, ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
+    ).run(projectId, loopName, status, `${projectId}-${loopName}-session`, Date.now())
+  }
+
   beforeEach(() => {
-    db = createTestDb()
-    // Insert a parent loop row to satisfy FK constraint
-    db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, loopName])
+    testDb = createTestDb()
+    db = testDb.db
+    insertLoop(projectId, loopName)
     repo = createSectionPlansRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   describe('bulkInsert', () => {
@@ -99,7 +72,7 @@ describe('SectionPlansRepo', () => {
 
     test('inserts into different projects independently', () => {
       const otherProject = 'other-project'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [otherProject, loopName])
+      insertLoop(otherProject, loopName)
 
       const sections: ParsedSection[] = [
         { index: 0, title: 'Original', content: 'Original content' },
@@ -375,7 +348,7 @@ describe('SectionPlansRepo', () => {
 
     test('scopes by projectId and loopName', () => {
       const otherProject = 'other-project'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [otherProject, loopName])
+      insertLoop(otherProject, loopName)
 
       const sections: ParsedSection[] = [{ index: 0, title: 'A', content: 'A content' }]
       repo.bulkInsert({ projectId, loopName, sections })
@@ -518,7 +491,7 @@ describe('SectionPlansRepo', () => {
 
     test('scopes replacements to the target loop', () => {
       const otherLoop = 'other-loop'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
+      insertLoop(projectId, otherLoop)
 
       repo.bulkInsert({ projectId, loopName, sections: baseSections })
       repo.bulkInsert({ projectId, loopName: otherLoop, sections: baseSections })
@@ -555,7 +528,7 @@ describe('SectionPlansRepo', () => {
 
     test('counts per project and loop', () => {
       const otherLoop = 'other-loop'
-      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
+      insertLoop(projectId, otherLoop)
 
       const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
       repo.bulkInsert({ projectId, loopName, sections })

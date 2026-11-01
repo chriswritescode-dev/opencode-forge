@@ -1,43 +1,34 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import Database from 'better-sqlite3'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
+import { createLoopService } from '../../src/loop/service'
 import { formatAuditHandoffResult } from '../../src/loop/handoff'
-import type { LoopState } from '../../src/loop/state'
+import type { PluginConfig } from '../../src/types'
 import { createLoopEventHandler } from '../../src/hooks/loop'
-import type { Logger, PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { createTestDb } from '../helpers/test-db'
+import { createCapturingLogger, createMockLogger } from '../helpers/logger'
+import { makeLoopState } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff } from '../helpers/loop-handoff'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 const PROJECT_ID = 'test-project'
 
 describe('Loop Section Audit Retry', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let loopService: ReturnType<typeof createLoopService>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
-  let tempDir: string
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'loop-section-audit-retry-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -57,47 +48,11 @@ describe('Loop Section Audit Retry', () => {
   })
 
   afterEach(() => {
-    db.close()
-    rmSync(tempDir, { recursive: true, force: true })
+    testDb.cleanup()
   })
 
-  function makeState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: 'loop-session-id',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/nonexistent-worktree-for-test',
-      projectDir: '/tmp/host-project-dir',
-      worktreeBranch: 'test/branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running',
-      worktree: true,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      currentSectionIndex: 0,
-      totalSections: 2,
-      ...overrides,
-    }
-  }
-
-  function createCapturingLogger() {
-    const logs: Array<{ level: string; message: string }> = []
-    return {
-      logger: {
-        log: (msg: string) => logs.push({ level: 'log', message: msg }),
-        error: (msg: string) => logs.push({ level: 'error', message: msg }),
-        debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-      } as Logger,
-      logs,
-    }
+  const SECTION_AUDIT_RETRY_STATE_DEFAULTS = {
+    totalSections: 2,
   }
 
   const mockConfig: PluginConfig = {
@@ -111,7 +66,7 @@ describe('Loop Section Audit Retry', () => {
 
   describe('dirty audit behavior', () => {
     test('dirty audit via idle event increments attempts and does not advance section', async () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -175,7 +130,7 @@ describe('Loop Section Audit Retry', () => {
     })
 
     test('two dirty audits via idle events keep loop on section 0 with attempts === 2', async () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -197,7 +152,7 @@ describe('Loop Section Audit Retry', () => {
         sectionIndex: 0,
       })
 
-      loopService.incrementSectionAttempts(state.loopName, 0)
+      sectionPlansRepo.incrementAttempts(PROJECT_ID, state.loopName, 0)
       const planBefore = loopService.getSectionPlan(state, 0)!
       expect(planBefore.attempts).toBe(1)
 
@@ -234,7 +189,7 @@ describe('Loop Section Audit Retry', () => {
 
   describe('auditor handoff turn end', () => {
     test('an audit idle without a handoff nudges the same session and keeps the phase auditing', async () => {
-      const state = makeState({ loopName: 'audit-nudge-loop', sessionId: 'audit-nudge-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'audit-nudge-loop', sessionId: 'audit-nudge-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -281,7 +236,7 @@ describe('Loop Section Audit Retry', () => {
     })
 
     test('three audit handoff nudges then a fourth idle terminate with handoff_missing', async () => {
-      const state = makeState({ loopName: 'audit-nudge-exhausted', sessionId: 'audit-exhausted-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'audit-nudge-exhausted', sessionId: 'audit-exhausted-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -335,7 +290,7 @@ describe('Loop Section Audit Retry', () => {
 
   describe('clean audit after dirty', () => {
     test('clean audit via idle event completes section 0, advances to section 1, and prior summary appears in next section prompt', async () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -390,7 +345,8 @@ describe('Loop Section Audit Retry', () => {
     })
 
     test('rotated session title reflects new section index and iteration after clean audit advance', async () => {
-      const state = makeState({
+      const state = makeLoopState({
+        ...SECTION_AUDIT_RETRY_STATE_DEFAULTS,
         currentSectionIndex: 3,
         totalSections: 12,
         phase: 'auditing',
@@ -457,7 +413,7 @@ describe('Loop Section Audit Retry', () => {
 
   describe('retry prompt iteration reporting', () => {
     test('dirty section retry prompt reports the next persisted iteration (N+1)', async () => {
-      const state = makeState({ loopName: 'retry-iteration-loop', sessionId: 'retry-iteration-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing', iteration: 39, maxIterations: 50 })
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'retry-iteration-loop', sessionId: 'retry-iteration-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing', iteration: 39, maxIterations: 50 })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -518,7 +474,7 @@ describe('Loop Section Audit Retry', () => {
     })
 
     test('dirty section retry at N=max-1 sends the final permitted iteration', async () => {
-      const state = makeState({ loopName: 'retry-cap-edge-loop', sessionId: 'retry-cap-edge-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing', iteration: 4, maxIterations: 5 })
+      const state = makeLoopState({ ...SECTION_AUDIT_RETRY_STATE_DEFAULTS, loopName: 'retry-cap-edge-loop', sessionId: 'retry-cap-edge-session', currentSectionIndex: 0, totalSections: 2, phase: 'auditing', iteration: 4, maxIterations: 5 })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -573,186 +529,6 @@ describe('Loop Section Audit Retry', () => {
       expect(retryPrompts.length).toBeGreaterThan(0)
       const retryPromptText = (retryPrompts[retryPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
       expect(retryPromptText).toContain('[Loop section 1/2 -- iteration 5/5 (continuation)]')
-    })
-  })
-
-  describe('exhausted retries', () => {
-    test('exhausted iterations via idle event terminates with max_iterations', async () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2, phase: 'auditing', maxIterations: 1 })
-      loopService.setState(state.loopName, state)
-
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [
-          { index: 0, title: 'Section A', content: 'Content A' },
-          { index: 1, title: 'Section B', content: 'Content B' },
-        ],
-      })
-      loopService.startSection(state.loopName, 0)
-      reviewFindingsRepo.write({
-        projectId: PROJECT_ID,
-        file: 'src/broken.ts',
-        line: 5,
-        severity: 'bug',
-        description: 'Found an issue',
-        loopName: state.loopName,
-        sectionIndex: 0,
-      })
-
-      const { logger } = createCapturingLogger()
-
-      const { client: forgeClient, calls } = createFakeForgeClient({
-        session: {
-          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'dirty audit: found issues' }] }],
-        },
-      })
-      const getConfig = () => mockConfig as PluginConfig
-
-      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
-      await recordAuditorHandoff(handler.loop, state.sessionId)
-
-      await handler.onEvent({
-        event: {
-          type: 'session.status',
-          properties: {
-            sessionID: state.sessionId,
-            status: { type: 'idle' },
-          },
-        },
-      })
-
-      const terminatedState = loopService.getAnyState(state.loopName)
-      expect(terminatedState).not.toBeNull()
-      expect(terminatedState!.active).toBe(false)
-      expect(terminatedState!.terminationReason).toBe('max_iterations')
-
-      const retryPrompts = calls.filter(
-        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
-      )
-      expect(retryPrompts.length).toBe(0)
-
-      const retained = reviewFindingsRepo.listByLoopName(PROJECT_ID, state.loopName)
-      expect(retained.some((f) => f.severity === 'bug')).toBe(true)
-    })
-  })
-
-  describe('audit result storage', () => {
-    test('setLastAuditResult stores text in large fields', () => {
-      const state = makeState()
-      loopService.setState(state.loopName, state)
-
-      loopService.setLastAuditResult(state.loopName, 'Audit findings here')
-
-      const updated = loopService.getActiveState(state.loopName)!
-      expect(updated.lastAuditResult).toBe('Audit findings here')
-    })
-
-    test('setLastAuditResult ignores empty string', () => {
-      const state = makeState()
-      loopService.setState(state.loopName, state)
-
-      loopService.setLastAuditResult(state.loopName, '')
-
-      const after = loopService.getActiveState(state.loopName)!
-      expect(after.lastAuditResult).toBeUndefined()
-    })
-  })
-
-  describe('buildSectionContinuationPrompt', () => {
-    test('continuation prompt includes the runtime notice text', () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2 })
-      loopService.setState(state.loopName, state)
-
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [
-          { index: 0, title: 'Section A', content: 'Content A' },
-          { index: 1, title: 'Section B', content: 'Content B' },
-        ],
-      })
-
-      const prompt = loopService.buildSectionContinuationPrompt(state, 'Fix the bugs mentioned in audit')
-      expect(prompt).toContain('continuation')
-      expect(prompt).toContain('## Loop notice')
-      expect(prompt).toContain('Fix the bugs mentioned in audit')
-    })
-
-    test('continuation prompt includes outstanding bug findings for current section', () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2 })
-      loopService.setState(state.loopName, state)
-
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [
-          { index: 0, title: 'Section A', content: 'Content A' },
-          { index: 1, title: 'Section B', content: 'Content B' },
-        ],
-      })
-
-      reviewFindingsRepo.write({
-        projectId: PROJECT_ID,
-        file: 'src/broken.ts',
-        line: 5,
-        severity: 'bug',
-        description: 'Found an issue',
-        loopName: state.loopName,
-        sectionIndex: 0,
-      })
-
-      const prompt = loopService.buildSectionContinuationPrompt(state)
-      expect(prompt).toContain('Outstanding review findings (1)')
-      expect(prompt).toContain('src/broken.ts:5')
-      expect(prompt).toContain('Found an issue')
-    })
-  })
-
-  describe('getCompletedSectionDigest', () => {
-    test('returns empty digest when no sections are completed', () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2 })
-      loopService.setState(state.loopName, state)
-
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [
-          { index: 0, title: 'Section A', content: 'Content A' },
-          { index: 1, title: 'Section B', content: 'Content B' },
-        ],
-      })
-
-      const digest = loopService.getCompletedSectionDigest(state)
-      expect(digest).toHaveLength(0)
-    })
-
-    test('returns completed sections with their summaries', () => {
-      const state = makeState({ currentSectionIndex: 1, totalSections: 2 })
-      loopService.setState(state.loopName, state)
-
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [
-          { index: 0, title: 'Section A', content: 'Content A' },
-          { index: 1, title: 'Section B', content: 'Content B' },
-        ],
-      })
-
-      // Complete section 0
-      loopService.startSection(state.loopName, 0)
-      loopService.completeSection(state.loopName, 0, {
-        done: 'Implemented feature X',
-        deviations: 'None',
-        followUps: 'Deferred Y',
-      })
-
-      const digest = loopService.getCompletedSectionDigest(state)
-      expect(digest).toHaveLength(1)
-      expect(digest[0].summaryDone).toContain('Implemented feature X')
-      expect(digest[0].summaryDeviations).toContain('None')
-      expect(digest[0].summaryFollowUps).toContain('Deferred Y')
     })
   })
 })

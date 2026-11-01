@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import { createFakeGitService } from '../helpers/fake-git'
-import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 describe('detectGitMount', () => {
   it('mounts external git dirs when rev-parse returns out-of-tree paths', async () => {

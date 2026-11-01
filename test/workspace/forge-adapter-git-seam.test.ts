@@ -1,18 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createForgeWorkspaceAdapter } from '../../src/workspace/forge-adapter'
 import { createFakeGitService } from '../helpers/fake-git'
+import { createMockLogger } from '../helpers/logger'
 import type { GitService, GitResult } from '../../src/utils/git-service'
 import { join } from 'path'
 import { mkdtempSync, existsSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
-
-function createMockLogger() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
-}
 
 function makeInfo(loopName: string, projectDirectory?: string) {
   return {
@@ -55,7 +48,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     })
     const configured = adapter.configure(makeInfo('test-loop', projectDir))
 
-    await expect(adapter.create(configured, {})).rejects.toThrow(
+    await expect(adapter.create(configured)).rejects.toThrow(
       /forge workspace adapter: projectDirectory .* is not a git work tree/,
     )
   })
@@ -72,7 +65,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     })
     const configured = adapter.configure(makeInfo('happy-loop', projectDir))
 
-    await adapter.create(configured, {})
+    await adapter.create(configured)
 
     expect(fake.worktreeAdd).toHaveBeenCalledWith(
       projectDir,
@@ -94,7 +87,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     })
     const configured = adapter.configure(makeInfo('existing-loop', projectDir))
 
-    await adapter.create(configured, {})
+    await adapter.create(configured)
 
     expect(fake.worktreeAdd).toHaveBeenCalledWith(
       projectDir,
@@ -110,7 +103,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
       branchExists: vi.fn(() => false),
       currentBranch: vi.fn(() => 'forge/orphan-reuse-loop'),
     })
-    fake.worktreeAdd = vi.fn<[string, string, string, boolean], GitResult>(() => ({
+    fake.worktreeAdd = vi.fn<(a: string, b: string, c: string, d: boolean) => GitResult>(() => ({
       ok: false,
       status: 128,
       stdout: '',
@@ -126,7 +119,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     // Pre-create the worktree directory so existsSync returns true
     mkdirSync(configured.directory!, { recursive: true })
 
-    await adapter.create(configured, {})
+    await adapter.create(configured)
 
     // worktreeAdd should only be called once (no retry)
     expect(fake.worktreeAdd).toHaveBeenCalledTimes(1)
@@ -147,7 +140,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     const okResult: GitResult = {
       ok: true, status: 0, stdout: '', stderr: '',
     }
-    fake.worktreeAdd = vi.fn<[string, string, string, boolean], GitResult>()
+    fake.worktreeAdd = vi.fn<(a: string, b: string, c: string, d: boolean) => GitResult>()
       .mockReturnValueOnce(failResult)
       .mockReturnValueOnce(okResult)
 
@@ -160,7 +153,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     // Pre-create the worktree directory WITHOUT .git so cleanupLoopWorktree does rmSync
     mkdirSync(configured.directory!, { recursive: true })
 
-    await adapter.create(configured, {})
+    await adapter.create(configured)
 
     // worktreeAdd should be called twice (initial + retry)
     expect(fake.worktreeAdd).toHaveBeenCalledTimes(2)
@@ -207,7 +200,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
       isInsideWorkTree: vi.fn(() => true),
       branchExists: vi.fn(() => false),
     })
-    fake.worktreeAdd = vi.fn<[string, string, string, boolean], GitResult>(() => ({
+    fake.worktreeAdd = vi.fn<(a: string, b: string, c: string, d: boolean) => GitResult>(() => ({
       ok: false,
       status: 128,
       stdout: '',
@@ -221,7 +214,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     })
     const configured = adapter.configure(makeInfo('hard-fail-loop', projectDir))
 
-    await expect(adapter.create(configured, {})).rejects.toThrow(
+    await expect(adapter.create(configured)).rejects.toThrow(
       /git worktree add failed: some other git error/,
     )
   })

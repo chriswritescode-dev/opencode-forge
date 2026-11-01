@@ -1,38 +1,6 @@
 import { describe, test, expect, vi } from 'vitest'
 import { classifyForgeWorkspace } from '../../src/workspace/classify-stale'
-import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
-
-function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
-  return {
-    insert: vi.fn(),
-    get: vi.fn().mockReturnValue(null),
-    getLarge: vi.fn(),
-    getBySessionId: vi.fn(),
-    listByStatus: vi.fn(),
-    listAll: vi.fn(),
-    updatePhase: vi.fn(),
-    updateIteration: vi.fn(),
-    incrementError: vi.fn(),
-    resetError: vi.fn(),
-    setCurrentSessionId: vi.fn(),
-    setWorkspaceId: vi.fn(),
-    clearWorkspaceId: vi.fn(),
-    setModelFailed: vi.fn(),
-    setLastAuditResult: vi.fn(),
-    clearLastAuditResult: vi.fn(),
-    setSandboxContainer: vi.fn(),
-    setStatus: vi.fn(),
-    setPhaseAndResetError: vi.fn(),
-    replaceSession: vi.fn(),
-    restart: vi.fn(),
-    terminate: vi.fn(),
-    delete: vi.fn(),
-    findPartial: vi.fn(),
-    setCurrentSectionIndex: vi.fn(),
-    setTotalSections: vi.fn(),
-    ...overrides,
-  }
-}
+import { createMockLoopsRepo } from '../helpers/loop-fixtures'
 
 describe('classifyForgeWorkspace', () => {
   const projectId = 'test-project'

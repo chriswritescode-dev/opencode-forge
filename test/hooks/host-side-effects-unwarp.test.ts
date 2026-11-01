@@ -1,29 +1,22 @@
 import { describe, test, expect, vi } from 'vitest'
 import { performTerminationSideEffects } from '../../src/hooks/host-side-effects'
-import type { LoopState, TerminationReason } from '../../src/loop'
+import type { TerminationReason } from '../../src/loop'
 import type { PluginConfig } from '../../src/types'
+import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 
-function buildState(overrides?: Partial<LoopState>): LoopState {
-  return {
-    phase: 'coding',
-    active: false,
-    sessionId: 'sess_worktree',
-    hostSessionId: 'sess_host',
-    loopName: 'feat-x',
-    worktreeDir: '/tmp/wt/feat-x',
-    projectDir: '/tmp/project',
-    worktreeBranch: 'forge/feat-x',
-    iteration: 3,
-    maxIterations: 10,
-    startedAt: new Date().toISOString(),
-    errorCount: 0,
-    auditCount: 0,
-    currentSectionIndex: 0,
-    totalSections: 1,
-    worktree: true,
-    workspaceId: 'ws_abc',
-    ...overrides,
-  } as LoopState
+const HOST_SIDE_EFFECTS_STATE_DEFAULTS = {
+  active: false,
+  sessionId: 'sess_worktree',
+  hostSessionId: 'sess_host',
+  loopName: 'feat-x',
+  worktreeDir: '/tmp/wt/feat-x',
+  projectDir: '/tmp/project',
+  worktreeBranch: 'forge/feat-x',
+  iteration: 3,
+  maxIterations: 10,
+  totalSections: 1,
+  workspaceId: 'ws_abc',
 }
 
 function buildCtx(overrides?: {
@@ -68,7 +61,7 @@ const maxIterations: TerminationReason = { kind: 'max_iterations' }
 describe('performTerminationSideEffects', () => {
   test('max_iterations removes workspace but preserves restartable worktree', async () => {
     const { ctx, workspaceRemove } = buildCtx()
-    const state = buildState({ iteration: 10, maxIterations: 10 })
+    const state = makeLoopState({ ...HOST_SIDE_EFFECTS_STATE_DEFAULTS, iteration: 10, maxIterations: 10 })
 
     await performTerminationSideEffects(state, maxIterations, 'sess_worktree', ctx)
 
@@ -78,7 +71,7 @@ describe('performTerminationSideEffects', () => {
   test('completed teardown deletes the final loop session after the worktree is removed', async () => {
     const { ctx, sessionDelete } = buildCtx()
 
-    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
+    await performTerminationSideEffects(makeLoopState(HOST_SIDE_EFFECTS_STATE_DEFAULTS), completed, 'sess_worktree', ctx)
 
     expect(sessionDelete).toHaveBeenCalledWith({ sessionID: 'sess_worktree', directory: '/tmp/wt/feat-x' })
   })
@@ -86,7 +79,7 @@ describe('performTerminationSideEffects', () => {
   test('restartable teardown keeps the final loop session', async () => {
     const { ctx, sessionDelete } = buildCtx()
 
-    await performTerminationSideEffects(buildState(), maxIterations, 'sess_worktree', ctx)
+    await performTerminationSideEffects(makeLoopState(HOST_SIDE_EFFECTS_STATE_DEFAULTS), maxIterations, 'sess_worktree', ctx)
 
     expect(sessionDelete).not.toHaveBeenCalled()
   })
@@ -149,14 +142,14 @@ describe('performTerminationSideEffects', () => {
 
     const ctx = {
       client,
-      logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
+      logger: createMockLogger(),
       getConfig: () => ({}) as PluginConfig,
       pendingTeardowns: pendingTeardowns as never,
       loopsRepo: { get: loopsRepoGet } as never,
       projectId: 'proj_1',
     }
 
-    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
+    await performTerminationSideEffects(makeLoopState(HOST_SIDE_EFFECTS_STATE_DEFAULTS), completed, 'sess_worktree', ctx)
 
     // Verify the terminating loop's own workspace was removed (via ForgeClient,
     // which delegates to the workspaceRemove mock)
@@ -195,12 +188,12 @@ describe('performTerminationSideEffects', () => {
         },
         toast,
       } as never,
-      logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
+      logger: createMockLogger(),
       getConfig: () => ({}) as PluginConfig,
       // No loopsRepo, projectId, or pendingTeardowns
     }
 
-    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
+    await performTerminationSideEffects(makeLoopState(HOST_SIDE_EFFECTS_STATE_DEFAULTS), completed, 'sess_worktree', ctx)
 
     // The terminating loop's own workspace was still removed
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })

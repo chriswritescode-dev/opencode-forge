@@ -1,66 +1,47 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { initializeDatabase } from '../src/storage'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopService } from '../src/loop/service'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createLogger } from '../src/utils/logger'
+import { makeLoopState } from './helpers/loop-fixtures'
+import { createMockLogger } from './helpers/logger'
+import { createTestDb, type TestDb } from './helpers/test-db'
+
+const PLAN_TEXT_STATE_DEFAULTS = {
+  worktreeDir: '/tmp/test',
+  projectDir: '/tmp/test',
+  prompt: undefined,
+  executionModel: undefined,
+  auditorModel: undefined,
+}
 
 describe('loopService.getPlanText', () => {
-  let db: Database
+  let testDb: TestDb
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let loopService: ReturnType<typeof createLoopService>
   const projectId = 'test-project'
-  const logger = createLogger({ enabled: false, file: ':memory:' })
+  const logger = createMockLogger()
 
   beforeEach(() => {
-    const dbPath = `/tmp/test-loop-plan-text-${Date.now()}-${Math.random()}.db`
-    db = initializeDatabase(dbPath)
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
+    testDb = createTestDb()
+    loopsRepo = createLoopsRepo(testDb.db)
+    plansRepo = createPlansRepo(testDb.db)
+    reviewFindingsRepo = createReviewFindingsRepo(testDb.db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
-
-  function makeState(overrides: Record<string, unknown> = {}) {
-    return {
-      active: true,
-      sessionId: 'session-1',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/test',
-      projectDir: '/tmp/test',
-      worktreeBranch: 'test-branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: undefined as string | undefined,
-      phase: 'coding' as const,
-      status: 'running' as const,
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
-      executionModel: undefined,
-      auditorModel: undefined,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      ...overrides,
-    }
-  }
 
   it('returns plan written by setState via plans table', () => {
     const loopName = 'test-loop-1'
     const sessionId = 'session-1-' + Date.now()
     const planText = 'Test plan content'
 
-    loopService.setState(loopName, makeState({ loopName, sessionId, prompt: planText }))
+    loopService.setState(loopName, makeLoopState({ ...PLAN_TEXT_STATE_DEFAULTS, loopName, sessionId, prompt: planText }))
 
     const result = loopService.getPlanText(loopName, sessionId)
     expect(result).toBe(planText)
@@ -89,7 +70,7 @@ describe('loopService.getPlanText', () => {
     plansRepo.writeForLoop(projectId, loopName, draftPlan)
 
     // Create loop state with different prompt, which writes to plans table via setState
-    loopService.setState(loopName, makeState({ loopName, sessionId, prompt: executionPlan }))
+    loopService.setState(loopName, makeLoopState({ ...PLAN_TEXT_STATE_DEFAULTS, loopName, sessionId, prompt: executionPlan }))
 
     const result = loopService.getPlanText(loopName, sessionId)
     expect(result).toBe(executionPlan)
@@ -109,7 +90,7 @@ describe('loopService.getPlanText', () => {
     const sessionId = 'session-4-' + Date.now()
     const planText = 'Plan for getPlanTextForState'
 
-    loopService.setState(loopName, makeState({ loopName, sessionId, prompt: planText }))
+    loopService.setState(loopName, makeLoopState({ ...PLAN_TEXT_STATE_DEFAULTS, loopName, sessionId, prompt: planText }))
 
     const retrievedState = loopService.getActiveState(loopName)
     expect(retrievedState).not.toBeNull()
@@ -128,7 +109,7 @@ describe('loopService.getPlanText', () => {
     plansRepo.writeForLoop(projectId, loopName, planText)
 
     // Create loop state without prompt (simulating DB load where prompt isn't stored in large fields)
-    loopService.setState(loopName, makeState({ loopName, sessionId }))
+    loopService.setState(loopName, makeLoopState({ ...PLAN_TEXT_STATE_DEFAULTS, loopName, sessionId }))
 
     // getAnyState should hydrate prompt from plans table
     const loadedState = loopService.getAnyState(loopName)
@@ -147,7 +128,7 @@ describe('loopService.getPlanText', () => {
     const planText = 'Persistent plan content for restart test'
 
     // Create stopped loop with plan
-    loopService.setState(loopName, makeState({ loopName, sessionId, prompt: planText, active: false }))
+    loopService.setState(loopName, makeLoopState({ ...PLAN_TEXT_STATE_DEFAULTS, loopName, sessionId, prompt: planText, active: false }))
 
     // Terminate the loop so it's not "active"
     loopsRepo.setStatus(projectId, loopName, 'completed')
@@ -175,7 +156,7 @@ describe('loopService.getPlanText', () => {
     const newSessionId = 'session-new-' + Date.now()
     const planText = 'Session rotation plan content'
 
-    loopService.setState(loopName, makeState({ loopName, sessionId: originalSessionId, prompt: planText }))
+    loopService.setState(loopName, makeLoopState({ ...PLAN_TEXT_STATE_DEFAULTS, loopName, sessionId: originalSessionId, prompt: planText }))
 
     // Rotate the session (replace old session ID with new one)
     loopService.replaceSession(loopName, {
@@ -198,7 +179,7 @@ describe('loopService.getPlanText', () => {
     const loopName = 'test-loop-no-plan-' + Date.now()
     const sessionId = 'session-no-plan-' + Date.now()
 
-    loopService.setState(loopName, makeState({ loopName, sessionId }))
+    loopService.setState(loopName, makeLoopState({ ...PLAN_TEXT_STATE_DEFAULTS, loopName, sessionId }))
 
     // No plan was written - both should return null
     const result = loopService.getPlanText(loopName, sessionId)

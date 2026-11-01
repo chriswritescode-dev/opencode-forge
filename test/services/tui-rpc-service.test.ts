@@ -1,19 +1,18 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo, createPlansRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { LoopsRepo, LoopRow } from '../../src/storage/repos/loops-repo'
 import type { SessionSandboxDesiredState } from '../../src/storage'
-import type { Logger } from '../../src/types'
 import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createMockLogger } from '../helpers/logger'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'project-a'
-const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+const logger = createMockLogger()
 
 function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
   return {
@@ -45,28 +44,31 @@ function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
     totalSections: 1,
     executionVariant: 'high',
     auditorVariant: 'low',
+    baseCommit: null,
+    standbySessionId: null,
     ...overrides,
   }
 }
 
 describe('createTuiRpcService', () => {
   let tempDir: string
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let sandboxPreferences: ReturnType<typeof createSessionSandboxPreferencesRepo>
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'tui-rpc-service-test-'))
-    db = new Database(join(tempDir, 'forge.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb({ path: join(tempDir, 'forge.db') })
+    db = testDb.db
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
     sandboxPreferences = createSessionSandboxPreferencesRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     rmSync(tempDir, { recursive: true, force: true })
   })
 
@@ -113,7 +115,7 @@ describe('createTuiRpcService', () => {
 
       const running = result.loops.find((loop) => loop.name === 'loop-running')
       expect(running).toMatchObject({ restartable: true, restartRequiresForce: true })
-      expect(running?.sections).toBeUndefined()
+      expect((running as Record<string, unknown> | undefined)?.sections).toBeUndefined()
     })
 
     test('a loop with unset optional fields is JSON-clean after toForgeRpcJson', () => {

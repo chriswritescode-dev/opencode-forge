@@ -7,6 +7,7 @@
 - Focus a Node test with `pnpm test --project node test/path.test.ts`; add `-t "test name"` for one case. Run dashboard DOM tests with `pnpm test --project dom test/dashboard/app-dom.test.ts`. The `dom` project is the only happy-dom suite; all other tests use the `node` project and a `bun:sqlite` shim.
 - `tsc` is TypeScript 7 (native, devDependency alias `typescript-7`). The `typescript` package is an alias for `@typescript/typescript6` because typedoc needs the JavaScript compiler API, which TypeScript 7.0 does not ship; keep both aliases until typedoc supports 7.
 - `pnpm typecheck` covers `src/`, not tests or scripts. Oxlint also ignores tests and generated dashboard files.
+- Test fixtures come from `test/helpers/`: test databases from `createTestDb` in `test/helpers/test-db.ts` (real migrations; never hand-write `CREATE TABLE` outside `test/storage-migrations.test.ts` and `test/scripts/cleanup-loop.test.ts`), loggers from `test/helpers/logger.ts`, loop state/runtime/execution fixtures from `test/helpers/loop-fixtures.ts`, loop handoff payloads and recording from `test/helpers/loop-handoff.ts`, ForgeClients from `test/helpers/fake-client.ts`.
 
 ## Package surfaces
 

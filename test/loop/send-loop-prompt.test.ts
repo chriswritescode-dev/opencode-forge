@@ -5,7 +5,6 @@ import {
   ConcurrentPromptError,
   type PromptAgent,
 } from '../../src/loop/in-flight-guard'
-import type { Logger } from '../../src/types'
 
 const { clearPromptPendingMock, markPromptSentMock } = vi.hoisted(() => ({
   clearPromptPendingMock: vi.fn(),
@@ -21,14 +20,7 @@ vi.mock('../../src/loop/idle-gate', () => ({
 }))
 
 import { sendLoopPrompt } from '../../src/loop/send-loop-prompt'
-
-function createMockLogger(): Logger {
-  return {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-}
+import { createMockLogger } from '../helpers/logger'
 
 const testModel = { providerID: 'test-provider', modelID: 'test-model' }
 const PROJECT_ID = 'test-project'
@@ -64,7 +56,7 @@ describe('sendLoopPrompt', () => {
   })
 
   test('model fallback', async () => {
-    const performPrompt = vi.fn((model: typeof testModel | undefined) => {
+    const performPrompt = vi.fn(async (model: typeof testModel | undefined) => {
       if (model) return { error: new Error('model failed') }
       return {}
     })

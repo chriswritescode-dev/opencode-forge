@@ -28,6 +28,7 @@ const defaultState = {
   maxIterations: 5,
   startedAt: '2025-01-01T00:00:00Z',
   phase: 'coding' as const,
+  status: 'running' as const,
   errorCount: 0,
   auditCount: 0,
   currentSectionIndex: 0,
@@ -131,42 +132,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('Auditor session could not run; retrying.')
       expect(result).not.toContain('Auditor feedback from previous attempt')
     })
-
-    test('includes recurring-findings escalation when count >= threshold (coder)', () => {
-      const findings: ReviewFindingRow[] = [
-        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
-      ]
-      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 3]])
-      const ctx = makeCtx({
-        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
-        getFindingRecurrence: () => recurrence,
-      })
-      const result = buildContinuationPrompt(ctx, { ...defaultState })
-      expect(result).toContain('Recurring blocking findings')
-      expect(result).toContain('src/bug.ts:5')
-      expect(result).toContain('recurred 3×')
-    })
-
-    test('omits recurring-findings escalation when count < threshold', () => {
-      const findings: ReviewFindingRow[] = [
-        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
-      ]
-      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 2]])
-      const ctx = makeCtx({
-        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
-        getFindingRecurrence: () => recurrence,
-      })
-      const result = buildContinuationPrompt(ctx, { ...defaultState })
-      expect(result).not.toContain('Recurring blocking findings')
-    })
-
-    test('omits recurring-findings escalation when no findings', () => {
-      const ctx = makeCtx({
-        getFindingRecurrence: () => new Map([['x:src/other.ts:1', 5]]),
-      })
-      const result = buildContinuationPrompt(ctx, { ...defaultState })
-      expect(result).not.toContain('Recurring blocking findings')
-    })
   })
 
   describe('buildAuditPrompt', () => {
@@ -219,33 +184,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
       expect(result).not.toContain('Coder decisions & verification notes')
       expect(result).not.toContain('never an automatic waiver')
-    })
-
-    test('includes recurring-findings escalation when count >= threshold (auditor)', () => {
-      const findings: ReviewFindingRow[] = [
-        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
-      ]
-      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 3]])
-      const ctx = makeCtx({
-        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
-        getFindingRecurrence: () => recurrence,
-      })
-      const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
-      expect(result).toContain('Recurring findings — re-evaluate')
-      expect(result).toContain('src/bug.ts:5')
-    })
-
-    test('omits recurring-findings escalation when count < threshold (auditor)', () => {
-      const findings: ReviewFindingRow[] = [
-        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
-      ]
-      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 2]])
-      const ctx = makeCtx({
-        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
-        getFindingRecurrence: () => recurrence,
-      })
-      const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
-      expect(result).not.toContain('Recurring findings — re-evaluate')
     })
   })
 
@@ -547,20 +485,32 @@ describe('prompt builders (src/loop/prompts)', () => {
       })
     }
 
-    test('at threshold the coder block demands a revisited causal hypothesis and a reproducer', () => {
-      const result = buildSectionContinuationPrompt(ctxWithRecurrence(3), { ...sectionState }, '')
-      expect(result).toContain('Recurring blocking findings')
-      expect(result).toContain('`src/bug.ts:5`')
-      expect(result).toContain('recurred 3×')
-      expect(result).toContain('revisit the causal hypothesis')
-      expect(result).toContain('reproducer or counterexample')
-      expect(result).toContain('Do not repeat the previous patch')
+    test('at threshold the coder blocks demand a revisited causal hypothesis and a reproducer', () => {
+      const sectionPrompt = buildSectionContinuationPrompt(ctxWithRecurrence(3), { ...sectionState }, '')
+      const legacyPrompt = buildContinuationPrompt(ctxWithRecurrence(3), { ...defaultState })
+      for (const result of [sectionPrompt, legacyPrompt]) {
+        expect(result).toContain('Recurring blocking findings')
+        expect(result).toContain('`src/bug.ts:5`')
+        expect(result).toContain('recurred 3×')
+        expect(result).toContain('revisit the causal hypothesis')
+        expect(result).toContain('reproducer or counterexample')
+        expect(result).toContain('Do not repeat the previous patch')
+      }
     })
 
-    test('below threshold the coder escalation block is absent', () => {
-      const result = buildSectionContinuationPrompt(ctxWithRecurrence(2), { ...sectionState }, '')
-      expect(result).not.toContain('Recurring blocking findings')
-      expect(result).not.toContain('revisit the causal hypothesis')
+    test('below threshold and without findings the coder escalation block is absent', () => {
+      const belowThreshold = [
+        buildSectionContinuationPrompt(ctxWithRecurrence(2), { ...sectionState }, ''),
+        buildContinuationPrompt(ctxWithRecurrence(2), { ...defaultState }),
+      ]
+      const noFindings = buildContinuationPrompt(
+        makeCtx({ getFindingRecurrence: () => new Map([['x:src/other.ts:1', 5]]) }),
+        { ...defaultState },
+      )
+      for (const result of [...belowThreshold, noFindings]) {
+        expect(result).not.toContain('Recurring blocking findings')
+        expect(result).not.toContain('revisit the causal hypothesis')
+      }
     })
 
     test('escalation changes the requested diagnostic method only, not gates or authority', () => {
@@ -577,11 +527,13 @@ describe('prompt builders (src/loop/prompts)', () => {
 
     test('at threshold the auditor block renders locations and counts and defers policy to the addendum', () => {
       const result = buildAuditPrompt(ctxWithRecurrence(3), { ...defaultState, iteration: 2 })
+      const belowThreshold = buildAuditPrompt(ctxWithRecurrence(2), { ...defaultState, iteration: 2 })
       expect(result).toContain('Recurring findings — re-evaluate')
       expect(result).toContain('Recurring Findings policy')
       expect(result).toContain('`src/bug.ts:5` (3×)')
       expect(result).not.toContain('genuinely, verifiably still broken')
       expect(result).not.toContain('DELETE it with review-delete')
+      expect(belowThreshold).not.toContain('Recurring findings — re-evaluate')
     })
   })
 

@@ -1,75 +1,42 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { Database } from 'bun:sqlite'
 type DB = InstanceType<typeof Database>
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { createLoopsRepo } from '../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import type { LoopState } from '../src/loop/state'
-import { createLoop } from '../src/loop/runtime'
 import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../src/constants/loop'
-import type { Logger, PluginConfig } from '../src/types'
-import { setupLoopsTestDb } from './helpers/loops-test-db'
+import type { PluginConfig } from '../src/types'
+import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
+import { buildLoopRuntime, makeLoopState } from './helpers/loop-fixtures'
 import { recordCoderHandoff } from './helpers/loop-handoff'
 
 const PROJECT_ID = 'test-project'
+const AUDIT_PERMISSION_STATE_DEFAULTS = {
+  sessionId: 'code-session-id',
+  worktreeDir: '/tmp/test-worktree',
+  projectDir: '/tmp/host-project',
+  totalSections: 1,
+} satisfies Partial<LoopState>
 
 describe('Audit session permissions', () => {
   let db: DB
   let tempDir: string
-  let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let plansRepo: ReturnType<typeof createPlansRepo>
-  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  let testDb: ReturnType<typeof createTestDb>
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-audit-perm-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
+    testDb = createTestDb()
+    db = testDb.db
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {}
   })
-
-  function makeState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: 'code-session-id',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/test-worktree',
-      projectDir: '/tmp/host-project',
-      worktreeBranch: 'test/branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running',
-      worktree: true,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      currentSectionIndex: 0,
-      totalSections: 1,
-      ...overrides,
-    }
-  }
 
   test('audit session includes buildAuditSessionPermissionRuleset()', async () => {
     const createCalls: Array<Record<string, unknown>> = []
@@ -101,46 +68,21 @@ describe('Audit session permissions', () => {
       toast: async () => {},
     })
 
-    const logger: Logger = {
-      log: () => {},
-      error: () => {},
-      debug: () => {},
-    }
-
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5 },
+      loop: { enabled: true, defaultMaxIterations: 5 },
     }
 
-    const loopService = (
-      await import('../src/loop/service')
-    ).createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      logger,
-      undefined,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
+    const { loop, loopService } = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
       client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
+      config,
       dataDir: tempDir,
     })
 
-    const state = makeState({
+    const state = makeLoopState({
+      ...AUDIT_PERMISSION_STATE_DEFAULTS,
       phase: 'coding',
       sessionId: 'code-session-id',
       totalSections: 1,
@@ -200,46 +142,21 @@ describe('Audit session permissions', () => {
       toast: async () => {},
     })
 
-    const logger: Logger = {
-      log: () => {},
-      error: () => {},
-      debug: () => {},
-    }
-
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5, permissions: { deny: ['webfetch'] } },
+      loop: { enabled: true, defaultMaxIterations: 5, permissions: { deny: ['webfetch'] } },
     }
 
-    const loopService = (
-      await import('../src/loop/service')
-    ).createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      logger,
-      undefined,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
+    const { loop, loopService } = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
       client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
+      config,
       dataDir: tempDir,
     })
 
-    const state = makeState({
+    const state = makeLoopState({
+      ...AUDIT_PERMISSION_STATE_DEFAULTS,
       phase: 'coding',
       sessionId: 'code-session-id',
       totalSections: 1,
@@ -312,46 +229,21 @@ describe('Audit session permissions', () => {
       toast: async () => {},
     })
 
-    const logger: Logger = {
-      log: () => {},
-      error: () => {},
-      debug: () => {},
-    }
-
     const config: PluginConfig = {
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5 },
+      loop: { enabled: true, defaultMaxIterations: 5 },
     }
 
-    const loopService = (
-      await import('../src/loop/service')
-    ).createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      logger,
-      undefined,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
+    const { loop, loopService } = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
       client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
+      config,
       dataDir: tempDir,
     })
 
-    const state = makeState({
+    const state = makeLoopState({
+      ...AUDIT_PERMISSION_STATE_DEFAULTS,
       phase: 'coding',
       sessionId: 'code-session-id',
       totalSections: 1,

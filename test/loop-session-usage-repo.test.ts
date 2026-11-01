@@ -1,84 +1,31 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRow } from '../src/storage'
-
-const TEST_DIR = '/tmp/opencode-loop-session-usage-test-' + Date.now()
-
-function createTestDb(): Database {
-  const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
-  db.run(`
-    CREATE TABLE loops (
-      project_id           TEXT NOT NULL,
-      loop_name            TEXT NOT NULL,
-      status               TEXT NOT NULL,
-      current_session_id   TEXT NOT NULL,
-      worktree             INTEGER NOT NULL,
-      worktree_dir         TEXT NOT NULL,
-      worktree_branch      TEXT,
-      project_dir          TEXT NOT NULL,
-      max_iterations       INTEGER NOT NULL,
-      iteration            INTEGER NOT NULL DEFAULT 0,
-      audit_count          INTEGER NOT NULL DEFAULT 0,
-      error_count          INTEGER NOT NULL DEFAULT 0,
-      phase                TEXT NOT NULL,
-      execution_model      TEXT,
-      auditor_model        TEXT,
-      model_failed         INTEGER NOT NULL DEFAULT 0,
-      sandbox              INTEGER NOT NULL DEFAULT 0,
-      sandbox_container    TEXT,
-      started_at           INTEGER NOT NULL,
-      completed_at         INTEGER,
-      termination_reason   TEXT,
-      completion_summary   TEXT,
-      workspace_id         TEXT,
-      host_session_id      TEXT,
-      current_section_index INTEGER NOT NULL DEFAULT 0,
-      total_sections       INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (project_id, loop_name)
-    );
-
-    CREATE TABLE loop_session_usage (
-      project_id        TEXT NOT NULL,
-      loop_name         TEXT NOT NULL,
-      session_id        TEXT NOT NULL,
-      role              TEXT NOT NULL CHECK(role IN ('code', 'auditor', 'unknown')),
-      model             TEXT NOT NULL,
-      cost              REAL NOT NULL DEFAULT 0,
-      input_tokens      INTEGER NOT NULL DEFAULT 0,
-      output_tokens     INTEGER NOT NULL DEFAULT 0,
-      reasoning_tokens  INTEGER NOT NULL DEFAULT 0,
-      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-      message_count     INTEGER NOT NULL DEFAULT 0,
-      captured_at       INTEGER NOT NULL,
-      PRIMARY KEY (project_id, loop_name, session_id, model),
-      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-    );
-
-    CREATE INDEX idx_loop_session_usage_project_loop ON loop_session_usage(project_id, loop_name);
-  `)
-  return db
-}
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('LoopSessionUsageRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createLoopSessionUsageRepo>
+  let testDb: TestDb
   const projectId = 'test-project'
   const loopName = 'test-loop'
 
+  function insertLoop(projectId: string, loopName: string, status: 'running' | 'completed' = 'running'): void {
+    db.prepare(
+      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+       VALUES (?, ?, ?, ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
+    ).run(projectId, loopName, status, `${projectId}-${loopName}-session`, Date.now())
+  }
+
   beforeEach(() => {
-    db = createTestDb()
-    db.run('PRAGMA foreign_keys = ON')
-    // Insert parent loop row to satisfy FK constraint
-    db.run(`
-      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, phase, started_at)
-      VALUES (?, ?, 'active', 'session-1', 1, '/tmp/test', '/tmp/test', 10, 0, 'running', ?)
-    `, [projectId, loopName, Date.now()])
+    testDb = createTestDb()
+    db = testDb.db
+    insertLoop(projectId, loopName)
     repo = createLoopSessionUsageRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   function createUsageRow(overrides?: Partial<LoopSessionUsageRow>): LoopSessionUsageRow {
@@ -417,15 +364,8 @@ describe('LoopSessionUsageRepo', () => {
     })
 
     test('returns false for different loop with same session id', () => {
-      // Insert parent loop rows for loop-a and loop-b
-      db.run(`
-        INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, phase, started_at)
-        VALUES (?, ?, 'active', 'session-1', 1, '/tmp/test', '/tmp/test', 10, 0, 'running', ?)
-      `, [projectId, 'loop-a', Date.now()])
-      db.run(`
-        INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, phase, started_at)
-        VALUES (?, ?, 'active', 'session-1', 1, '/tmp/test', '/tmp/test', 10, 0, 'running', ?)
-      `, [projectId, 'loop-b', Date.now()])
+      insertLoop(projectId, 'loop-a')
+      insertLoop(projectId, 'loop-b')
       
       const row = createUsageRow({ sessionId: 'session-123', loopName: 'loop-a' })
       repo.upsertSessionUsage(row)
@@ -436,15 +376,8 @@ describe('LoopSessionUsageRepo', () => {
 
   describe('deleteLoop', () => {
     test('deletes all usage rows for a loop', () => {
-      // Insert parent loop rows for loop-a and loop-b
-      db.run(`
-        INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, phase, started_at)
-        VALUES (?, ?, 'active', 'session-1', 1, '/tmp/test', '/tmp/test', 10, 0, 'running', ?)
-      `, [projectId, 'loop-a', Date.now()])
-      db.run(`
-        INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, phase, started_at)
-        VALUES (?, ?, 'active', 'session-1', 1, '/tmp/test', '/tmp/test', 10, 0, 'running', ?)
-      `, [projectId, 'loop-b', Date.now()])
+      insertLoop(projectId, 'loop-a')
+      insertLoop(projectId, 'loop-b')
       
       const row1 = createUsageRow({ sessionId: 'session-1', loopName: 'loop-a' })
       const row2 = createUsageRow({ sessionId: 'session-2', loopName: 'loop-a' })

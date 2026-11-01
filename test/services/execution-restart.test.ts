@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync } from 'fs'
 import { execFileSync } from 'child_process'
-import { createHash } from 'crypto'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -12,7 +11,6 @@ import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transiti
 import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
 import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -20,16 +18,13 @@ import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-rep
 import type { LoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import type { LoopService } from '../../src/loop/service'
-const Database = require('better-sqlite3')
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import type { Database } from 'bun:sqlite'
+import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
-type Database = ReturnType<typeof Database>
+import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 const PROJECT_ID = 'test-project'
 
@@ -63,6 +58,7 @@ function createNonReentrantMutex() {
 }
 
 describe('handleLoopRestart from stall_timeout', () => {
+  let testDb: ReturnType<typeof createTestDb>
   let db: Database
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
@@ -72,17 +68,9 @@ describe('handleLoopRestart from stall_timeout', () => {
   let loopAttemptsRepo: LoopAttemptsRepo
   let loopService: LoopService
 
-  const mockPendingTeardowns = {
-    register: () => {},
-    unregister: () => {},
-    get: () => undefined,
-  }
-
   beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -107,7 +95,7 @@ describe('handleLoopRestart from stall_timeout', () => {
   })
 
   afterEach(() => {
-    try { db.close() } catch {}
+    testDb.cleanup()
   })
 
   function insertLoop(overrides: Partial<{
@@ -256,40 +244,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -373,41 +332,15 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-        service: mockLoopService,
-        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-      } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-      loopSessionUsageRepo,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockLoopService as LoopService },
+        loopSessionUsageRepo,
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -485,40 +418,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-        service: mockLoopService,
-        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-      } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -581,39 +485,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
-      loop: {
-        service: mockLoopService,
-        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-      } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -742,40 +618,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -868,40 +715,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -971,35 +789,10 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1071,35 +864,10 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1174,35 +942,10 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1283,36 +1026,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      // Remote-like config: no loop.permissions on the server, rules come only from the workspace.
-      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    // Remote-like config: no loop.permissions on the server, rules come only from the workspace.
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1389,40 +1107,19 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true, postAction: { enabled: true, skill: 'pr-review' } },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockLoopService as LoopService },
+        config: {
+          loop: { enabled: true, postAction: { enabled: true, skill: 'pr-review' } },
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1459,8 +1156,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       status: 'stalled',
       terminationReason: 'stall_timeout',
     })
-
-    const noopFn = () => {}
 
     const { client } = createFakeForgeClient({
       session: {
@@ -1499,48 +1194,25 @@ describe('handleLoopRestart from stall_timeout', () => {
     let capturedResolvedOld: string | null | undefined
     let capturedPhase: string | null | undefined
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
-        const result = await fn()
-        // Capture loop service state at the exact moment the lock release completes,
-        // BEFORE the outer restart body sends prompts and persists to DB.
-        capturedResolvedNew = loopService.resolveLoopName('race-new-session')
-        capturedResolvedOld = loopService.resolveLoopName('session-old')
-        capturedPhase = loopService.getActiveState('race-loop')?.phase ?? null
-        return result
-      },
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockLoopService as LoopService },
+        loopHandler: {
+          runExclusive: async <T>(_name: string, fn: () => Promise<T>) => {
+            const result = await fn()
+            // Capture loop service state at the exact moment the lock release completes,
+            // BEFORE the outer restart body sends prompts and persists to DB.
+            capturedResolvedNew = loopService.resolveLoopName('race-new-session')
+            capturedResolvedOld = loopService.resolveLoopName('session-old')
+            capturedPhase = loopService.getActiveState('race-loop')?.phase ?? null
+            return result
+          },
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1570,8 +1242,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       active: true,
     })
 
-    const noopFn = () => {}
-
     const { client } = createFakeForgeClient({
       session: {
         create: async () => ({ id: 'new-code-session' }),
@@ -1589,18 +1259,6 @@ describe('handleLoopRestart from stall_timeout', () => {
     let capturedResolvedNew: string | null | undefined
     let capturedResolvedOld: string | null | undefined
     let capturedPhase: string | null | undefined
-
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
-        const result = await fn()
-        capturedResolvedNew = loopService.resolveLoopName('new-code-session')
-        capturedResolvedOld = loopService.resolveLoopName('session-old')
-        capturedPhase = loopService.getActiveState('audit-restart-loop')?.phase ?? null
-        return result
-      },
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
 
     const mockLoopService: Partial<LoopService> = {
       buildPlanInitialPrompt: (text) => loopService.buildPlanInitialPrompt(text),
@@ -1623,32 +1281,21 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockLoopService as LoopService },
+        loopHandler: {
+          runExclusive: async <T>(_name: string, fn: () => Promise<T>) => {
+            const result = await fn()
+            capturedResolvedNew = loopService.resolveLoopName('new-code-session')
+            capturedResolvedOld = loopService.resolveLoopName('session-old')
+            capturedPhase = loopService.getActiveState('audit-restart-loop')?.phase ?? null
+            return result
+          },
+        },
+      }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1730,41 +1377,12 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      // postAction NOT configured → resolvePostActionConfig returns enabled=false.
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    // postAction NOT configured → resolvePostActionConfig returns enabled=false.
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: { service: mockLoopService as LoopService } }).deps,
+    )
 
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -1830,38 +1448,18 @@ describe('handleLoopRestart from stall_timeout', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true, postAction: { enabled: true, skill: 'pr-review' } },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      client,
-      pendingTeardowns: mockPendingTeardowns as any,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockLoopService as LoopService },
+        config: {
+          loop: { enabled: true, postAction: { enabled: true, skill: 'pr-review' } },
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+        },
+      }).deps,
+    )
 
     return { service, client }
   }
@@ -2001,6 +1599,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: 0,
       totalSections: 0,
       auditorFallbackIndex: 1,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
 
     const { service } = await createRestartOverrideService(() => Promise.reject(new Error('prompt delivery failed')))
@@ -2174,6 +1774,7 @@ describe('handleLoopRestart from stall_timeout', () => {
 })
 
 describe('handleLoopRestart restartability rules', () => {
+  let testDb: ReturnType<typeof createTestDb>
   let db: Database
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
@@ -2184,10 +1785,8 @@ describe('handleLoopRestart restartability rules', () => {
   let notifySpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-rules-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -2209,7 +1808,7 @@ describe('handleLoopRestart restartability rules', () => {
   })
 
   afterEach(() => {
-    try { db.close() } catch {}
+    testDb.cleanup()
   })
 
   function insertLoop(overrides: Partial<{
@@ -2279,6 +1878,8 @@ describe('handleLoopRestart restartability rules', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       sandboxSettings: opts.sandboxSettings,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
   }
 
@@ -2324,18 +1925,6 @@ describe('handleLoopRestart restartability rules', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: opts?.runExclusive ?? (async <T>(name: string, fn: () => Promise<T>) => fn()),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
-    const mockPendingTeardowns = {
-      register: noopFn,
-      unregister: noopFn,
-      get: () => undefined,
-    }
-
     // Default terminate: persist errored status and termination reason, then mark inactive.
     const defaultTerminate = async (name: string, reason: any) => {
       const state = loopService.getActiveState(name)
@@ -2349,35 +1938,23 @@ describe('handleLoopRestart restartability rules', () => {
     }
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-        ...(opts?.config ?? {}),
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-
-      plansRepo,
-      loopsRepo,
-      loop: {
-          service: mockLoopService,
-          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-          registerSessionReverseIndex: () => {},
-          unregisterSessionReverseIndex: () => {},
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        config: {
+          loop: { enabled: true },
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          ...(opts?.config ?? {}),
+        },
+        loop: {
+          service: mockLoopService as LoopService,
           terminate: opts?.terminate ?? defaultTerminate,
-        } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      pendingTeardowns: mockPendingTeardowns as any,
-      client,
-      sandboxManager: opts?.sandboxManager as any,
-    })
+        },
+        loopHandler: opts?.runExclusive ? { runExclusive: opts.runExclusive } : undefined,
+        sandboxManager: opts?.sandboxManager as any,
+      }).deps,
+    )
 
     return {
       service,
@@ -3204,48 +2781,19 @@ describe('handleLoopRestart restartability rules', () => {
       toast: async () => {},
     })
 
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
-        await mutex.acquire()
-        try { return await fn() } finally { mutex.release() }
-      },
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
-    const mockPendingTeardownsInline = {
-      register: noopFn,
-      unregister: noopFn,
-      get: () => undefined,
-    }
-
     const { createForgeExecutionService } = await import('../../src/services/execution')
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      plansRepo,
-      loopsRepo,
-      loop: {
-        service: mockLoopService,
-        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
-        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
-        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-        terminate: terminateSpy,
-      } as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-      pendingTeardowns: mockPendingTeardownsInline as any,
-      client,
-    })
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockLoopService as LoopService, terminate: terminateSpy },
+        loopHandler: {
+          runExclusive: async <T>(_name: string, fn: () => Promise<T>): Promise<T> => {
+            await mutex.acquire()
+            try { return await fn() } finally { mutex.release() }
+          },
+        },
+      }).deps,
+    )
 
     // Race the dispatch against a deadlock sentinel. With the regression, the
     // inner terminate await would block forever and the race rejects. With the

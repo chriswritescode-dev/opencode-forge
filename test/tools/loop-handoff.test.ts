@@ -1,23 +1,16 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { z } from 'zod'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/loop/service'
-import { createLoop, __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopHandoffTools } from '../../src/tools/loop-handoff'
 import type { ToolDefinition } from '../../src/tools/tool'
 import { LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
 import { coderHandoffSchema } from '../../src/loop/handoff'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
+import { createTestDb } from '../helpers/test-db'
 import { coderPayload, postActionPayload } from '../helpers/loop-handoff'
 
 const PROJECT_ID = 'loop-handoff-project'
@@ -29,17 +22,14 @@ const POST_ACTION_SESSION = 'post-action-session'
 const config: PluginConfig = {
   executionModel: 'test/model',
   auditorModel: 'test/auditor',
-  loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5 },
+  loop: { enabled: true, defaultMaxIterations: 5 },
 }
 
-const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
-
 describe('loop handoff tools', () => {
-  let db: Database
-  let tempDir: string
-  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let testDb: ReturnType<typeof createTestDb>
+  let db: ReturnType<typeof createTestDb>['db']
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let service: ReturnType<typeof createLoopService>
+  let service: ReturnType<typeof buildLoopRuntime>['loopService']
   let loop: Loop
   let tools: Record<string, ToolDefinition>
   let statuses: Record<string, { type?: string }>
@@ -48,16 +38,11 @@ describe('loop handoff tools', () => {
   let parentMap: Record<string, string | null>
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'loop-handoff-tool-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     __resetLoopRuntimeSharedState()
 
-    loopsRepo = createLoopsRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    service = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, logger, undefined, undefined, sectionPlansRepo)
 
     statuses = {}
     statusError = null
@@ -74,57 +59,25 @@ describe('loop handoff tools', () => {
       },
     })
 
-    loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
+    const runtime = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
       client,
-      logger,
-      getConfig: () => config,
-      loopService: service,
+      config,
       getParentSessionId: async (sessionId) => parentMap[sessionId] ?? null,
     })
+    loop = runtime.loop
+    service = runtime.loopService
     tools = createLoopHandoffTools({ loop } as never)
   })
 
   afterEach(() => {
     loop.clearAllRetryTimeouts()
     __resetLoopRuntimeSharedState()
-    db.close()
-    rmSync(tempDir, { recursive: true, force: true })
+    testDb.cleanup()
   })
 
-  function makeState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: CODER_SESSION,
-      loopName: LOOP_NAME,
-      worktreeDir: tempDir,
-      projectDir: tempDir,
-      worktreeBranch: 'test/handoff',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Implement the handoff phase',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running',
-      worktree: true,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      currentSectionIndex: 0,
-      totalSections: 0,
-      ...overrides,
-    }
-  }
-
   function startLoop(overrides: Partial<LoopState> = {}): LoopState {
-    const state = makeState(overrides)
+    const state = makeLoopState({ loopName: LOOP_NAME, sessionId: CODER_SESSION, ...overrides })
     service.setState(LOOP_NAME, state)
     return state
   }
@@ -367,6 +320,7 @@ describe('loop handoff tools', () => {
       expect(result.ok).toBe(true)
       expect(result.message).toContain('Handoff recorded')
       const [record] = handoffs()
+      if (record.role !== 'coder') throw new Error('expected coder handoff')
       expect(record.role).toBe('coder')
       expect(record.phase).toBe('coding')
       expect(record.sectionIndex).toBe(1)

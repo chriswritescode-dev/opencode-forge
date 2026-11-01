@@ -1,18 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
-import { createFakeForgeClient } from '../helpers/fake-client'
-
-const noopFn = () => {}
+import { dirname } from 'path'
+import type { SandboxManager } from '../../src/sandbox/manager'
+import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -21,80 +12,32 @@ vi.mock('../../src/utils/sandbox-ready', () => ({
 }))
 
 describe('attachLoopToSession sandbox-not-ready cleanup', () => {
-  let db: Database
+  let testDb: ReturnType<typeof createTestDb>
+  let db: ReturnType<typeof createTestDb>['db']
   let tempDir: string
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'exec-sandbox-cleanup-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-    // attachLoopToSession only runs the sandbox wait when forge.db exists at dataDir.
-    writeFileSync(join(tempDir, 'forge.db'), '')
+    testDb = createTestDb()
+    db = testDb.db
+    tempDir = dirname(testDb.path)
   })
 
   afterEach(() => {
-    try {
-      db.close()
-    } catch {}
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {}
+    testDb.cleanup()
   })
 
   function buildDeps() {
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} } as Logger,
-      undefined,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const { client } = createFakeForgeClient()
-
     const stop = vi.fn(async () => {})
-    const sandboxManager = { stop }
+    const sandboxManager = { stop } as unknown as SandboxManager
     const unregisterSessionReverseIndex = vi.fn()
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() }
+    const logger = createMockLogger()
 
-    const deps = {
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
+    const { deps, loopService } = buildExecutionDeps(db, {
       logger,
       dataDir: tempDir,
-      client,
-      plansRepo,
-      loopsRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      loop: {
-        service: loopService,
-        listActive: (...a: any[]) => loopService.listActive(...a as any),
-        findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex,
-        handleAuditorProviderLimit: async () => false,
-      } as any,
-      loopHandler: {
-        runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: vi.fn(),
-        clearLoopTimers: noopFn,
-      },
       sandboxManager,
-    }
+      loop: { unregisterSessionReverseIndex },
+    })
 
     return { deps, loopService, sandboxManager, unregisterSessionReverseIndex, logger }
   }

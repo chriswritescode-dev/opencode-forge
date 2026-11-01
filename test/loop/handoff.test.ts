@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import {
   auditorHandoffSchema,
   coderHandoffSchema,
@@ -20,11 +16,11 @@ import { createLoopService } from '../../src/loop/service'
 import { createLoopsRepo, type LoopRow } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { coderPayload, postActionPayload } from '../helpers/loop-handoff'
-import type { Logger } from '../../src/types'
+import { createMockLogger } from '../helpers/logger'
+import { createTestDb } from '../helpers/test-db'
 
-const silentLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+const silentLogger = createMockLogger()
 
 const mixedOutcomePayload: PostActionCompletePayload = {
   outcome: 'completed_with_issues',
@@ -159,8 +155,8 @@ describe('handoff renderers', () => {
 })
 
 describe('LoopService handoff store', () => {
-  let db: Database
-  let tempDir: string
+  let testDb: ReturnType<typeof createTestDb>
+  let db: ReturnType<typeof createTestDb>['db']
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let service: ReturnType<typeof createLoopService>
 
@@ -198,9 +194,8 @@ describe('LoopService handoff store', () => {
   }
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'handoff-service-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     loopsRepo = createLoopsRepo(db)
     loopsRepo.insert(loopRow, { lastAuditResult: null })
     service = createLoopService(
@@ -213,8 +208,7 @@ describe('LoopService handoff store', () => {
   })
 
   afterEach(() => {
-    db.close()
-    rmSync(tempDir, { recursive: true, force: true })
+    testDb.cleanup()
   })
 
   test('injects the loop project and stores, applies, discards, and lists handoffs', () => {

@@ -1,35 +1,21 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { createLoop } from '../src/loop/runtime'
 import type { LoopChangeNotifier } from '../src/loop/service'
-import type { LoopsRepo } from '../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import type { Logger } from '../src/types'
+import { createMockLogger } from './helpers/logger'
+import { createMockLoopsRepo } from './helpers/loop-fixtures'
 
 // Mock repos
 function createMockRepos() {
-  const mockLoopsRepo = {
-    insert: () => true,
-    get: () => null,
-    getLarge: () => null,
-    delete: () => {},
-    setStatus: () => {},
-    setCurrentSessionId: () => {},
-    getBySessionId: () => null,
-    findPartial: () => ({ match: null, candidates: [] }),
-    listByStatus: () => [],
-    updatePhase: () => {},
-    setPhaseAndResetError: () => {},
-    setModelFailed: () => {},
-    setLastAuditResult: () => {},
-    replaceSession: () => {},
-    terminate: () => {},
-    setSandboxContainer: () => {},
-    clearWorkspaceId: () => {},
-    setWorkspaceId: () => {},
-    incrementError: () => 0,
-    resetError: () => {},
-  } as unknown as LoopsRepo
+  const mockLoopsRepo = createMockLoopsRepo({
+    insert: vi.fn(() => true),
+    getLarge: vi.fn(() => null),
+    getBySessionId: vi.fn(() => null),
+    findPartial: vi.fn(() => ({ match: null, candidates: [] })),
+    listByStatus: vi.fn(() => []),
+    incrementError: vi.fn(() => 0),
+  })
 
   const mockPlansRepo = {
     writeForSession: () => {},
@@ -44,7 +30,7 @@ function createMockRepos() {
     searchRecent: () => [],
   } as unknown as PlansRepo
   const mockReviewFindingsRepo = {} as ReviewFindingsRepo
-  const mockLogger = { log: () => {}, error: () => {}, debug: () => {} } as Logger
+  const mockLogger = createMockLogger()
 
   return { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger }
 }
@@ -79,7 +65,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -107,7 +92,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -121,52 +105,18 @@ describe('LoopChangeNotifier', () => {
 
     it('should cascade plan deletion when deleteState is called', () => {
       const deletedPlans: Array<{ projectId: string; loopName: string }> = []
-      const mockLoopsRepo = {
-        insert: () => true,
-        get: () => null,
-        getLarge: () => null,
-        delete: () => {},
-        setStatus: () => {},
-        setCurrentSessionId: () => {},
-        getBySessionId: () => null,
-        findPartial: () => ({ match: null, candidates: [] }),
-        listByStatus: () => [],
-        updatePhase: () => {},
-        setPhaseAndResetError: () => {},
-        setModelFailed: () => {},
-        setLastAuditResult: () => {},
-        replaceSession: () => {},
-        terminate: () => {},
-        setSandboxContainer: () => {},
-        clearWorkspaceId: () => {},
-        setWorkspaceId: () => {},
-        incrementError: () => 0,
-        resetError: () => {},
-      } as unknown as LoopsRepo
-
-      const mockPlansRepo = {
-        writeForSession: () => {},
-        writeForLoop: () => {},
-        getForSession: () => null,
-        getForLoop: () => null,
-        getForLoopOrSession: () => null,
-        promote: () => false,
-        deleteForSession: () => {},
-        deleteForLoop: (projectId: string, loopName: string) => {
-          deletedPlans.push({ projectId, loopName })
-        },
-        listRecent: () => [],
-        searchRecent: () => [],
-      } as unknown as PlansRepo
+      const { mockLoopsRepo, mockPlansRepo } = createMockRepos()
+      mockPlansRepo.deleteForLoop = (projectId: string, loopName: string) => {
+        deletedPlans.push({ projectId, loopName })
+      }
 
       const loop = createLoop({
         loopsRepo: mockLoopsRepo,
         plansRepo: mockPlansRepo,
         reviewFindingsRepo: {} as ReviewFindingsRepo,
         projectId: 'proj-test',
-        logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
+        logger: createMockLogger(),
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify: () => {},
       })
@@ -194,7 +144,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -222,7 +171,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -250,7 +198,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -278,7 +225,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -306,7 +252,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -334,7 +279,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -362,7 +306,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -390,7 +333,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -420,7 +362,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -448,7 +389,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -476,7 +416,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -504,7 +443,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -532,7 +470,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -574,6 +511,12 @@ describe('LoopChangeNotifier', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        executionVariant: null,
+        auditorVariant: null,
+        baseCommit: null,
+        standbySessionId: null,
         loopId: 1,
         projectId: 'test-project',
       }
@@ -602,7 +545,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify,
       })
@@ -629,7 +571,6 @@ describe('LoopChangeNotifier', () => {
         projectId: 'test-project',
         logger: mockLogger,
         client: {} as any,
-        v2Client: {} as any,
         getConfig: () => ({} as any),
         notify: undefined,
       })

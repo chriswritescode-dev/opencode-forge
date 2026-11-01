@@ -1,41 +1,22 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { createReviewFindingsRepo } from '../src/storage'
-
-const TEST_DIR = '/tmp/opencode-review-findings-repo-test-' + Date.now()
-
-function createTestDb(): Database {
-  const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS review_findings (
-      project_id   TEXT NOT NULL,
-      loop_name    TEXT NOT NULL DEFAULT '',
-      file         TEXT NOT NULL,
-      line         INTEGER NOT NULL,
-      severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
-      description  TEXT NOT NULL,
-      scenario     TEXT,
-      section_index INTEGER,
-      created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, loop_name, file, line, section_index)
-    )
-  `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
-  return db
-}
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('ReviewFindingsRepo', () => {
   let db: Database
+  let testDb: TestDb
   let repo: ReturnType<typeof createReviewFindingsRepo>
   const projectId = 'test-project'
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     repo = createReviewFindingsRepo(db)
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   test('writes a loop-scoped finding', () => {

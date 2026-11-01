@@ -5,8 +5,8 @@ import type { ForgeClient } from '../../src/client/port'
 // ---------------------------------------------------------------------------
 // Compile-time assertions — consumers never need `as any`
 // ---------------------------------------------------------------------------
-const _typeCheck: ForgeClient = createFakeForgeClient().client
-const _typeCheck2: CreateFakeForgeClientResult = createFakeForgeClient()
+export const _typeCheck: ForgeClient = createFakeForgeClient().client
+export const _typeCheck2: CreateFakeForgeClientResult = createFakeForgeClient()
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -73,8 +73,8 @@ describe('createFakeForgeClient', () => {
   test('workspace.create returns incremental IDs', async () => {
     const { client } = createFakeForgeClient()
 
-    const a = await client.workspace.create({ directory: '/a' })
-    const b = await client.workspace.create({ directory: '/b' })
+    const a = await client.workspace.create({ type: 'forge', branch: null })
+    const b = await client.workspace.create({ type: 'forge', branch: null })
 
     expect(a.id).toBe('ws_fake_1')
     expect(b.id).toBe('ws_fake_2')
@@ -88,7 +88,7 @@ describe('createFakeForgeClient', () => {
 
   test('workspace.remove resolves to undefined', async () => {
     const { client } = createFakeForgeClient()
-    await expect(client.workspace.remove({ id: 's1', directory: '/tmp' })).resolves.toBeUndefined()
+    await expect(client.workspace.remove({ id: 's1' })).resolves.toBeUndefined()
   })
 
   test('workspace.warp resolves to undefined', async () => {
@@ -117,7 +117,7 @@ describe('createFakeForgeClient', () => {
       workspace: { create: async () => ({ id: 'custom-ws' }) },
     })
 
-    const result = await client.workspace.create({ directory: '/tmp' })
+    const result = await client.workspace.create({ type: 'forge', branch: null })
     expect(result).toEqual({ id: 'custom-ws' })
   })
 
@@ -149,13 +149,13 @@ describe('createFakeForgeClient', () => {
     const { client, calls } = createFakeForgeClient()
 
     await client.session.create({ directory: '/a' })
-    await client.workspace.create({ directory: '/b' })
+    await client.workspace.create({ type: 'forge', branch: null })
     await client.session.messages({ sessionID: 'a', directory: '/tmp', limit: 5 })
     await client.toast({ directory: '/tmp', message: 'hi' })
 
     expect(calls).toHaveLength(4)
     expect(calls[0]).toEqual<RecordedCall>({ method: 'session.create', params: { directory: '/a' } })
-    expect(calls[1]).toEqual<RecordedCall>({ method: 'workspace.create', params: { directory: '/b' } })
+    expect(calls[1]).toEqual<RecordedCall>({ method: 'workspace.create', params: { type: 'forge', branch: null } })
     expect(calls[2]).toEqual<RecordedCall>({ method: 'session.messages', params: { sessionID: 'a', directory: '/tmp', limit: 5 } })
     expect(calls[3]).toEqual<RecordedCall>({ method: 'toast', params: { directory: '/tmp', message: 'hi' } })
   })

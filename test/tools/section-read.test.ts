@@ -9,18 +9,14 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import { createSectionReadTool } from '../../src/tools/section-read'
-import type { Logger } from '../../src/types'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createMockLogger } from '../helpers/logger'
+import { createTestDb } from '../helpers/test-db'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 describe('section-read tool', () => {
   let db: Database
-  let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
@@ -31,10 +27,8 @@ describe('section-read tool', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'section-read-test-'))
-    dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -44,7 +38,7 @@ describe('section-read tool', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
@@ -78,6 +72,8 @@ describe('section-read tool', () => {
       totalSections: opts?.totalSections ?? 0,
       executionVariant: null,
       auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     }, { lastAuditResult: null })
   }
 
@@ -98,7 +94,7 @@ describe('section-read tool', () => {
   async function executeSectionRead(args?: { section_index?: number; pending_suffix?: boolean }, sessionID?: string): Promise<string> {
     const tool = createSectionReadTool({ loop: { service: loopService } } as any)
     const result = await tool.execute(args ?? {}, makeToolContext(sessionID ?? ''))
-    return typeof result === 'string' ? result : result.output
+    return typeof result === 'string' ? result : (result as unknown as { output: string }).output
   }
 
   function parseJson(result: string) {

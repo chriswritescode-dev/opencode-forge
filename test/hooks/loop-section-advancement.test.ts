@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -9,19 +8,15 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
-import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { formatAuditHandoffResult } from '../../src/loop/handoff'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { createTestDb } from '../helpers/test-db'
+import { createMockLogger } from '../helpers/logger'
 import { recordAuditorHandoff } from '../helpers/loop-handoff'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
-const mockLogger: Logger = {
-  log: () => {},
-  error: () => {},
-  debug: () => {},
-}
+const mockLogger = createMockLogger()
 
 const mockConfig: PluginConfig = {
   executionModel: 'test/model',
@@ -42,7 +37,8 @@ const assistantMessage = (text: string) => [
 ]
 
 describe('Loop Section Advancement', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
@@ -54,10 +50,8 @@ describe('Loop Section Advancement', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-section-advancement-test-'))
-    const dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -68,7 +62,7 @@ describe('Loop Section Advancement', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
@@ -107,439 +101,6 @@ describe('Loop Section Advancement', () => {
       [projectId, 'test-loop', index, title, content, status, 0, Date.now()]
     )
   }
-
-  describe('1. Section advancement from one to next', () => {
-    test('setCurrentSectionIndex increments to next section and startSection marks it as in_progress', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
-      insertSectionPlan(2, 'Section 3', 'Content 3', 'pending')
-
-      // Simulate the hook logic: advance from section 0 to section 1
-      const nextIdx = 1
-      loopService.setCurrentSectionIndex('test-loop', nextIdx)
-      loopService.startSection('test-loop', nextIdx)
-
-      const state = loopService.getActiveState('test-loop')
-      expect(state).not.toBeNull()
-      expect(state!.currentSectionIndex).toBe(1)
-
-      const section = loopService.getSectionPlan(state!, 1)
-      expect(section).not.toBeNull()
-      expect(section!.status).toBe('in_progress')
-      expect(section!.startedAt).not.toBeNull()
-    })
-
-    test('setCurrentSectionIndex works for advancing multiple sections', () => {
-      insertLoop({ total_sections: 5 })
-      for (let i = 0; i < 5; i++) {
-        insertSectionPlan(i, `Section ${i + 1}`, `Content ${i + 1}`)
-      }
-
-      // Advance through sections
-      for (let i = 0; i < 5; i++) {
-        loopService.setCurrentSectionIndex('test-loop', i)
-        loopService.startSection('test-loop', i)
-      }
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(state.currentSectionIndex).toBe(4)
-
-      // Verify all sections were started
-      for (let i = 0; i < 5; i++) {
-        const plan = loopService.getSectionPlan(state, i)
-        expect(plan!.status).toBe('in_progress')
-      }
-    })
-  })
-
-  describe('2. Last open section detection', () => {
-    test('isLastOpenSection is true when every other section is completed', () => {
-      insertLoop({ phase: 'auditing', current_section_index: 1, total_sections: 2 })
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'in_progress')
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(loopService.isLastOpenSection(state)).toBe(true)
-    })
-
-    test('isLastOpenSection treats an earlier index as last open after a rewind', () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 3 })
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'completed')
-      insertSectionPlan(2, 'Section 3', 'Content 3', 'completed')
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(loopService.isLastOpenSection(state)).toBe(true)
-    })
-
-    test('isLastOpenSection is false while another section is still open', () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2 })
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(loopService.isLastOpenSection(state)).toBe(false)
-    })
-
-    test('isLastOpenSection is false for a non-sectioned loop', () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 0 })
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(loopService.isLastOpenSection(state)).toBe(false)
-    })
-  })
-
-  describe('3. Section completion updates status', () => {
-    test('completeSection sets status to completed and writes summary fields', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-
-      loopService.completeSection('test-loop', 0, {
-        done: 'Implemented feature X',
-        deviations: 'None',
-        followUps: 'Handled in section 2',
-      })
-
-      const section = loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)
-      expect(section).not.toBeNull()
-      expect(section!.status).toBe('completed')
-      expect(section!.summaryDone).toBe('Implemented feature X')
-      expect(section!.summaryDeviations).toBe('None')
-      expect(section!.summaryFollowUps).toBe('Handled in section 2')
-      expect(section!.completedAt).not.toBeNull()
-    })
-
-    test('completeSection works with null summary fields', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-
-      loopService.completeSection('test-loop', 0, {
-        done: null,
-        deviations: null,
-        followUps: null,
-      })
-
-      const section = loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)
-      expect(section).not.toBeNull()
-      expect(section!.status).toBe('completed')
-      expect(section!.summaryDone).toBeNull()
-      expect(section!.summaryDeviations).toBeNull()
-      expect(section!.summaryFollowUps).toBeNull()
-      expect(section!.completedAt).not.toBeNull()
-    })
-  })
-
-  describe('4. Section retry on dirty audit', () => {
-    test('incrementSectionAttempts increments attempts counter', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-
-      loopService.incrementSectionAttempts('test-loop', 0)
-      expect(loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)!.attempts).toBe(1)
-
-      loopService.incrementSectionAttempts('test-loop', 0)
-      expect(loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)!.attempts).toBe(2)
-
-      loopService.incrementSectionAttempts('test-loop', 0)
-      expect(loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)!.attempts).toBe(3)
-    })
-
-    test('section retry does not change section index', () => {
-      insertLoop({ current_section_index: 1 })
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'in_progress')
-      insertSectionPlan(2, 'Section 3', 'Content 3', 'pending')
-
-      // Retry increments attempts but should not change section index
-      loopService.incrementSectionAttempts('test-loop', 1)
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(state.currentSectionIndex).toBe(1)
-      expect(state.totalSections).toBe(3)
-    })
-  })
-
-  describe('6. Completed section digest', () => {
-    test('getCompletedSectionDigest returns correct digest with done/deviations/follow-ups', () => {
-      insertLoop({ total_sections: 3 })
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-      insertSectionPlan(2, 'Section 3', 'Content 3')
-
-      loopService.startSection('test-loop', 0)
-      loopService.completeSection('test-loop', 0, {
-        done: 'Feature A implemented',
-        deviations: 'None',
-        followUps: 'Deferred item',
-      })
-
-      loopService.startSection('test-loop', 1)
-      loopService.completeSection('test-loop', 1, {
-        done: 'Feature B implemented',
-        deviations: 'Minor deviation',
-        followUps: null,
-      })
-
-      const state = loopService.getActiveState('test-loop')!
-      const digest = loopService.getCompletedSectionDigest(state)
-
-      expect(digest).toHaveLength(2)
-      expect(digest[0].title).toBe('Section 1')
-      expect(digest[0].summaryDone).toBe('Feature A implemented')
-      expect(digest[0].summaryDeviations).toBe('None')
-      expect(digest[0].summaryFollowUps).toBe('Deferred item')
-      expect(digest[1].title).toBe('Section 2')
-      expect(digest[1].summaryDone).toBe('Feature B implemented')
-      expect(digest[1].summaryDeviations).toBe('Minor deviation')
-      expect(digest[1].summaryFollowUps).toBeNull()
-    })
-
-    test('getCompletedSectionDigest returns empty when no sections completed', () => {
-      insertLoop({ total_sections: 2 })
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-
-      const state = loopService.getActiveState('test-loop')!
-      const digest = loopService.getCompletedSectionDigest(state)
-
-      expect(digest).toHaveLength(0)
-    })
-  })
-
-  describe('7. All sections completed check', () => {
-    test('after all sections complete, completed count equals totalSections', () => {
-      insertLoop({ total_sections: 3 })
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-      insertSectionPlan(2, 'Section 3', 'Content 3')
-
-      // Complete all 3 sections
-      for (let i = 0; i < 3; i++) {
-        loopService.startSection('test-loop', i)
-        loopService.completeSection('test-loop', i, {
-          done: `Done ${i}`,
-          deviations: null,
-          followUps: null,
-        })
-      }
-
-      const state = loopService.getActiveState('test-loop')!
-      const digest = loopService.getCompletedSectionDigest(state)
-
-      expect(digest.length).toBe(state.totalSections)
-      expect(digest.length).toBe(3)
-    })
-
-    test('partial completion count is less than totalSections', () => {
-      insertLoop({ total_sections: 3 })
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-      insertSectionPlan(2, 'Section 3', 'Content 3')
-
-      loopService.startSection('test-loop', 0)
-      loopService.completeSection('test-loop', 0, {
-        done: 'Done 0',
-        deviations: null,
-        followUps: null,
-      })
-
-      loopService.startSection('test-loop', 1)
-      loopService.completeSection('test-loop', 1, {
-        done: 'Done 1',
-        deviations: null,
-        followUps: null,
-      })
-
-      const state = loopService.getActiveState('test-loop')!
-      const digest = loopService.getCompletedSectionDigest(state)
-
-      expect(digest.length).toBe(2)
-      expect(digest.length).toBeLessThan(state.totalSections)
-    })
-
-    test('can detect all completed after rewind scenario', () => {
-      insertLoop({ total_sections: 2 })
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-
-      // Complete both sections after rewind
-      loopService.startSection('test-loop', 0)
-      loopService.completeSection('test-loop', 0, {
-        done: 'Done 0',
-        deviations: null,
-        followUps: null,
-      })
-
-      loopService.startSection('test-loop', 1)
-      loopService.completeSection('test-loop', 1, {
-        done: 'Done 1',
-        deviations: null,
-        followUps: null,
-      })
-
-      const state = loopService.getActiveState('test-loop')!
-      const allCompleted = loopService.getCompletedSectionDigest(state).length === state.totalSections
-      expect(allCompleted).toBe(true)
-    })
-  })
-
-  describe('8. Reset for rewind', () => {
-    test('resetSectionForRewind resets section state', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
-      loopService.completeSection('test-loop', 0, {
-        done: 'old done',
-        deviations: 'old dev',
-        followUps: 'old follow',
-      })
-
-      loopService.resetSectionForRewind('test-loop', 0)
-
-      const section = loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)
-      expect(section).not.toBeNull()
-      expect(section!.status).toBe('in_progress')
-      expect(section!.attempts).toBe(0)
-      expect(section!.summaryDone).toBeNull()
-      expect(section!.summaryDeviations).toBeNull()
-      expect(section!.summaryFollowUps).toBeNull()
-      expect(section!.completedAt).toBeNull()
-    })
-
-    test('resetSectionForRewind clears summaries even with non-null values', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
-      loopService.completeSection('test-loop', 0, {
-        done: 'Feature implemented',
-        deviations: 'Some deviation',
-        followUps: 'Some follow-up',
-      })
-
-      // Verify it has summaries before reset
-      let section = loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)!
-      expect(section.summaryDone).toBe('Feature implemented')
-      expect(section.summaryDeviations).toBe('Some deviation')
-      expect(section.summaryFollowUps).toBe('Some follow-up')
-
-      loopService.resetSectionForRewind('test-loop', 0)
-
-      section = loopService.getSectionPlan(loopService.getActiveState('test-loop')!, 0)!
-      expect(section.summaryDone).toBeNull()
-      expect(section.summaryDeviations).toBeNull()
-      expect(section.summaryFollowUps).toBeNull()
-      expect(section.status).toBe('in_progress')
-    })
-  })
-
-  describe('Cross-cutting: audit result storage', () => {
-    test('setLastAuditResult persists audit text in large fields', () => {
-      insertLoop()
-      loopService.setLastAuditResult('test-loop', 'Section looks good')
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(state.lastAuditResult).toBe('Section looks good')
-    })
-
-    test('setLastAuditResult ignores empty string', () => {
-      insertLoop()
-      loopService.setLastAuditResult('test-loop', '')
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(state.lastAuditResult).toBeUndefined()
-    })
-
-    test('clearLastAuditResult removes stored audit text', () => {
-      insertLoop()
-      loopService.setLastAuditResult('test-loop', 'Some text')
-      loopService.clearLastAuditResult('test-loop')
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(state.lastAuditResult).toBeUndefined()
-    })
-  })
-
-  describe('Cross-cutting: section prompts include correct context', () => {
-    test('buildSectionInitialPrompt includes completed section digest', () => {
-      insertLoop({ total_sections: 2 })
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-
-      loopService.startSection('test-loop', 0)
-      loopService.completeSection('test-loop', 0, {
-        done: 'Completed section 0',
-        deviations: 'None',
-        followUps: 'Deferred item',
-      })
-      loopService.startSection('test-loop', 1)
-
-      const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionInitialPrompt(state)
-      expect(prompt).toContain('Prior Sections')
-      expect(prompt).toContain('Completed section 0')
-    })
-
-    test('buildSectionContinuationPrompt includes outstanding findings', () => {
-      insertLoop({ total_sections: 2 })
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-
-      reviewFindingsRepo.write({
-        projectId,
-        file: 'src/test.ts',
-        line: 10,
-        severity: 'bug',
-        description: 'Test bug',
-        loopName: 'test-loop',
-        sectionIndex: 0,
-      })
-
-      const state = loopService.getActiveState('test-loop')!
-      const prompt = loopService.buildSectionContinuationPrompt(state)
-      expect(prompt).toContain('Outstanding review findings (1)')
-      expect(prompt).toContain('src/test.ts:10')
-      expect(prompt).toContain('Test bug')
-    })
-  })
-
-  describe('Edge cases', () => {
-    test('completeSection on non-existent section is no-op', () => {
-      insertLoop({ total_sections: 2 })
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-      insertSectionPlan(1, 'Section 2', 'Content 2')
-
-      // Should not throw when completing non-existent section
-      loopService.completeSection('test-loop', 5, {
-        done: 'phantom done',
-        deviations: null,
-        followUps: null,
-      })
-
-      // Original sections unchanged
-      const state = loopService.getActiveState('test-loop')!
-      expect(loopService.getSectionPlan(state, 0)!.status).toBe('pending')
-      expect(loopService.getSectionPlan(state, 1)!.status).toBe('pending')
-    })
-
-    test('incrementSectionAttempts on non-existent section is no-op', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1')
-
-      loopService.incrementSectionAttempts('test-loop', 5)
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(loopService.getSectionPlan(state, 0)!.attempts).toBe(0)
-    })
-
-    test('resetSectionForRewind on non-existent section is no-op', () => {
-      insertLoop()
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'pending')
-
-      loopService.resetSectionForRewind('test-loop', 5)
-
-      const state = loopService.getActiveState('test-loop')!
-      expect(loopService.getSectionPlan(state, 0)!.status).toBe('pending')
-    })
-  })
 
   describe('Section checkpoint commits', () => {
     function createFakeGitService(overrides: { statusStdout?: string } = {}) {
@@ -740,9 +301,9 @@ describe('Loop Section Advancement', () => {
 
     test('a runtime max-iterations termination records exactly one terminate row', async () => {
       // iteration=1, maxIterations=1 → the very next iteration cap fires.
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, iteration: 1, max_iterations: 1 })
-      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
-      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+      insertLoop({ phase: 'auditing', current_section_index: 1, total_sections: 2, iteration: 1, max_iterations: 1 })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'in_progress')
       // An outstanding bug finding makes the audit genuinely dirty.
       reviewFindingsRepo.write({
         projectId,
@@ -751,13 +312,13 @@ describe('Loop Section Advancement', () => {
         severity: 'bug',
         description: 'Found an issue',
         loopName: 'test-loop',
-        sectionIndex: 0,
+        sectionIndex: 1,
       })
 
       // A dirty auditor handoff routes through the section-dirty branch, which
       // calls nextIterationOrTerminate; the cap terminates the loop without
       // first logging a rotate row.
-      const { client: forgeClient } = createFakeForgeClient({
+      const { client: forgeClient, calls } = createFakeForgeClient({
         session: { messages: async () => assistantMessage('dirty audit: found issues') },
       })
       const handler = createLoopEventHandler(
@@ -797,15 +358,22 @@ describe('Loop Section Advancement', () => {
       expect(rows[0].status).toBe('errored')
       expect(rows[0].reason).toBe('max_iterations')
       expect(rows[0].iteration).toBe(1)
-      expect(rows[0].sectionIndex).toBe(0)
+      expect(rows[0].sectionIndex).toBe(1)
 
       // The loop is persisted as terminated.
       const after = loopService.getAnyState('test-loop')!
       expect(after.active).toBe(false)
       expect(after.terminationReason).toBe('max_iterations')
 
+      // A capped dirty audit sends no coder retry prompt and keeps the finding.
+      const retryPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(retryPrompts.length).toBe(0)
+      const retained = reviewFindingsRepo.listByLoopName(projectId, 'test-loop')
+      expect(retained.some((f) => f.severity === 'bug')).toBe(true)
+
       handler.clearAllRetryTimeouts()
     })
   })
 })
-

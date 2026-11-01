@@ -1,87 +1,22 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { createLoopsRepo, type LoopRow, type LoopLargeFields } from '../src/storage/repos/loops-repo'
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
+import type { LoopHandoffWriteInputFor } from '../src/loop/handoff'
+import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('LoopsRepo', () => {
   let db: Database
   let repo: ReturnType<typeof createLoopsRepo>
-  let dbPath: string
-  let tempDir: string
+  let testDb: TestDb
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'loops-repo-test-'))
-    dbPath = join(tempDir, 'loops-repo-test.db')
-    db = new Database(dbPath)
-    
-    // Create the tables
-    db.run(`
-      CREATE TABLE loops (
-        project_id           TEXT NOT NULL,
-        loop_name            TEXT NOT NULL,
-        status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
-        current_session_id   TEXT NOT NULL,
-        worktree             INTEGER NOT NULL,
-        worktree_dir         TEXT NOT NULL,
-        session_directory    TEXT,
-        worktree_branch      TEXT,
-        project_dir          TEXT NOT NULL,
-        max_iterations       INTEGER NOT NULL,
-        iteration            INTEGER NOT NULL DEFAULT 0,
-        audit_count          INTEGER NOT NULL DEFAULT 0,
-        error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','post_action')),
-        execution_model      TEXT,
-        auditor_model        TEXT,
-        model_failed         INTEGER NOT NULL DEFAULT 0,
-        sandbox              INTEGER NOT NULL DEFAULT 0,
-        sandbox_container    TEXT,
-        started_at           INTEGER NOT NULL,
-        completed_at         INTEGER,
-        termination_reason   TEXT,
-        completion_summary   TEXT,
-        workspace_id         TEXT,
-        host_session_id      TEXT,
-        audit_session_id     TEXT,
-        current_section_index INTEGER NOT NULL DEFAULT 0,
-        total_sections INTEGER NOT NULL DEFAULT 0,
-      execution_variant    TEXT,
-      auditor_variant      TEXT,
-      auditor_fallback_index INTEGER NOT NULL DEFAULT 0,
-      sandbox_settings     TEXT,
-      base_commit          TEXT,
-      standby_session_id   TEXT,
-      PRIMARY KEY (project_id, loop_name)
-      )
-    `)
-    
-    db.run(`
-      CREATE TABLE loop_large_fields (
-        project_id          TEXT NOT NULL,
-        loop_name           TEXT NOT NULL,
-        last_audit_result   TEXT,
-        post_action_report  TEXT,
-        PRIMARY KEY (project_id, loop_name),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
-    
-    db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id) WHERE status = 'running'`)
-
-    db.exec(readFileSync(new URL('../src/storage/migrations/156_create_loop_handoffs.sql', import.meta.url), 'utf8'))
-
+    testDb = createTestDb()
+    db = testDb.db
     repo = createLoopsRepo(db)
   })
 
   afterEach(() => {
-    db.close()
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    testDb.cleanup()
   })
 
   const testRow: LoopRow = {
@@ -172,17 +107,7 @@ describe('LoopsRepo', () => {
 
   describe('insert atomicity', () => {
     beforeEach(() => {
-      db.run(`DROP TABLE loop_large_fields`)
-      db.run(`
-        CREATE TABLE loop_large_fields (
-          project_id          TEXT NOT NULL,
-          loop_name           TEXT NOT NULL,
-          last_audit_result   TEXT CHECK(last_audit_result != '__TXN_FAIL_SENTINEL__'),
-          post_action_report  TEXT,
-          PRIMARY KEY (project_id, loop_name),
-          FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-        )
-      `)
+      db.run("CREATE TRIGGER fail_large_fields BEFORE INSERT ON loop_large_fields WHEN NEW.last_audit_result = '__TXN_FAIL_SENTINEL__' BEGIN SELECT RAISE(ABORT, 'forced failure'); END")
       repo = createLoopsRepo(db)
     })
 
@@ -293,10 +218,6 @@ describe('LoopsRepo', () => {
   })
 
   describe('listSidebarRows', () => {
-    beforeEach(() => {
-      db.run(readFileSync(new URL('../src/storage/migrations/142_create_loop_transitions.sql', import.meta.url), 'utf8'))
-    })
-
     const insertTransition = (loopName: string, eventType: string, toPhase: string | null, createdAt: number) => {
       db.run(
         `INSERT INTO loop_transitions (project_id, loop_name, event_type, transition_kind, from_phase, to_phase, iteration, created_at)
@@ -389,7 +310,7 @@ describe('LoopsRepo', () => {
         repo.incrementError(testRow.projectId, testRow.loopName)
       )
       
-      const results = await Promise.all(increments.map(async (fn) => fn))
+      await Promise.all(increments.map(async (fn) => fn))
       
       // All increments should succeed sequentially
       const final = repo.get(testRow.projectId, testRow.loopName)
@@ -993,7 +914,9 @@ describe('LoopsRepo', () => {
       verification: [{ command: 'pnpm test', cwd: 'repo', outcome: 'pass' as const, changedAfter: false }],
     })
 
-    const handoffInput = (overrides: Partial<Parameters<typeof repo.upsertPendingHandoff>[0]> = {}) => ({
+    const handoffInput = (
+      overrides: Partial<LoopHandoffWriteInputFor<'coder'>> = {},
+    ): LoopHandoffWriteInputFor<'coder'> & { projectId: string } => ({
       projectId: testRow.projectId,
       loopName: testRow.loopName,
       sessionId: testRow.currentSessionId,

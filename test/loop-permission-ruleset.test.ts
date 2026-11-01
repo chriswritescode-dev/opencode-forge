@@ -3,7 +3,8 @@ import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildPo
 import { createLoopPermissionPatcher, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
-import type { Logger } from '../src/types'
+import { createFakeForgeClient } from './helpers/fake-client'
+import { createMockLogger } from './helpers/logger'
 
 beforeEach(() => {
   __resetLoopPermissionCache()
@@ -118,31 +119,13 @@ describe('Forge-managed loop phase tools', () => {
 describe('createAuditSession passes audit permission rules into session creation', () => {
   test('session.create receives permission equal to buildAuditSessionPermissionRuleset()', async () => {
     const expectedPermission = buildAuditSessionPermissionRuleset()
-    const mockCreate = vi.fn(async (params: any) => ({ id: 'audit-session' }))
-    const mockClient = {
-      session: {
-        create: mockCreate,
-        get: vi.fn(async () => ({})),
-        promptAsync: vi.fn(async () => {}),
-        aborts: vi.fn(async () => {}),
-        status: vi.fn(async () => ({})),
-        messages: vi.fn(async () => []),
-        update: vi.fn(async () => {}),
-        delete: vi.fn(async () => {}),
-      },
-      workspace: {
-        create: vi.fn(async () => ({ id: '', directory: '', branch: '' })),
-        list: vi.fn(async () => []),
-        remove: vi.fn(async () => {}),
-        warp: vi.fn(async () => {}),
-      },
-      toast: vi.fn(async () => {}),
-    } as any
-
-    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
+    const { client, calls } = createFakeForgeClient({
+      session: { create: async () => ({ id: 'audit-session' }) },
+    })
+    const logger = createMockLogger()
 
     await createAuditSession({
-      client: mockClient,
+      client,
       loopName: 'permission-loop',
       iteration: 1,
       currentSectionIndex: 0,
@@ -152,8 +135,8 @@ describe('createAuditSession passes audit permission rules into session creation
       logger,
     })
 
-    expect(mockCreate).toHaveBeenCalled()
-    const callArgs = (mockCreate as any).mock.calls[0][0]
+    expect(calls.some((call) => call.method === 'session.create')).toBe(true)
+    const callArgs = calls.find((call) => call.method === 'session.create')!.params as any
     expect(callArgs.directory).toBe('/tmp/permission-loop')
     expect(callArgs.permission).toEqual(expectedPermission)
     expect(callArgs.permission.some((r: { permission: string }) => r.permission === 'external_directory')).toBe(false)
@@ -163,31 +146,13 @@ describe('createAuditSession passes audit permission rules into session creation
 describe('createLoopSessionWithWorkspace passes loop permission rules into session creation', () => {
   test('session.create receives permission exactly equal to buildLoopPermissionRuleset()', async () => {
     const expectedPermission = buildLoopPermissionRuleset()
-    const mockCreate = vi.fn(async (params: any) => ({ id: 'loop-session' }))
-    const mockClient = {
-      session: {
-        create: mockCreate,
-        get: vi.fn(async () => ({})),
-        promptAsync: vi.fn(async () => {}),
-        abort: vi.fn(async () => {}),
-        status: vi.fn(async () => ({})),
-        messages: vi.fn(async () => []),
-        update: vi.fn(async () => {}),
-        delete: vi.fn(async () => {}),
-      },
-      workspace: {
-        create: vi.fn(async () => ({ id: '', directory: '', branch: '' })),
-        list: vi.fn(async () => []),
-        remove: vi.fn(async () => {}),
-        warp: vi.fn(async () => {}),
-      },
-      toast: vi.fn(async () => {}),
-    } as any
-
-    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
+    const { client, calls } = createFakeForgeClient({
+      session: { create: async () => ({ id: 'loop-session' }) },
+    })
+    const logger = createMockLogger()
 
     await createLoopSessionWithWorkspace({
-      client: mockClient,
+      client,
       title: 'test loop session',
       directory: '/tmp/permission-loop',
       permission: expectedPermission,
@@ -195,8 +160,8 @@ describe('createLoopSessionWithWorkspace passes loop permission rules into sessi
       logger,
     })
 
-    expect(mockCreate).toHaveBeenCalled()
-    const callArgs = (mockCreate as any).mock.calls[0][0]
+    expect(calls.some((call) => call.method === 'session.create')).toBe(true)
+    const callArgs = calls.find((call) => call.method === 'session.create')!.params as any
     expect(callArgs.permission).toEqual(expectedPermission)
     expect(callArgs.directory).toBe('/tmp/permission-loop')
     expect(callArgs.permission.some((r: { permission: string }) => r.permission === 'external_directory')).toBe(false)
@@ -208,7 +173,7 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
     const mockGet = vi.fn(async () => ({ permission: buildLoopPermissionRuleset() }))
     const mockUpdate = vi.fn(async () => {})
     const mockResolve = vi.fn(async () => null)
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const hook = createLoopPermissionPatcher({
       client: {
@@ -246,7 +211,7 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
     const parentPermission = buildLoopPermissionRuleset()
     const mockGet = vi.fn(async () => ({ permission: parentPermission }))
     const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const hook = createLoopPermissionPatcher({
       client: {
@@ -293,7 +258,7 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
   test('falls back to worktree-only rules when parent permissions are unavailable for a non-sandbox loop', async () => {
     const mockGet = vi.fn(async () => ({}))
     const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const hook = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
@@ -326,7 +291,7 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
   test('fallback ruleset includes configured loop.permissions deny rules for subagent sessions', async () => {
     const mockGet = vi.fn(async () => ({}))
     const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
     const options = { extraRules: [{ permission: 'webfetch', pattern: '*', action: 'deny' as const }] }
 
     const hook = createLoopPermissionPatcher({
@@ -362,7 +327,7 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
     const parentPermission = buildLoopPermissionRuleset()
     const mockGet = vi.fn(async () => ({ permission: parentPermission }))
     const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const hook = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
@@ -393,7 +358,7 @@ describe('createLoopPermissionPatcher (session.created path)', () => {
   test('transient ancestry lookup rejection does not reject onSessionCreated and skips patching', async () => {
     const mockGet = vi.fn(async () => ({}))
     const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const hook = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
@@ -443,7 +408,7 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
     })
     const mockUpdate = vi.fn(async () => {})
     const mockResolve = vi.fn(overrides.resolve ?? (async () => ACTIVE_LOOP))
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const patcher = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
@@ -583,7 +548,7 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
       return { permission: [{ permission: 'task', pattern: '*', action: 'deny' }] }
     })
     const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const patcher = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
@@ -614,7 +579,7 @@ describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
   test('transient ancestry lookup rejection does not reject ensurePatched and skips patching', async () => {
     const mockGet = vi.fn(async () => ({}))
     const mockUpdate = vi.fn(async () => {})
-    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+    const logger = createMockLogger()
 
     const patcher = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,

@@ -1,4 +1,3 @@
-import { vi } from 'vitest'
 import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/msb'
 import type { SandboxResources, SandboxSecretConfig } from '../../src/types'
 import type { SandboxRuntimeSettings } from '../../src/sandbox/loop-settings'
@@ -114,17 +113,4 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     },
   }
   return mock
-}
-
-/**
- * Creates a mock Logger for sandbox tests.
- * Returns vi.fn() spies (structurally a Logger) so callers can both use it as a
- * no-op logger and assert on calls (e.g. `logger.log.mock.calls`).
- */
-export function createMockLogger() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
 }

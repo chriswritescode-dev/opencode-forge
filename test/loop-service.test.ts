@@ -6,33 +6,27 @@ import { tmpdir } from 'os'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import type { ReviewFindingRow } from '../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import { createPlanAmendmentsRepo } from '../src/storage/repos/plan-amendments-repo'
 import { createLoopService } from '../src/loop/service'
-import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
-import type { Logger } from '../src/types'
-import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { createTestDb } from './helpers/test-db'
+import { createMockLogger } from './helpers/logger'
+import { makeLoopState } from './helpers/loop-fixtures'
 
 describe('Loop', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let loop: ReturnType<typeof createLoop>
   let tempDir: string
   const projectId = 'test-project'
 
-  const mockLogger: Logger = {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
+  const mockLogger = createMockLogger()
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-service-test-'))
-    const dbPath = join(tempDir, 'loop-service-test.db')
-    db = new Database(dbPath)
-
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -50,7 +44,7 @@ describe('Loop', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {
@@ -302,7 +296,7 @@ describe('Loop', () => {
   })
 
   describe('bumpFindingRecurrence', () => {
-    test('increments finding recurrence count across consecutive calls', () => {
+    test('escalates recurrence in the coder and auditor prompts after the threshold', () => {
       const reviewFindingsRepo = createReviewFindingsRepo(db)
       reviewFindingsRepo.write({
         projectId, file: 'src/bug.ts', line: 10, severity: 'bug', description: 'Bug', scenario: 'test', loopName: 'test-loop',
@@ -311,52 +305,38 @@ describe('Loop', () => {
       const findings = loop.service.getOutstandingFindings('test-loop', 'bug')
       expect(findings.length).toBe(1)
 
-      // First bump → count=1
+      const state = makeLoopState({
+        sessionId: 's1', worktreeDir: '/tmp/test', projectDir: '/tmp/test', iteration: 3, auditCount: 2,
+      })
+
+      // First bump → count=1, resolved through the repository.
       loop.service.bumpFindingRecurrence('test-loop', findings)
-      const prompt1 = loop.service.buildContinuationPrompt({
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 1, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any)
-      // Count 1 is below threshold, so no escalation
+      const prompt1 = loop.service.buildContinuationPrompt({ ...state, iteration: 1 })
       expect(prompt1).not.toContain('Recurring blocking findings')
       expect(prompt1).not.toContain('revisit the causal hypothesis')
       expect(prompt1).not.toContain('Recurring findings — re-evaluate')
 
-      // Second bump → count=2
+      // Second bump → count=2, with explicit findings input.
       loop.service.bumpFindingRecurrence('test-loop', findings)
-      const prompt2 = loop.service.buildContinuationPrompt({
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 2, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any)
-      // Count 2 is still below threshold
+      const prompt2 = loop.service.buildContinuationPrompt({ ...state, iteration: 2 }, undefined, findings)
       expect(prompt2).not.toContain('Recurring blocking findings')
 
-      // Third bump → count=3 (threshold reached)
+      // Third bump → count=3 (threshold reached) in both input paths.
       loop.service.bumpFindingRecurrence('test-loop', findings)
-      const prompt3 = loop.service.buildContinuationPrompt({
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any)
-      expect(prompt3).toContain('Recurring blocking findings')
-      expect(prompt3).toContain('src/bug.ts:10')
-      expect(prompt3).toContain('recurred 3×')
-      expect(prompt3).toContain('revisit the causal hypothesis')
-      expect(prompt3).toContain('reproducer or counterexample')
-      expect(prompt3).toContain('Do not repeat the previous patch')
+      for (const prompt of [
+        loop.service.buildContinuationPrompt(state),
+        loop.service.buildContinuationPrompt(state, undefined, findings),
+      ]) {
+        expect(prompt).toContain('Recurring blocking findings')
+        expect(prompt).toContain('src/bug.ts:10')
+        expect(prompt).toContain('recurred 3×')
+        expect(prompt).toContain('revisit the causal hypothesis')
+        expect(prompt).toContain('reproducer or counterexample')
+        expect(prompt).toContain('Do not repeat the previous patch')
+      }
 
-      // Also surfaces in audit prompt
-      const auditPrompt = loop.service.buildAuditPrompt({
-        active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any)
+      // Also surfaces in the auditor prompt.
+      const auditPrompt = loop.service.buildAuditPrompt({ ...state, phase: 'auditing' })
       expect(auditPrompt).toContain('Recurring findings — re-evaluate')
       expect(auditPrompt).toContain('src/bug.ts:10')
       expect(auditPrompt).toContain('`src/bug.ts:10` (3×)')
@@ -400,49 +380,6 @@ describe('Loop', () => {
       } as any)
       // Count=1, below threshold — no escalation
       expect(prompt).not.toContain('Recurring blocking findings')
-    })
-
-    test('escalates recurrence in the coder and auditor prompts after threshold', () => {
-      const reviewFindingsRepo = createReviewFindingsRepo(db)
-
-      reviewFindingsRepo.write({
-        projectId, file: 'src/final-bug.ts', line: 42, severity: 'bug', description: 'Escalating bug', scenario: 'test', loopName: 'test-loop-escalating',
-      })
-
-      const findings = loop.service.getOutstandingFindings('test-loop-escalating', 'bug')
-      expect(findings.length).toBe(1)
-
-      const state = {
-        active: true, sessionId: 's1', loopName: 'test-loop-escalating', worktreeDir: '/tmp/test',
-        projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
-        startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 2,
-        currentSectionIndex: 0, totalSections: 0,
-      } as any
-
-      // Bump once — below threshold, no escalation
-      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
-      const prompt1 = loop.service.buildContinuationPrompt(state, undefined, findings)
-      expect(prompt1).not.toContain('Recurring blocking findings')
-
-      // Bump twice — still below threshold
-      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
-      const prompt2 = loop.service.buildContinuationPrompt(state, undefined, findings)
-      expect(prompt2).not.toContain('Recurring blocking findings')
-
-      // Bump third time — threshold reached, escalation appears
-      loop.service.bumpFindingRecurrence('test-loop-escalating', findings)
-      const prompt3 = loop.service.buildContinuationPrompt(state, undefined, findings)
-      expect(prompt3).toContain('Recurring blocking findings')
-      expect(prompt3).toContain('src/final-bug.ts:42')
-      expect(prompt3).toContain('recurred 3×')
-      expect(prompt3).toContain('revisit the causal hypothesis')
-      expect(prompt3).toContain('reproducer or counterexample')
-
-      // Also surfaces in the auditor prompt
-      const auditPrompt = loop.service.buildAuditPrompt({ ...state, phase: 'auditing' })
-      expect(auditPrompt).toContain('Recurring findings — re-evaluate')
-      expect(auditPrompt).toContain('src/final-bug.ts:42')
-      expect(auditPrompt).toContain('Recurring Findings policy')
     })
   })
 
@@ -546,21 +483,12 @@ describe('Loop', () => {
         loopsRepo, plansRepo, reviewFindingsRepo, 'test-project-2', mockLogger,
       )
 
-      const state: LoopState = {
-        active: true,
+      const state = makeLoopState({
         sessionId: 's1',
         loopName: 'test-loop-cd',
         worktreeDir: '/tmp/test',
         projectDir: '/tmp/test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        phase: 'coding',
-        errorCount: 0,
-        auditCount: 0,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      } as LoopState
+      })
 
       // Set coder decisions
       service.setCoderDecisions('test-loop-cd', '### Decisions\n- Chose X')
@@ -585,21 +513,12 @@ describe('Loop', () => {
       service.setCoderDecisions('test-loop-cd2', 'some decisions')
       service.setCoderDecisions('test-loop-cd2', '')
 
-      const state: LoopState = {
-        active: true,
+      const state = makeLoopState({
         sessionId: 's2',
         loopName: 'test-loop-cd2',
         worktreeDir: '/tmp/test',
         projectDir: '/tmp/test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        phase: 'coding',
-        errorCount: 0,
-        auditCount: 0,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      } as LoopState
+      })
 
       const prompt = service.buildAuditPrompt(state)
       expect(prompt).not.toContain('Coder decisions & verification notes')
@@ -1206,8 +1125,8 @@ describe('Loop', () => {
     })
 
     test('concurrency: suffix-deletion clamps setCurrentSectionIndex when index exceeds totalSections', () => {
-      const db = new Database(':memory:')
-      setupLoopsTestDb(db)
+      const testDb = createTestDb()
+      const db = testDb.db
       const loopsRepo = createLoopsRepo(db)
       const plansRepo = createPlansRepo(db)
       const rfr = createReviewFindingsRepo(db)
@@ -1232,12 +1151,12 @@ describe('Loop', () => {
 
       service.setCurrentSectionIndex('adj', 2)
       expect(loopsRepo.get('p', 'adj')?.currentSectionIndex).toBe(1)
-      db.close()
+      testDb.cleanup()
     })
 
     test('concurrency: setTotalSections clamps currentSectionIndex when total is reduced', () => {
-      const db = new Database(':memory:')
-      setupLoopsTestDb(db)
+      const testDb = createTestDb()
+      const db = testDb.db
       const loopsRepo = createLoopsRepo(db)
       const plansRepo = createPlansRepo(db)
       const rfr = createReviewFindingsRepo(db)
@@ -1259,22 +1178,21 @@ describe('Loop', () => {
 
       service.setTotalSections('adj', 3)
       expect(loopsRepo.get('p', 'adj')?.currentSectionIndex).toBe(2)
-      db.close()
+      testDb.cleanup()
     })
 
     test('adjacent runExclusive calls serialise: two concurrent adjustRemainingSections never interleave', async () => {
       // When runExclusive is wired, two concurrent adjustRemainingSections calls
       // must be serialised — the second must see the updated state (after the first
       // committed) rather than the stale pre-first-snapshot state.
-      const dbLocal = new Database(':memory:')
-      setupLoopsTestDb(dbLocal)
+      const testDb = createTestDb()
+      const dbLocal = testDb.db
       const loopsRepo = createLoopsRepo(dbLocal)
       const plansRepo = createPlansRepo(dbLocal)
       const rfr = createReviewFindingsRepo(dbLocal)
       const sectionPlansRepo = createSectionPlansRepo(dbLocal)
       const amendmentsRepo = createPlanAmendmentsRepo(dbLocal)
 
-      let callOrder: number[] = []
       // A simple promise-chain lock simulating runExclusive.
       let pendingPromise: Promise<unknown> = Promise.resolve()
       const mockRunExclusive = async <T>(_loopName: string, fn: () => Promise<T>) => {
@@ -1336,7 +1254,7 @@ describe('Loop', () => {
       expect(rows).toHaveLength(2)
       expect(rows[1].title).toBe('B') // B was second
 
-      dbLocal.close()
+      testDb.cleanup()
     })
 
     test('adjacent: adjustRemainingSections rejects when loop falls out of auditing phase', async () => {
@@ -1344,8 +1262,8 @@ describe('Loop', () => {
       // causes setCurrentSectionIndex to clamp, but the loop stays in auditing.
       // A subsequent adjustment still validates against the (now-authoritative)
       // phase and totalSections.
-      const dbLocal = new Database(':memory:')
-      setupLoopsTestDb(dbLocal)
+      const testDb = createTestDb()
+      const dbLocal = testDb.db
       const loopsRepo = createLoopsRepo(dbLocal)
       const plansRepo = createPlansRepo(dbLocal)
       const rfr = createReviewFindingsRepo(dbLocal)
@@ -1395,7 +1313,7 @@ describe('Loop', () => {
         expect(result.error).toMatch(/auditing/)
       }
 
-      dbLocal.close()
+      testDb.cleanup()
     })
   })
 })

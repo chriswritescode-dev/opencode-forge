@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 describe('SandboxManager tool-output mount', () => {
   const tmpDirs: string[] = []

@@ -1,55 +1,27 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/loop/service'
-import type { Logger } from '../../src/types'
+import { buildExecutionDeps, makeLoopState } from '../helpers/loop-fixtures'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createTestDb } from '../helpers/test-db'
 
-const noopFn = () => {}
+type PromptCallArgs = { agent?: string; sessionID?: string; parts: Array<{ text: string }> }
 
 const PROJECT_ID = 'test-project'
 
 describe('attachLoopToSession', () => {
-  let db: Database
-  let tempDir: string
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'attach-loop-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
   })
 
   afterEach(() => {
-    try {
-      db.close()
-    } catch {}
+    testDb.cleanup()
   })
 
-  function buildDeps() {
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} } as Logger,
-      undefined,
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
-
-    const promptAsyncMock = vi.fn(async () => {})
+  function setupAttach() {
+    const promptAsyncMock = vi.fn(async (_args: PromptCallArgs) => {})
 
     const fakeClient = createFakeForgeClient({
       session: {
@@ -58,41 +30,13 @@ describe('attachLoopToSession', () => {
       },
     })
 
-    const deps = {
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-      },
-      logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
-      dataDir: '/tmp',
-      client: fakeClient.client,
-      plansRepo,
-      loopsRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      loop: {
-        service: loopService,
-        listActive: (...args: any[]) => loopService.listActive(...args),
-        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
-        registerSessionReverseIndex: () => {},
-        unregisterSessionReverseIndex: () => {},
-      } as any,
-      loopHandler: {
-        runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: vi.fn(() => {}),
-        clearLoopTimers: noopFn,
-      },
-      sandboxManager: null,
-    }
+    const built = buildExecutionDeps(db, { client: fakeClient.client })
 
-    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, fakeClient }
+    return { ...built, promptAsyncMock, fakeClient }
   }
 
   test('disabled mode persists state and sends code-agent prompt', async () => {
-    const { deps, loopsRepo, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = setupAttach()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -129,7 +73,7 @@ describe('attachLoopToSession', () => {
 
     // Verify code-agent prompt was sent
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.sessionID).toBe('sess_abc')
 
@@ -138,7 +82,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('onStarted callback is invoked after state persistence', async () => {
-    const { deps } = buildDeps()
+    const { deps } = setupAttach()
 
     const onStartedSpy = vi.fn(() => {})
 
@@ -174,7 +118,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('prompt failure returns ok:false and cleans up state', async () => {
-    const { deps, loopsRepo, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = setupAttach()
 
     // Make promptAsync throw an error (port contract: throws on failure)
     promptAsyncMock.mockImplementationOnce(async () => { throw new Error('network timeout') })
@@ -209,13 +153,13 @@ describe('attachLoopToSession', () => {
   })
 
   test('attachLoopToSession does NOT call loop.deleteState when setState throws because loop already exists', async () => {
-    const { deps } = buildDeps()
+    const { deps } = setupAttach()
 
     let deleteStateCalled = false
     const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)
-    deps.loop.service.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
+    deps.loop.service.deleteState = (name: string) => { deleteStateCalled = true; return originalDeleteState(name) }
 
-    ;(deps.loop.service as any).setState = vi.fn((...args: any[]) => {
+    ;(deps.loop.service as any).setState = vi.fn((..._args: any[]) => {
       throw new Error('setState: loop "my-feature" already exists')
     })
 
@@ -247,7 +191,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('attachLoopToSession refuses terminal loop row without deleting state', async () => {
-    const { deps, loopsRepo, loopService } = buildDeps()
+    const { deps, loopsRepo, loopService } = setupAttach()
 
     // Pre-seed a terminal loop row.
     const baseState = {
@@ -276,7 +220,7 @@ describe('attachLoopToSession', () => {
 
     let deleteStateCalled = false
     const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)
-    deps.loop.service.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
+    deps.loop.service.deleteState = (name: string) => { deleteStateCalled = true; return originalDeleteState(name) }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -309,30 +253,19 @@ describe('attachLoopToSession', () => {
   })
 
   test('attachLoopToSession returns already_attached when existing row is running', async () => {
-    const { deps, loopService } = buildDeps()
+    const { deps, loopService } = setupAttach()
 
-    loopService.setState('live-loop', {
-      active: true,
+    loopService.setState('live-loop', makeLoopState({
       sessionId: 'sess_existing',
       loopName: 'live-loop',
       worktreeDir: '/tmp/wt/live',
       projectDir: '/tmp/test',
-      iteration: 1,
       maxIterations: 50,
-      startedAt: new Date().toISOString(),
-      phase: 'coding',
-      status: 'running' as const,
-      worktree: true,
-      auditCount: 0,
-      errorCount: 0,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      sandbox: false,
-    } as any)
+    }))
 
     let deleteStateCalled = false
     const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)
-    deps.loop.service.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
+    deps.loop.service.deleteState = (name: string) => { deleteStateCalled = true; return originalDeleteState(name) }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -361,7 +294,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('attach extracts sections via forge-section markers', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = setupAttach()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -404,12 +337,12 @@ describe('attachLoopToSession', () => {
     expect(state!.totalSections).toBe(2)
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
   })
 
   test('attach falls back to single-prompt mode when no forge-section markers present', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = setupAttach()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -443,14 +376,14 @@ describe('attachLoopToSession', () => {
     const state = (deps.loop.service as any).getActiveState('phase-loop')
     expect(state).not.toBeNull()
     expect(state!.totalSections).toBe(0)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     const promptText = promptCallArgs.parts[0].text as string
     expect(promptText.startsWith(planText)).toBe(true)
     expect(promptText.match(/## Required: coder handoff/g)).toHaveLength(1)
   })
 
   test('attach falls back to single raw-plan dispatch when no markers and no phase headings', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = setupAttach()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -480,14 +413,14 @@ describe('attachLoopToSession', () => {
     expect(state!.totalSections).toBe(0)
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.parts[0].text).toContain(planText)
     expect((promptCallArgs.parts[0].text as string).match(/## Required: coder handoff/g)).toHaveLength(1)
   })
 
   test('attach no longer creates a decomposer session', async () => {
-    const { deps, loopService, promptAsyncMock } = buildDeps()
+    const { deps, promptAsyncMock } = setupAttach()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -511,7 +444,7 @@ describe('attachLoopToSession', () => {
     expect(result.ok).toBe(true)
 
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.sessionID).toBe('sess_nodecomp')
 
@@ -523,7 +456,7 @@ describe('attachLoopToSession', () => {
   test('attachLoopToSession does NOT call session.update for permission repair on any surface', async () => {
     const surfaces: Array<'tui' | 'tool' | 'approval-hook'> = ['tui', 'tool', 'approval-hook']
     for (const surface of surfaces) {
-      const { deps, fakeClient } = buildDeps()
+      const { deps, fakeClient } = setupAttach()
       const { attachLoopToSession } = await import('../../src/services/execution')
       await attachLoopToSession(
         deps as any,
@@ -550,7 +483,7 @@ describe('attachLoopToSession', () => {
   })
 
   test('attachLoopToSession persists execution and auditor variants', async () => {
-    const { deps, loopsRepo } = buildDeps()
+    const { deps, loopsRepo } = setupAttach()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 

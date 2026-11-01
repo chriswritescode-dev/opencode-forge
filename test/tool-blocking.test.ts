@@ -4,35 +4,23 @@ import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createLoopService } from '../src/loop/service'
-import { openForgeDatabase } from '../src/storage/database'
 import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
 import { createToolExecuteBeforeHook } from '../src/hooks/plan-approval'
 import type { ToolContext } from '../src/tools/types'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
-import type { Logger } from '../src/types'
-
-function createTestDb(): Database {
-  return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
-}
-
-function createMockLogger(): Logger {
-  return {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-}
+import { createTestDb } from './helpers/test-db'
+import { makeLoopState } from './helpers/loop-fixtures'
+import { createMockLogger } from './helpers/logger'
 
 describe('Tool Blocking Logic', () => {
   let db: Database
+  let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof createLoopService>
   const projectId = 'test-project'
   const sessionID = 'test-session-123'
 
   beforeEach(() => {
-    db = createTestDb()
+    testDb = createTestDb()
+    db = testDb.db
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -40,30 +28,18 @@ describe('Tool Blocking Logic', () => {
   })
 
   afterEach(() => {
-    db.close()
+    testDb.cleanup()
   })
 
   describe('Loop state lookup', () => {
     test('getActiveState returns active state when loop is active', () => {
       const loopName = 'test-worktree'
-      const state = {
-        active: true,
+      const state = makeLoopState({
         sessionId: sessionID,
         loopName,
         worktreeDir: '/test/worktree',
         worktreeBranch: 'opencode/loop-test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        prompt: 'Test prompt',
-        phase: 'coding' as const,
-        status: 'running' as const,
-        errorCount: 0,
-        auditCount: 0,
-        worktree: true,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      }
+      })
       loopService.setState(loopName, state)
 
       const retrieved = loopService.getActiveState(loopName)
@@ -78,24 +54,14 @@ describe('Tool Blocking Logic', () => {
 
     test('getActiveState returns null when loop is inactive', () => {
       const loopName = 'test-worktree-inactive'
-      const inactiveState = {
+      const inactiveState = makeLoopState({
         active: false,
+        status: 'completed',
         sessionId: sessionID,
         loopName,
         worktreeDir: '/test/worktree',
         worktreeBranch: 'opencode/loop-test',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        prompt: 'Test prompt',
-        phase: 'coding' as const,
-        status: 'completed' as const,
-        errorCount: 0,
-        auditCount: 0,
-        worktree: true,
-        currentSectionIndex: 0,
-        totalSections: 0,
-      }
+      })
       loopService.setState(loopName, inactiveState)
 
       const retrieved = loopService.getActiveState(loopName)
@@ -142,32 +108,19 @@ describe('Tool Blocking Logic', () => {
     const unrelatedSessionId = 'unrelated-session-toolblock'
 
     function setStateAuditing(loopService: ReturnType<typeof createLoopService>): void {
-      loopService.setState(hostLoopName, {
-        active: true,
-        sessionId: auditorSessionId,
-        loopName: hostLoopName,
-        worktreeDir: '/test/worktree',
-        worktreeBranch: 'opencode/loop-auditing',
-        projectDir: '/test/project',
-        iteration: 1,
-        maxIterations: 5,
-        startedAt: new Date().toISOString(),
-        prompt: '',
-        phase: 'auditing',
-        status: 'running',
-        errorCount: 0,
-        auditCount: 0,
-        worktree: true,
-        modelFailed: false,
-        sandbox: false,
-        executionModel: 'test/model',
-        auditorModel: 'test/auditor',
-        executionVariant: undefined,
-        auditorVariant: undefined,
-        currentSectionIndex: 0,
-        totalSections: 0,
-        hostSessionId: 'host-toolblock',
-      })
+      loopService.setState(
+        hostLoopName,
+        makeLoopState({
+          sessionId: auditorSessionId,
+          loopName: hostLoopName,
+          worktreeDir: '/test/worktree',
+          worktreeBranch: 'opencode/loop-auditing',
+          projectDir: '/test/project',
+          prompt: '',
+          phase: 'auditing',
+          hostSessionId: 'host-toolblock',
+        }),
+      )
       loopService.registerLoopSession(auditorSessionId, hostLoopName)
     }
 
@@ -183,7 +136,6 @@ describe('Tool Blocking Logic', () => {
       const resolver = createSessionLoopResolver({
         loop: {
           service: loopService,
-          listActive: () => [],
         },
         getParentSessionId: async () => null,
         logger: createMockLogger(),
@@ -206,7 +158,6 @@ describe('Tool Blocking Logic', () => {
       const resolver = createSessionLoopResolver({
         loop: {
           service: loopService,
-          listActive: () => [],
         },
         getParentSessionId: async () => null,
         logger: createMockLogger(),
@@ -226,7 +177,6 @@ describe('Tool Blocking Logic', () => {
       const resolver = createSessionLoopResolver({
         loop: {
           service: loopService,
-          listActive: () => [],
         },
         getParentSessionId: async () => null,
         logger: createMockLogger(),

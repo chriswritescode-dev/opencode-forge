@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import type { MsbAvailability } from '../../src/sandbox/msb'
-import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 const available: MsbAvailability = { available: true }
 const hostUnsupported: MsbAvailability = { available: false, reason: 'host-unsupported', detail: 'mock daemon down' }
@@ -26,8 +27,8 @@ describe('SandboxManager caching', () => {
 
   it('should cache checkAvailable and latch templateExists across two start() calls', async () => {
     mockRuntime.getSandboxState = vi.fn()
-      .mockImplementationOnce(async () => false)
-      .mockImplementationOnce(async () => true)
+      .mockImplementationOnce(async () => 'missing' as const)
+      .mockImplementationOnce(async () => 'running' as const)
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
     const manager = createSandboxManager(mockRuntime, config, mockLogger)

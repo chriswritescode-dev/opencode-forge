@@ -32,7 +32,7 @@ import type { ForgeClient } from '../../src/client/port'
  * Recursive `Partial` so callers only need to specify the methods they want to
  * override at any nesting level.
  */
-type DeepPartial<T> = T extends (...args: unknown[]) => unknown
+type DeepPartial<T> = T extends (...args: never[]) => unknown
   ? (...args: any[]) => any
   : T extends object
     ? { [P in keyof T]?: DeepPartial<T[P]> }
@@ -73,7 +73,7 @@ export function createFakeForgeClient(
    * replaces the default implementation, but the resulting `vi.fn()` still
    * records invocations to the shared `calls` array.
    */
-  function makeMethod<T extends (...args: unknown[]) => unknown>(
+  function makeMethod<T extends (...args: never[]) => unknown>(
     methodPath: string,
     defaultImpl: T,
     overrideImpl?: T,
@@ -81,7 +81,7 @@ export function createFakeForgeClient(
     const impl = overrideImpl ?? defaultImpl
     return vi.fn(((...args: unknown[]) => {
       calls.push({ method: methodPath, params: args[0] })
-      return impl(...args)
+      return impl(...(args as Parameters<T>))
     }) as any) as any
   }
 

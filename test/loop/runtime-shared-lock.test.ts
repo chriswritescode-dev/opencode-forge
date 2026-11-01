@@ -1,14 +1,11 @@
 import { describe, test, expect, vi } from 'vitest'
 import type { Loop } from '../../src/loop/runtime'
 import type { LoopService } from '../../src/loop/service'
-import type { ForgeClient } from '../../src/client/port'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
+import { createFakeForgeClient } from '../helpers/fake-client'
+import { createMockLogger } from '../helpers/logger'
 
-const logger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
-
-function createFakeClient(): ForgeClient {
-  return new Proxy({}, { get: () => () => Promise.resolve(undefined) }) as unknown as ForgeClient
-}
+const logger = createMockLogger()
 
 function createFakeLoopService(): LoopService {
   return new Proxy({}, { get: () => () => undefined }) as unknown as LoopService
@@ -22,7 +19,7 @@ function buildLoop(createLoop: CreateLoop, projectId: string): Loop {
     plansRepo: {} as never,
     reviewFindingsRepo: {} as never,
     projectId,
-    client: createFakeClient(),
+    client: createFakeForgeClient().client,
     logger,
     getConfig: () => ({}) as PluginConfig,
     loopService: createFakeLoopService(),

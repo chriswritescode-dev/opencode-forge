@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { createGoalsRepo } from '../../src/storage/repos/goals-repo'
 import type { GoalLaunchSnapshot, GoalTask } from '../../src/storage/repos/goals-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
@@ -14,9 +13,10 @@ import type { ArchitectAutoPlanner, ArchitectAutoSpawnInput } from '../../src/se
 import { GOAL_CHUNK_SUMMARY_MAX_CHARS, GOAL_COMPLETE_MARKER, goalPlanningDir } from '../../src/constants/goal'
 import { processShared } from '../../src/utils/process-shared'
 import type { LoopState } from '../../src/loop/state'
-import type { Logger } from '../../src/types'
 import { createFakeGitService } from '../helpers/fake-git'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
+import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'test-project'
 const HOST = 'host-session'
@@ -39,29 +39,19 @@ const SNAPSHOT: GoalLaunchSnapshot = {
   maxIterations: 7,
 }
 
-const silentLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+const silentLogger = createMockLogger()
 
-function loopState(overrides: Partial<LoopState> & { status: LoopState['status'] }): LoopState {
-  return {
-    active: false,
-    sessionId: 'ses-loop',
-    loopName: 'chunk-0-loop',
-    worktreeDir: '/tmp/wt',
-    iteration: 1,
-    maxIterations: 10,
-    startedAt: new Date().toISOString(),
-    errorCount: 0,
-    auditCount: 0,
-    currentSectionIndex: 0,
-    totalSections: 0,
-    phase: 'coding',
-    ...overrides,
-  } as LoopState
+const GOAL_LOOP_STATE_DEFAULTS = {
+  active: false,
+  sessionId: 'ses-loop',
+  loopName: 'chunk-0-loop',
+  worktreeDir: '/tmp/wt',
+  maxIterations: 10,
 }
 
 function createHarness(overrides: Partial<GoalOrchestratorDeps> = {}) {
-  const db = new Database(':memory:')
-  setupLoopsTestDb(db)
+  const testDb = createTestDb()
+  const db = testDb.db
   const goalsRepo = createGoalsRepo(db)
   const plansRepo = createPlansRepo(db)
   const git = createFakeGitService({
@@ -79,7 +69,7 @@ function createHarness(overrides: Partial<GoalOrchestratorDeps> = {}) {
       spawnCounter += 1
       return { sessionId: `planner-session-${spawnCounter}` }
     }),
-    capturePlan: vi.fn(async () => ({ ready: true })),
+    capturePlan: vi.fn(async () => ({ ready: true as const })),
     latestAssistantText: vi.fn(async () => null),
   }
 
@@ -134,6 +124,7 @@ function createHarness(overrides: Partial<GoalOrchestratorDeps> = {}) {
   }
 
   return {
+    testDb,
     db,
     goalsRepo,
     plansRepo,
@@ -161,14 +152,14 @@ describe('createGoalOrchestrator', () => {
   })
 
   afterEach(() => {
-    h.db.close()
+    h.testDb.cleanup()
   })
 
   describe('onLoopSettled', () => {
     test('completes the chunk and starts planning the next one from the completed branch', async () => {
       h = createHarness()
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'chunk zero done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'chunk zero done' }))
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
@@ -206,7 +197,7 @@ describe('createGoalOrchestrator', () => {
       h.seedRunningGoal()
       h.loopStates.set(
         'chunk-0-loop',
-        loopState({ status: 'completed', completionSummary: 'x'.repeat(GOAL_CHUNK_SUMMARY_MAX_CHARS + 500) }),
+        makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'x'.repeat(GOAL_CHUNK_SUMMARY_MAX_CHARS + 500) }),
       )
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
@@ -219,7 +210,8 @@ describe('createGoalOrchestrator', () => {
       h.seedRunningGoal()
       h.loopStates.set(
         'chunk-0-loop',
-        loopState({
+        makeLoopState({
+          ...GOAL_LOOP_STATE_DEFAULTS,
           status: 'completed',
           completionSummary: 'completed — 3/4 steps done, 0 skipped, 1 failed',
           postActionReport: 'Outcome: partial\n\nSteps:\n  ...\n\nFollow-ups:\n  - fix the failing step',
@@ -237,7 +229,7 @@ describe('createGoalOrchestrator', () => {
     test('falls back to the post-action report when no completion summary exists', async () => {
       h = createHarness()
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', postActionReport: 'post action report' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', postActionReport: 'post action report' }))
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
@@ -249,7 +241,7 @@ describe('createGoalOrchestrator', () => {
       h.seedRunningGoal()
       h.loopStates.set(
         'chunk-0-loop',
-        loopState({ status: 'errored', terminationReason: 'stall_timeout' }),
+        makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'errored', terminationReason: 'stall_timeout' }),
       )
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
@@ -288,7 +280,7 @@ describe('createGoalOrchestrator', () => {
       h = createHarness()
       h.seedRunningGoal()
       h.goalsRepo.completeChunk(PROJECT, GOAL, 0, 'already done')
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'ignored' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'ignored' }))
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
@@ -300,7 +292,7 @@ describe('createGoalOrchestrator', () => {
       h = createHarness()
       h.seedRunningGoal()
       h.goalsRepo.updateStatus(PROJECT, GOAL, ['running'], 'paused', { error: 'paused earlier' })
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
@@ -313,7 +305,7 @@ describe('createGoalOrchestrator', () => {
     test('pauses at the chunk limit instead of planning another chunk', async () => {
       h = createHarness()
       h.seedRunningGoal({ maxChunks: 1 })
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
@@ -328,7 +320,7 @@ describe('createGoalOrchestrator', () => {
       h = createHarness()
       h.seedRunningGoal()
       vi.mocked(h.git.revParse).mockReturnValue({ ok: false, status: 1, stdout: '', stderr: 'bad ref' })
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
@@ -343,7 +335,7 @@ describe('createGoalOrchestrator', () => {
       h = createHarness()
       h.seedRunningGoal()
       vi.mocked(h.git.worktreeAddDetached).mockReturnValue({ ok: false, status: 1, stdout: '', stderr: 'boom' })
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
 
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
@@ -357,7 +349,7 @@ describe('createGoalOrchestrator', () => {
   describe('onPlannerIdle', () => {
     async function setupPlanningChunk() {
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
       await h.orchestrator.onLoopSettled('chunk-0-loop')
       h.plansRepo.writeForSession(PROJECT, 'planner-session-1', '# stored plan')
     }
@@ -512,7 +504,7 @@ describe('createGoalOrchestrator', () => {
   describe('onPlannerError', () => {
     async function setupPlanningChunk() {
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
       await h.orchestrator.onLoopSettled('chunk-0-loop')
       h.plansRepo.writeForSession(PROJECT, 'planner-session-1', '# stored plan')
     }
@@ -601,7 +593,7 @@ describe('createGoalOrchestrator', () => {
     test('reports an in-flight planning chunk and re-plans it under force', async () => {
       h = createHarness()
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
       await expect(h.orchestrator.restart(GOAL)).resolves.toBe('Chunk 2 is still being planned.')
@@ -616,7 +608,7 @@ describe('createGoalOrchestrator', () => {
     test('reports a running chunk loop', async () => {
       h = createHarness()
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'running', active: true }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'running', active: true }))
 
       await expect(h.orchestrator.restart(GOAL)).resolves.toContain('is running')
     })
@@ -624,7 +616,7 @@ describe('createGoalOrchestrator', () => {
     test('catches up a chunk whose loop already completed', async () => {
       h = createHarness()
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
 
       const message = await h.orchestrator.restart(GOAL)
 
@@ -636,7 +628,7 @@ describe('createGoalOrchestrator', () => {
     test('reports a chunk loop that needs an explicit loop restart', async () => {
       h = createHarness()
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'errored', terminationReason: 'stall_timeout' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'errored', terminationReason: 'stall_timeout' }))
 
       await expect(h.orchestrator.restart(GOAL)).resolves.toContain('loop-status restart=true')
     })
@@ -682,7 +674,7 @@ describe('createGoalOrchestrator', () => {
     test('raises the chunk limit and continues', async () => {
       h = createHarness()
       h.seedRunningGoal({ maxChunks: 1 })
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
       await h.orchestrator.onLoopSettled('chunk-0-loop')
       expect(h.goalsRepo.getGoal(PROJECT, GOAL)?.status).toBe('paused')
 
@@ -705,7 +697,7 @@ describe('createGoalOrchestrator', () => {
     test('cancels the goal and cleans up a planning chunk', async () => {
       h = createHarness()
       h.seedRunningGoal()
-      h.loopStates.set('chunk-0-loop', loopState({ status: 'completed', completionSummary: 'done' }))
+      h.loopStates.set('chunk-0-loop', makeLoopState({ ...GOAL_LOOP_STATE_DEFAULTS, status: 'completed', completionSummary: 'done' }))
       await h.orchestrator.onLoopSettled('chunk-0-loop')
 
       const message = await h.orchestrator.cancel(GOAL)

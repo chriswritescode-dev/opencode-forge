@@ -3,7 +3,8 @@ import { mkdtempSync, realpathSync, rmSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import { createMockLogger, createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
 
 describe('SandboxManager temp mount', () => {
   const tmpDirs: string[] = []

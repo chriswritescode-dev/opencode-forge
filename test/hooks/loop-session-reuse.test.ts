@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -13,16 +12,27 @@ import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler, type LoopEventHandler } from '../../src/hooks/loop'
 import { AUDITOR_HANDOFF_INSTRUCTION } from '../../src/loop/prompts'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { makeLoopState } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff, recordCoderHandoff } from '../helpers/loop-handoff'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createTestDb } from '../helpers/test-db'
+import { createCapturingLogger } from '../helpers/logger'
 import type { ModelContextLimitParams } from '../../src/client/port'
 import { __resetIdleGate, hasSuppressedIdle, recordInboxEnqueued } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import { __resetLoopRuntimeSharedState } from '../../src/loop/runtime'
 
 const PROJECT_ID = 'test-project'
+const REUSE_STATE_DEFAULTS = {
+  sessionId: 'audit-1',
+  loopName: 'reuse-loop',
+  projectDir: '/tmp/host-project',
+  worktreeBranch: 'test/reuse',
+  phase: 'auditing',
+  auditCount: 1,
+  totalSections: 2,
+} satisfies Partial<LoopState>
 const FULL_PROMPT_MARKER = '## Section plan'
 const FOLLOW_UP_MARKER = 'The audit of your previous changes left the findings below open.'
 const AUDIT_FOLLOW_UP_MARKER = 'The coder has finished the next attempt for this scope.'
@@ -56,7 +66,8 @@ function assistantMessage(options: AssistantOptions = {}) {
 }
 
 describe('Loop session reuse', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
@@ -74,8 +85,8 @@ describe('Loop session reuse', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-session-reuse-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -91,39 +102,12 @@ describe('Loop session reuse', () => {
     __resetIdleGate()
     __resetInFlightGuard()
     __resetLoopRuntimeSharedState()
-    db.close()
+    testDb.cleanup()
     rmSync(tempDir, { recursive: true, force: true })
   })
 
   function configWithSessionReuse(sessionReuse: { coderContextPercent?: number; auditorContextPercent?: number }): PluginConfig {
     return { ...mockConfig, loop: { ...mockConfig.loop, sessionReuse } }
-  }
-
-  function makeState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: 'audit-1',
-      loopName: 'reuse-loop',
-      worktreeDir: join(tempDir, 'worktree'),
-      projectDir: '/tmp/host-project',
-      worktreeBranch: 'test/reuse',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'auditing',
-      errorCount: 0,
-      auditCount: 1,
-      status: 'running',
-      worktree: true,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      currentSectionIndex: 0,
-      totalSections: 2,
-      ...overrides,
-    }
   }
 
   function createHarness(options: {
@@ -135,12 +119,7 @@ describe('Loop session reuse', () => {
     compact?: (params: { sessionID: string }) => Promise<void>
     status?: () => Promise<Record<string, { type: string }>>
   }) {
-    const logs: string[] = []
-    const logger: Logger = {
-      log: (message: string) => logs.push(message),
-      error: (message: string) => logs.push(`error: ${message}`),
-      debug: (message: string) => logs.push(message),
-    }
+    const { logger, logs } = createCapturingLogger()
 
     const messagesBySession = new Map(Object.entries(options.messages))
     let sessionCounter = 0
@@ -235,7 +214,7 @@ describe('Loop session reuse', () => {
 
   describe('sectioned retry', () => {
     test('a dirty section audit reuses the coder standby with a findings-only follow-up prompt', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -276,7 +255,7 @@ describe('Loop session reuse', () => {
     })
 
     test('the next coding idle reuses the audit standby with the audit follow-up prompt', async () => {
-      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
       const { calls, service } = createHarness({
         state,
         sections: 2,
@@ -307,7 +286,7 @@ describe('Loop session reuse', () => {
     })
 
     test('the reused audit session is re-titled for the new iteration', async () => {
-      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
       const { calls } = createHarness({
         state,
         sections: 2,
@@ -321,12 +300,12 @@ describe('Loop session reuse', () => {
       await idle('coder-1')
 
       const update = calls.find((call) => call.method === 'session.update')
-      expect(update?.params.title).toBe('Loop: reuse-loop 1/2 #1')
+      expect((update?.params as { title: string }).title).toBe('Loop: reuse-loop 1/2 #1')
     })
   })
 
   describe('fallbacks', () => {    test('a missing standby falls back to a fresh coder session and deletes the standby', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'gone-coder' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'gone-coder' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -362,7 +341,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a coder standby over its context percent is compacted, then prompted in the same session', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'fat-coder' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'fat-coder' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -404,7 +383,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a coder standby under its context percent is reused without compaction', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -435,7 +414,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a failed compaction falls back to a fresh coder session with the full prompt', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'fat-coder' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'fat-coder' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -468,7 +447,7 @@ describe('Loop session reuse', () => {
       expect(createCalls(calls)).toHaveLength(1)
       expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
       expect(deletedSessionIds(calls)).toContain('fat-coder')
-      expect(logs.some((line) => line.includes('compaction of reused session fat-coder failed'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('compaction of reused session fat-coder failed'))).toBe(true)
 
       const after = service.getActiveState(state.loopName)!
       expect(after.sessionId).toBe('created-session-1')
@@ -476,7 +455,7 @@ describe('Loop session reuse', () => {
     })
 
     test('an audit session over its context percent is kept as the next standby', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'gone-coder' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'gone-coder' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -509,7 +488,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a recurring blocking finding forces fresh sessions for both roles', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -559,7 +538,7 @@ describe('Loop session reuse', () => {
 
   describe('context-window thresholds', () => {
     test('separate coder and auditor percents gate their own role', async () => {
-      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -613,7 +592,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a coder percent of 0 disables coder reuse only', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -642,14 +621,14 @@ describe('Loop session reuse', () => {
       expect(promptsTo(calls, 'coder-1')).toHaveLength(0)
       expect(compactCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'created-session-1')[0]).toContain(FULL_PROMPT_MARKER)
-      expect(logs.some((line) => line.includes('disabled for the code role'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('disabled for the code role'))).toBe(true)
       const after = service.getActiveState(state.loopName)!
       expect(after.sessionId).toBe('created-session-1')
       expect(after.standbySessionId).toBe('audit-1')
     })
 
     test('an auditor percent of 0 disables audit reuse only', async () => {
-      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'coding', sessionId: 'coder-1', standbySessionId: 'audit-1', auditCount: 0 })
 
       const { calls, logs, service } = createHarness({
         state,
@@ -669,7 +648,7 @@ describe('Loop session reuse', () => {
       expect(promptsTo(calls, 'audit-1')).toHaveLength(0)
       expect(compactCalls(calls)).toHaveLength(0)
       expect(deletedSessionIds(calls)).toContain('audit-1')
-      expect(logs.some((line) => line.includes('disabled for the auditor role'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('disabled for the auditor role'))).toBe(true)
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('auditing')
       expect(after.sessionId).toBe('created-session-1')
@@ -677,7 +656,7 @@ describe('Loop session reuse', () => {
     })
 
     test('an unknown context window allows reuse', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -705,12 +684,12 @@ describe('Loop session reuse', () => {
       expect(createCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
       expect(compactCalls(calls)).toHaveLength(0)
-      expect(logs.some((line) => line.includes('unknown context window'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('unknown context window'))).toBe(true)
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
     })
 
     test('a failed context-window lookup allows reuse', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -740,14 +719,14 @@ describe('Loop session reuse', () => {
       expect(createCalls(calls)).toHaveLength(0)
       expect(promptsTo(calls, 'coder-1')).toHaveLength(1)
       expect(compactCalls(calls)).toHaveLength(0)
-      expect(logs.some((line) => line.includes('context-window lookup failed'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('context-window lookup failed'))).toBe(true)
       expect(service.getActiveState(state.loopName)!.sessionId).toBe('coder-1')
     })
   })
 
   describe('compaction on reuse', () => {
     test('an audit standby over its context percent is compacted, then audited in the same session', async () => {
-      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'fat-audit', auditCount: 0 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'coding', sessionId: 'coder-1', standbySessionId: 'fat-audit', auditCount: 0 })
 
       const { calls, service } = createHarness({
         state,
@@ -778,7 +757,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a failed audit compaction falls back to a fresh audit session with the full audit prompt', async () => {
-      const state = makeState({ phase: 'coding', sessionId: 'coder-1', standbySessionId: 'fat-audit', auditCount: 0 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'coding', sessionId: 'coder-1', standbySessionId: 'fat-audit', auditCount: 0 })
 
       const { calls, logs, service } = createHarness({
         state,
@@ -805,7 +784,7 @@ describe('Loop session reuse', () => {
       expect(freshAuditPrompts[0]).toContain('[Loop section audit 1/2]')
       expect(freshAuditPrompts[0]).not.toContain('(follow-up)')
       expect(deletedSessionIds(calls)).toContain('fat-audit')
-      expect(logs.some((line) => line.includes('compaction of reused session fat-audit failed'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('compaction of reused session fat-audit failed'))).toBe(true)
 
       const after = service.getActiveState(state.loopName)!
       expect(after.phase).toBe('auditing')
@@ -814,7 +793,7 @@ describe('Loop session reuse', () => {
     })
 
     test('an idle while the follow-up prompt is still queued does not advance the phase', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'fat-coder' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'fat-coder' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -854,7 +833,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a compaction record is never read as the reused session turn result', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -888,7 +867,7 @@ describe('Loop session reuse', () => {
       await idle('coder-1')
 
       expect(createCalls(calls)).toHaveLength(createsAfterReuse)
-      expect(logs.some((line) => line.includes('last message role: compaction'))).toBe(true)
+      expect(logs.map((line) => line.message).some((line) => line.includes('last message role: compaction'))).toBe(true)
       const coderPrompts = promptsTo(calls, 'coder-1')
       expect(coderPrompts).toHaveLength(2)
       // Only an unanswered turn (no message, or a user message) re-sends the full prompt;
@@ -903,7 +882,7 @@ describe('Loop session reuse', () => {
 
   describe('audit failure', () => {
     test('reuses the coder standby with the failure notice and no findings claim in the follow-up', async () => {
-      const state = makeState({ phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1' })
       const { calls, service } = createHarness({
         state,
         sections: 2,
@@ -945,7 +924,7 @@ describe('Loop session reuse', () => {
 
   describe('release paths', () => {
     test('a clean section advance deletes the standby and captures its usage', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       sectionPlansRepo.setStatus(PROJECT_ID, state.loopName, 0, 'in_progress')
 
       const { calls, service } = createHarness({
@@ -972,7 +951,7 @@ describe('Loop session reuse', () => {
     })
 
     test('completion of a non-sectioned loop releases the standby with captured usage', async () => {
-      const state = makeState({ phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1', totalSections: 0, auditCount: 1 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1', totalSections: 0, auditCount: 1 })
       const { calls, service } = createHarness({
         state,
         messages: {
@@ -991,7 +970,7 @@ describe('Loop session reuse', () => {
     })
 
     test('termination deletes the standby and clears the column', async () => {
-      const state = makeState({ phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1' })
       const { calls } = createHarness({
         state,
         sections: 2,
@@ -1008,7 +987,7 @@ describe('Loop session reuse', () => {
     })
 
     test('a restart deletes the standby and never resumes it', async () => {
-      const state = makeState({ phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1' })
       const { calls } = createHarness({
         state,
         sections: 2,
@@ -1031,7 +1010,7 @@ describe('Loop session reuse', () => {
 
   describe('non-sectioned loops', () => {
     test('a dirty audit reuses the coder standby', async () => {
-      const state = makeState({ phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1', totalSections: 0, auditCount: 1 })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), phase: 'auditing', sessionId: 'audit-1', standbySessionId: 'coder-1', totalSections: 0, auditCount: 1 })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,
@@ -1065,7 +1044,7 @@ describe('Loop session reuse', () => {
 
   describe('stale-turn guard', () => {
     test('an idle on a reused session whose last assistant message is unchanged nudges for a handoff and stays in coding', async () => {
-      const state = makeState({ sessionId: 'audit-1', standbySessionId: 'coder-1' })
+      const state = makeLoopState({ ...REUSE_STATE_DEFAULTS, worktreeDir: join(tempDir, 'worktree'), sessionId: 'audit-1', standbySessionId: 'coder-1' })
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
         loopName: state.loopName,

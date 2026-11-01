@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { join } from 'path'
 import { mkdtempSync, existsSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
@@ -9,14 +9,7 @@ import {
   type WriteWorktreeOpencodeConfigInput,
   type WriteWorktreeOpencodeConfigResult,
 } from '../../src/workspace/worktree-opencode-config'
-
-function createMockLogger() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
-}
+import { createMockLogger } from '../helpers/logger'
 
 describe('writeWorktreeOpencodeConfig', () => {
   let logger: ReturnType<typeof createMockLogger>

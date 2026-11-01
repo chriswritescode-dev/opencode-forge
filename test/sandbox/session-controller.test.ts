@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import {
   createSessionSandboxController,
   createUnavailableSandboxLifecycleManager,
@@ -14,8 +10,9 @@ import {
 import { createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { SessionSandboxAppliedState, SessionSandboxDesiredState, SessionSandboxPreferencesRepo } from '../../src/storage'
 import type { ActiveSandbox } from '../../src/sandbox/manager'
-import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createMockSandboxRuntime } from '../helpers/sandbox-mocks'
+import { createMockLogger } from '../helpers/logger'
+import { createTestDb } from '../helpers/test-db'
 import { emitTuiEvent, registerTuiEventEmitter } from '../../src/host/tui-events'
 import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 
@@ -82,9 +79,9 @@ function createFakeManager(): FakeManager {
 }
 
 describe('SessionSandboxController', () => {
-  let db: Database
+  let db: ReturnType<typeof createTestDb>['db']
   let repo: ReturnType<typeof createSessionSandboxPreferencesRepo>
-  let tempDir: string
+  let testDb: ReturnType<typeof createTestDb>
   let manager: FakeManager
   let logger: ReturnType<typeof createMockLogger>
 
@@ -114,21 +111,15 @@ describe('SessionSandboxController', () => {
   }
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'session-sandbox-controller-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     repo = createSessionSandboxPreferencesRepo(db)
     manager = createFakeManager()
     logger = createMockLogger()
   })
 
   afterEach(() => {
-    db.close()
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    testDb.cleanup()
   })
 
   test('an ON start converges the sandbox to its overrides and records them on the applied row', async () => {
@@ -292,6 +283,7 @@ describe('SessionSandboxController', () => {
     const wrappedRepo: SessionSandboxPreferencesRepo = {
       getDesired: (p) => repo.getDesired(p),
       setDesired: (p, s) => repo.setDesired(p, s),
+      updateDesired: (p, build) => repo.updateDesired(p, build),
       getApplied: (p) => repo.getApplied(p),
       setApplied: (p, s) => {
         if (s.enabled) throw new Error('SQLITE_BUSY: database is locked')
@@ -413,7 +405,7 @@ describe('SessionSandboxController', () => {
       appliedAt: Date.now(),
     })
     manager.setEnsureRunningImpl(async (key, dir) => {
-      manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
+      manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${key}` }
       throw new Error('env file generation failed during restore')
     })
     const controller = createController()
@@ -442,7 +434,7 @@ describe('SessionSandboxController', () => {
         appliedAt: Date.now(),
       })
       manager.setEnsureRunningImpl(async (key, dir) => {
-        manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
+        manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${key}` }
         throw new Error('start failed after creation during restore')
       })
       let stopFails = true
@@ -908,6 +900,7 @@ describe('SessionSandboxController', () => {
     const wrappedRepo: SessionSandboxPreferencesRepo = {
       getDesired: (p) => repo.getDesired(p),
       setDesired: (p, s) => repo.setDesired(p, s),
+      updateDesired: (p, build) => repo.updateDesired(p, build),
       getApplied: (p) => repo.getApplied(p),
       setApplied: (p, s) => repo.setApplied(p, s),
       getControllerState: (p) => repo.getControllerState(p),
@@ -1112,7 +1105,7 @@ describe('SessionSandboxController', () => {
       // The acknowledged container dies; the first restore attempt is gated and then fails.
       const recoveryGate = deferred<string>()
       let gateFirst = true
-      manager.setEnsureRunningImpl(async (key, dir) => {
+      manager.setEnsureRunningImpl(async (key, _dir) => {
         if (gateFirst) {
           gateFirst = false
           await recoveryGate.promise
@@ -1208,6 +1201,7 @@ describe('SessionSandboxController', () => {
       projectDir: DIRECTORY,
       startedAt: new Date().toISOString(),
       mounts: [],
+      instanceId: 'instance-forge-stale',
     })
     const controller = createController({ getSessionIdentity: async () => null })
 
@@ -1260,6 +1254,7 @@ describe('SessionSandboxController', () => {
       projectDir: DIRECTORY,
       startedAt: new Date().toISOString(),
       mounts: [],
+      instanceId: 'instance-forge-old',
     })
     const controller = createController({
       getSessionIdentity: async () => ({ projectId: PROJECT, directory: newDirectory }),
@@ -1944,7 +1939,7 @@ describe('SessionSandboxController', () => {
     // ensureRunning creates the container (env file) and then fails: a first start with no prior
     // binding must still run deterministic-key cleanup so the created container is not leaked.
     manager.setEnsureRunningImpl(async (key, dir) => {
-      manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
+      manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${key}` }
       throw new Error('env file generation failed')
     })
     const controller = createController()
@@ -1965,7 +1960,7 @@ describe('SessionSandboxController', () => {
     try {
       repo.setDesired(PROJECT, makeDesired({ revision: 'r-partial-retry', sessionId: ROOT_SESSION }))
       manager.setEnsureRunningImpl(async (key, dir) => {
-        manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
+        manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${key}` }
         throw new Error('start failed after creation')
       })
       let stopFails = true
@@ -2007,7 +2002,7 @@ describe('SessionSandboxController', () => {
       manager.setEnsureRunningImpl(async (key, dir) => {
         startCount++
         if (startCount === 1) {
-          manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
+          manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${key}` }
           throw new Error('start failed after creation')
         }
         return `forge-${key}`
@@ -2058,7 +2053,7 @@ describe('SessionSandboxController', () => {
     // The acknowledged container dies; recovery recreates it but fails during create-time secret
     // binding, leaving a partially-created container and a stale applied-ON row.
     manager.setEnsureRunningImpl(async (key, dir) => {
-      manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [] }
+      manager.active = { containerName: `forge-${key}`, projectDir: dir, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${key}` }
       throw new Error('env setup failed during restore')
     })
     await expect(
@@ -2167,7 +2162,7 @@ describe('SessionSandboxController', () => {
       error: null,
       appliedAt: Date.now(),
     })
-    manager.setActive({ containerName: `forge-${MANAGER_KEY}`, projectDir: DIRECTORY, startedAt: new Date().toISOString(), mounts: [] })
+    manager.setActive({ containerName: `forge-${MANAGER_KEY}`, projectDir: DIRECTORY, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${MANAGER_KEY}` })
     const controller = createController({
       resolveActiveLoopForSession: async () => {
         throw new Error('session lookup failed')
@@ -2290,7 +2285,7 @@ describe('SessionSandboxController', () => {
       error: null,
       appliedAt: Date.now(),
     })
-    manager.setActive({ containerName: `forge-${MANAGER_KEY}`, projectDir: DIRECTORY, startedAt: new Date().toISOString(), mounts: [] })
+    manager.setActive({ containerName: `forge-${MANAGER_KEY}`, projectDir: DIRECTORY, startedAt: new Date().toISOString(), mounts: [], instanceId: `instance-forge-${MANAGER_KEY}` })
     const controller = createController({
       getSessionDirectory: async () => null,
     })
@@ -2347,7 +2342,7 @@ describe('SessionSandboxController', () => {
 
     // A's container dies and the restore now fails (only the first recovery attempt fails).
     let failFirst = true
-    manager.setEnsureRunningImpl(async (key, dir) => {
+    manager.setEnsureRunningImpl(async (key, _dir) => {
       if (failFirst) {
         failFirst = false
         throw new Error('cannot recover container')
@@ -2388,6 +2383,7 @@ describe('SessionSandboxController', () => {
         projectDir: DIRECTORY,
         startedAt: new Date().toISOString(),
         mounts: [],
+        instanceId: `instance-forge-${MANAGER_KEY}`,
       })
       const controller = createController({
         pollIntervalMs: 20,

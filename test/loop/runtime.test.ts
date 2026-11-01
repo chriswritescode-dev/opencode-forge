@@ -1,28 +1,20 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
-import { createPlansRepo } from '../../src/storage/repos/plans-repo'
-import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopSessionUsageRepo, type LoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
-import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
-import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
-  clearPromptInFlight,
   getPromptInFlight,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
-import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
+import type { PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createTestDb } from '../helpers/test-db'
+import { makeLoopState, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
 import { buildHandoffNudgePrompt } from '../../src/loop/prompts'
@@ -35,55 +27,26 @@ const mockConfig: PluginConfig = {
   auditorModel: 'test/auditor',
   loop: {
     enabled: true,
-    model: 'test/loop',
     defaultMaxIterations: 5,
   },
 }
 
-function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string; message: string }> } {
-  const logs: Array<{ level: string; message: string }> = []
-  const logger: Logger = {
-    log: (msg: string) => logs.push({ level: 'log', message: msg }),
-    error: (msg: string) => logs.push({ level: 'error', message: msg }),
-    debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-  }
-  return { logger, logs }
-}
-
 describe('Loop Runtime', () => {
-  let db: Database
-  let loopService: ReturnType<typeof createLoopService>
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
+  type Runtime = ReturnType<typeof buildLoopRuntime>
+  let loopService: Runtime['loopService']
   let tempDir: string
-  let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let plansRepo: ReturnType<typeof createPlansRepo>
-  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
-  let loopSessionUsageRepo: LoopSessionUsageRepo
-  let loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo>
+  let reviewFindingsRepo: Runtime['reviewFindingsRepo']
+  let sectionPlansRepo: Runtime['sectionPlansRepo']
+  let loopSessionUsageRepo: Runtime['loopSessionUsageRepo']
+  let loopTransitionsRepo: Runtime['loopTransitionsRepo']
   let currentLoop: Loop | null = null
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-runtime-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
-
-    loopsRepo = createLoopsRepo(db)
-    plansRepo = createPlansRepo(db)
-    reviewFindingsRepo = createReviewFindingsRepo(db)
-    sectionPlansRepo = createSectionPlansRepo(db)
-    loopSessionUsageRepo = createLoopSessionUsageRepo(db)
-    loopTransitionsRepo = createLoopTransitionsRepo(db)
-
-    loopService = createLoopService(
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      PROJECT_ID,
-      { log: () => {}, error: () => {}, debug: () => {} },
-      undefined,
-      undefined,
-      sectionPlansRepo,
-    )
+    testDb = createTestDb({ path: join(tempDir, 'forge.db') })
+    db = testDb.db
 
     __resetIdleGate()
     __resetInFlightGuard()
@@ -95,7 +58,7 @@ describe('Loop Runtime', () => {
       currentLoop.clearAllRetryTimeouts()
       currentLoop = null
     }
-    db.close()
+    testDb.cleanup()
     try {
       rmSync(tempDir, { recursive: true, force: true })
     } catch {
@@ -105,78 +68,46 @@ describe('Loop Runtime', () => {
     vi.useRealTimers()
   })
 
-  function makeState(overrides: Partial<LoopState> = {}): LoopState {
-    return {
-      active: true,
-      sessionId: 'loop-session-id',
-      loopName: 'test-loop',
-      worktreeDir: '/tmp/nonexistent-worktree-for-test',
-      projectDir: '/tmp/host-project-dir',
-      worktreeBranch: 'test/branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      status: 'running',
-      worktree: true,
-      modelFailed: false,
-      sandbox: false,
-      executionModel: 'test/model',
-      auditorModel: 'test/auditor',
-      executionVariant: undefined,
-      auditorVariant: undefined,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      ...overrides,
-    }
-  }
-
-  function createRuntime(overrides: {
-    client?: ForgeClient
-    loopConfig?: Partial<PluginConfig>
-    serviceLoopConfig?: LoopConfig
-    withUsageRepo?: boolean
-    getParentSessionId?: (sessionId: string) => Promise<string | null>
-  } = {}): { loop: Loop; calls: RecordedCall[]; logger: Logger; logs: Array<{ level: string; message: string }> } {
-    const forge = overrides.client ? { client: overrides.client, calls: [] as RecordedCall[] } : createFakeForgeClient()
-    const { logger, logs } = createCapturingLogger()
-    const config: PluginConfig = { ...mockConfig, ...(overrides.loopConfig ?? {}) }
-
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      loopTransitionsRepo,
+  const buildRuntime = (
+    overrides: {
+      client?: ForgeClient
+      loopConfig?: Partial<PluginConfig>
+      stallConfig?: LoopConfig
+      withUsageRepo?: boolean
+      getParentSessionId?: (sessionId: string) => Promise<string | null>
+    } = {},
+  ) => {
+    const runtime = buildLoopRuntime(db, {
       projectId: PROJECT_ID,
-      client: forge.client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
+      client: overrides.client,
+      config: { ...mockConfig, ...(overrides.loopConfig ?? {}) },
+      loopConfig: overrides.stallConfig,
       dataDir: tempDir,
-      loopSessionUsageRepo: overrides.withUsageRepo ? loopSessionUsageRepo : undefined,
+      withUsageRepo: overrides.withUsageRepo,
       getParentSessionId: overrides.getParentSessionId,
     })
 
-    currentLoop = loop
-    return { loop, calls: forge.calls, logger, logs }
+    loopService = runtime.loopService
+    reviewFindingsRepo = runtime.reviewFindingsRepo
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loopSessionUsageRepo = runtime.loopSessionUsageRepo
+    loopTransitionsRepo = runtime.loopTransitionsRepo
+    currentLoop = runtime.loop
+    return runtime
   }
 
   describe('idle coding session advances to auditing', () => {
     test('idle event on a coding phase transitions to auditing phase', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -207,9 +138,9 @@ describe('Loop Runtime', () => {
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -242,16 +173,16 @@ describe('Loop Runtime', () => {
 
   describe('clean non-sectioned audit terminates completed', () => {
     test('audit session returning clean assistant message terminates with completed', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 0,
@@ -292,9 +223,9 @@ describe('Loop Runtime', () => {
 
     test('a clean auditor handoff sets lastAuditResult from the payload and stays applied', async () => {
       const { client } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 0,
@@ -326,9 +257,9 @@ describe('Loop Runtime', () => {
 
     test('an aborted audit session with a pending handoff is processed and applies the handoff', async () => {
       const { client } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 0,
@@ -366,9 +297,9 @@ describe('Loop Runtime', () => {
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 0,
@@ -406,9 +337,9 @@ describe('Loop Runtime', () => {
 
     test('an aborted audit session without a pending handoff rotates to coding and records audit-session-aborted', async () => {
       const { client } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 0,
@@ -442,7 +373,7 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({
+    const { loop } = buildRuntime({
       client,
       loopConfig: {
         loop: {
@@ -453,7 +384,7 @@ describe('post-action phase', () => {
       },
     })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'auditing',
       totalSections: 0,
       auditCount: 0,
@@ -533,10 +464,10 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({ client })
+    const { loop } = buildRuntime({ client })
     // Default config has no postAction — verifies no regression
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'auditing',
       totalSections: 0,
       auditCount: 0,
@@ -593,7 +524,7 @@ describe('post-action phase', () => {
     }
 
     function seedAuditingLoop(loopName: string, sessionId: string, totalSections: number, currentSectionIndex: number) {
-      const state = makeState({
+      const state = makeLoopState({
         loopName,
         sessionId,
         phase: 'auditing',
@@ -622,7 +553,7 @@ describe('post-action phase', () => {
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         loopConfig: { loop: { enabled: true, defaultMaxIterations: 5, postAction: { enabled: true, skill: 'pr-review' } } },
       })
@@ -657,7 +588,7 @@ describe('post-action phase', () => {
       const { client } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const loopName = 'last-open-terminate'
       seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
@@ -678,7 +609,7 @@ describe('post-action phase', () => {
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const loopName = 'last-open-earlier-bug'
       seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
@@ -703,7 +634,7 @@ describe('post-action phase', () => {
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const loopName = 'last-open-cross-bug'
       seedAuditingLoop(loopName, 'last-open-audit', 2, 1)
@@ -724,7 +655,7 @@ describe('post-action phase', () => {
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const loopName = 'non-last-section'
       seedAuditingLoop(loopName, 'first-section-audit', 2, 0)
@@ -747,7 +678,7 @@ describe('post-action phase', () => {
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const loopName = 'non-last-earlier-bug'
       seedAuditingLoop(loopName, 'second-section-audit', 3, 1)
@@ -770,7 +701,7 @@ describe('post-action phase', () => {
       const { client } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const loopName = 'rewind-earlier-open'
       seedAuditingLoop(loopName, 'rewind-audit', 3, 2)
@@ -794,7 +725,7 @@ describe('post-action phase', () => {
       const { client } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const loopName = 'rewind-last-open'
       seedAuditingLoop(loopName, 'rewind-audit', 3, 0)
@@ -819,7 +750,7 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({
+    const { loop } = buildRuntime({
       client,
       loopConfig: {
         loop: {
@@ -833,7 +764,7 @@ describe('post-action phase', () => {
       },
     })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'auditing',
       totalSections: 0,
       auditCount: 0,
@@ -908,7 +839,7 @@ describe('post-action phase', () => {
         promptAsync: async () => { throw new Error('prompt failed') },
       },
     })
-    const { loop } = createRuntime({
+    const { loop } = buildRuntime({
       client,
       loopConfig: {
         loop: {
@@ -919,7 +850,7 @@ describe('post-action phase', () => {
       },
     })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'auditing',
       totalSections: 0,
       auditCount: 0,
@@ -952,9 +883,9 @@ describe('post-action phase', () => {
 
   test('post_action idle with missing worktreeDir → terminates missing_worktree_dir', async () => {
     const { client } = createFakeForgeClient()
-    const { loop } = createRuntime({ client })
+    const { loop } = buildRuntime({ client })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'post_action',
       worktreeDir: '',
     })
@@ -983,8 +914,8 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({ client })
-    const state = makeState({ phase: 'post_action' })
+    const { loop } = buildRuntime({ client })
+    const state = makeLoopState({ phase: 'post_action' })
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -1021,8 +952,8 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({ client })
-    const state = makeState({ phase: 'post_action' })
+    const { loop } = buildRuntime({ client })
+    const state = makeLoopState({ phase: 'post_action' })
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -1049,9 +980,9 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({ client })
+    const { loop } = buildRuntime({ client })
 
-    const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 1, iteration: 1, maxIterations: 5 })
+    const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 1, iteration: 1, maxIterations: 5 })
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -1103,8 +1034,8 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({ client })
-    const state = makeState({ phase: 'post_action' })
+    const { loop } = buildRuntime({ client })
+    const state = makeLoopState({ phase: 'post_action' })
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -1126,9 +1057,9 @@ describe('post-action phase', () => {
 
   test('post_action session error → terminates completed as best effort', async () => {
     const { client } = createFakeForgeClient()
-    const { loop } = createRuntime({ client })
+    const { loop } = buildRuntime({ client })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'post_action',
     })
     loopService.setState(state.loopName, state)
@@ -1162,9 +1093,9 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({ client })
+    const { loop } = buildRuntime({ client })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'post_action',
     })
     loopService.setState(state.loopName, state)
@@ -1204,9 +1135,9 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({ client })
+    const { loop } = buildRuntime({ client })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'post_action',
     })
     loopService.setState(state.loopName, state)
@@ -1243,9 +1174,9 @@ describe('post-action phase', () => {
         messages: async () => [],
       },
     })
-    const { loop } = createRuntime({ client })
+    const { loop } = buildRuntime({ client })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'post_action',
     })
     loopService.setState(state.loopName, state)
@@ -1275,7 +1206,7 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({
+    const { loop } = buildRuntime({
       client,
       loopConfig: {
         loop: {
@@ -1286,7 +1217,7 @@ describe('post-action phase', () => {
       },
     })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'auditing',
       totalSections: 0,
       auditCount: 0,
@@ -1320,7 +1251,7 @@ describe('post-action phase', () => {
         ],
       },
     })
-    const { loop } = createRuntime({
+    const { loop } = buildRuntime({
       client,
       loopConfig: {
         loop: {
@@ -1331,7 +1262,7 @@ describe('post-action phase', () => {
       },
     })
 
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'auditing',
       totalSections: 0,
       auditCount: 0,
@@ -1356,7 +1287,7 @@ describe('post-action phase', () => {
 
 describe('runtime re-provisioning updates state.workspaceId', () => {
   test('ensureWorkspaceForLoop provisions workspace and sets workspaceId', async () => {
-    const { client, calls } = createFakeForgeClient({
+    const { client } = createFakeForgeClient({
       session: {
         messages: async () => [
           { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
@@ -1367,24 +1298,9 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
       },
     })
 
-    const { logger } = createCapturingLogger()
-    const config: PluginConfig = { ...mockConfig }
+    const { loop } = buildRuntime({ client })
 
-    const loop = createLoop({
-      loopsRepo,
-      plansRepo,
-      reviewFindingsRepo,
-      sectionPlansRepo,
-      projectId: PROJECT_ID,
-      client,
-      logger,
-      getConfig: () => config,
-      sandboxManager: undefined,
-      dataDir: tempDir,
-    })
-    currentLoop = loop
-
-    const state = makeState({
+    const state = makeLoopState({
       phase: 'coding',
       totalSections: 0,
       auditCount: 0,
@@ -1419,37 +1335,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
         maxConsecutiveStalls: 2,
       }
 
-      loopService = createLoopService(
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        PROJECT_ID,
-        { log: () => {}, error: () => {}, debug: () => {} },
-        stallConfig,
-        undefined,
-        sectionPlansRepo,
-      )
+      const { client } = createFakeForgeClient()
 
-      const { client, calls } = createFakeForgeClient()
-      const { logger, logs } = createCapturingLogger()
-      const config: PluginConfig = { ...mockConfig }
+      const { loop } = buildRuntime({ client, stallConfig })
 
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
-        projectId: PROJECT_ID,
-        client,
-        logger,
-        getConfig: () => config,
-        sandboxManager: undefined,
-        dataDir: tempDir,
-        loopConfig: stallConfig,
-      })
-      currentLoop = loop
-
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
       })
@@ -1480,38 +1370,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       config: PluginConfig,
       client: ForgeClient,
       loopCfg: LoopConfig,
-      logs: Array<{ level: string; message: string }>,
     ): Loop {
-      const logger: Logger = {
-        log: (msg: string) => logs.push({ level: 'log', message: msg }),
-        error: (msg: string) => logs.push({ level: 'error', message: msg }),
-        debug: (msg: string) => logs.push({ level: 'debug', message: msg }),
-      }
-      loopService = createLoopService(
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        PROJECT_ID,
-        { log: () => {}, error: () => {}, debug: () => {} },
-        loopCfg,
-        undefined,
-        sectionPlansRepo,
-      )
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
-        projectId: PROJECT_ID,
-        client,
-        logger,
-        getConfig: () => config,
-        sandboxManager: undefined,
-        dataDir: tempDir,
-        loopConfig: loopCfg,
-      })
-      currentLoop = loop
-      return loop
+      return buildRuntime({ client, loopConfig: config, stallConfig: loopCfg }).loop
     }
 
     async function stopWatchdogAndDrain(loop: Loop, loopName: string): Promise<void> {
@@ -1534,15 +1394,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const logs: Array<{ level: string; message: string }> = []
       const loop = createWatchdogLoop(
         { ...mockConfig, auditorFallbackModels: ['fb/auditor-2'] },
         client,
         { stallTimeoutMs: 10_000, busyStallTimeoutMs: 30, maxConsecutiveStalls: 100 },
-        logs,
       )
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -1570,15 +1428,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: 'busy' } }),
         },
       })
-      const logs: Array<{ level: string; message: string }> = []
       const loop = createWatchdogLoop(
         { ...mockConfig },
         client,
         { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
-        logs,
       )
 
-      const state = makeState({ phase: 'coding', totalSections: 0 })
+      const state = makeLoopState({ phase: 'coding', totalSections: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -1601,15 +1457,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: 'busy' } }),
         },
       })
-      const logs: Array<{ level: string; message: string }> = []
       const loop = createWatchdogLoop(
         { ...mockConfig },
         client,
         { stallTimeoutMs: 100, busyStallTimeoutMs: 30, maxConsecutiveStalls: 3 },
-        logs,
       )
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorFallbackIndex: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -1634,16 +1488,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('rejects audit prompt while code prompt in-flight', async () => {
       markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
 
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
           ],
         },
       })
-      const { loop, logger, logs } = createRuntime({ client })
+      const { loop, logs } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -1679,9 +1533,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop, logs } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -1711,10 +1565,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight after busy event', async () => {
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       markPromptInFlight(PROJECT_ID, 'test-loop', state.sessionId, 'code')
 
-      const { loop } = createRuntime()
+      const { loop } = buildRuntime()
       loopService.setState(state.loopName, state)
 
       await loop.tick({
@@ -1731,8 +1585,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('busy event from non-owning session does not clear in-flight', async () => {
       markPromptInFlight(PROJECT_ID, 'test-loop', 'sess-owner', 'auditor-loop')
 
-      const { loop } = createRuntime()
-      const state = makeState({ phase: 'coding' })
+      const { loop } = buildRuntime()
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession('sess-old', 'test-loop')
 
@@ -1751,7 +1605,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight when promptAsync throws a transient error', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
@@ -1763,9 +1617,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -1784,16 +1638,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight on prompt completion', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -1814,16 +1668,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
       markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
 
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
           ],
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -1858,9 +1712,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -1891,25 +1745,29 @@ describe('stall handling terminates with stall timeout when configured cap is re
           delete: async () => { throw new Error('delete failed') },
         },
       })
-      const { loop, logger, logs } = createRuntime({ client })
+      const { loop, logs } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
 
+      await recordCoderHandoff(loop, state.sessionId)
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
-      // No unhandled rejection from delete failure
-      const hasDeleteError = logs.some(
-        (l) => l.level === 'error' && l.message.includes('failed to delete'),
-      )
-      // Even if no trim happened (queue <= 2), we verify no crash occurred
+      await loop.cancel(state.loopName)
+
+      const deletedSids = calls.filter(c => c.method === 'session.delete').map((c: any) => c.params.sessionID)
+      expect(deletedSids).toContain(state.sessionId)
+      await vi.waitFor(() => {
+        expect(logs.some(l => l.level === 'error' && l.message.includes(`failed to delete trimmed session ${state.sessionId}`))).toBe(true)
+      })
+      expect(loopService.getAnyState(state.loopName)!.active).toBe(false)
     })
 
     test('terminate flushes retained sessions', async () => {
@@ -1920,9 +1778,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -1964,14 +1822,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
     }
 
     test('code session retention captures usage with state.executionModel', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 })],
         },
       })
-      const { loop, logs } = createRuntime({ client, withUsageRepo: true })
+      const { loop } = buildRuntime({ client, withUsageRepo: true })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         executionModel: 'test/exec-model',
         auditorModel: 'test/auditor-model',
@@ -1995,14 +1853,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('audit termination captures usage with state.auditorModel', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })],
         },
       })
-      const { loop } = createRuntime({ client, withUsageRepo: true })
+      const { loop } = buildRuntime({ client, withUsageRepo: true })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         executionModel: 'test/exec-model',
         auditorModel: 'test/audit-model',
@@ -2029,14 +1887,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('state models take precedence over current config', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })],
         },
       })
-      const { loop } = createRuntime({ client, withUsageRepo: true })
+      const { loop } = buildRuntime({ client, withUsageRepo: true })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         executionModel: 'state/exec-model',
       })
@@ -2058,14 +1916,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('capture failure logs error but does not block termination', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => { throw new Error('messages fetch failed') },
         },
       })
-      const { loop, logs } = createRuntime({ client, withUsageRepo: true })
+      const { loop, logs } = buildRuntime({ client, withUsageRepo: true })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await loop.cancel(state.loopName)
@@ -2083,14 +1941,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       messagesBySession.set('coding-session-1', [
         mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 }),
       ])
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async (params: any) => messagesBySession.get(params.sessionID) ?? [],
         },
       })
-      const { loop } = createRuntime({ client, withUsageRepo: true })
+      const { loop } = buildRuntime({ client, withUsageRepo: true })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         executionModel: 'state/exec-model',
         auditorModel: 'state/audit-model',
@@ -2135,15 +1993,15 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('retained audit session cleaned up on termination with correct attribution', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })],
         },
       })
-      const { loop } = createRuntime({ client, withUsageRepo: true })
+      const { loop } = buildRuntime({ client, withUsageRepo: true })
 
       // Start in auditing phase
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         executionModel: 'state/exec-model',
         auditorModel: 'state/audit-model',
@@ -2174,14 +2032,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('retained sessions cleaned up on clearLoopTimers with correct attribution', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })],
         },
       })
-      const { loop } = createRuntime({ client, withUsageRepo: true })
+      const { loop } = buildRuntime({ client, withUsageRepo: true })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         executionModel: 'state/exec-model',
         auditorModel: 'state/audit-model',
@@ -2219,9 +2077,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 1,
@@ -2266,9 +2124,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -2303,9 +2161,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -2340,9 +2198,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
@@ -2376,7 +2234,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           messages: async () => [
             { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
           ],
-          promptAsync: async (params: any) => {
+          promptAsync: async () => {
             if (failCount > 0) {
               failCount--
               throw Object.assign(new Error('simulated model failure'), { name: 'TestError', data: { message: 'simulated model failure' } })
@@ -2384,24 +2242,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { logger } = createCapturingLogger()
-      const config: PluginConfig = { ...mockConfig, executionModel: 'test/model' }
+      const { loop } = buildRuntime({ client, loopConfig: { executionModel: 'test/model' } })
 
-      const loop = createLoop({
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        sectionPlansRepo,
-        projectId: PROJECT_ID,
-        client,
-        logger,
-        getConfig: () => config,
-        sandboxManager: undefined,
-        dataDir: tempDir,
-      })
-      currentLoop = loop
-
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 1,
@@ -2446,7 +2289,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         loopConfig: {
           loop: {
@@ -2457,7 +2300,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 0,
@@ -2506,7 +2349,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         loopConfig: {
           loop: {
@@ -2517,7 +2360,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      const state = makeState({
+      const state = makeLoopState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 0,
@@ -2558,9 +2401,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
   describe('provider limit abort', () => {
     test('retry event with usage-limit message terminates', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -2584,9 +2427,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('generic retry event does not terminate', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -2608,9 +2451,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('session.error APIError 403 terminates', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -2634,9 +2477,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('session.error ProviderAuthError terminates in coding phase', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -2660,9 +2503,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('session.error UnknownError without limit text does not terminate', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -2684,9 +2527,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('auditing phase usage-limit error terminates instead of rotating', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'auditing' })
+      const state = makeLoopState({ phase: 'auditing' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -2714,15 +2557,15 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('stale session provider-limit error terminates the active loop', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const originalSessionId = 'original-session-id'
-      const state = makeState({ sessionId: originalSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: originalSessionId, phase: 'coding' })
       loop.start({ state })
 
       // Simulate session rotation: new session becomes current
       const rotatedSessionId = 'rotated-session-id'
-      const rotatedState = makeState({ sessionId: rotatedSessionId, phase: 'coding' })
+      const rotatedState = makeLoopState({ sessionId: rotatedSessionId, phase: 'coding' })
       loop.restart(state.loopName, { newState: rotatedState, newSessionId: rotatedSessionId })
 
       // Stale session emits a provider-limit error
@@ -2746,15 +2589,15 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('stale session non-provider-limit error does not terminate', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const originalSessionId = 'original-session-id'
-      const state = makeState({ sessionId: originalSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: originalSessionId, phase: 'coding' })
       loop.start({ state })
 
       // Simulate session rotation
       const rotatedSessionId = 'rotated-session-id'
-      const rotatedState = makeState({ sessionId: rotatedSessionId, phase: 'coding' })
+      const rotatedState = makeLoopState({ sessionId: rotatedSessionId, phase: 'coding' })
       loop.restart(state.loopName, { newState: rotatedState, newSessionId: rotatedSessionId })
 
       // Stale session emits a non-provider-limit error
@@ -2776,10 +2619,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('stale audit session provider-limit error terminates the active loop', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const codingSessionId = 'coding-session-id'
-      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: codingSessionId, phase: 'coding' })
       loop.start({ state })
 
       // Register an audit session (simulates audit creation replacing the coding session)
@@ -2793,7 +2636,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // Rotate back to coding (simulates post-audit rotation)
       const newCodingSessionId = 'new-coding-session-id'
       loop.restart(state.loopName, {
-        newState: makeState({ sessionId: newCodingSessionId, phase: 'coding' }),
+        newState: makeLoopState({ sessionId: newCodingSessionId, phase: 'coding' }),
         newSessionId: newCodingSessionId,
       })
 
@@ -2819,13 +2662,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('child session provider-limit retry terminates the owning loop', async () => {
       const { client, calls } = createFakeForgeClient()
       const parentLookup = new Map<string, string>()
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
       })
 
       const codingSessionId = 'coding-session-id'
-      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: codingSessionId, phase: 'coding' })
       loop.start({ state })
 
       // Register a child session whose parent is the coding session
@@ -2854,13 +2697,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('generic child session retry does not terminate', async () => {
       const { client, calls } = createFakeForgeClient()
       const parentLookup = new Map<string, string>()
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
       })
 
       const codingSessionId = 'coding-session-id'
-      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: codingSessionId, phase: 'coding' })
       loop.start({ state })
 
       const childSessionId = 'child-session-id'
@@ -2885,12 +2728,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('transient ancestry lookup rejection does not reject retry status handling and leaves loop running', async () => {
       const fake = createFakeForgeClient()
-      const { loop, calls, logs } = createRuntime({
+      const { loop, logs } = buildRuntime({
         client: fake.client,
         getParentSessionId: async () => { throw new Error('transient ancestry failure') },
       })
       const codingSessionId = 'coding-session-id'
-      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: codingSessionId, phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await expect(
@@ -2907,7 +2750,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(true)
 
-      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      const abortCalls = fake.calls.filter(c => c.method === 'session.abort')
       expect(abortCalls.length).toBe(0)
       expect(logs.some(l => l.level === 'error' && l.message.includes('ancestry lookup failed'))).toBe(true)
     })
@@ -2930,9 +2773,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       // Send busy then idle to trigger runCodingPhase
@@ -2956,7 +2799,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('persisted assistant ProviderAuthError terminates as provider_limit', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             {
@@ -2973,9 +2816,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await loop.tick({
@@ -2995,7 +2838,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('persisted assistant error with 403 status terminates as provider_limit', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             {
@@ -3012,9 +2855,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await loop.tick({
@@ -3034,7 +2877,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('persisted assistant error with 429 does not terminate as provider_limit', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => [
             {
@@ -3051,9 +2894,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await loop.tick({
@@ -3080,9 +2923,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('concurrent cancel during provider-limit termination executes side effects once', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3144,9 +2987,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3165,15 +3008,15 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('audit prompt send failure with no configured fallback terminates', async () => {
-      const { client, calls } = createFakeForgeClient({
+      const { client } = createFakeForgeClient({
         session: {
           messages: async () => makeCodingIdleMessages(),
           promptAsync: async (params: any) => auditLimitPromptAsync(params),
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3194,9 +3037,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           promptAsync: async (params: any) => auditLimitPromptAsync(params),
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3215,10 +3058,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('coding phase provider limit still terminates immediately and leaves auditorFallbackIndex at 0', async () => {
-      const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { client } = createFakeForgeClient()
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3248,9 +3091,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3273,9 +3116,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           messages: async () => [{ info: { role: 'user', finish: 'stop' }, parts: [{ type: 'text', text: 'prompt' }] }],
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3312,9 +3155,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('duplicate provider-limit signals for the same failed prompt cause exactly one advance and one resend', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3342,9 +3185,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('a later limit from the fallback prompt advances to the next fallback entry', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3384,9 +3227,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('single primary retry then fallback busy then a single fallback retry advances exactly once more', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3424,9 +3267,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('primary retry then fallback busy then a replacement-only provider-limit error advances to the next fallback', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3466,9 +3309,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('replacement-only provider-limit error with no remaining fallback exhausts the chain and terminates', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3520,9 +3363,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3576,9 +3419,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3637,9 +3480,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('two pre-busy retry limit signals from one prompt cause exactly one advance and resend', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3683,9 +3526,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3733,9 +3576,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => persistedAuditLimitMessage() },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3756,9 +3599,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const { client } = createFakeForgeClient({
         session: { messages: async () => persistedAuditLimitMessage() },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3774,9 +3617,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('session.error ProviderAuthError on the current audit session re-dispatches on the fallback auditor model', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3798,16 +3641,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('stale (non-current) audit session provider-limit error with a configured fallback terminates and leaves auditorFallbackIndex at 0', async () => {
       const { client } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
       const auditSessionId = 'audit-session-id'
-      const state = makeState({ sessionId: auditSessionId, phase: 'auditing' })
+      const state = makeLoopState({ sessionId: auditSessionId, phase: 'auditing' })
       loop.start({ state })
 
       // Rotate to a new current audit session; the old one becomes stale.
       const newAuditSessionId = 'new-audit-session-id'
       loop.restart(state.loopName, {
-        newState: makeState({ sessionId: newAuditSessionId, phase: 'auditing' }),
+        newState: makeLoopState({ sessionId: newAuditSessionId, phase: 'auditing' }),
         newSessionId: newAuditSessionId,
       })
 
@@ -3828,9 +3671,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('delayed old-prompt abort after busy is consumed; a limit after busy advances to the next entry', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3890,9 +3733,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/a', 'fb/b'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3942,9 +3785,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -3998,10 +3841,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
       loopRef = loop
 
-      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -4036,10 +3879,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
           },
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
       loopRef = loop
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -4079,7 +3922,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
           messages: async () => makeCodingIdleMessages(),
         },
       })
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
       // A persistent bug finding keeps audits dirty so a successful audit rotates
       // back to coding instead of terminating, giving us a second audit dispatch.
@@ -4092,7 +3935,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         description: 'persistent issue',
       })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorVariant: 'audit-high' })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 0, auditorVariant: 'audit-high' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -4145,13 +3988,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('child session session.error with provider limit terminates the owning loop', async () => {
       const { client, calls } = createFakeForgeClient()
       const parentLookup = new Map<string, string>()
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
       })
 
       const codingSessionId = 'coding-session-id'
-      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: codingSessionId, phase: 'coding' })
       loop.start({ state })
 
       // Register a child session whose parent is the coding session
@@ -4180,13 +4023,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('child session session.error without provider limit does not terminate', async () => {
       const { client, calls } = createFakeForgeClient()
       const parentLookup = new Map<string, string>()
-      const { loop } = createRuntime({
+      const { loop } = buildRuntime({
         client,
         getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
       })
 
       const codingSessionId = 'coding-session-id'
-      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: codingSessionId, phase: 'coding' })
       loop.start({ state })
 
       const childSessionId = 'child-session-id'
@@ -4211,11 +4054,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('transient ancestry lookup rejection does not reject session.error handling and leaves loop running', async () => {
       const fake = createFakeForgeClient()
-      const { loop, calls, logs } = createRuntime({
+      const { loop, logs } = buildRuntime({
         client: fake.client,
         getParentSessionId: async () => { throw new Error('transient ancestry failure') },
       })
-      const state = makeState({ sessionId: 'coding-session-id', phase: 'coding' })
+      const state = makeLoopState({ sessionId: 'coding-session-id', phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await expect(
@@ -4232,7 +4075,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(true)
 
-      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      const abortCalls = fake.calls.filter(c => c.method === 'session.abort')
       expect(abortCalls.length).toBe(0)
       expect(logs.some(l => l.level === 'error' && l.message.includes('ancestry lookup failed'))).toBe(true)
     })
@@ -4241,9 +4084,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
   describe('reverse index lifecycle', () => {
     test('unregisterSessionReverseIndex removes session from reverse index', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ sessionId: 'session-1', phase: 'coding' })
+      const state = makeLoopState({ sessionId: 'session-1', phase: 'coding' })
       loop.start({ state })
 
       // Register session-2 in reverse index (simulating a path that doesn't call start)
@@ -4269,7 +4112,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const abortCallsBefore = calls.filter(c => c.method === 'session.abort').length
 
       // Restart the loop to test unregister
-      const newState = makeState({ sessionId: 'session-3', phase: 'coding' })
+      const newState = makeLoopState({ sessionId: 'session-3', phase: 'coding' })
       loop.restart(state.loopName, { newState, newSessionId: 'session-3' })
 
       // Register session-4 and then unregister it
@@ -4296,15 +4139,15 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('restart retains old session in reverse index', async () => {
       const { client, calls } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
       const originalSessionId = 'original-session-id'
-      const state = makeState({ sessionId: originalSessionId, phase: 'coding' })
+      const state = makeLoopState({ sessionId: originalSessionId, phase: 'coding' })
       loop.start({ state })
 
       // Restart with new session
       const newSessionId = 'new-session-id'
-      const newState = makeState({ sessionId: newSessionId, phase: 'coding' })
+      const newState = makeLoopState({ sessionId: newSessionId, phase: 'coding' })
       loop.restart(state.loopName, { newState, newSessionId: newSessionId })
 
       // Old session should still resolve via reverse index
@@ -4336,9 +4179,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding', totalSections: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'coding', totalSections: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
 
       recordInboxEnqueued(state.sessionId, 'inbox-1')
@@ -4368,9 +4211,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop, logs } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       recordInboxEnqueued(state.sessionId, 'inbox-1')
@@ -4399,9 +4242,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: 'busy' } }),
         },
       })
-      const { loop, logs } = createRuntime({ client })
+      const { loop, logs } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       vi.useFakeTimers()
@@ -4433,9 +4276,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           status: async () => ({ 'loop-session-id': { type: statusType } }),
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding' })
+      const state = makeLoopState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       vi.useFakeTimers()
@@ -4482,9 +4325,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0, iteration: 1, maxIterations: 5 })
+      const state = makeLoopState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0, iteration: 1, maxIterations: 5 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession('coder-1', state.loopName)
 
@@ -4532,9 +4375,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'post_action' })
+      const state = makeLoopState({ phase: 'post_action' })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -4551,9 +4394,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('an audit session error discards a pending auditor handoff so the next coder handoff is not a replacement', async () => {
       const { client } = createFakeForgeClient()
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 1 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 1 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -4583,9 +4426,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('an internal auditor resend for a provider limit discards the aborted turn handoff', async () => {
       const { client } = createFakeForgeClient()
-      const { loop } = createRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
+      const { loop } = buildRuntime({ client, loopConfig: { auditorFallbackModels: ['fb/auditor-2'] } })
 
-      const state = makeState({ phase: 'auditing', totalSections: 0, auditCount: 1 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 0, auditCount: 1 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
 
@@ -4610,9 +4453,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = buildRuntime({ client })
 
-      const state = makeState({ phase: 'auditing', totalSections: 1, currentSectionIndex: 0, auditCount: 0 })
+      const state = makeLoopState({ phase: 'auditing', totalSections: 1, currentSectionIndex: 0, auditCount: 0 })
       loopService.setState(state.loopName, state)
       loopService.registerLoopSession(state.sessionId, state.loopName)
       sectionPlansRepo.bulkInsert({
@@ -4666,9 +4509,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
             },
           },
         })
-        const { loop } = createRuntime({ client })
+        const { loop } = buildRuntime({ client })
 
-        const state = makeState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0 })
+        const state = makeLoopState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0 })
         loopService.setState(state.loopName, state)
         loopService.registerLoopSession('coder-1', state.loopName)
 
@@ -4701,12 +4544,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
               : []),
           },
         })
-        const { loop } = createRuntime({
+        const { loop } = buildRuntime({
           client,
           getParentSessionId: async (sessionId) => (sessionId === 'child-1' ? 'audit-1' : null),
         })
 
-        const state = makeState({ phase: 'auditing', sessionId: 'audit-1', totalSections: 0, auditCount: 1 })
+        const state = makeLoopState({ phase: 'auditing', sessionId: 'audit-1', totalSections: 0, auditCount: 1 })
         loopService.setState(state.loopName, state)
         loopService.registerLoopSession('audit-1', state.loopName)
 

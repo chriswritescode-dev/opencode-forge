@@ -1,8 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { Database } from 'bun:sqlite'
-import { mkdtempSync, rmSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -10,14 +6,15 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopService, type LoopService } from '../../src/loop/service'
-import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
 import { LOOP_COMPLETE_TOOL_NAME } from '../../src/constants/loop'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
-import type { Logger, PluginConfig } from '../../src/types'
+import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
-import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createTestDb } from '../helpers/test-db'
+import { makeLoopState } from '../helpers/loop-fixtures'
+import { createMockLogger } from '../helpers/logger'
 import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { captureAuditSnapshot, compareAuditSnapshots, deleteAuditSnapshot } from '../../src/utils/audit-snapshot'
 
@@ -39,12 +36,11 @@ const mockConfig: PluginConfig = {
   auditorModel: 'test/auditor',
   loop: {
     enabled: true,
-    model: 'test/loop',
     defaultMaxIterations: 5,
   },
 }
 
-const silentLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+const silentLogger = createMockLogger()
 
 interface FakeMessage {
   info: { id?: string; role: string; finish?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
@@ -55,32 +51,12 @@ function assistantMessage(id: string, text: string): FakeMessage {
   return { info: { id, role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text }] }
 }
 
-function makeLoopState(loopName: string, sessionId: string, overrides: Partial<LoopState> = {}): LoopState {
-  return {
-    active: true,
-    sessionId,
-    loopName,
-    worktreeDir: '/tmp/attempt-handoff-worktree',
-    projectDir: '/tmp/attempt-handoff-project',
-    worktreeBranch: 'test/branch',
-    iteration: 1,
-    maxIterations: 5,
-    startedAt: new Date().toISOString(),
-    prompt: 'Test plan v1',
-    phase: 'coding',
-    errorCount: 0,
-    auditCount: 0,
-    status: 'running',
-    worktree: false,
-    modelFailed: false,
-    sandbox: false,
-    executionModel: 'test/model',
-    auditorModel: 'test/auditor',
-    currentSectionIndex: 0,
-    totalSections: 0,
-    ...overrides,
-  }
-}
+const STATE_DEFAULTS = {
+  worktreeDir: '/tmp/attempt-handoff-worktree',
+  projectDir: '/tmp/attempt-handoff-project',
+  prompt: 'Test plan v1',
+  worktree: false,
+} as const
 
 function queueSnapshotCommits(commits: string[]): void {
   const queue = [...commits]
@@ -89,10 +65,6 @@ function queueSnapshotCommits(commits: string[]): void {
     if (!commit) throw new Error('snapshot queue exhausted')
     return { commit, ref }
   })
-}
-
-function snapshotRefs(): string[] {
-  return vi.mocked(captureAuditSnapshot).mock.calls.map(call => (call as unknown as [string, string])[1])
 }
 
 async function idleTick(loop: Loop, sessionId: string): Promise<void> {
@@ -118,8 +90,8 @@ function auditorPrompts(calls: RecordedCall[]): string[] {
 }
 
 describe('durable attempt handoff', () => {
-  let db: Database
-  let tempDir: string
+  let db: ReturnType<typeof createTestDb>['db']
+  let testDb: ReturnType<typeof createTestDb>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
@@ -128,7 +100,7 @@ describe('durable attempt handoff', () => {
   let attemptsRepo: ReturnType<typeof createLoopAttemptsRepo>
   let currentLoop: Loop | null = null
 
-  const harnessLogger: Logger = { log: () => {}, error: () => {}, debug: () => {} }
+  const harnessLogger = createMockLogger()
 
   interface RuntimeHarness {
     loop: Loop
@@ -189,7 +161,7 @@ describe('durable attempt handoff', () => {
   }
 
   async function drivePlanLoopThroughDirtyAudit(harness: RuntimeHarness, loopName: string): Promise<{ auditSessionId: string; coderBId: string }> {
-    const state = makeLoopState(loopName, 'coder-a')
+    const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'coder-a' })
     harness.service.setState(loopName, state)
     harness.messagesBySession.set('coder-a', [
       assistantMessage('msg-a1', 'Implemented the ledger.'),
@@ -222,9 +194,8 @@ describe('durable attempt handoff', () => {
   }
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'attempt-handoff-test-'))
-    db = new Database(join(tempDir, 'test.db'))
-    setupLoopsTestDb(db)
+    testDb = createTestDb()
+    db = testDb.db
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -245,12 +216,7 @@ describe('durable attempt handoff', () => {
       currentLoop.clearAllRetryTimeouts()
       currentLoop = null
     }
-    db.close()
-    try {
-      rmSync(tempDir, { recursive: true, force: true })
-    } catch {
-      // ignore cleanup errors
-    }
+    testDb.cleanup()
     __resetIdleGate()
     __resetInFlightGuard()
     vi.useRealTimers()
@@ -263,7 +229,7 @@ describe('durable attempt handoff', () => {
       vi.mocked(compareAuditSnapshots).mockResolvedValue(DELTA_SUMMARY)
       const harness = createRuntimeHarness({})
 
-      const state = makeLoopState(loopName, 'coder-a')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'coder-a' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('coder-a', [
         assistantMessage('msg-a1', 'Implemented the ledger.'),
@@ -319,7 +285,7 @@ describe('durable attempt handoff', () => {
       expect(finalized.length).toBe(1)
       expect(finalized[0].outcome).toBe('dirty')
       expect(finalized[0].auditedAt).not.toBeNull()
-      expect(finalized[0].findingsAfter.map(f => f.file)).toEqual(['src/ledger.ts'])
+      expect(finalized[0].findingsAfter!.map(f => f.file)).toEqual(['src/ledger.ts'])
 
       const afterAudit = harness.service.getActiveState(loopName)!
       expect(afterAudit.phase).toBe('coding')
@@ -383,7 +349,7 @@ describe('durable attempt handoff', () => {
       queueSnapshotCommits([COMMIT_A])
       const harness = createRuntimeHarness({})
 
-      const state = makeLoopState(loopName, 'q-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'q-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('q-coder', [
         assistantMessage('msg-q1', 'work done'),
@@ -409,7 +375,7 @@ describe('durable attempt handoff', () => {
         getParentSessionId: async (sessionId) => (sessionId === 'child-q' ? 'q-coder' : null),
       })
 
-      const state = makeLoopState(loopName, 'q-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'q-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('q-coder', [
         assistantMessage('msg-q1', 'work done'),
@@ -444,7 +410,12 @@ describe('durable attempt handoff', () => {
         getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
       })
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'pa-ses', { phase: 'post_action' }))
+      harness.service.setState(loopName, makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
+        sessionId: 'pa-ses',
+        phase: 'post_action',
+      }))
       harness.service.registerLoopSession('pa-ses', loopName)
       await recordPostActionComplete(harness.loop, 'pa-ses')
       harness.statuses['reviewer-ses'] = { type: 'busy' }
@@ -469,7 +440,12 @@ describe('durable attempt handoff', () => {
         getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
       })
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'pa-ses', { phase: 'post_action' }))
+      harness.service.setState(loopName, makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
+        sessionId: 'pa-ses',
+        phase: 'post_action',
+      }))
       harness.service.registerLoopSession('pa-ses', loopName)
 
       const result = await harness.loop.recordHandoff({
@@ -492,7 +468,7 @@ describe('durable attempt handoff', () => {
         getParentSessionId: async (sessionId) => (sessionId === 'reviewer-ses' ? 'pa-ses' : null),
       })
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'pa-ses', { phase: 'post_action' }))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'pa-ses', phase: 'post_action' }))
       harness.service.registerLoopSession('pa-ses', loopName)
       await recordPostActionComplete(harness.loop, 'pa-ses')
       harness.statuses['reviewer-ses'] = { type: 'busy' }
@@ -524,7 +500,7 @@ describe('durable attempt handoff', () => {
         },
       })
 
-      const state = makeLoopState(loopName, 'f-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'f-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('f-coder', [
         assistantMessage('msg-f1', 'work done'),
@@ -554,7 +530,7 @@ describe('durable attempt handoff', () => {
       queueSnapshotCommits([COMMIT_A])
       const harness = createRuntimeHarness({})
 
-      const state = makeLoopState(loopName, 'u-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'u-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('u-coder', [
         assistantMessage('msg-u1', 'work done'),
@@ -582,7 +558,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-legacy-runtime'
       const harness = createRuntimeHarness({ withAttemptsRepo: false })
 
-      const state = makeLoopState(loopName, 'legacy-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'legacy-coder' })
       harness.service.setState(loopName, state)
       harness.messagesBySession.set('legacy-coder', [
         assistantMessage('msg-l1', 'done'),
@@ -605,7 +581,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-nudge-single'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'nudge-coder'))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'nudge-coder' }))
       harness.messagesBySession.set('nudge-coder', [
         assistantMessage('msg-n1', 'work done'),
       ])
@@ -627,7 +603,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-nudge-exhausted'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'exhausted-coder'))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'exhausted-coder' }))
       harness.messagesBySession.set('exhausted-coder', [
         assistantMessage('msg-x1', 'work done'),
       ])
@@ -651,7 +627,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-assistant-error'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'error-coder'))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'error-coder' }))
       harness.messagesBySession.set('error-coder', [
         {
           info: { id: 'msg-e1', role: 'assistant', finish: 'stop', error: { name: 'UnknownError', data: { message: 'harness crashed' } } },
@@ -675,7 +651,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-second-idle'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'repeat-coder'))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'repeat-coder' }))
       harness.messagesBySession.set('repeat-coder', [
         assistantMessage('msg-r1', 'work done'),
       ])
@@ -700,7 +676,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-audit-nudge-exhausted'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'audit-nudge', { phase: 'auditing', auditCount: 1 }))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-nudge', phase: 'auditing', auditCount: 1 }))
       harness.messagesBySession.set('audit-nudge', [
         assistantMessage('msg-an1', 'The audit is complete.'),
       ])
@@ -735,7 +711,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-audit-assistant-error'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'audit-error', { phase: 'auditing', auditCount: 1 }))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-error', phase: 'auditing', auditCount: 1 }))
       harness.messagesBySession.set('audit-error', [
         {
           info: { id: 'msg-ae1', role: 'assistant', finish: 'stop', error: { name: 'UnknownError', data: { message: 'auditor crashed' } } },
@@ -758,7 +734,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-audit-duplicate-idle'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'audit-dup', { phase: 'auditing', auditCount: 1 }))
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-dup', phase: 'auditing', auditCount: 1 }))
       harness.messagesBySession.set('audit-dup', [
         assistantMessage('msg-ad1', 'Still missing phase two.'),
       ])
@@ -795,7 +771,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-audit-clean-record'
       const harness = createRuntimeHarness({})
 
-      harness.service.setState(loopName, makeLoopState(loopName, 'audit-clean', {
+      harness.service.setState(loopName, makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'audit-clean',
         phase: 'auditing',
         auditCount: 1,
         totalSections: 1,
@@ -820,6 +796,7 @@ describe('durable attempt handoff', () => {
       expect(handoffs).toHaveLength(1)
       expect(handoffs[0].role).toBe('auditor')
       expect(handoffs[0].status).toBe('applied')
+      if (handoffs[0].role !== 'auditor') throw new Error('expected auditor handoff')
       expect(handoffs[0].payload.summary?.done).toEqual(['Implemented the section'])
 
       const section = harness.service.getSectionPlan(harness.service.getAnyState(loopName)!, 0)!
@@ -832,7 +809,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-dup-key'
       queueSnapshotCommits([COMMIT_A])
       const service = createDurableService()
-      const state = makeLoopState(loopName, 'dup-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'dup-coder' })
       service.setState(loopName, state)
 
       expect(await service.captureAttempt(state, 'dup-coder:key-1', 'first decisions')).toBe(true)
@@ -848,7 +825,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-capture-failure'
       vi.mocked(captureAuditSnapshot).mockRejectedValue(new Error('git exploded'))
       const service = createDurableService()
-      const state = makeLoopState(loopName, 'cf-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'cf-coder' })
       service.setState(loopName, state)
 
       expect(await service.captureAttempt(state, 'cf:key-1', null)).toBe(true)
@@ -868,7 +845,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-compare-failure'
       queueSnapshotCommits([COMMIT_A, COMMIT_B])
       const service = createDurableService()
-      const state = makeLoopState(loopName, 'cmp-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'cmp-coder' })
       service.setState(loopName, state)
 
       expect(await service.captureAttempt(state, 'cmp:key-1', null)).toBe(true)
@@ -894,7 +871,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-plan-change'
       queueSnapshotCommits([COMMIT_A, COMMIT_B])
       const service = createDurableService()
-      const state = makeLoopState(loopName, 'pc-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'pc-coder' })
       service.setState(loopName, state)
 
       expect(await service.captureAttempt(state, 'pc:key-1', null)).toBe(true)
@@ -919,7 +896,7 @@ describe('durable attempt handoff', () => {
     test('cancelling the loop during capture records nothing and deletes the orphan checkpoint', async () => {
       const loopName = 'handoff-cancel-capture'
       const service = createDurableService()
-      const state = makeLoopState(loopName, 'cc-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'cc-coder' })
       service.setState(loopName, state)
 
       let releaseCapture!: (value: { commit: string; ref: string }) => void
@@ -940,7 +917,13 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-section-scope'
       queueSnapshotCommits([COMMIT_A])
       const service = createDurableService()
-      const state = makeLoopState(loopName, 'ss-coder', { totalSections: 1, currentSectionIndex: 0 })
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
+        sessionId: 'ss-coder',
+        totalSections: 1,
+        currentSectionIndex: 0,
+      })
       service.setState(loopName, state)
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
@@ -974,7 +957,13 @@ describe('durable attempt handoff', () => {
     test('section-scoped attempts count cross-section and earlier-section bugs toward recurrence escalation', async () => {
       const loopName = 'handoff-section-recurrence'
       const service = createDurableService()
-      const state = makeLoopState(loopName, 'sr-coder', { totalSections: 2, currentSectionIndex: 1 })
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        loopName,
+        sessionId: 'sr-coder',
+        totalSections: 2,
+        currentSectionIndex: 1,
+      })
       service.setState(loopName, state)
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
@@ -1016,7 +1005,7 @@ describe('durable attempt handoff', () => {
       const loopName = 'handoff-durable'
       queueSnapshotCommits([COMMIT_A, COMMIT_B, COMMIT_C])
       const serviceA = createDurableService()
-      const state = makeLoopState(loopName, 'dur-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'dur-coder' })
       serviceA.setState(loopName, state)
       reviewFindingsRepo.write({
         projectId: PROJECT_ID,
@@ -1051,7 +1040,7 @@ describe('durable attempt handoff', () => {
     test('a service without the attempts repo keeps the legacy in-memory decisions flow', async () => {
       const loopName = 'handoff-legacy-service'
       const legacy = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, silentLogger)
-      const state = makeLoopState(loopName, 'legacy-coder')
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'legacy-coder' })
       legacy.setState(loopName, state)
 
       expect(await legacy.captureAttempt(state, 'legacy:key-1', 'legacy decisions')).toBe(true)
