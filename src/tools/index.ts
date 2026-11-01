@@ -4,6 +4,7 @@ import { createPlanTools } from './plan-kv'
 import { createPlanAuthoringTools } from './plan-authoring'
 import { createGoalTools } from './goal'
 import { createLoopTools } from './loop'
+import { createLoopHandoffTools } from './loop-handoff'
 import { createSectionReadTool } from './section-read'
 import { createPlanAdjustTool } from './plan-adjust'
 import type { ToolContext } from './types'
@@ -23,6 +24,7 @@ export function createTools(ctx: ToolContext): Record<string, ToolDefinition> {
     ...createPlanAuthoringTools(ctx),
     ...createGoalTools(ctx),
     ...createLoopTools(ctx),
+    ...createLoopHandoffTools(ctx),
     'section-read': createSectionReadTool(ctx),
     'plan-adjust': createPlanAdjustTool(ctx),
   }

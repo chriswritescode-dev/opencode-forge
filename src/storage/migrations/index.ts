@@ -530,4 +530,13 @@ export const migrations: Migration[] = [
       db.run(loadSql('155_add_loop_standby_session.sql'))
     },
   },
+  {
+    id: '156',
+    description: 'Create loop_handoffs: schema-validated phase handoff history with one pending row per loop',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_handoffs'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('156_create_loop_handoffs.sql'))
+    },
+  },
 ]

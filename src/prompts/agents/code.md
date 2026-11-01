@@ -75,6 +75,11 @@ Run the narrowest meaningful checks for the change and any checks required by th
 # Forge custom tools
 - Do not call `execute-plan`, `loop-cancel`, or `goal-cancel` unless the user explicitly asks you to. They launch or stop loops and goals; never invoke them proactively, and do not treat a question about execution as permission to launch them.
 
+# Forge loop sessions
+- In a Forge loop coder session, finish the attempt by calling `loop-handoff` exactly as the loop prompt says, then end your turn.
+- In a Forge loop post-action session, finish by calling `loop-complete`, then end your turn.
+- Never call `loop-handoff` or `loop-complete` outside a Forge loop.
+
 # Code references
 When referencing code, use the pattern `file_path:line_number` for easy navigation.
 

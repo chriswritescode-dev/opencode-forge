@@ -1,15 +1,17 @@
-%% Regenerate: mmdc -i diagrams/loop-flow.mmd -o /tmp/loop-flow.png -b white -s 2
-%%             magick /tmp/loop-flow.png -quality 90 diagrams/loop-flow.webp
+%% Regenerate: PUPPETEER_EXECUTABLE_PATH=$(command -v chromium) pnpm dlx @mermaid-js/mermaid-cli -i diagrams/loop-flow.mmd -o /tmp/loop-flow.png -w 1600 -b white
+%%             cwebp -q 90 /tmp/loop-flow.png -o diagrams/loop-flow.webp
 stateDiagram-v2
     direction TB
     [*] --> Coding: loop triggered
-    Coding --> Auditing: session idle
-    Auditing --> Coding: findings remain, retry section
-    Auditing --> Coding: clean, next section
-    Auditing --> PostAction: clean, no section left, post-action configured
-    Auditing --> [*]: clean, no section left
-    PostAction --> [*]: post-action complete
-    Coding --> [*]: max iterations / 3 consecutive errors / stall timeout / cancellation
+    Coding --> Auditing: loop-handoff
+    Auditing --> Coding: loop-handoff, findings remain, retry section
+    Auditing --> Coding: loop-handoff, clean, next section
+    Auditing --> PostAction: loop-handoff, clean, no section left, post-action configured
+    Auditing --> [*]: loop-handoff, clean, no section left
+    PostAction --> [*]: loop-complete
+    Coding --> [*]: 3 turns without loop-handoff (handoff_missing) / max iterations / 3 consecutive errors / stall timeout / cancellation
+    Auditing --> [*]: 3 turns without loop-handoff (handoff_missing)
+    PostAction --> [*]: 3 turns without loop-complete (completed)
     note right of Coding
         Loops start by creating a git worktree, an
         optional msb sandbox, and a code session.

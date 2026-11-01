@@ -1,5 +1,4 @@
 import type { ForgeClient } from '../client/port'
-import { createHash } from 'node:crypto'
 import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
@@ -21,7 +20,7 @@ import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopSessionReuseRole } from '../constants/loop'
+import { buildPermissionRulesetForPhase, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopPhaseToolName, type LoopSessionReuseRole } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
@@ -45,11 +44,12 @@ import { processShared, projectLoopKey } from '../utils/process-shared'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
-import { parseCoderDecisions } from '../utils/coder-decisions'
 import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
-import { buildPostActionContinuePromptText, buildSectionSummaryRepromptText, POST_ACTION_COMPLETE_MARKER } from './prompts'
+import { buildHandoffNudgePrompt } from './prompts'
+import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, parseHandoffWriteInput, type LoopHandoffRecordFor, type LoopHandoffRole } from './handoff'
+import type { ZodError } from 'zod'
 
 export interface LoopEvent {
   type: string
@@ -105,6 +105,16 @@ export interface StartLoopInput {
   state: LoopState
 }
 
+export type HandoffRecordingResult = { ok: true; replaced: boolean } | { ok: false; error: string }
+
+export interface HandoffRecordingInput {
+  sessionId: string
+  tool: LoopPhaseToolName
+  args: unknown
+  /** The tool call's abort signal; an aborted call never records a handoff. */
+  signal?: AbortSignal
+}
+
 export interface Loop {
   tick(event: LoopEvent): Promise<void>
   start(input: StartLoopInput): void
@@ -156,6 +166,11 @@ export interface Loop {
   /** Access the underlying LoopService for state/prompt/section operations. */
   service: LoopService
   /**
+   * Record the current session's phase handoff. Only the loop's current coder, auditor, or
+   * post-action session may call it, and only with the role schema for its phase.
+   */
+  recordHandoff(input: HandoffRecordingInput): Promise<HandoffRecordingResult>
+  /**
    * Resolve an auditor provider limit by advancing the fallback chain and
    * re-dispatching the audit prompt, or declining so the caller terminates.
    * Exposed for the restart path, which must invoke it after releasing the
@@ -191,11 +206,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
 
-  const { sendPromptWithFallback, getLastAssistantInfo, getAssistantTranscript } = createPromptDispatch({ client, logger, getConfig, loopService, projectId })
+  const { sendPromptWithFallback, getLastAssistantInfo } = createPromptDispatch({ client, logger, getConfig, loopService, projectId })
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
-  const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
-  const idleRetryAttempts = new Map<string, number>()
+  const handoffDeferTimers = new Map<string, NodeJS.Timeout>()
+  /** Handoff nudges sent in the current phase turn (loopName → owner and count). */
+  const handoffNudges = new Map<string, HandoffNudgeState>()
 
   /**
    * Process-wide per-loop state locks. OpenCode loads a separate copy of the plugin module
@@ -210,22 +226,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   function stateLockKey(loopName: string): string {
     return projectLoopKey(projectId, loopName)
   }
-
-  /**
-   * Sections that already received their one summary re-prompt this audit
-   * round (loopName → sectionIndex). A section audit that reports zero
-   * blocking bugs but omits the parseable section-summary block gets exactly
-   * one follow-up prompt asking for the block before the loop falls back to a
-   * dirty rotation (which would burn a full coder iteration on nothing).
-   */
-  const summaryRepromptedSections = new Map<string, number>()
-
-  /**
-   * Continue prompts already sent to the post-action session (loopName → count).
-   * An idle post-action reply without POST_ACTION_COMPLETE_MARKER is re-prompted
-   * at most MAX_POST_ACTION_CONTINUES times before the loop completes best-effort.
-   */
-  const postActionContinueAttempts = new Map<string, number>()
 
   /**
    * Commit the just-completed section's work as a `section <N>: <title>`
@@ -321,22 +321,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   const coalescedLimitSessions = new Map<string, string>()
 
-  const IDLE_RETRY_DELAY_MS = 1500
   const AUDITOR_FALLBACK_SETTLE_MS = 250
-  const MAX_IDLE_RETRIES = 1
-  const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
-  const MAX_POST_ACTION_CONTINUES = 3
+  const MAX_HANDOFF_NUDGES = 3
 
-  const codingLaunchRecoveryAttempts = new Map<string, number>()
-  /**
-   * Latest assistant message id seen in a session when it was activated for
-   * reuse (loopName → session). A reused session still lists the previous
-   * turn's reply until the new one arrives, so a phase handler that reads that
-   * same id must treat the turn as "no assistant reply yet" instead of
-   * processing the stale result. Per-instance state is correct here: only the
-   * instance that owns the loop's worktree drives its phases.
-   */
-  const standbyTurnBaselines = new Map<string, { sessionId: string; messageId?: string }>()
+  interface HandoffNudgeState {
+    sessionId: string
+    phase: LoopState['phase']
+    iteration: number
+    count: number
+  }
+
   interface RetainedSessionMeta {
     sessionId: string
     role: 'code' | 'auditor'
@@ -449,11 +443,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return strict ? resolution : tolerateUndeterminedParent(resolution)
   }
 
-  function completionKey(state: LoopState, info: { messageId?: string; text: string | null }): string {
-    const message = info.messageId ?? createHash('sha256').update(`${state.iteration}:${info.text ?? ''}`).digest('hex')
-    return `${state.sessionId}:${message}`
-  }
-
   /** Reads the directory's session statuses, or null when the shape is unexpected. */
   async function fetchSessionStatuses(directory: string): Promise<Record<string, { type?: string }> | null> {
     const statuses = await client.session.status({ directory })
@@ -462,32 +451,65 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Defers a phase handoff indefinitely while any loop session (subagents included) is
-   * busy or retrying, or a prompt is still queued in the session inbox, re-checking on the
-   * existing 1.5s retry timer. Genuinely wedged sessions are left to the watchdog's
+   * Session ids of every loop session that is busy or retrying, excluding the standby
+   * sibling, which is idle by construction until the next rotation reuses it. Throws when
+   * the status query fails or ancestry cannot be resolved: callers must never treat an
+   * unverifiable status as quiescent.
+   */
+  async function findBusyLoopSessions(state: LoopState): Promise<string[]> {
+    const statuses = await fetchSessionStatuses(state.worktreeDir)
+    if (!statuses) throw new Error('Session status is unavailable')
+    const active = await activeLoopSessions(statuses, state.loopName, sessionId => resolveSessionLoopName(sessionId, true))
+    return active
+      .map(([sessionId]) => sessionId)
+      .filter((sessionId) => sessionId !== state.standbySessionId)
+  }
+
+  /**
+   * Busy loop sessions other than the session recording a handoff. That session is the
+   * caller and is necessarily busy while the tool runs, so it never counts itself.
+   */
+  async function findBusyChildSessions(state: LoopState): Promise<string[]> {
+    const busy = await findBusyLoopSessions(state)
+    return busy.filter((sessionId) => sessionId !== state.sessionId)
+  }
+
+  /** Cancels any scheduled handoff deferral re-check for a loop. */
+  function clearHandoffDeferTimer(loopName: string): void {
+    const pending = handoffDeferTimers.get(loopName)
+    if (!pending) return
+    clearTimeout(pending)
+    handoffDeferTimers.delete(loopName)
+  }
+
+  /**
+   * Defers a phase handoff indefinitely while any loop session (the current turn's session,
+   * its subagents, and the other role's session) is busy or retrying, or a prompt is still
+   * queued in the session inbox, re-checking on the existing 1.5s retry timer. Only the
+   * standby sibling is exempt. Genuinely wedged sessions are left to the watchdog's
    * progress-aware stall handling rather than a wall-clock cutoff here.
    */
-  async function deferUntilQuiescent(state: LoopState): Promise<boolean> {
-    if (!deps.loopAttemptsRepo) return false
+  async function deferWhileLoopSessionsBusy(state: LoopState): Promise<boolean> {
     const loopName = state.loopName
     let reason: string | null = null
     try {
-      const statuses = await fetchSessionStatuses(state.worktreeDir)
-      if (!statuses) throw new Error('Session status is unavailable')
-      const active = await activeLoopSessions(statuses, loopName, sessionId => resolveSessionLoopName(sessionId, true))
-      if (active.length > 0) reason = 'Loop sessions are still busy or retrying'
+      const busySessions = await findBusyLoopSessions(state)
+      if (busySessions.length > 0) reason = `Loop sessions are still busy or retrying: ${busySessions.join(', ')}`
       else if (isPromptQueued(state.sessionId)) reason = 'A prompt is still queued in the session inbox'
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err)
     }
     const fresh = loopService.getActiveState(loopName)
     if (!fresh || fresh.sessionId !== state.sessionId || fresh.phase !== state.phase) return true
-    if (!reason) return false
+    if (!reason) {
+      clearHandoffDeferTimer(loopName)
+      return false
+    }
     logger.debug(`Loop: deferring ${state.phase} handoff for ${loopName}: ${reason}`)
-    const pending = idleRetryTimeouts.get(loopName)
+    const pending = handoffDeferTimers.get(loopName)
     if (pending) clearTimeout(pending)
     const timer = setTimeout(() => {
-      idleRetryTimeouts.delete(loopName)
+      handoffDeferTimers.delete(loopName)
       void withStateLock(loopName, async () => {
         const current = loopService.getActiveState(loopName)
         if (!current || current.sessionId !== state.sessionId || current.phase !== state.phase) return
@@ -498,70 +520,161 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
       })
     }, 1500)
-    idleRetryTimeouts.set(loopName, timer)
+    handoffDeferTimers.set(loopName, timer)
     return true
   }
 
-  /**
-   * Whether the loop's current session is still busy or retrying. Used to suppress
-   * no-assistant idle handling while the session is still working. Any error or
-   * unexpected status shape returns false so the existing retry/recovery behavior
-   * (and the watchdog backstop) stays in charge.
-   */
-  async function isSessionActive(state: LoopState): Promise<boolean> {
-    try {
-      const statuses = await fetchSessionStatuses(state.worktreeDir)
-      if (!statuses) return false
-      const active = await activeLoopSessions(statuses, state.loopName, sessionId => (sessionId === state.sessionId ? state.loopName : null))
-      return active.length > 0
-    } catch {
-      return false
-    }
+  const NOT_CURRENT_SESSION_ERROR = 'Not the current session of an active loop; only the loop\'s current coder, auditor or post-action session may call this tool.'
+
+  function formatHandoffValidationError(error: ZodError): string {
+    const details = error.issues.map((issue) => {
+      const path = issue.path.join('.')
+      return path ? `${path}: ${issue.message}` : issue.message
+    })
+    return `Invalid handoff payload: ${details.join('; ')}`
   }
 
   /**
-   * Shared no-assistant idle gate. Returns true when the caller must wait for a
-   * later idle instead of retrying or recovering: a prompt is still queued in the
-   * session inbox, or the session is still busy/retrying. A queued-prompt wait
-   * records the suppressed idle so a later cancel can replay it.
+   * Records the current session's handoff under the per-loop state lock. Every check runs
+   * before the write so a rejected call leaves no pending row: session ownership, tool/phase
+   * pairing, subagent quiescence, the role's strict schema, the audit summary rules, and the
+   * tool call's abort signal, which is re-checked right before the write.
    */
-  async function shouldDeferNoAssistantIdle(loopName: string, state: LoopState, phaseLabel: string): Promise<boolean> {
-    if (isPromptQueued(state.sessionId)) {
-      recordSuppressedIdle(state.sessionId)
-      logger.debug(`[idle-gate] ${phaseLabel} idle ignored for ${loopName}; a prompt is still queued in the session inbox`)
-      return true
+  async function recordHandoff(input: HandoffRecordingInput): Promise<HandoffRecordingResult> {
+    const active = loopService.resolveActiveLoopForSession(input.sessionId)
+    if (!active) return { ok: false, error: NOT_CURRENT_SESSION_ERROR }
+
+    return withStateLock(active.loopName, async () => {
+      const state = loopService.resolveActiveLoopForSession(input.sessionId)
+      if (!state) return { ok: false, error: NOT_CURRENT_SESSION_ERROR }
+
+      const role = handoffRoleForPhase(state.phase)
+      if (!role) return { ok: false, error: `No handoff is accepted while the loop is in phase "${state.phase}".` }
+      if (input.tool === LOOP_HANDOFF_TOOL_NAME && role === 'post_action') {
+        return { ok: false, error: `In post-action, call ${LOOP_COMPLETE_TOOL_NAME} instead.` }
+      }
+      if (input.tool === LOOP_COMPLETE_TOOL_NAME && role !== 'post_action') {
+        return { ok: false, error: `${LOOP_COMPLETE_TOOL_NAME} is only for the post-action session; call ${LOOP_HANDOFF_TOOL_NAME}.` }
+      }
+
+      let busyChildren: string[]
+      try {
+        busyChildren = await findBusyChildSessions(state)
+      } catch (err) {
+        return { ok: false, error: `Could not check subagent sessions: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      if (busyChildren.length > 0) {
+        return { ok: false, error: `Wait for these subagent sessions to finish, then call the tool again: ${busyChildren.join(', ')}` }
+      }
+
+      const parsed = parseHandoffWriteInput(role, {
+        loopName: state.loopName,
+        sessionId: input.sessionId,
+        phase: state.phase,
+        sectionIndex: state.totalSections > 0 ? state.currentSectionIndex : null,
+        iteration: state.iteration,
+      }, input.args)
+      if (!parsed.ok) return { ok: false, error: formatHandoffValidationError(parsed.error) }
+
+      if (parsed.input.role === 'auditor') {
+        const payload = parsed.input.payload
+        if (state.totalSections > 0) {
+          const blocking = loopService.getBlockingBugFindings(state)
+          if (blocking.length === 0 && !payload.summary) {
+            return { ok: false, error: 'This section has no blocking bug findings, so it is clean: pass summary { done, deviations, followUps }.' }
+          }
+          if (blocking.length > 0 && payload.summary) {
+            const noun = blocking.length === 1 ? 'finding remains' : 'findings remain'
+            return { ok: false, error: `${blocking.length} blocking bug ${noun} open; omit summary or resolve them first.` }
+          }
+        } else if (payload.summary) {
+          return { ok: false, error: 'summary applies only to section audits; omit it.' }
+        }
+      }
+
+      if (input.signal?.aborted) {
+        return { ok: false, error: 'The tool call was aborted; no handoff was recorded.' }
+      }
+
+      const record = loopService.recordPendingHandoff(parsed.input)
+      watchdog.recordActivity(state.loopName, 'handoff-recorded')
+      return { ok: true, replaced: record.replaced }
+    })
+  }
+
+  /**
+   * Ends a phase turn that produced no handoff. Re-sends the full phase prompt only when the
+   * turn was never answered at all, otherwise sends the short handoff nudge, on the phase's
+   * own agent and model. After MAX_HANDOFF_NUDGES the turn is abandoned through the
+   * `handoff-missing` transition: coding and auditing error out, post-action stays
+   * best-effort and completes.
+   */
+  async function nudgeForMissingHandoff(
+    loopName: string,
+    state: LoopState,
+    lastMessageRole: string,
+    phasePrompt: () => string,
+  ): Promise<void> {
+    const role = handoffRoleForPhase(state.phase)
+    if (!role) return
+
+    const owner = { sessionId: state.sessionId, phase: state.phase, iteration: state.iteration }
+    const stored = handoffNudges.get(loopName)
+    const nudges = stored
+      && stored.sessionId === owner.sessionId
+      && stored.phase === owner.phase
+      && stored.iteration === owner.iteration
+      ? stored.count
+      : 0
+    if (nudges >= MAX_HANDOFF_NUDGES) {
+      logger.error(`Loop: ${state.phase} turn ended without a handoff after ${nudges} nudges for ${loopName}, terminating`)
+      const trans = nextTransition(state, { type: 'handoff-missing' })
+      if (trans.kind !== 'terminate') return
+      await terminateLoop(loopName, state, trans.reason)
+      return
     }
-    if (await isSessionActive(state)) {
-      logger.debug(`Loop: ${phaseLabel} has no assistant reply yet for ${loopName} but session ${state.sessionId} is still active; waiting for its idle`)
-      return true
+
+    handoffNudges.set(loopName, { ...owner, count: nudges + 1 })
+    const unanswered = lastMessageRole === 'none' || lastMessageRole === 'user'
+    const promptText = unanswered ? phasePrompt() : buildHandoffNudgePrompt(role)
+    logger.log(`Loop: ${state.phase} turn ended without a handoff for ${loopName}; sending ${unanswered ? 'the full phase prompt' : 'a handoff nudge'} (${nudges + 1}/${MAX_HANDOFF_NUDGES})`)
+
+    if (role === 'post_action') {
+      const { error } = await sendPostActionPrompt(loopName, state.sessionId, promptText)
+      if (error) {
+        await handlePromptError(loopName, state, 'failed to send post-action handoff nudge', error)
+      }
+      return
     }
-    return false
+
+    const choice = role === 'auditor' ? resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger) : undefined
+    await sendPromptWithRetryRecovery({
+      loopName,
+      sessionId: state.sessionId,
+      promptText,
+      agent: role === 'auditor' ? 'auditor-loop' : 'code',
+      model: choice ? choice.model : resolveLoopModel(getConfig(), loopService, loopName),
+      variant: choice ? choice.variant : state.executionVariant,
+      errorContext: 'handoff nudge',
+      errorState: state,
+      isRetryValid: (fresh) => fresh.sessionId === state.sessionId && fresh.phase === state.phase,
+    })
+  }
+
+  /**
+   * Reports a pending handoff that the current phase could not apply because it belongs to
+   * another role. The row is left pending for the role that wrote it. A row whose payload no
+   * longer parses is reported by the repository's row mapper instead.
+   */
+  function reportUnappliedPendingHandoff(loopName: string, sessionId: string, expectedRole: LoopHandoffRole): void {
+    const pending = loopService.getPendingHandoff(loopName)
+    if (!pending || pending.sessionId !== sessionId || pending.role === expectedRole) return
+    logger.error(
+      `Loop: pending ${pending.role} handoff for session ${sessionId} in ${loopName} does not match the ${expectedRole} phase; leaving it pending`,
+    )
   }
 
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
-
-  /**
-   * Records the assistant message id a reused session already held when it was
-   * activated, so its first read cannot be mistaken for the new turn's reply.
-   */
-  function setStandbyTurnBaseline(loopName: string, sessionId: string, messageId: string | undefined): void {
-    if (messageId) standbyTurnBaselines.set(loopName, { sessionId, messageId })
-    else standbyTurnBaselines.delete(loopName)
-  }
-
-  function clearStandbyTurnBaseline(loopName: string): void {
-    standbyTurnBaselines.delete(loopName)
-  }
-
-  /**
-   * Whether `messageId` is the reply the reused session already held at
-   * activation: the new turn's assistant message has not landed yet, so the
-   * phase handler must treat it as "no assistant reply" rather than a result.
-   */
-  function isStaleReusedTurn(loopName: string, sessionId: string, messageId: string | undefined): boolean {
-    const baseline = standbyTurnBaselines.get(loopName)
-    return !!baseline && baseline.sessionId === sessionId && baseline.messageId !== undefined && baseline.messageId === messageId
-  }
 
   /**
    * A standby session that may carry over into the next phase. `needsCompaction`
@@ -570,7 +683,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   interface StandbyCandidate {
     sessionId: string
-    latestAssistantMessageId?: string
     needsCompaction: boolean
   }
 
@@ -618,17 +730,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       if (contextLimit === undefined) {
         logger.log(`Loop: reusing session ${sessionId} (${role}) for ${state.loopName}; used ${contextTokens} tokens with an unknown context window for ${providerID ?? 'unknown'}/${modelID ?? 'unknown'}`)
-        return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: false }
+        return { sessionId, needsCompaction: false }
       }
 
       const contextPercent = (contextTokens / contextLimit) * 100
       if (contextPercent >= maxPercent) {
         logger.log(`Loop: reusing session ${sessionId} (${role}) for ${state.loopName} with compaction; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), at or above the ${maxPercent}% reuse threshold`)
-        return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: true }
+        return { sessionId, needsCompaction: true }
       }
 
       logger.log(`Loop: session ${sessionId} (${role}) is reusable for ${state.loopName}; used ${contextTokens} of ${contextLimit} context tokens (${contextPercent.toFixed(1)}%), below the ${maxPercent}% reuse threshold`)
-      return { sessionId, latestAssistantMessageId: lastAssistant.info.id, needsCompaction: false }
+      return { sessionId, needsCompaction: false }
     } catch (err) {
       logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; session lookup failed`, err)
       return null
@@ -683,7 +795,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * Shared session-activation bookkeeping for a freshly created session and a
    * reused standby session: clears the old prompt lifecycle and retry timer,
    * registers the new session, keeps the retired session resolvable for delayed
-   * errors, and restarts the watchdog.
+   * errors, starts a fresh handoff nudge budget for the new phase turn, and
+   * restarts the watchdog.
    */
   function activateLoopSession(loopName: string, previousSessionId: string | null, newSessionId: string): void {
     clearPromptPending(projectId, loopName, logger)
@@ -692,12 +805,27 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       clearTimeout(oldRetryTimeout)
       retryTimeouts.delete(loopName)
     }
+    clearHandoffDeferTimer(loopName)
+    handoffNudges.delete(loopName)
     loopService.registerLoopSession(newSessionId, loopName)
     sessionToLoop.set(newSessionId, loopName)
     if (previousSessionId) sessionToLoop.set(previousSessionId, loopName)
-    clearStandbyTurnBaseline(loopName)
     watchdog.stop(loopName)
     watchdog.start(loopName)
+  }
+
+  /**
+   * Persists a session/phase replacement and, when the phase changes, starts a fresh
+   * handoff nudge budget for the new phase turn. A reused session keeps its conversation,
+   * so the previous turn's spent nudges must never shorten the new turn's budget.
+   */
+  function replaceLoopSession(
+    loopName: string,
+    update: Parameters<LoopService['replaceSession']>[1],
+  ): void {
+    const prior = loopService.getActiveState(loopName)
+    loopService.replaceSession(loopName, update)
+    if (prior && prior.phase !== update.phase) handoffNudges.delete(loopName)
   }
 
   /**
@@ -759,7 +887,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     )
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
-    const permissionRuleset = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(state))
+    const permissionRuleset = buildPermissionRulesetForPhase('coding', await resolveLoopPermissionOptionsForLoop(state))
 
     const createResult = await createLoopSessionWithWorkspace({
       client: client,
@@ -926,7 +1054,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!currentState.worktreeDir) return false
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
-    const permission = buildLoopPermissionRuleset(await resolveLoopPermissionOptionsForLoop(currentState))
+    const permission = buildPermissionRulesetForPhase('post_action', await resolveLoopPermissionOptionsForLoop(currentState))
     const created = await createLoopSessionWithWorkspace({
       client,
       title: formatPostActionSessionTitle(loopName),
@@ -950,17 +1078,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Retain the old session in the reverse index so delayed errors from the
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(currentState.sessionId, loopName)
-    loopService.replaceSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
+    replaceLoopSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
 
     // Record the *entry* into post_action here — after the persisted phase commit
     // AND before sending the post-action prompt. If the prompt send fails below,
     // terminateLoop is invoked from inside this helper and would otherwise insert
     // its terminal row before the entry row, reversing chronological id order.
-    // The source event type mirrors the section-clean/audit-clear verdict that
-    // drove the redirect; both reduce to "phase" non-terminal rows.
-    const sourceEventType = currentState.totalSections > 0 ? 'section-clean' : 'audit-clear'
+    // The source event type is the auditor handoff that drove the redirect.
     loopService.recordTransition(loopName, {
-      eventType: sourceEventType,
+      eventType: 'auditor-handoff',
       transitionKind: 'phase',
       fromPhase: currentState.phase,
       toPhase: 'post_action',
@@ -1046,7 +1172,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
     }
 
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId: activeSessionId,
       phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
@@ -1152,7 +1278,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId: standby.sessionId,
       phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
@@ -1162,7 +1288,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
 
     activateLoopSession(loopName, auditSessionId, standby.sessionId)
-    setStandbyTurnBaseline(loopName, standby.sessionId, standby.latestAssistantMessageId)
     recordTransitionEntry(loopName, currentState, transition)
     if (input.markModelFailed) {
       loopService.setModelFailed(loopName, true)
@@ -1238,7 +1363,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await discardStandbySession(loopName, state, 'before coder rotation')
     const newSessionId = await rotateSession(loopName, state)
 
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId,
       phase: 'coding',
       resetError: false,
@@ -1287,56 +1412,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return loopService.buildSectionInitialPrompt(state)
     }
     return loopService.buildContinuationPrompt(state)
-  }
-
-  async function recoverCodeLaunchWithoutAssistant(loopName: string, state: LoopState, lastMessageRole: string): Promise<void> {
-    const codeSessionId = state.sessionId
-
-    try {
-      const freshState = loopService.getActiveState(loopName)
-      if (!freshState?.active || freshState.phase !== 'coding' || freshState.sessionId !== codeSessionId) return
-
-      if (await shouldDeferNoAssistantIdle(loopName, state, 'coding')) return
-
-      const attempts = (codingLaunchRecoveryAttempts.get(loopName) ?? 0) + 1
-      codingLaunchRecoveryAttempts.set(loopName, attempts)
-
-      if (attempts > MAX_CODE_LAUNCH_RECOVERIES) {
-        logger.error(`Loop: coding launch failed after ${attempts} no-assistant idle events for ${loopName} (last=${lastMessageRole})`)
-        await terminateLoop(loopName, state, { kind: 'coding_no_assistant' })
-        return
-      }
-
-      const recoveryPrompt = buildCodingPromptForCurrentState(state)
-      logger.log(`Loop: recovering code launch for ${loopName} (attempt ${attempts}/${MAX_CODE_LAUNCH_RECOVERIES}, last=${lastMessageRole})`)
-
-      const currentConfig = getConfig()
-      await sendPromptWithRetryRecovery({
-        loopName,
-        sessionId: codeSessionId,
-        promptText: recoveryPrompt,
-        agent: 'code',
-        model: resolveLoopModel(currentConfig, loopService, loopName),
-        variant: freshState.executionVariant,
-        errorContext: 'failed to recover code launch',
-        sendErrorContext: 'failed to recover code launch',
-        errorState: freshState,
-        onSendError: () => clearPromptPending(projectId, loopName, logger),
-        isRetryValid: (fresh) => fresh.phase === 'coding' && fresh.sessionId === codeSessionId,
-        send: async (fresh) => {
-          await client.session.promptAsync({
-            sessionID: codeSessionId,
-            directory: fresh.worktreeDir,
-            ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: recoveryPrompt }],
-          })
-        },
-      })
-    } catch (err) {
-      logger.error(`Loop: failed to recover code launch for ${loopName}`, err)
-      await handlePromptError(loopName, state, 'failed to recover code launch', err)
-    }
   }
 
   async function scheduleSessionDelete(input: {
@@ -1420,17 +1495,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       retryTimeouts.delete(loopName)
     }
 
-    const idleRetryTimeout = idleRetryTimeouts.get(loopName)
-    if (idleRetryTimeout) {
-      clearTimeout(idleRetryTimeout)
-      idleRetryTimeouts.delete(loopName)
-    }
-    idleRetryAttempts.delete(loopName)
-    codingLaunchRecoveryAttempts.delete(loopName)
+    clearHandoffDeferTimer(loopName)
+    handoffNudges.delete(loopName)
+    loopService.discardPendingHandoff(loopName)
     coalescedLimitSessions.delete(loopName)
-    summaryRepromptedSections.delete(loopName)
-    postActionContinueAttempts.delete(loopName)
-    clearStandbyTurnBaseline(loopName)
     clearPromptPending(projectId, loopName, logger)
     clearPromptInFlight(projectId, loopName)
 
@@ -1531,9 +1599,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * abort. The marker is added only once the abort succeeds: a rejected abort
    * (session already idle) emits no AbortError, so leaving a marker would suppress a
    * later genuine abort of the replacement prompt. After settling, the idle-gate and
-   * in-flight guard are cleared because they must not reject the resend.
+   * in-flight guard are cleared because they must not reject the resend. Any handoff
+   * recorded during the aborted turn belongs to that turn and is discarded so it can
+   * never be applied to the re-sent one.
    */
   async function abortForInternalResend(loopName: string, sessionId: string): Promise<void> {
+    loopService.discardPendingHandoff(loopName)
     try {
       await client.session.abort({ sessionID: sessionId })
       internalFallbackAborts.set(sessionId, (internalFallbackAborts.get(sessionId) ?? 0) + 1)
@@ -1892,47 +1963,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   })
 
   /**
-   * Shared idle/no-assistant gate for the auditing and post_action phases.
-   * If the last message is not from the assistant, schedules a bounded retry (re-invoking `rerun`)
-   * or terminates with `exhaustedReason` once MAX_IDLE_RETRIES is reached. When an assistant message
-   * is present it clears any pending idle-retry timer/attempts. Returns true when the caller should
-   * return early (retry scheduled or loop terminated).
-   */
-  async function handleIdleNoAssistantGate(
-    loopName: string,
-    currentState: LoopState,
-    lastMessageRole: string,
-    opts: { phaseLabel: string; exhaustedReason: TerminationReason; rerun: (loopName: string, state: LoopState) => Promise<void> },
-  ): Promise<boolean> {
-    if (lastMessageRole !== 'assistant') {
-      if (await shouldDeferNoAssistantIdle(loopName, currentState, opts.phaseLabel)) return true
-      const attempts = idleRetryAttempts.get(loopName) ?? 0
-      if (attempts >= MAX_IDLE_RETRIES) {
-        logger.error(`Loop: ${opts.phaseLabel} retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
-        idleRetryAttempts.delete(loopName)
-        await terminateLoop(loopName, currentState, opts.exhaustedReason)
-        return true
-      }
-      logger.log(`Loop: ${opts.phaseLabel} idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
-      idleRetryAttempts.set(loopName, attempts + 1)
-      const phase = currentState.phase
-      const t = setTimeout(() => {
-        void withStateLock(loopName, async () => {
-          const fresh = loopService.getActiveState(loopName)
-          if (!fresh?.active || fresh.phase !== phase) return
-          await opts.rerun(loopName, fresh)
-        })
-      }, IDLE_RETRY_DELAY_MS)
-      idleRetryTimeouts.set(loopName, t)
-      return true
-    }
-    const pending = idleRetryTimeouts.get(loopName)
-    if (pending) { clearTimeout(pending); idleRetryTimeouts.delete(loopName) }
-    if (idleRetryAttempts.has(loopName)) { idleRetryAttempts.delete(loopName) }
-    return false
-  }
-
-  /**
    * Sends an audit prompt, handling workspace re-bind recovery and retry
    * registration. The fresh-audit and standby-reuse paths share this dispatch so
    * both recover identically; `buildPrompt` supplies the text re-sent on a retry.
@@ -2028,11 +2058,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const codeSessionId = currentState.sessionId
     const auditSessionId = standby.sessionId
 
-    loopService.replaceSession(loopName, { newSessionId: auditSessionId, phase: 'auditing' })
+    replaceLoopSession(loopName, { newSessionId: auditSessionId, phase: 'auditing' })
     activateLoopSession(loopName, codeSessionId, auditSessionId)
-    setStandbyTurnBaseline(loopName, auditSessionId, standby.latestAssistantMessageId)
     loopService.setStandbySessionId(loopName, codeSessionId)
-    logTransition(loopName, currentState, { type: 'coding-idle-complete' }, idleTrans, 'auditing')
+    logTransition(loopName, currentState, { type: 'coder-handoff' }, idleTrans, 'auditing')
 
     logger.log(`Loop: reusing audit session ${auditSessionId} for ${loopName}`)
     await updateReusedSessionTitle(loopName, auditSessionId, currentState, {
@@ -2072,17 +2101,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
-    const assistantError = assistantInfo.error
-    const staleReusedTurn = isStaleReusedTurn(loopName, currentState.sessionId, assistantInfo.messageId)
-    if (staleReusedTurn) {
-      logger.log(`Loop: reused coding session ${currentState.sessionId} still holds its previous reply for ${loopName}; waiting for the new turn`)
-    }
-    const lastMessageRole = staleReusedTurn ? 'assistant:stale-reuse' : assistantInfo.lastMessageRole
 
-    // Classify persisted provider-limit errors before the no-assistant gate.
-    // A finish:'error' assistant message has lastMessageRole 'assistant:error'
-    // which the gate treats as missing, but a provider limit must terminate
-    // immediately rather than entering the idle-retry path.
+    // Classify persisted provider-limit errors before anything else.
     if (assistantInfo.errorSignal) {
       const limitReason = classifyProviderLimit(assistantInfo.errorSignal)
       if (limitReason) {
@@ -2092,57 +2112,36 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
-    if (lastMessageRole !== 'assistant') {
-      if (await shouldDeferNoAssistantIdle(loopName, currentState, 'coding')) return
-      const attempts = idleRetryAttempts.get(loopName) ?? 0
-      if (attempts < MAX_IDLE_RETRIES) {
-        logger.log(`Loop: coding idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
-        idleRetryAttempts.set(loopName, attempts + 1)
-        const sessionId = currentState.sessionId
-        const t = setTimeout(async () => {
-          idleRetryTimeouts.delete(loopName)
-          await withStateLock(loopName, async () => {
-            const retryState = loopService.getActiveState(loopName)
-            if (!retryState?.active || retryState.phase !== 'coding' || retryState.sessionId !== sessionId) return
-            await runCodingPhase(loopName, retryState)
-          })
-        }, IDLE_RETRY_DELAY_MS)
-        idleRetryTimeouts.set(loopName, t)
-        return
-      }
-
-      logger.log(`Loop: coding phase has no assistant response for ${loopName} after retry (last message: ${lastMessageRole}); recovering code launch`)
-      idleRetryAttempts.delete(loopName)
-      await recoverCodeLaunchWithoutAssistant(loopName, currentState, lastMessageRole)
-      return
-    }
-
-    const pending = idleRetryTimeouts.get(loopName)
-    if (pending) {
-      clearTimeout(pending)
-      idleRetryTimeouts.delete(loopName)
-    }
-    if (idleRetryAttempts.has(loopName)) {
-      idleRetryAttempts.delete(loopName)
-    }
-    codingLaunchRecoveryAttempts.delete(loopName)
-
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'coding', assistantInfo.errorSignal)
+    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantInfo.error, 'coding', assistantInfo.errorSignal)
     if (!errorResult) return
     const assistantErrorDetected = errorResult.assistantErrorDetected
     currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
-    if (await deferUntilQuiescent(currentState)) return
+    if (await deferWhileLoopSessionsBusy(currentState)) return
 
-    // Parse coder decisions from the coding assistant's response and store for the audit prompt.
-    if (!await loopService.captureAttempt(currentState, completionKey(currentState, assistantInfo), parseCoderDecisions(assistantInfo.text))) return
+    const nudgeState = currentState
+    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'coder')
+    if (!record) reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'coder')
+    if (!record && !assistantErrorDetected) {
+      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => buildCodingPromptForCurrentState(nudgeState))
+      return
+    }
+
+    if (record) {
+      handoffNudges.delete(loopName)
+      if (!await loopService.captureAttempt(currentState, handoffCompletionKey(record), formatCoderHandoff(record.payload))) return
+    } else {
+      // An assistant error still rotates to audit so the auditor sees the failure;
+      // it carries no coder handoff, so the attempt has no decisions.
+      if (!await loopService.captureAttempt(currentState, `coding-error:${currentState.sessionId}:${currentState.iteration}`, null)) return
+    }
 
     const currentConfig = getConfig()
     const auditorChoice = resolveLoopAuditorChoice(currentConfig, loopService, loopName, logger)
     const codeSessionId = currentState.sessionId
 
-    const idleTrans = nextTransition(currentState, { type: 'coding-idle-complete' })
+    const idleTrans = nextTransition(currentState, { type: 'coder-handoff' })
     if (idleTrans.kind === 'terminate') {
       await terminateLoop(loopName, currentState, idleTrans.reason)
       return
@@ -2198,7 +2197,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopService.resetError(loopName)
       try {
         const rotatedSessionId = await rotateSession(loopName, currentState)
-        loopService.replaceSession(loopName, {
+        replaceLoopSession(loopName, {
           newSessionId: rotatedSessionId,
           phase: 'coding',
           resetError: false,
@@ -2235,7 +2234,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     await discardStandbySession(loopName, currentState, 'after audit creation')
     const retainCoderAsStandby = !loopService.hasEscalatedBugFindings(currentState)
-    loopService.replaceSession(loopName, {
+    replaceLoopSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
     })
@@ -2246,11 +2245,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     sessionToLoop.set(codeSessionId, loopName)
     sessionToLoop.set(created.auditSessionId, loopName)
-    clearStandbyTurnBaseline(loopName)
 
     // Record the coding→auditing rotation derived from the pure transition
     // table.  logTransition (non-terminal-only wrapper) writes the row.
-    logTransition(loopName, currentState, { type: 'coding-idle-complete' }, idleTrans, 'auditing')
+    logTransition(loopName, currentState, { type: 'coder-handoff' }, idleTrans, 'auditing')
 
     await dispatchAuditPrompt(
       loopName,
@@ -2260,6 +2258,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       auditorChoice,
       'audit-created',
     )
+  }
+
+  /**
+   * A clean section audit must carry a summary, so a pending auditor record that would
+   * finish a section without one is discarded before it is applied: the auditor can record
+   * a dirty handoff and then resolve its last blocking bug in the same turn, which leaves a
+   * summary-less record behind. Discarding it lets the turn take the missing-handoff path and
+   * ask the auditor to hand off again. Returns true when a record was discarded.
+   */
+  function discardCleanSectionHandoffWithoutSummary(loopName: string, state: LoopState): boolean {
+    if (!(state.totalSections > 0)) return false
+    const pending = loopService.getPendingHandoff(loopName)
+    if (!pending || pending.role !== 'auditor' || pending.sessionId !== state.sessionId) return false
+    if (pending.payload.summary) return false
+    if (loopService.getBlockingBugFindings(state).length > 0) return false
+    loopService.discardPendingHandoff(loopName)
+    logger.log(`Loop: section ${state.currentSectionIndex} audit is clean but its handoff carried no summary for ${loopName}; discarding the record and asking the auditor to hand off again`)
+    return true
   }
 
   async function runAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
@@ -2282,15 +2298,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const auditSessionId = currentState.sessionId
 
-    const { text: auditText, error: assistantError, errorSignal: auditErrorSignal, messageId: auditMessageId, lastMessageRole: auditLastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
-    const staleReusedTurn = isStaleReusedTurn(loopName, auditSessionId, auditMessageId)
-    if (staleReusedTurn) {
-      logger.log(`Loop: reused audit session ${auditSessionId} still holds its previous reply for ${loopName}; waiting for the new audit turn`)
-    }
-    const lastMessageRole = staleReusedTurn ? 'assistant:stale-reuse' : auditLastMessageRole
+    const { error: assistantError, errorSignal: auditErrorSignal, lastMessageRole: auditLastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
 
-    // Classify persisted provider-limit errors before the no-assistant gate
-    // so that finish:'error' assistant messages terminate immediately.
+    // Classify persisted provider-limit errors first so finish:'error'
+    // assistant messages terminate immediately.
     if (auditErrorSignal) {
       const limitReason = classifyProviderLimit(auditErrorSignal)
       if (limitReason) {
@@ -2301,205 +2312,29 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
-    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'auditing phase', exhaustedReason: { kind: 'audit_retry_exhausted' }, rerun: runAuditingPhase })) return
+    const pendingHandoff = loopService.getPendingHandoff(loopName)
+    const auditAbortedWithHandoff = (auditErrorSignal?.name === 'MessageAbortedError' || auditErrorSignal?.name === 'AbortError')
+      && pendingHandoff?.sessionId === currentState.sessionId
+      && pendingHandoff.role === 'auditor'
 
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing', auditErrorSignal)
-    if (!errorResult) {
-      return
-    }
-    const assistantErrorDetected = errorResult.assistantErrorDetected
-    currentState = errorResult.currentState
-
-    currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
-    if (await deferUntilQuiescent(currentState)) return
-
-    if (!assistantErrorDetected) {
-      loopService.resetAuditorFallbackIndex(loopName)
-      currentState = { ...currentState, auditorFallbackIndex: 0 }
-      const newAuditCount = (currentState.auditCount ?? 0) + 1
-      logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
-
-      if (currentState.totalSections > 0) {
-        const idx = currentState.currentSectionIndex
-        const sectionSummary = loopService.parseSectionSummary(auditText || '')
-        const blockingBugs = loopService.getBlockingBugFindings(currentState)
-        const isLastOpen = loopService.isLastOpenSection(currentState)
-
-        if (sectionSummary && blockingBugs.length === 0) {
-          loopService.finishAttempt(currentState, 'clean')
-          logger.log(`Loop: section ${idx} audit clean, marking completed`)
-          summaryRepromptedSections.delete(loopName)
-
-          // Reset recurrence for this section so resolved findings don't falsely escalate later
-          loopService.resetSectionRecurrence(loopName, idx)
-
-          loopService.setLastAuditResult(loopName, auditText || '')
-          loopService.completeSection(loopName, idx, sectionSummary)
-          commitSectionCheckpoint(currentState, idx)
-
-          let lastOpen = isLastOpen
-          const freshRow = loopsRepo.get(projectId, currentState.loopName ?? '')
-          if (freshRow && freshRow.totalSections > currentState.totalSections) {
-            logger.log(`Loop: amendment appended sections after section ${idx}; no longer the last open section`)
-            lastOpen = false
-          }
-
-          const sectionEvent: TransitionEvent = { type: 'section-clean', isLastOpenSection: lastOpen }
-          const sectionTrans = nextTransition(currentState, sectionEvent)
-          if (sectionTrans.kind === 'terminate') {
-            logger.log(`Loop: last open section ${idx} audit clean for ${loopName}, completing`)
-            await finishLoop(loopName, currentState, sectionTrans.reason)
-            return
-          }
-          if (sectionTrans.kind !== 'advance-section') return
-
-          const nextSection = loopService.getNextIncompleteSectionPlan(currentState)
-          const nextIdx = nextSection?.sectionIndex ?? idx + 1
-          const nextIter = await nextIterationOrTerminate(loopName, currentState)
-          if (nextIter === null) return
-
-          logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
-          loopService.setCurrentSectionIndex(loopName, nextIdx)
-          loopService.startSection(loopName, nextIdx)
-
-          await discardStandbySession(loopName, currentState, 'after section advance')
-
-          loopService.replaceSession(loopName, {
-            newSessionId: currentState.sessionId,
-            phase: 'coding',
-            iteration: nextIter,
-          })
-
-          const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
-          const continuationPrompt = loopService.buildSectionInitialPrompt(updatedState)
-          await rotateAndSendContinuation(
-            loopName,
-            currentState,
-            {
-              iteration: nextIter,
-              currentSectionIndex: nextIdx,
-              phase: 'coding',
-              lastAuditResult: auditText || undefined,
-              auditCount: newAuditCount,
-            },
-            continuationPrompt,
-            assistantErrorDetected,
-            'section coding continuation',
-            {
-              eventType: sectionEvent.type,
-              transitionKind: sectionTrans.kind,
-              fromPhase: currentState.phase,
-              toPhase: 'coding',
-            },
-          )
-          return
-        }
-
-        // Clean-but-no-summary guard: the audit reported no blocking bugs for
-        // this section but its response had no parseable summary block. Rotating
-        // to the coder would waste a full iteration with nothing to fix, so
-        // re-prompt the same audit session once for the block (or real findings).
-        if (!sectionSummary && blockingBugs.length === 0 && summaryRepromptedSections.get(loopName) !== idx) {
-          summaryRepromptedSections.set(loopName, idx)
-          logger.log(`Loop: section ${idx} audit has no blocking findings but no summary block; re-prompting auditor for ${loopName}`)
-          const repromptChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
-          const { error } = await sendPromptWithFallback({
-            loopName,
-            sessionId: currentState.sessionId,
-            promptText: buildSectionSummaryRepromptText(),
-            agent: 'auditor-loop',
-            model: repromptChoice.model,
-            variant: repromptChoice.variant,
-          })
-          if (!error) {
-            watchdog.recordActivity(loopName, 'summary-reprompt')
-            return
-          }
-          logger.error(`Loop: summary re-prompt failed for ${loopName}; falling back to dirty rotation`, error)
-        }
-
-        const dirtyTrans = nextTransition(currentState, { type: 'section-dirty' })
-        if (dirtyTrans.kind !== 'rotate') return
-
-        summaryRepromptedSections.delete(loopName)
-        loopService.finishAttempt(currentState, 'dirty')
-        logger.log(`Loop: section ${idx} audit dirty (${blockingBugs.length} blocking bug findings), retrying same section`)
-
-        const nextIter = await nextIterationOrTerminate(loopName, currentState)
-        if (nextIter === null) return
-
-        loopService.incrementSectionAttempts(loopName, idx)
-
-        bumpDirtyAuditRecurrence(loopName, blockingBugs)
-
-        loopService.setLastAuditResult(loopName, auditText || '')
-
-        const continuationPrompt = loopService.buildSectionContinuationPrompt({ ...currentState, iteration: nextIter }, undefined, blockingBugs)
-        const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIter }, blockingBugs)
-        await switchToCodingPhase({
-          loopName,
-          currentState,
-          stateUpdates: {
-            iteration: nextIter,
-            phase: 'coding',
-            lastAuditResult: auditText || undefined,
-            auditCount: newAuditCount,
-          },
-          followUpPrompt,
-          fullPrompt: continuationPrompt,
-          assistantErrorDetected,
-          errorContext: 'section retry continuation',
-          transition: {
-            eventType: 'section-dirty',
-            transitionKind: dirtyTrans.kind,
-            fromPhase: currentState.phase,
-            toPhase: 'coding',
-          },
-        })
+    let assistantErrorDetected = false
+    if (auditAbortedWithHandoff) {
+      logger.log(`Loop: audit session ${auditSessionId} aborted with a pending handoff for ${loopName}, processing the handoff`)
+    } else {
+      const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing', auditErrorSignal)
+      if (!errorResult) {
         return
       }
+      assistantErrorDetected = errorResult.assistantErrorDetected
+      currentState = errorResult.currentState
+    }
 
-      const candidateState = { ...currentState, auditCount: newAuditCount }
-      loopService.finishAttempt(currentState, loopService.hasOutstandingFindings(loopName, 'bug') ? 'dirty' : 'clean')
-      if (await checkAuditClearAndTerminate(loopName, candidateState)) return
+    currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
 
-      const dirtyTrans = nextTransition(candidateState, { type: 'audit-dirty' })
-      if (dirtyTrans.kind !== 'continue') return
+    if (await deferWhileLoopSessionsBusy(currentState)) return
 
-      const nextIteration = await nextIterationOrTerminate(loopName, currentState)
-      if (nextIteration === null) return
-
-      const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
-      bumpDirtyAuditRecurrence(loopName, outstandingBugs)
-
-      const continuationPrompt = loopService.buildContinuationPrompt(
-        { ...currentState, iteration: nextIteration },
-        undefined,
-        outstandingBugs,
-      )
-      const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIteration }, outstandingBugs)
-
-      await switchToCodingPhase({
-        loopName,
-        currentState,
-        stateUpdates: {
-          iteration: nextIteration,
-          phase: 'coding',
-          lastAuditResult: auditText || undefined,
-          auditCount: newAuditCount,
-        },
-        followUpPrompt,
-        fullPrompt: continuationPrompt,
-        assistantErrorDetected,
-        errorContext: 'coding continuation',
-        transition: {
-          eventType: 'audit-dirty',
-          transitionKind: dirtyTrans.kind,
-          fromPhase: candidateState.phase,
-          toPhase: 'coding',
-        },
-      })
-    } else {
+    if (assistantErrorDetected) {
+      loopService.discardPendingHandoff(loopName)
       logger.log(`Loop: audit error detected, continuing without incrementing audit count`)
       const nextIteration = await nextIterationOrTerminate(loopName, currentState)
       if (nextIteration === null) return
@@ -2513,7 +2348,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         stateUpdates: {
           iteration: nextIteration,
           phase: 'coding',
-          lastAuditResult: auditText || undefined,
           auditCount: currentState.auditCount ?? 0,
         },
         followUpPrompt,
@@ -2528,16 +2362,219 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         },
         discardAuditSession: true,
       })
+      return
     }
+
+    const nudgeState = currentState
+    if (discardCleanSectionHandoffWithoutSummary(loopName, currentState)) {
+      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
+      return
+    }
+    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'auditor')
+    if (!record) {
+      reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'auditor')
+      await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
+      return
+    }
+    handoffNudges.delete(loopName)
+
+    loopService.resetAuditorFallbackIndex(loopName)
+    currentState = { ...currentState, auditorFallbackIndex: 0 }
+    const newAuditCount = (currentState.auditCount ?? 0) + 1
+    logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
+
+    if (currentState.totalSections > 0) {
+      const idx = currentState.currentSectionIndex
+      const blockingBugs = loopService.getBlockingBugFindings(currentState)
+      const isLastOpen = loopService.isLastOpenSection(currentState)
+      const clean = blockingBugs.length === 0
+      const auditResult = formatAuditHandoffResult(record.payload, {
+        clean,
+        blockingBugs: blockingBugs.length,
+        sectionIndex: idx,
+      })
+
+      if (clean) {
+        loopService.finishAttempt(currentState, 'clean')
+        logger.log(`Loop: section ${idx} audit clean, marking completed`)
+
+        // Reset recurrence for this section so resolved findings don't falsely escalate later
+        loopService.resetSectionRecurrence(loopName, idx)
+
+        loopService.setLastAuditResult(loopName, auditResult)
+        loopService.completeSection(loopName, idx, record.payload.summary
+          ? formatSectionSummary(record.payload.summary)
+          : { done: null, deviations: null, followUps: null })
+        commitSectionCheckpoint(currentState, idx)
+
+        let lastOpen = isLastOpen
+        const freshRow = loopsRepo.get(projectId, currentState.loopName ?? '')
+        if (freshRow && freshRow.totalSections > currentState.totalSections) {
+          logger.log(`Loop: amendment appended sections after section ${idx}; no longer the last open section`)
+          lastOpen = false
+        }
+
+        const sectionEvent: TransitionEvent = { type: 'section-clean', isLastOpenSection: lastOpen }
+        const sectionTrans = nextTransition(currentState, sectionEvent)
+        if (sectionTrans.kind === 'terminate') {
+          logger.log(`Loop: last open section ${idx} audit clean for ${loopName}, completing`)
+          await finishLoop(loopName, currentState, sectionTrans.reason)
+          return
+        }
+        if (sectionTrans.kind !== 'advance-section') return
+
+        const nextSection = loopService.getNextIncompleteSectionPlan(currentState)
+        const nextIdx = nextSection?.sectionIndex ?? idx + 1
+        const nextIter = await nextIterationOrTerminate(loopName, currentState)
+        if (nextIter === null) return
+
+        logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
+        loopService.setCurrentSectionIndex(loopName, nextIdx)
+        loopService.startSection(loopName, nextIdx)
+
+        await discardStandbySession(loopName, currentState, 'after section advance')
+
+        replaceLoopSession(loopName, {
+          newSessionId: currentState.sessionId,
+          phase: 'coding',
+          iteration: nextIter,
+        })
+
+        const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
+        const continuationPrompt = loopService.buildSectionInitialPrompt(updatedState)
+        await rotateAndSendContinuation(
+          loopName,
+          currentState,
+          {
+            iteration: nextIter,
+            currentSectionIndex: nextIdx,
+            phase: 'coding',
+            lastAuditResult: auditResult,
+            auditCount: newAuditCount,
+          },
+          continuationPrompt,
+          assistantErrorDetected,
+          'section coding continuation',
+          {
+            eventType: 'auditor-handoff',
+            transitionKind: sectionTrans.kind,
+            fromPhase: currentState.phase,
+            toPhase: 'coding',
+          },
+        )
+        return
+      }
+
+      const dirtyTrans = nextTransition(currentState, { type: 'section-dirty' })
+      if (dirtyTrans.kind !== 'rotate') return
+
+      loopService.finishAttempt(currentState, 'dirty')
+      logger.log(`Loop: section ${idx} audit dirty (${blockingBugs.length} blocking bug findings), retrying same section`)
+
+      const nextIter = await nextIterationOrTerminate(loopName, currentState)
+      if (nextIter === null) return
+
+      loopService.incrementSectionAttempts(loopName, idx)
+
+      bumpDirtyAuditRecurrence(loopName, blockingBugs)
+
+      loopService.setLastAuditResult(loopName, auditResult)
+
+      const continuationPrompt = loopService.buildSectionContinuationPrompt({ ...currentState, iteration: nextIter }, undefined, blockingBugs)
+      const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIter }, blockingBugs)
+      await switchToCodingPhase({
+        loopName,
+        currentState,
+        stateUpdates: {
+          iteration: nextIter,
+          phase: 'coding',
+          lastAuditResult: auditResult,
+          auditCount: newAuditCount,
+        },
+        followUpPrompt,
+        fullPrompt: continuationPrompt,
+        assistantErrorDetected,
+        errorContext: 'section retry continuation',
+        transition: {
+          eventType: 'auditor-handoff',
+          transitionKind: dirtyTrans.kind,
+          fromPhase: currentState.phase,
+          toPhase: 'coding',
+        },
+      })
+      return
+    }
+
+    const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
+    const auditResult = formatAuditHandoffResult(record.payload, {
+      clean: !loopService.hasOutstandingFindings(loopName),
+      blockingBugs: outstandingBugs.length,
+      sectionIndex: null,
+    })
+    const candidateState = { ...currentState, auditCount: newAuditCount }
+    loopService.finishAttempt(currentState, outstandingBugs.length > 0 ? 'dirty' : 'clean')
+    loopService.setLastAuditResult(loopName, auditResult)
+    if (await checkAuditClearAndTerminate(loopName, candidateState)) return
+
+    const dirtyTrans = nextTransition(candidateState, { type: 'audit-dirty' })
+    if (dirtyTrans.kind !== 'continue') return
+
+    const nextIteration = await nextIterationOrTerminate(loopName, currentState)
+    if (nextIteration === null) return
+
+    bumpDirtyAuditRecurrence(loopName, outstandingBugs)
+
+    const continuationPrompt = loopService.buildContinuationPrompt(
+      { ...currentState, iteration: nextIteration },
+      undefined,
+      outstandingBugs,
+    )
+    const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIteration }, outstandingBugs)
+
+    await switchToCodingPhase({
+      loopName,
+      currentState,
+      stateUpdates: {
+        iteration: nextIteration,
+        phase: 'coding',
+        lastAuditResult: auditResult,
+        auditCount: newAuditCount,
+      },
+      followUpPrompt,
+      fullPrompt: continuationPrompt,
+      assistantErrorDetected,
+      errorContext: 'coding continuation',
+      transition: {
+        eventType: 'auditor-handoff',
+        transitionKind: dirtyTrans.kind,
+        fromPhase: candidateState.phase,
+        toPhase: 'coding',
+      },
+    })
   }
 
   /**
-   * Completes the post-action phase once its session is idle. Unless `confirmCompletion`
-   * is false (user abort), it first waits for every loop session, subagents included,
-   * to settle, then requires the completion marker in the final reply, re-prompting the
-   * session to finish its work up to MAX_POST_ACTION_CONTINUES times.
+   * Applies the post-action `loop-complete` record, stores its report, and terminates the loop.
+   * A null record completes without a report or summary, which is the best-effort outcome of
+   * the assistant-error and exhausted-nudge paths.
    */
-  async function runPostActionPhase(loopName: string, _state: LoopState, confirmCompletion = true): Promise<void> {
+  async function completePostAction(
+    loopName: string,
+    state: LoopState,
+    record: LoopHandoffRecordFor<'post_action'> | null,
+    reason: TerminationReason,
+  ): Promise<void> {
+    if (record) loopService.setPostActionReport(loopName, formatPostActionReport(record.payload))
+    await terminateLoop(loopName, state, reason, record ? formatPostActionSummary(record.payload) : undefined)
+  }
+
+  /**
+   * Completes the post-action phase once its session is idle. Assistant errors complete
+   * best-effort. Otherwise it waits for every loop session, subagents included, to settle,
+   * then applies the pending `loop-complete` record and renders the post-action report. A
+   * turn without a record is nudged; past MAX_HANDOFF_NUDGES the loop completes best-effort.
+   */
+  async function runPostActionPhase(loopName: string, _state: LoopState): Promise<void> {
     const currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} no longer active, skipping post-action phase`)
@@ -2555,56 +2592,32 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    const { text: postActionText, lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
 
-    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'post-action phase', exhaustedReason: { kind: 'completed' }, rerun: runPostActionPhase })) return
-
-    if (confirmCompletion) {
-      if (await deferUntilQuiescent(currentState)) return
-      if (!postActionText?.includes(POST_ACTION_COMPLETE_MARKER)) {
-        const attempts = postActionContinueAttempts.get(loopName) ?? 0
-        if (attempts < MAX_POST_ACTION_CONTINUES) {
-          postActionContinueAttempts.set(loopName, attempts + 1)
-          logger.log(`Loop: post-action reply for ${loopName} has no completion marker; prompting the session to finish (attempt ${attempts + 1}/${MAX_POST_ACTION_CONTINUES})`)
-          const { error } = await sendPostActionPrompt(loopName, currentState.sessionId, buildPostActionContinuePromptText())
-          if (!error) {
-            watchdog.recordActivity(loopName, 'post-action-continue')
-            return
-          }
-          logger.error(`Loop: post-action continue prompt failed for ${loopName}, completing best-effort`, error)
-        } else {
-          logger.error(`Loop: post-action for ${loopName} never confirmed completion after ${MAX_POST_ACTION_CONTINUES} continue prompts, completing best-effort`)
-        }
-      }
+    if (assistantInfo.error) {
+      logger.error(`Loop: post-action assistant error for ${loopName}: ${assistantInfo.error}, completing best-effort`)
+      const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'post_action')
+      if (!record) reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'post_action')
+      await completePostAction(loopName, currentState, record, { kind: 'completed' })
+      return
     }
+
+    if (await deferWhileLoopSessionsBusy(currentState)) return
+
+    const nudgeState = currentState
+    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'post_action')
+    if (!record) {
+      reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'post_action')
+      const cfg = resolvePostActionConfig(getConfig())
+      await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => loopService.buildPostActionPrompt(nudgeState, { skill: cfg.skill, prompt: cfg.prompt }))
+      return
+    }
+    handoffNudges.delete(loopName)
 
     logger.log(`Loop: post-action complete for ${loopName}, terminating`)
     const trans = nextTransition(currentState, { type: 'post-action-complete' })
-    if (trans.kind === 'terminate') {
-      // Persist the full assistant transcript of the post-action session before it is
-      // deleted on termination, so the run's details survive (loop-status/dashboard).
-      const report = await getAssistantTranscript(currentState.sessionId, currentState.worktreeDir)
-      if (report) {
-        loopService.setPostActionReport(loopName, report)
-      }
-      // Capture the raw post-action assistant message as the loop's completion summary so the
-      // outcome (alternate review verdict, CI result, etc.) is visible in loop-status/dashboard.
-      // The loop still terminates `completed` — the plan itself was already cleared by the audit.
-      await terminateLoop(loopName, currentState, trans.reason, postActionText?.replace(POST_ACTION_COMPLETE_MARKER, '').trim() || undefined)
-    }
-  }
-
-  /** Re-fetch the last message; run `onAssistant` if the assistant replied, otherwise `onNoAssistant`. */
-  async function resumeOrFallback(
-    loopName: string,
-    state: LoopState,
-    eventSessionId: string,
-    onAssistant: (loopName: string, state: LoopState) => Promise<void>,
-    onNoAssistant: (loopName: string, state: LoopState) => Promise<void>,
-  ): Promise<void> {
-    const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
-    if (lastMessageRole === 'assistant') { await onAssistant(loopName, state); return }
-    await onNoAssistant(loopName, state)
+    if (trans.kind !== 'terminate') return
+    await completePostAction(loopName, currentState, record, trans.reason)
   }
 
   // Single source of truth for idle/watchdog dispatch. Every persisted phase maps to
@@ -2667,17 +2680,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             return
           }
           if (state.phase === 'auditing') {
-            await resumeOrFallback(loopName, state, eventSessionId,
-              async (ln, s) => { logger.log(`Loop: audit session ${eventSessionId} aborted after assistant response, processing audit result`); await runAuditingPhase(ln, s) },
-              async (ln, s) => { logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted', 'audit-session-aborted') },
-            )
+            if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+              logger.log(`Loop: audit session ${eventSessionId} aborted with a pending handoff, processing it`)
+              await runAuditingPhase(loopName, state)
+            } else {
+              logger.log(`Loop: audit session ${eventSessionId} aborted without a pending handoff, cleaning up and rolling back to coding`)
+              await rotateToCodingAfterAuditFailure(loopName, state, 'aborted', 'audit-session-aborted')
+            }
             return
           }
           if (state.phase === 'post_action') {
-            await resumeOrFallback(loopName, state, eventSessionId,
-              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted after assistant response, processing result`); await runPostActionPhase(ln, s, false) },
-              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted without assistant response, terminating as completed (best-effort)`); await terminateLoop(ln, s, { kind: 'completed' }) },
-            )
+            if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+              logger.log(`Loop: post-action session ${eventSessionId} aborted with a pending handoff, processing it`)
+              await runPostActionPhase(loopName, state)
+            } else {
+              logger.log(`Loop: post-action session ${eventSessionId} aborted without a pending handoff, terminating as completed (best-effort)`)
+              await terminateLoop(loopName, state, { kind: 'completed' })
+            }
             return
           }
           // coding shares the default abort handling: a coding session aborted by
@@ -2720,11 +2739,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (state.phase === 'auditing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
+          loopService.discardPendingHandoff(loopName)
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage, 'audit-session-error')
           return
         }
         const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
         if (state.phase === 'post_action') {
+          if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+            logger.log(`Loop: post-action session ${eventSessionId} errored with a pending loop-complete for ${loopName}, completing with its report`)
+            await runPostActionPhase(loopName, state)
+            return
+          }
           logger.error(`Loop: post-action session error for ${eventSessionId}: ${errorMessage}, completing as best-effort`)
           await terminateLoop(loopName, state, { kind: 'completed' })
           return
@@ -3053,16 +3078,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       clearTimeout(timeout)
       retryTimeouts.delete(worktreeName)
     }
-    for (const [worktreeName, timeout] of idleRetryTimeouts.entries()) {
+    for (const [worktreeName, timeout] of handoffDeferTimers.entries()) {
       clearTimeout(timeout)
-      idleRetryTimeouts.delete(worktreeName)
+      handoffDeferTimers.delete(worktreeName)
     }
-    idleRetryAttempts.clear()
-    codingLaunchRecoveryAttempts.clear()
+    handoffNudges.clear()
     coalescedLimitSessions.clear()
-    postActionContinueAttempts.clear()
     loopRetainedSessions.clear()
-    standbyTurnBaselines.clear()
     sessionToLoop.clear()
     terminatingLoops.clear()
     watchdog.clearAll()
@@ -3110,16 +3132,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       retryTimeouts.delete(loopName)
     }
 
-    const idleRetryTimeout = idleRetryTimeouts.get(loopName)
-    if (idleRetryTimeout) {
-      clearTimeout(idleRetryTimeout)
-      idleRetryTimeouts.delete(loopName)
-    }
-    idleRetryAttempts.delete(loopName)
-    codingLaunchRecoveryAttempts.delete(loopName)
+    clearHandoffDeferTimer(loopName)
+    handoffNudges.delete(loopName)
     coalescedLimitSessions.delete(loopName)
-    postActionContinueAttempts.delete(loopName)
-    clearStandbyTurnBaseline(loopName)
 
     const stateForStandby = loopService.getAnyState(loopName)
     if (stateForStandby) {
@@ -3344,6 +3359,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       getParentSessionId = lookup
     },
     handleAuditorProviderLimit,
+    recordHandoff,
     service: loopService,
   }
 }

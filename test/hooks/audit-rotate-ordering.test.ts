@@ -9,6 +9,7 @@ import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopState } from '../../src/loop/state'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { recordAuditorHandoff } from '../helpers/loop-handoff'
 
 interface Database {
   run: (sql: string) => void
@@ -50,16 +51,144 @@ interface LoopRowObject {
   host_session_id: string | null
 }
 
+interface LoopHandoffRow {
+  id: number
+  project_id: string
+  loop_name: string
+  session_id: string
+  role: string
+  phase: string
+  section_index: number | null
+  iteration: number
+  payload: string
+  status: string
+  created_at: number
+  resolved_at: number | null
+}
+
 const loopDataStore = new Map<string, LoopRowObject>()
 const loopLargeStore = new Map<string, { prompt: string | null; last_audit_result: string | null }>()
 const plansStore = new Map<string, any>()
 const findingsStore = new Map<string, any>()
+const handoffsStore = new Map<string, LoopHandoffRow[]>()
+let nextHandoffId = 1
+
+function pendingHandoffs(projectId: string, loopName: string): LoopHandoffRow[] {
+  return (handoffsStore.get(`${projectId}:${loopName}`) ?? []).filter((row) => row.status === 'pending')
+}
 
 function createMockDatabase(): Database {
   return {
     run: vi.fn(),
     exec: vi.fn(),
     prepare: vi.fn((sql: string) => {
+      // UPDATE loop_handoffs SET session_id = ... WHERE status = 'pending' (upsert an existing pending row)
+      if (sql.includes('UPDATE loop_handoffs') && sql.includes('SET session_id = ?')) {
+        return {
+          run: vi.fn((...args: any[]) => {
+            const [sessionId, role, phase, sectionIndex, iteration, payload, createdAt, projectId, loopName] = args
+            const pending = pendingHandoffs(projectId, loopName)
+            if (pending.length === 0) return { changes: 0 }
+            const row = pending[pending.length - 1]
+            row.session_id = sessionId
+            row.role = role
+            row.phase = phase
+            row.section_index = sectionIndex ?? null
+            row.iteration = iteration
+            row.payload = payload
+            row.created_at = createdAt
+            return { changes: 1 }
+          }),
+          get: vi.fn(),
+          all: vi.fn(() => []),
+        }
+      }
+      // INSERT INTO loop_handoffs
+      if (sql.includes('INSERT INTO loop_handoffs')) {
+        return {
+          run: vi.fn((...args: any[]) => {
+            const [projectId, loopName, sessionId, role, phase, sectionIndex, iteration, payload, createdAt] = args
+            const key = `${projectId}:${loopName}`
+            const rows = handoffsStore.get(key) ?? []
+            rows.push({
+              id: nextHandoffId++,
+              project_id: projectId,
+              loop_name: loopName,
+              session_id: sessionId,
+              role,
+              phase,
+              section_index: sectionIndex ?? null,
+              iteration,
+              payload,
+              status: 'pending',
+              created_at: createdAt,
+              resolved_at: null,
+            })
+            handoffsStore.set(key, rows)
+            return { changes: 1 }
+          }),
+          get: vi.fn(),
+          all: vi.fn(() => []),
+        }
+      }
+      // UPDATE loop_handoffs SET status = 'applied' ... RETURNING
+      if (sql.includes('UPDATE loop_handoffs') && sql.includes("status = 'applied'")) {
+        return {
+          run: vi.fn(() => ({ changes: 0 })),
+          get: vi.fn((...args: any[]) => {
+            const [resolvedAt, projectId, loopName, sessionId] = args
+            const pending = pendingHandoffs(projectId, loopName).filter((row) => row.session_id === sessionId)
+            if (pending.length === 0) return null
+            const row = pending[pending.length - 1]
+            row.status = 'applied'
+            row.resolved_at = resolvedAt
+            return { ...row }
+          }),
+          all: vi.fn(() => []),
+        }
+      }
+      // UPDATE loop_handoffs SET status = 'discarded'
+      if (sql.includes('UPDATE loop_handoffs') && sql.includes("status = 'discarded'")) {
+        return {
+          run: vi.fn((...args: any[]) => {
+            const [, projectId, loopName] = args
+            let changes = 0
+            for (const row of pendingHandoffs(projectId, loopName)) {
+              row.status = 'discarded'
+              changes += 1
+            }
+            return { changes }
+          }),
+          get: vi.fn(),
+          all: vi.fn(() => []),
+        }
+      }
+      // SELECT pending handoff
+      if (sql.includes('FROM loop_handoffs') && sql.includes("status = 'pending'") && sql.includes('ORDER BY id DESC')) {
+        return {
+          run: vi.fn(() => ({ changes: 0 })),
+          get: vi.fn((...args: any[]) => {
+            const [projectId, loopName] = args
+            const pending = pendingHandoffs(projectId, loopName)
+            return pending.length > 0 ? { ...pending[pending.length - 1] } : null
+          }),
+          all: vi.fn(() => []),
+        }
+      }
+      // SELECT handoff list
+      if (sql.includes('FROM loop_handoffs') && sql.includes('ORDER BY id ASC')) {
+        return {
+          run: vi.fn(() => ({ changes: 0 })),
+          get: vi.fn(),
+          all: vi.fn((...args: any[]) => {
+            const [projectId, loopName, limit] = args
+            const rows = [...(handoffsStore.get(`${projectId}:${loopName}`) ?? [])]
+              .sort((a, b) => a.id - b.id)
+            const limited = typeof limit === 'number' && limit >= 0 ? rows.slice(0, limit) : rows
+            return limited.map((row) => ({ ...row }))
+          }),
+        }
+      }
       // INSERT INTO loops
       if (sql.includes('INSERT INTO loops') && sql.includes('VALUES')) {
         return {
@@ -316,6 +445,8 @@ describe('audit→code rotation ordering', () => {
     loopLargeStore.clear()
     plansStore.clear()
     findingsStore.clear()
+    handoffsStore.clear()
+    nextHandoffId = 1
 
     loopsRepo = createLoopsRepo(db as any)
     plansRepo = createPlansRepo(db as any)
@@ -394,6 +525,10 @@ describe('audit→code rotation ordering', () => {
       undefined,
       tempDir,
     )
+
+    // The outstanding finding makes the section dirty, so the auditor hands
+    // off without a summary.
+    await recordAuditorHandoff(handler.loop, 'audit-1')
 
     await handler.onEvent({
       event: {

@@ -106,7 +106,7 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 - **Termination** (`src/loop/termination.ts`) - Termination reason mapping and status checks
 - **Prompts** (`src/loop/prompts.ts`) - Prompt builders for each loop phase (continuation, audit, section)
 - **Idle Gate** (`src/loop/idle-gate.ts`) - Session busy detection and timeout tracking
-- **Section Summary** (`src/loop/section-summary.ts`) - Parse audit output markers
+- **Handoff** (`src/loop/handoff.ts`) - Per-role handoff schemas, payload renderers, and completion keys for the persisted `loop_handoffs` records
 - **LoopEventHandler** (`src/hooks/loop.ts`) - Event handling, session rotation, watchdog integration
 
 ## Sandbox System

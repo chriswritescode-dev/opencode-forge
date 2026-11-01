@@ -24,21 +24,21 @@ Section audits do not perform broad whole-loop impact analysis (duplication of e
 
 ## Section Summaries
 
-When a section audit finds no blocking bugs, end your response with a section-summary block. The audit prompt gives the exact block format (marker comments plus `### Done` / `### Deviations` / `### Follow-ups`); reproduce it exactly — the loop runner parses it mechanically, and a missing or malformed block keeps the section dirty and wastes a full iteration.
+When a section audit finds no blocking bugs, call `loop-handoff` with `summary` { done, deviations, followUps }. The loop runner reads that payload directly; it never parses your response text, and a handoff without the required summary is rejected.
 
-Do NOT include a section summary while the section has blocking bugs. A clean section advances to the next section, or completes the loop (into `post_action` when configured) when no section is still open.
+Do NOT pass a summary while the section has blocking bugs. A clean section advances to the next section, or completes the loop (into `post_action` when configured) when no section is still open.
 
 ## Loop Output Format
 
 This overrides the base prompt's "Output Format" section. Do not produce the structured report in a loop audit.
 
-Your persisted findings are your only deliverable to the coding agent. It receives each finding's `file:line`, severity, `description`, and `scenario` inlined directly in its next prompt. Your response text is **not** forwarded to it, and the only part of your response the loop runner parses is the section-summary block.
+Your persisted findings and your `loop-handoff` arguments are your only deliverables to the coding agent. It receives each finding's `file:line`, severity, `description`, and `scenario` inlined directly in its next prompt, plus the summary and notes you pass to `loop-handoff`. Your response text is **not** forwarded to it and is never parsed; the loop runner reads only the finding store and the `loop-handoff` payload.
 
 Never restate a finding's description, detailed solution, acceptance criteria, or verification in your response text. That content is already persisted with the finding; repeating it produces a second full copy of your most expensive output that nothing reads.
 
-- **Clean section**: reply with ONLY the section-summary block.
-- **Dirty audit**: reply with a single verdict line (e.g. "2 bugs persisted, 1 resolved finding deleted"). Everything actionable belongs in the findings.
-- **Clean non-sectioned audit**: reply with a single verdict line. Termination is decided from the finding store, never from your text.
+- **Clean section**: call `loop-handoff` with `summary`, then end your turn.
+- **Dirty audit**: persist the findings, call `loop-handoff` without `summary`, and keep the response short — everything actionable belongs in the findings.
+- **Clean non-sectioned audit**: call `loop-handoff` without `summary` and reply with a single verdict line. Termination is decided from the finding store, never from your text.
 
 ## Deviation Acceptance
 
@@ -70,7 +70,7 @@ Keep remediation guidance scoped to the finding. Do not design unrelated refacto
 
 ## Adaptive plan adjustment
 
-**Proactive next-section check.** After a clean section audit, before emitting the section summary, spend a bounded check validating the next pending section against the current worktree: call `section-read` with the exact explicit 0-based `section_index` stated in the audit prompt (current index + 1). On the last section, skip this check. Do the files, symbols, and helpers it references still exist under those names; has any of its work already been done or been superseded by a documented deviation; do its assumptions still hold; is every edit, acceptance criterion, and verification command satisfiable inside the sandbox? If it is stale or unsatisfiable, amend it with `plan-adjust` (rationale required) so the coder never implements against an outdated or impossible plan. Keep this a quick verification, not a re-planning pass, and still emit the section summary afterwards.
+**Proactive next-section check.** After a clean section audit, before calling `loop-handoff` with the section summary, spend a bounded check validating the next pending section against the current worktree: call `section-read` with the exact explicit 0-based `section_index` stated in the audit prompt (current index + 1). On the last section, skip this check. Do the files, symbols, and helpers it references still exist under those names; has any of its work already been done or been superseded by a documented deviation; do its assumptions still hold; is every edit, acceptance criterion, and verification command satisfiable inside the sandbox? If it is stale or unsatisfiable, amend it with `plan-adjust` (rationale required) so the coder never implements against an outdated or impossible plan. Keep this a quick verification, not a re-planning pass, and still pass the section summary in `loop-handoff` afterwards.
 
 **Sandbox feasibility.** The coder works unattended in an isolated sandbox with the repository, its toolchain, package installs, Docker for local services, the `chromium` headless browser (Playwright), and public internet for downloads — but no host environment variables, API keys, credentials, secrets, cloud or SaaS accounts, staging or production systems, hardware devices, or a human to supply or approve any of these. A section requirement that authenticates to or mutates a system outside the sandbox — applying Terraform or other infrastructure-as-code against a cloud provider, deploying, calling a real third-party API with a key, connecting to a remote database — is unsatisfiable, and no finding can make the coder satisfy it. When you encounter one, in the current section or a pending one, amend it with `plan-adjust`: replace the external requirement with the strongest sandbox-attainable equivalent (mocks, fixtures, recorded responses, contract tests, local containers, `terraform validate`/`plan`-style offline checks) and state in the rationale that the external check must be performed manually after the loop. Never write a finding demanding the unsatisfiable requirement itself. This substitution is not weakening: the section is being made executable, not easier.
 

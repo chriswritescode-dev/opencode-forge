@@ -190,7 +190,7 @@ export function formatCompletionSummary(summary: string): string[] {
   return ['', 'Completion Summary (post-action):', `  ${preview}`]
 }
 
-/** Full, untruncated transcript of the post-action run (e.g. pr-review output). */
-export function formatPostActionReport(report: string): string[] {
+/** Full, untruncated rendered report of the applied `loop-complete` payload: outcome, steps, follow-ups, and notes. */
+export function formatPostActionReportLines(report: string): string[] {
   return ['', 'Post-Action Report:', report]
 }

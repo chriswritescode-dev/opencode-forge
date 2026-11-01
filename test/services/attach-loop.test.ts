@@ -443,9 +443,10 @@ describe('attachLoopToSession', () => {
     const state = (deps.loop.service as any).getActiveState('phase-loop')
     expect(state).not.toBeNull()
     expect(state!.totalSections).toBe(0)
-    // The prompt sent to the code agent equals the raw plan text (legacy single-prompt mode)
     const promptCallArgs = promptAsyncMock.mock.calls[0][0]
-    expect(promptCallArgs.parts[0].text).toBe(planText)
+    const promptText = promptCallArgs.parts[0].text as string
+    expect(promptText.startsWith(planText)).toBe(true)
+    expect(promptText.match(/## Required: coder handoff/g)).toHaveLength(1)
   })
 
   test('attach falls back to single raw-plan dispatch when no markers and no phase headings', async () => {
@@ -482,6 +483,7 @@ describe('attachLoopToSession', () => {
     const promptCallArgs = promptAsyncMock.mock.calls[0][0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.parts[0].text).toContain(planText)
+    expect((promptCallArgs.parts[0].text as string).match(/## Required: coder handoff/g)).toHaveLength(1)
   })
 
   test('attach no longer creates a decomposer session', async () => {

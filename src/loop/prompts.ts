@@ -2,11 +2,11 @@ import type { LoopState } from './state'
 import type { ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { LoopAttemptRow } from '../storage/repos/loop-attempts-repo'
 import type { SectionPlanRow } from '../storage/repos/section-plans-repo'
-import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
-import { CODER_DECISIONS_INSTRUCTION } from '../utils/coder-decisions'
+import type { LoopHandoffRole } from './handoff'
 import { findingRecurrenceKey, isRecurrenceEscalated } from './finding-recurrence'
 import { formatFindingDetails } from '../utils/review-format'
 import { blockingBugFindings } from './section-scope'
+import { LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME } from '../constants/loop'
 
 export interface SectionDigestEntry {
   index: number
@@ -29,21 +29,34 @@ export interface PromptContext {
 }
 
 /**
- * The one and only section-summary block template shown to the loop auditor.
- * The loop runner parses this block mechanically (parseSectionSummary), so the
- * template must never be hand-written elsewhere — prompt markdown files refer
- * to it, they do not restate it.
+ * The only coder handoff instruction. Every coder prompt ends with it so the
+ * attempt hands its decisions and verification evidence to the auditor through
+ * `loop-handoff` instead of free-text prose.
  */
-const SECTION_SUMMARY_TEMPLATE = `${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}`
+const CODER_HANDOFF_INSTRUCTION: string = `\n\n---
+## Required: coder handoff
+When this attempt is done, call \`${LOOP_HANDOFF_TOOL_NAME}\` with \`changes\` (each change and why), \`deviations\` (plan item, what you did instead, why), \`verification\` (each check: exact command, worktree-relative \`cwd\`, pass/fail/not-run, whether code changed afterwards), and optional \`notes\`, then end your turn.`
 
 /**
- * One-shot follow-up sent to the audit session when it reported no blocking
- * findings for the section but omitted (or malformed) the section-summary
- * block. Without the block the section counts as dirty and a full coder
- * iteration is wasted on nothing.
+ * The only auditor handoff instruction. Section audits require the summary
+ * payload when the section is clean; the non-sectioned plan audit never passes
+ * one because summaries apply only to sectioned loops.
  */
-export function buildSectionSummaryRepromptText(): string {
-  return `Your previous audit response did not include a parseable section-summary block, and no blocking bug findings are recorded for this section.\n\n- If the section is clear: reply with ONLY the section-summary block below, reproducing the marker comments exactly.\n${SECTION_SUMMARY_TEMPLATE}\n- If the section is NOT clear: persist each blocking issue with review-write (severity: bug) and do not include the summary block.`
+function auditorHandoffInstruction(includeSummary: boolean): string {
+  const summaryRule = includeSummary
+    ? ' When no blocking bug findings remain for this section, pass `summary` { done: [...], deviations: [...], followUps: [...] }; never pass `summary` while blocking bugs remain.'
+    : ''
+  return `\n\n---
+## Required: auditor handoff
+When the audit is done, call \`${LOOP_HANDOFF_TOOL_NAME}\`.${summaryRule} Use \`notes\` only for context the findings do not carry. Then end your turn.`
+}
+
+export const AUDITOR_HANDOFF_INSTRUCTION: string = auditorHandoffInstruction(true)
+
+/** Short follow-up sent when a phase session ended its turn without its handoff tool. */
+export function buildHandoffNudgePrompt(role: LoopHandoffRole): string {
+  const tool = role === 'post_action' ? LOOP_COMPLETE_TOOL_NAME : LOOP_HANDOFF_TOOL_NAME
+  return `You ended your turn without calling \`${tool}\`. Finish the work, then call it.`
 }
 
 function formatSectionsSummary(digest: SectionDigestEntry[]): string {
@@ -75,7 +88,7 @@ function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState, 
   const escalated = getEscalatedFindings(ctx, state, outstandingBugs)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (recurred ${e.count}×)`)
-  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution, so the previous patches did not hold. For EACH: revisit the causal hypothesis behind the earlier fix, produce a specific reproducer or counterexample that demonstrates the failure, and then either fix it definitively or, if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it. Do not repeat the previous patch without a changed hypothesis.\n\n${lines.join('\n')}`
+  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution, so the previous patches did not hold. For EACH: revisit the causal hypothesis behind the earlier fix, produce a specific reproducer or counterexample that demonstrates the failure, and then either fix it definitively or, if it is intentional/correct, document the reasoning and the exact passing verification method in your ${LOOP_HANDOFF_TOOL_NAME} report so the auditor can verify and clear it. Do not repeat the previous patch without a changed hypothesis.\n\n${lines.join('\n')}`
 }
 
 function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState): string {
@@ -93,7 +106,7 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
  */
 function buildOutstandingFindingsCoderBlock(findings: ReviewFindingRow[]): string {
   if (findings.length === 0) return ''
-  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the coder-decisions block at the end of this prompt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
+  return `\n\n---\n## Outstanding review findings (${String(findings.length)})\nThese block loop completion. Each description carries the detailed solution, acceptance criterion, and narrow verification — address every one so it passes the next audit.\n\nRemediation policy (applies to every finding below):\n- Read every finding before changing anything. Identify shared root causes across findings and fix in dependency order, addressing related findings through one owner instead of independent per-file patches. Coupled fixes are serialized under one implementation owner; independent fixes may be delegated to code subagents under the existing concurrency policy. Ordering or grouping findings is not permission to truncate, suppress, or silently defer any of them.\n- For a behavioral bug, first produce a focused failing test or reproducer through the affected public interface, then apply the smallest complete fix and show the regression check passing against the reported failure. For races, replays, or ordering bugs, exercise the ordering, competing operations, or repeated delivery explicitly instead of relying on a large suite to expose them.\n- When a failing test is inappropriate for the finding, verify with concrete source or contract evidence plus the finding's own narrow verification instead of a speculative rewrite.\n- Run targeted verification after each root-cause fix. Run all applicable repository/plan full checks once after the fix batch reaches its final state, rerunning any check a later change invalidated; never run the full suite separately for every finding unless a required check demands it.\n- Record each fix's outcome and regression check in the ${LOOP_HANDOFF_TOOL_NAME} report at the end of this attempt. Never delete findings — they stay open until the auditor clears them.\n\n${formatFindingDetails(findings)}`
 }
 
 /**
@@ -201,6 +214,16 @@ export function buildAttemptHistoryBlock(ctx: PromptContext, state: LoopState, r
   return lines.join('\n')
 }
 
+/**
+ * The first coder prompt of a non-sectioned loop: the raw plan followed by the
+ * coder handoff instruction. Idempotent, so a stored prompt that already ends
+ * with the instruction is never sent with it twice.
+ */
+export function buildPlanInitialPrompt(planText: string): string {
+  if (planText.endsWith(CODER_HANDOFF_INSTRUCTION)) return planText
+  return planText + CODER_HANDOFF_INSTRUCTION
+}
+
 export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
   if (state.totalSections > 0) {
     return buildSectionContinuationPrompt(ctx, state, notice, outstandingBugs)
@@ -213,7 +236,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, no
   prompt += buildOutstandingFindingsCoderBlock(ctx.getOutstandingFindings(state.loopName))
   prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
-  return prompt + CODER_DECISIONS_INSTRUCTION
+  return prompt + CODER_HANDOFF_INSTRUCTION
 }
 
 /**
@@ -277,7 +300,7 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     parts.push('', recurringBlock)
   }
 
-  return parts.join('\n')
+  return parts.join('\n') + auditorHandoffInstruction(false)
 }
 
 export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState): string {
@@ -320,7 +343,7 @@ export function buildSectionInitialPromptText(input: {
     header += input.attemptHistoryBlock
   }
 
-  return header + CODER_DECISIONS_INSTRUCTION
+  return header + CODER_HANDOFF_INSTRUCTION
 }
 
 export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -346,14 +369,14 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
     ? `call \`section-read\` with \`section_index: ${idx + 1}\` and verify its plan against the current worktree`
     : 'this is the last section, so skip the proactive next-section check'
 
-  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to a later, not-yet-started section do not block this audit.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck} — then end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
+  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to a later, not-yet-started section do not block this audit.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck}.\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {
     header += `\n\n${recurringBlock}`
   }
 
-  return header
+  return header + AUDITOR_HANDOFF_INSTRUCTION
 }
 
 export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
@@ -379,7 +402,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   header += buildOutstandingFindingsCoderBlock(blockingBugs)
   header += buildRecurringFindingsCoderBlock(ctx, state, blockingBugs)
 
-  return header + CODER_DECISIONS_INSTRUCTION
+  return header + CODER_HANDOFF_INSTRUCTION
 }
 
 /** The `[Loop iteration i/max]` system line shared by non-sectioned coder prompts. */
@@ -411,7 +434,7 @@ export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, o
   prompt += buildOutstandingFindingsCoderBlock(findings)
   prompt += buildRecurringFindingsCoderBlock(ctx, state, state.totalSections > 0 ? findings : outstandingBugs)
 
-  return prompt + CODER_DECISIONS_INSTRUCTION
+  return prompt + CODER_HANDOFF_INSTRUCTION
 }
 
 /**
@@ -430,13 +453,9 @@ export function buildAuditFollowUpPrompt(ctx: PromptContext, state: LoopState): 
   prompt += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
   prompt += buildAttemptHistoryBlock(ctx, state, 'auditor')
 
-  const summaryRule = state.totalSections > 0
-    ? `\n- When this section is clear, end your response with the block below — when clean it may be your entire response:\n${SECTION_SUMMARY_TEMPLATE}`
-    : ''
+  prompt += `\n\n---\nAudit instructions:\n- Re-read the files that changed since your last turn (\`git status\` and \`git diff\` show what the coder touched).\n- Use review-read to load the findings in scope, verify every outstanding one against the current code, delete the resolved ones with review-delete, and keep the unresolved ones open.\n- Write severity: bug findings for unmet acceptance criteria or failed verification.\n- Verify with concrete source or contract evidence and the finding's own narrow verification rather than re-running unrelated work.`
 
-  prompt += `\n\n---\nAudit instructions:\n- Re-read the files that changed since your last turn (\`git status\` and \`git diff\` show what the coder touched).\n- Use review-read to load the findings in scope, verify every outstanding one against the current code, delete the resolved ones with review-delete, and keep the unresolved ones open.\n- Write severity: bug findings for unmet acceptance criteria or failed verification.\n- Verify with concrete source or contract evidence and the finding's own narrow verification rather than re-running unrelated work.${summaryRule}`
-
-  return prompt
+  return prompt + (state.totalSections > 0 ? AUDITOR_HANDOFF_INSTRUCTION : auditorHandoffInstruction(false))
 }
 
 export interface PostActionPromptOptions {
@@ -474,22 +493,10 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
     'This runs unattended — do NOT use the question tool. Auto-defer any finding that would require clarification and report it.',
     ...(opts.skill ? [] : ['Apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.']),
     '',
-    POST_ACTION_COMPLETION_RULE,
+    POST_ACTION_HANDOFF_RULE,
   )
 
   return parts.join('\n')
 }
 
-/** Line the post-action agent must end its final reply with once every step is finished and persisted. */
-export const POST_ACTION_COMPLETE_MARKER = '<!-- forge:post-action-complete -->'
-
-const POST_ACTION_COMPLETION_RULE = `Do not end your turn while any step is still pending (subagents still running, results not yet merged, records not yet saved). The worktree is removed as soon as you confirm completion. Only when every step is finished and persisted, end your final reply with this exact line:\n${POST_ACTION_COMPLETE_MARKER}`
-
-/**
- * Follow-up sent to the post-action session when it went idle without the
- * completion marker, so an agent that ended its turn early finishes its work
- * before the loop terminates and the worktree is removed.
- */
-export function buildPostActionContinuePromptText(): string {
-  return `Your last reply did not confirm that the post-action workflow is complete. Check every step of it now. If anything is unfinished — subagent results not yet received or merged, findings or summaries not yet saved, checks not yet run — finish it in this turn, running subagents in the foreground so you wait for their results.\n\n${POST_ACTION_COMPLETION_RULE}`
-}
+const POST_ACTION_HANDOFF_RULE = `Do not end your turn while any step is still pending (subagents still running, results not yet merged, records not yet saved). When every step is finished and persisted, call \`${LOOP_COMPLETE_TOOL_NAME}\` with \`outcome\`, one \`steps\` entry per workflow step (name, status done/skipped/failed, and optional detail), \`followUps\`, and optional \`notes\`, then end your turn. The worktree is removed afterwards.`

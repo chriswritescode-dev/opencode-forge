@@ -248,30 +248,6 @@ describe('LoopService section management', () => {
     })
   })
 
-  describe('parseSectionSummary', () => {
-    test('extracts summary sections', () => {
-      const text = `<!-- section-summary:start -->
-### Done
-- Implemented feature X
-### Deviations
-- None
-### Follow-ups
-- Handled in section 2
-<!-- section-summary:end -->`
-
-      const result = loopService.parseSectionSummary(text)
-      expect(result).not.toBeNull()
-      expect(result!.done).toContain('Implemented feature X')
-      expect(result!.deviations).toContain('None')
-      expect(result!.followUps).toContain('Handled in section 2')
-    })
-
-    test('returns null when no section summary marker', () => {
-      const result = loopService.parseSectionSummary('No summary here')
-      expect(result).toBeNull()
-    })
-  })
-
   describe('getNextIncompleteSectionPlan', () => {
     test('returns lowest-index non-completed section', () => {
       insertLoop('test-loop')

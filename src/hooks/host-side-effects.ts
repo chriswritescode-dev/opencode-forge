@@ -251,8 +251,7 @@ function resolveReasonLabel(reason: TerminationReason): string {
     case 'provider_limit':
       return 'errored'
     case 'session_creation_failed':
-    case 'audit_retry_exhausted':
-    case 'coding_no_assistant':
+    case 'handoff_missing':
     case 'restart_prompt_failed':
       return 'errored'
     case 'missing_worktree_dir':

@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, buildPostActionPermissionRuleset, parseLoopPermissionRules } from '../src/constants/loop'
 import { createLoopPermissionPatcher, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
@@ -25,6 +25,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'loop-status',        pattern: '*', action: 'deny' },
       { permission: 'goal-cancel',        pattern: '*', action: 'deny' },
       { permission: 'goal-status',        pattern: '*', action: 'deny' },
+      { permission: 'loop-complete',      pattern: '*', action: 'deny' },
     ])
   })
 
@@ -76,6 +77,41 @@ describe('buildAuditSessionPermissionRuleset', () => {
   test('emits no external_directory rules, so external directories fall under the blanket allow', () => {
     const rules = buildAuditSessionPermissionRuleset()
     expect(rules.some((r) => r.permission === 'external_directory')).toBe(false)
+  })
+
+  test('denies loop-complete but keeps loop-handoff for the auditor', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    expect(rules).toContainEqual({ permission: 'loop-complete', pattern: '*', action: 'deny' })
+    expect(rules.some(r => r.permission === 'loop-handoff' && r.action === 'deny')).toBe(false)
+  })
+})
+
+describe('buildPostActionPermissionRuleset', () => {
+  test('denies loop-handoff and keeps loop-complete for the post-action session', () => {
+    const rules = buildPostActionPermissionRuleset()
+    expect(rules).toContainEqual({ permission: 'loop-handoff', pattern: '*', action: 'deny' })
+    expect(rules.some(r => r.permission === 'loop-complete' && r.action === 'deny')).toBe(false)
+  })
+
+  test('otherwise matches the loop ruleset, including configured rules', () => {
+    const configured = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    const postAction = buildPostActionPermissionRuleset({ extraRules: [configured] })
+    const loop = buildLoopPermissionRuleset({ extraRules: [configured] })
+    expect(postAction).toEqual([
+      ...loop.filter(r => r.permission !== 'loop-complete'),
+      { permission: 'loop-handoff', pattern: '*', action: 'deny' },
+    ])
+  })
+})
+
+describe('Forge-managed loop phase tools', () => {
+  test('drops loop.permissions entries naming either phase tool with the managed warning', () => {
+    const result = parseLoopPermissionRules({ deny: ['loop-handoff', 'loop-complete'] })
+    expect(result.rules).toEqual([])
+    expect(result.warnings).toEqual([
+      'loop.permissions.deny entry "loop-handoff" is ignored: Forge manages this permission for every loop and audit session',
+      'loop.permissions.deny entry "loop-complete" is ignored: Forge manages this permission for every loop and audit session',
+    ])
   })
 })
 

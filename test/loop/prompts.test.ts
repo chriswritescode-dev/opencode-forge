@@ -2,16 +2,17 @@ import { describe, test, expect, vi } from 'vitest'
 import {
   buildContinuationPrompt,
   buildAuditPrompt,
+  buildPlanInitialPrompt,
   buildSectionInitialPrompt,
   buildSectionInitialPromptText,
   buildSectionAuditPrompt,
   buildSectionContinuationPrompt,
+  buildCoderFollowUpPrompt,
   buildPostActionPrompt,
   buildAttemptHistoryBlock,
   ATTEMPT_HISTORY_LIMIT,
+  AUDITOR_HANDOFF_INSTRUCTION,
 } from '../../src/loop/prompts'
-import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
-import { CODER_DECISIONS_START_MARKER } from '../../src/utils/coder-decisions'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
 import type { LoopAttemptRow } from '../../src/storage/repos/loop-attempts-repo'
@@ -65,12 +66,28 @@ function makeSectionPlanRow(index: number, title: string, content: string) {
 
 describe('prompt builders (src/loop/prompts)', () => {
 
+  describe('buildPlanInitialPrompt', () => {
+    const planText = '# Plan\n\nDo the work.'
+
+    test('appends the coder handoff instruction to the raw plan', () => {
+      const result = buildPlanInitialPrompt(planText)
+      expect(result.startsWith(planText)).toBe(true)
+      expect(result.match(/## Required: coder handoff/g)).toHaveLength(1)
+      expect(result).toContain('call `loop-handoff` with')
+    })
+
+    test('does not append the instruction twice when the stored prompt already ends with it', () => {
+      const once = buildPlanInitialPrompt(planText)
+      expect(buildPlanInitialPrompt(once)).toBe(once)
+    })
+  })
+
   describe('buildContinuationPrompt', () => {
     test('continuation without findings - basic iteration info', () => {
       const ctx = makeCtx()
       const result = buildContinuationPrompt(ctx, { ...defaultState })
       expect(result).toContain('[Loop iteration 1 / 5]')
-      expect(result).toContain('coder-decisions:start')
+      expect(result).toContain('call `loop-handoff` with')
     })
 
     test('continuation without findings - no max iterations', () => {
@@ -163,6 +180,10 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('For each existing finding, verify whether it has been resolved')
       expect(result).not.toContain('Existing review findings:')
       expect(result).toContain('Plan completeness check:')
+      expect(result).toContain('## Required: auditor handoff')
+      expect(result).toContain('call `loop-handoff`')
+      expect(result).not.toContain('pass `summary`')
+      expect(result).not.toContain(AUDITOR_HANDOFF_INSTRUCTION)
     })
 
     test('non-sectioned audit with branch info', () => {
@@ -176,8 +197,10 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildAuditPrompt(ctx, { ...sectionState, phase: 'auditing' })
       expect(result).toContain('[Loop section audit 1/2]')
       expect(result).toContain('Section under audit')
-      expect(result).toContain(SECTION_SUMMARY_START_MARKER)
-      expect(result).toContain(SECTION_SUMMARY_END_MARKER)
+      expect(result).toContain('## Required: auditor handoff')
+      expect(result).toContain('call `loop-handoff`')
+      expect(result).toContain('pass `summary`')
+      expect(result).toContain(AUDITOR_HANDOFF_INSTRUCTION)
     })
 
     test('includes coder decisions block when present (non-section)', () => {
@@ -260,8 +283,10 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('## Section under audit')
       expect(result).toContain('Section plan for 1')
       expect(result).toContain('Audit instructions:')
-      expect(result).toContain(SECTION_SUMMARY_START_MARKER)
-      expect(result).toContain(SECTION_SUMMARY_END_MARKER)
+      expect(result).toContain('## Required: auditor handoff')
+      expect(result).toContain('call `loop-handoff`')
+      expect(result).toContain('pass `summary`')
+      expect(result).toContain(AUDITOR_HANDOFF_INSTRUCTION)
     })
 
     test('section audit with prior sections digest', () => {
@@ -446,7 +471,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       'concrete source or contract evidence',
       'targeted verification after each root-cause fix',
       'full checks once after the fix batch',
-      'coder-decisions block',
+      'loop-handoff report',
       'Never delete findings',
     ]
 
@@ -543,7 +568,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       const withoutRecurrence = buildSectionContinuationPrompt(makeCtx(), { ...sectionState }, '')
       for (const result of [withRecurrence, withoutRecurrence]) {
         expect(result).not.toContain('review-delete')
-        expect(result).toContain('coder-decisions:start')
+        expect(result).toContain('call `loop-handoff` with')
         expect(result).toContain('## Section plan')
       }
       expect(withRecurrence).toContain('Recurring blocking findings')
@@ -561,24 +586,28 @@ describe('prompt builders (src/loop/prompts)', () => {
   })
 
   describe('coder decisions template consumers and auditor renderer', () => {
-    const startMarkerCount = (text: string) => text.split(CODER_DECISIONS_START_MARKER).length - 1
+    const handoffInstructionCount = (text: string) => text.split('call `loop-handoff` with').length - 1
 
-    test('all three coder consumers retain exactly one decisions block with the evidence template', () => {
+    test('all four coder consumers retain exactly one handoff instruction with the evidence fields', () => {
       const ctx = makeCtx()
       const legacyContinuation = buildContinuationPrompt(ctx, { ...defaultState })
       const sectionInitial = buildSectionInitialPrompt(ctx, { ...sectionState })
       const sectionContinuation = buildSectionContinuationPrompt(ctx, { ...sectionState })
+      const coderFollowUp = buildCoderFollowUpPrompt(ctx, { ...sectionState })
 
       for (const [label, prompt] of [
         ['legacy continuation', legacyContinuation],
         ['section initial', sectionInitial],
         ['section continuation', sectionContinuation],
+        ['coder follow-up', coderFollowUp],
       ] as const) {
-        expect(startMarkerCount(prompt), label).toBe(1)
-        expect(prompt, label).toContain('the exact command, the worktree-relative working directory, and the pass/fail/not-run outcome')
-        expect(prompt, label).toContain('do not paste credentials or huge logs')
-        expect(prompt, label).toContain('whether any source/test/config changes occurred after those commands ran')
-        expect(prompt, label).toContain('which regression check covers each fixed finding')
+        expect(handoffInstructionCount(prompt), label).toBe(1)
+        expect(prompt, label).toContain('`changes` (each change and why)')
+        expect(prompt, label).toContain('`deviations` (plan item, what you did instead, why)')
+        expect(prompt, label).toContain('worktree-relative `cwd`')
+        expect(prompt, label).toContain('pass/fail/not-run')
+        expect(prompt, label).toContain('whether code changed afterwards')
+        expect(prompt, label).toContain('then end your turn')
       }
     })
 
