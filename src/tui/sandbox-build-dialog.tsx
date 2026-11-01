@@ -5,7 +5,7 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { tmpdir } from 'os'
 import { claimFocusOnMount } from './focus'
 import { createMsbRuntime } from '../sandbox/msb'
-import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE, type SandboxBuildStage } from '../sandbox/template'
+import { buildAndLoadSandboxTemplate, DEFAULT_SANDBOX_IMAGE, resolveTemplateBuildArgs, type SandboxBuildStage } from '../sandbox/template'
 import { resolveBundledContainerDir } from '../setup'
 import type { PluginConfig } from '../types'
 import { runCommand } from '../sandbox/process'
@@ -37,6 +37,7 @@ export function SandboxBuildDialog(props: {
   host: ForgeTuiHost
   buildContextDir: string
   image: string
+  buildArgs: string[]
 }) {
   const colors = () => props.host.colors()
 
@@ -116,6 +117,7 @@ export function SandboxBuildDialog(props: {
         loadTemplate: (tar, ref) => createMsbRuntime(logger).loadTemplate(tar, ref),
         logger,
         tmpDir: tmpdir(),
+        buildArgs: props.buildArgs,
         onProgress: (progress) => {
           outputTail.push(progress.line)
           if (outputTail.length > BUILD_TAIL_LIMIT) outputTail.shift()
@@ -213,5 +215,8 @@ export function SandboxBuildDialog(props: {
 export function openSandboxBuildDialog(host: ForgeTuiHost, pluginConfig: PluginConfig): void {
   const buildContextDir = resolveBundledContainerDir()
   const image = pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE
-  host.showDialog('medium', () => <SandboxBuildDialog host={host} buildContextDir={buildContextDir} image={image} />)
+  const buildArgs = resolveTemplateBuildArgs(pluginConfig)
+  host.showDialog('medium', () => (
+    <SandboxBuildDialog host={host} buildContextDir={buildContextDir} image={image} buildArgs={buildArgs} />
+  ))
 }

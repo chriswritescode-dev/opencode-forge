@@ -18,6 +18,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
 | `autoApprove` | unset | Deny rules applied while per-session auto-approve is on. See [Auto-Approve](#auto-approve). |
+| `codeGraph` | unset | `codegraph` installation in the sandbox template and its loop integration. See [Code Graph](#code-graph). |
 
 ## Logging
 
@@ -43,6 +44,24 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `messagesTransform.enabled` | `true` | Gate the interactive Architect system reminder (read-only filesystem mode plus finalize-the-plan instructions) appended to the last user message for the Architect agent. Loop sessions are unaffected. |
 | `messagesTransform.debug` | `false` | Accepted but currently unused. |
 
+## Code Graph
+
+| Option | Default | Description |
+|---|---:|---|
+| `codeGraph.install` | `true` | Install the pinned `codegraph` (v1.6.2) into the sandbox template image; `false` builds the image without it. The template is built once, so rebuild it ("Build sandbox template") after changing this. |
+| `codeGraph.enabled` | unset | Unset means on whenever `codegraph` is in the sandbox; `false` turns the integration off. `true` behaves like unset but logs an error when a sandbox has no `codegraph`. |
+
+While the integration is on, sandboxed loops index their worktree with the sandbox's `codegraph` and write snapshot reports to `.forge/codegraph/`, so the loop agents can see the structural impact of their edits. A sandbox without `codegraph` (`codeGraph.install: false`, or a template built before codegraph was added) skips the snapshots. Non-sandboxed loops never take them.
+
+Loop, audit, and post-action sessions also deny every `codegraph_*` tool, which is how OpenCode names the tools of an MCP server called `codegraph`. A host-side MCP server cannot read a loop's index, which lives on the sandbox cache disk, so loop agents query it with the `codegraph` CLI in `bash` instead. The deny is removed from the model's tool list, not just refused at call time, and subagents inherit it. Other sessions, such as planning, keep the MCP tools. An MCP server registered under a different name is not matched; deny it with [`loop.permissions`](#loop-permissions).
+
+```jsonc
+"codeGraph": {
+  "install": false,
+  "enabled": false
+}
+```
+
 ## Loop
 
 | Option | Default | Description |
@@ -55,7 +74,6 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.busyStallTimeoutMs` | `900000` | How long a session may stay busy with no sign of progress before the watchdog aborts the wedged message and sends a continue prompt. Both tool activity and streamed content (including reasoning/thinking deltas) count as progress, in the loop session or any of its subagent sessions, so a long thinking stretch is not mistaken for a wedged stream. `0` disables nudging. |
 | `loop.sessionReuse.coderContextPercent` | `50` | Compact the retained coder session before its next turn on a same-section retry once its last assistant turn reached this percentage of the model's context window. `0` disables coder reuse. |
 | `loop.sessionReuse.auditorContextPercent` | `50` | Same for the retained audit session. `0` disables auditor reuse. |
-| `loop.codeGraph.enabled` | `true` | Run Forge code-graph snapshots in sandboxed loops. |
 | `loop.allowExternalDirectories` | unset | Absolute host directories bind-mounted read-only into sandboxed loops, so in-container `bash`/`glob`/`grep` and host `read` see the same tree. In a sandbox the mounts are the file-tool boundary, so these are the external directories a loop can read; loops without a sandbox already have host access. |
 | `loop.permissions` | unset | Per-tool `deny` overrides for loop, audit, and post-action sessions. See [Loop Permissions](#loop-permissions). |
 | `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
@@ -72,10 +90,6 @@ On a same-section retry, the loop resumes the retained coder or audit session in
   }
 }
 ```
-
-### Loop Code Graph
-
-Sandboxed loops index their worktree with the image's `codegraph` and write snapshot reports to `.forge/codegraph/`, so the loop agents can see the structural impact of their edits. Non-sandboxed loops never do. Set `loop.codeGraph.enabled` to `false` to disable code-graph snapshots and the prompt guidance that references them.
 
 ### Loop Permissions
 

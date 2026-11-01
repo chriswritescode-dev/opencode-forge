@@ -41,9 +41,14 @@ export interface PostActionConfig {
   model?: string
 }
 
-/** Forge code-graph snapshots inside loop worktrees. */
-export interface LoopCodeGraphConfig {
-  /** Run Forge code-graph snapshots in sandboxed loops. Default: true. */
+/** Forge code-graph integration (`codegraph`). */
+export interface CodeGraphConfig {
+  /** Install `codegraph` into the sandbox template image when it is built. Default: true. */
+  install?: boolean
+  /**
+   * Run code-graph snapshots in sandboxed loops and deny the `codegraph_*` MCP tools in loop
+   * sessions. Unset means on whenever `codegraph` is available in the sandbox; `false` turns both off.
+   */
   enabled?: boolean
 }
 
@@ -94,8 +99,6 @@ export interface LoopConfig {
   busyStallTimeoutMs?: number
   /** Session reuse on same-section retries. */
   sessionReuse?: LoopSessionReuseConfig
-  /** Forge code-graph snapshots in sandboxed loop worktrees. */
-  codeGraph?: LoopCodeGraphConfig
   /**
    * Absolute directory paths bind-mounted read-only into loop sandboxes (e.g. an Obsidian vault),
    * so in-container `bash`/`glob`/`grep` resolve the same tree host `read` does. The sandbox mounts
@@ -342,6 +345,8 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
+  /** Code-graph (`codegraph`) installation and loop integration. */
+  codeGraph?: CodeGraphConfig
   /** Policy applied while auto-approve is on for a session. */
   autoApprove?: AutoApproveConfig
 }

@@ -19,6 +19,7 @@ import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } fr
 import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
 import { buildHandoffNudgePrompt } from '../../src/loop/prompts'
 import { LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
+import { CODE_GRAPH_PROBE_COMMAND } from '../../src/loop/code-graph'
 
 const PROJECT_ID = 'test-project'
 
@@ -4585,12 +4586,22 @@ describe('stall handling terminates with stall timeout when configured cap is re
     }
 
     function successfulExec(command: string): ExecResult {
-      if (command === 'command -v codegraph') return { exitCode: 0, stdout: '/usr/local/bin/codegraph\n', stderr: '' }
-      if (command.includes('codegraph.db')) return { exitCode: 0, stdout: 'present\n', stderr: '' }
-      if (command.includes('codegraph affected')) {
-        return { exitCode: 0, stdout: JSON.stringify({ affectedTests: ['test/a.test.ts'] }), stderr: '' }
+      if (command === CODE_GRAPH_PROBE_COMMAND) return { exitCode: 0, stdout: 'present\n', stderr: '' }
+      const runnerInput = /'([^']*)'$/.exec(command)
+      if (command.includes('/opt/codegraph/node') && runnerInput) {
+        const { files } = JSON.parse(runnerInput[1]) as { files: string[] }
+        const result = {
+          ok: true,
+          index: 'synced',
+          files: files.map((path) => ({
+            path,
+            symbols: [{ name: 'fromSectionFile', kind: 'function', signature: null, startLine: 1 }],
+            dependents: [],
+          })),
+          affectedTests: ['test/a.test.ts'],
+        }
+        return { exitCode: 0, stdout: `${JSON.stringify(result)}\n`, stderr: '' }
       }
-      if (command.includes('codegraph node')) return { exitCode: 0, stdout: 'function fromSectionFile() {}', stderr: '' }
       return { exitCode: 0, stdout: '', stderr: '' }
     }
 
@@ -4665,14 +4676,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(report).toContain('test/a.test.ts')
     })
 
-    test('disabled loop.codeGraph leaves the prompt without a pointer and still advances', async () => {
+    test('disabled codeGraph leaves the prompt without a pointer and still advances', async () => {
       const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-off-'))
       const { client, calls } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
       })
       const { loop } = createRuntime({
         client,
-        loopConfig: { loop: { enabled: true, codeGraph: { enabled: false } } },
+        loopConfig: { codeGraph: { enabled: false } },
         sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
       })
 
@@ -4848,20 +4859,21 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(auditorPrompts(calls).at(-1) ?? '').not.toContain('## Code graph')
     })
 
-    function createServiceWithConfig(loopConfig: LoopConfig | undefined, attemptsRepo?: LoopAttemptsRepo) {
+    function createServiceWithConfig(codeGraphEnabled: boolean, attemptsRepo?: LoopAttemptsRepo) {
       return createLoopService(
         loopsRepo,
         plansRepo,
         reviewFindingsRepo,
         PROJECT_ID,
         { log: () => {}, error: () => {}, debug: () => {} },
-        loopConfig,
+        undefined,
         undefined,
         sectionPlansRepo,
         undefined,
         undefined,
         undefined,
         attemptsRepo,
+        codeGraphEnabled,
       )
     }
 
@@ -4895,11 +4907,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
       attemptsRepo.setCodeGraph(PROJECT_ID, loopName, attempt.id, '# Code graph: audit attempt 1')
     }
 
-    test('stored reports are not pointed at when the loop service config disables loop.codeGraph', () => {
+    test('stored reports are not pointed at when codeGraph is disabled', () => {
       const worktreeDir = mkdtempSync(join(tempDir, 'cg-gate-off-'))
       const attemptsRepo = createLoopAttemptsRepo(db)
       const loopName = 'codegraph-gate-disabled'
-      const service = createServiceWithConfig({ enabled: true, codeGraph: { enabled: false } }, attemptsRepo)
+      const service = createServiceWithConfig(false, attemptsRepo)
       const state = makeState({
         loopName,
         sessionId: 'gate-off-session',
@@ -4920,7 +4932,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const worktreeDir = mkdtempSync(join(tempDir, 'cg-gate-sandbox-'))
       const attemptsRepo = createLoopAttemptsRepo(db)
       const loopName = 'codegraph-gate-sandbox'
-      const service = createServiceWithConfig(undefined, attemptsRepo)
+      const service = createServiceWithConfig(true, attemptsRepo)
       const state = makeState({
         loopName,
         sessionId: 'gate-sandbox-session',

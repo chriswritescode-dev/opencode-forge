@@ -8,7 +8,7 @@ import { createLoopSessionUsageRepo } from '../src/storage/repos/loop-session-us
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
-import { buildLoopPermissionRuleset } from '../src/constants/loop'
+import { buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../src/constants/loop'
 import { Database } from 'bun:sqlite'
 import { createTestDb } from './helpers/test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
@@ -408,7 +408,7 @@ describe('loop-status tool restart path', () => {
       call[0]?.permission !== undefined
     )
     expect(callWithPermission).toBeDefined()
-    expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset())
+    expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset(resolveLoopPermissionOptions(undefined)))
   })
 
   test('auditor model label clamps persisted fallback index to the chain', async () => {

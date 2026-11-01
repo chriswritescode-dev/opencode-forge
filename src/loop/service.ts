@@ -25,7 +25,7 @@ import {
 } from './prompts'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
-import { isLoopCodeGraphEnabled, MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
 import { buildCodeGraphPromptBlock, codeGraphReportPath, ensureCodeGraphReportFile } from './code-graph'
@@ -201,6 +201,7 @@ export function createLoopService(
   planAmendmentsRepo?: PlanAmendmentsRepo,
   runExclusive?: <T>(loopName: string, fn: () => Promise<T>) => Promise<T>,
   loopAttemptsRepo?: LoopAttemptsRepo,
+  codeGraphEnabled = true,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
   const coderDecisionsByLoop = new Map<string, string>()
@@ -714,8 +715,6 @@ export function createLoopService(
     return sectionPlansRepo.list(projectId, state.loopName)
   }
 
-  const codeGraphEnabled = isLoopCodeGraphEnabled({ loop: loopConfig })
-
   function sectionReportPath(index: number): string {
     return codeGraphReportPath(`section-${index + 1}`)
   }
@@ -740,7 +739,7 @@ export function createLoopService(
    * The `## Code graph` pointer rendered into this section's coder prompts.
    * Restarts and reused worktrees rewrite the report from the stored row text so
    * the pointer never outlives its file. A non-sandboxed loop or a disabled
-   * `loop.codeGraph` setting drops the pointer entirely.
+   * `codeGraph.enabled` setting drops the pointer entirely.
    */
   function getSectionCodeGraphBlock(state: LoopState): string {
     if (!state.sandbox || !codeGraphEnabled) return ''
@@ -762,7 +761,7 @@ export function createLoopService(
    * The `## Code graph` pointer rendered into this scope's audit and coder
    * prompts. Restarts and reused worktrees rewrite the report from the stored
    * attempt row so the pointer never outlives its file. A non-sandboxed loop or
-   * a disabled `loop.codeGraph` setting drops the pointer entirely.
+   * a disabled `codeGraph.enabled` setting drops the pointer entirely.
    */
   function getAttemptCodeGraphBlock(state: LoopState): string {
     if (!state.sandbox || !codeGraphEnabled) return ''

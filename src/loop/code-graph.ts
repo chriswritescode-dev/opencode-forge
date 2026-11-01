@@ -1,32 +1,38 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from 'fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
-import { CODE_GRAPH_LINK_NAME, isLoopCodeGraphEnabled } from '../constants/loop'
+import { CODE_GRAPH_LINK_NAME, isCodeGraphEnabled } from '../constants/loop'
 import { SANDBOX_CACHE_DIR } from '../sandbox/msb'
 import { quoteShellArg } from '../sandbox/exec-fs'
 import type { SandboxContextManager } from '../sandbox/context'
 import type { CommandResult } from '../sandbox/process'
 import type { Logger, PluginConfig } from '../types'
 import { LRUCache } from '../utils/lru-cache'
+import {
+  buildCodeGraphRunnerScript,
+  parseCodeGraphRunnerResult,
+  type CodeGraphFileReport,
+  type CodeGraphRunnerInput,
+  type CodeGraphRunnerResult,
+} from './code-graph-runner'
 
+const CODE_GRAPH_HOME = '/opt/codegraph'
+const CODE_GRAPH_NODE = `${CODE_GRAPH_HOME}/node`
+const CODE_GRAPH_LIB_DIR = `${CODE_GRAPH_HOME}/lib`
 const CODE_GRAPH_CACHE_DIR = `${SANDBOX_CACHE_DIR}/codegraph`
-const CODE_GRAPH_GIT_HOOKS_DIR = `${SANDBOX_CACHE_DIR}/codegraph-git-hooks`
-const CODE_GRAPH_ENV = [
-  'CODEGRAPH_TELEMETRY=0',
-  'CODEGRAPH_NO_DAEMON=1',
-  'CODEGRAPH_NO_WATCH=1',
-  'GIT_CONFIG_COUNT=1',
-  'GIT_CONFIG_KEY_0=core.hooksPath',
-  `GIT_CONFIG_VALUE_0=${quoteShellArg(CODE_GRAPH_GIT_HOOKS_DIR)}`,
-].join(' ')
+const CODE_GRAPH_ENV = 'CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1'
+/** Succeeds only when the bundled Node and the library the runner loads both exist. */
+export const CODE_GRAPH_PROBE_COMMAND = `test -x ${CODE_GRAPH_NODE} && test -f ${CODE_GRAPH_LIB_DIR}/dist/index.js && echo present`
 const BINARY_PROBE_TIMEOUT_MS = 30000
-const INDEX_TIMEOUT_MS = 600000
-const SYNC_TIMEOUT_MS = 120000
-const QUERY_TIMEOUT_MS = 120000
+/** One runner exec, which may build a full index for a loop's first snapshot. */
+const SNAPSHOT_TIMEOUT_MS = 600000
+const AFFECTED_MAX_DEPTH = 5
 const PROBED_CONTAINER_LIMIT = 100
 
 export interface CodeGraphTarget {
   key: string
   worktreeDir: string
+  /** The config asks for codegraph explicitly, so a missing binary is an error rather than a skip. */
+  required: boolean
   exec(command: string, timeoutMs: number): Promise<CommandResult>
 }
 
@@ -50,7 +56,7 @@ export function resolveLoopCodeGraphTarget(
   state: LoopCodeGraphState | null | undefined,
   config: PluginConfig | undefined,
 ): CodeGraphTarget | null {
-  if (!isLoopCodeGraphEnabled(config)) return null
+  if (!isCodeGraphEnabled(config)) return null
   if (!state?.sandbox || !state.worktreeDir || !sandboxManager) return null
   const active = sandboxManager.getActive(state.loopName)
   if (!active) return null
@@ -58,6 +64,7 @@ export function resolveLoopCodeGraphTarget(
   return {
     key: active.containerName,
     worktreeDir,
+    required: config?.codeGraph?.enabled === true || config?.codeGraph?.install === true,
     exec: (command, timeoutMs) =>
       sandboxManager.runtime.exec(active.containerName, command, { cwd: worktreeDir, timeout: timeoutMs }),
   }
@@ -151,22 +158,23 @@ function filterCodeGraphFiles(worktreeDir: string, files: string[]): string[] {
   return result
 }
 
-function describeQueryFailure(failure: CommandResult | unknown): string {
-  if (failure && typeof failure === 'object' && 'exitCode' in failure) {
-    const result = failure as CommandResult
-    const detail = result.stderr.trim() || result.stdout.trim()
-    return detail ? `_Query failed: ${detail}_` : `_Query failed (exit code ${result.exitCode})._`
-  }
-  const message = failure instanceof Error ? failure.message : String(failure)
-  return `_Query failed: ${message}_`
+function formatFileSection(file: CodeGraphFileReport): string[] {
+  const usedBy = file.dependents.length > 0 ? `Used by: ${file.dependents.join(', ')}` : 'No dependents in the index.'
+  const symbols =
+    file.symbols.length > 0
+      ? file.symbols.map((symbol) => {
+          const signature = symbol.signature ? ` ${symbol.signature}` : ''
+          return `- \`${symbol.name}\` (${symbol.kind})${signature} — line ${symbol.startLine}`
+        })
+      : ['_No symbols in the index._']
+  return ['', `## ${file.path}`, '', usedBy, '', ...symbols]
 }
 
 function formatCodeGraphReport(input: {
   title: string
   takenAt: Date
-  files: string[]
-  affected: string
-  nodes: Array<{ file: string; text: string }>
+  files: CodeGraphFileReport[]
+  affectedTests: string[]
 }): string {
   const title = input.title.replace(/\s+/g, ' ').trim() || 'snapshot'
   const lines = [
@@ -176,17 +184,19 @@ function formatCodeGraphReport(input: {
     '',
     '## Changed or planned files',
     '',
-    ...input.files.map((file) => `- ${file}`),
+    ...input.files.map((file) => `- ${file.path}`),
     '',
     '## Affected test files',
     '',
-    input.affected,
+    ...(input.affectedTests.length > 0 ? input.affectedTests.map((test) => `- ${test}`) : ['_None reported._']),
   ]
-  for (const node of input.nodes) {
-    lines.push('', `## ${node.file}`, '', '```text', node.text, '```')
-  }
+  for (const file of input.files) lines.push(...formatFileSection(file))
   lines.push('')
   return lines.join('\n')
+}
+
+function describeExecFailure(result: CommandResult): string {
+  return result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`
 }
 
 export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): CodeGraphSnapshotter {
@@ -196,10 +206,14 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
     const cached = binaryProbes.get(target.key)
     if (cached) return cached
     const pending = target
-      .exec('command -v codegraph', BINARY_PROBE_TIMEOUT_MS)
+      .exec(CODE_GRAPH_PROBE_COMMAND, BINARY_PROBE_TIMEOUT_MS)
       .then((result) => {
         const found = result.exitCode === 0 && result.stdout.trim().length > 0
-        if (!found) logger.error(`[code-graph] codegraph is not available in ${target.key}`)
+        if (!found && target.required) {
+          logger.error(`[code-graph] codegraph is not available in ${target.key}; rebuild the sandbox template with codeGraph.install left on`)
+        } else if (!found) {
+          logger.log(`[code-graph] codegraph is not installed in ${target.key}; skipping code-graph snapshots`)
+        }
         return found
       })
       .catch((err) => {
@@ -211,82 +225,44 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
     return pending
   }
 
-  async function ensureIndex(target: CodeGraphTarget): Promise<boolean> {
-    const mkdir = await target.exec(`mkdir -p ${quoteShellArg(CODE_GRAPH_CACHE_DIR)}`, BINARY_PROBE_TIMEOUT_MS)
-    if (mkdir.exitCode !== 0) {
-      logger.error(`[code-graph] cannot create ${CODE_GRAPH_CACHE_DIR} in ${target.key}`)
-      return false
+  async function runSnapshot(target: CodeGraphTarget, files: string[]): Promise<CodeGraphRunnerResult> {
+    const input: CodeGraphRunnerInput = {
+      libDir: CODE_GRAPH_LIB_DIR,
+      projectRoot: target.worktreeDir,
+      indexDir: CODE_GRAPH_CACHE_DIR,
+      files,
+      maxDepth: AFFECTED_MAX_DEPTH,
     }
-    if (!ensureCacheLink(target.worktreeDir, logger)) return false
-
-    const dbProbe = await target.exec(
-      `if [ -f ${CODE_GRAPH_LINK_NAME}/codegraph.db ]; then echo present; else echo missing; fi`,
-      BINARY_PROBE_TIMEOUT_MS,
-    )
-    const dbState = dbProbe.exitCode === 0 ? dbProbe.stdout.trim() : ''
-    if (dbState !== 'present' && dbState !== 'missing') {
-      const detail = dbProbe.stderr.trim() || dbState || `exit code ${dbProbe.exitCode}`
-      logger.error(`[code-graph] cannot read the index state in ${target.key}: ${detail}`)
-      return false
-    }
-    const hasIndex = dbState === 'present'
-    const command = hasIndex ? 'codegraph sync --quiet' : 'codegraph init --yes'
-    const result = await target.exec(`${CODE_GRAPH_ENV} ${command}`, hasIndex ? SYNC_TIMEOUT_MS : INDEX_TIMEOUT_MS)
-    if (result.exitCode === 0) return true
-    if (!hasIndex) {
-      logger.error(`[code-graph] index creation failed in ${target.key}: ${result.stderr.trim()}`)
-      return false
-    }
-
-    logger.error(`[code-graph] sync failed in ${target.key}; running a full index`)
-    const indexed = await target.exec(`${CODE_GRAPH_ENV} codegraph index --quiet`, INDEX_TIMEOUT_MS)
-    if (indexed.exitCode === 0) return true
-    logger.error(`[code-graph] full index failed in ${target.key}: ${indexed.stderr.trim()}`)
-    return false
-  }
-
-  async function runAffected(target: CodeGraphTarget, files: string[]): Promise<string> {
-    const command = `${CODE_GRAPH_ENV} codegraph affected --json ${files.map(quoteShellArg).join(' ')}`
-    try {
-      const result = await target.exec(command, QUERY_TIMEOUT_MS)
-      if (result.exitCode !== 0) return describeQueryFailure(result)
-      const parsed = JSON.parse(result.stdout) as { affectedTests?: unknown }
-      const tests = Array.isArray(parsed.affectedTests)
-        ? parsed.affectedTests.filter((test): test is string => typeof test === 'string')
-        : []
-      return tests.length > 0 ? tests.map((test) => `- ${test}`).join('\n') : '_None reported._'
-    } catch (err) {
-      return describeQueryFailure(err)
-    }
-  }
-
-  async function runNode(target: CodeGraphTarget, file: string): Promise<string> {
-    try {
-      const result = await target.exec(
-        `${CODE_GRAPH_ENV} codegraph node --file ${quoteShellArg(file)} --symbols-only`,
-        QUERY_TIMEOUT_MS,
-      )
-      if (result.exitCode !== 0) return describeQueryFailure(result)
-      return result.stdout.trim() || '_No symbols reported._'
-    } catch (err) {
-      return describeQueryFailure(err)
-    }
+    const command = [
+      CODE_GRAPH_ENV,
+      CODE_GRAPH_NODE,
+      '--liftoff-only',
+      '--disable-warning=ExperimentalWarning',
+      '-e',
+      quoteShellArg(buildCodeGraphRunnerScript()),
+      quoteShellArg(JSON.stringify(input)),
+    ].join(' ')
+    const result = await target.exec(command, SNAPSHOT_TIMEOUT_MS)
+    const parsed = parseCodeGraphRunnerResult(result.stdout)
+    if (parsed) return parsed
+    return { ok: false, stage: 'load', error: `unreadable runner output (${describeExecFailure(result)})` }
   }
 
   return {
     async snapshotFiles(target, input) {
       try {
         if (!(await probeBinary(target))) return null
-        if (!(await ensureIndex(target))) return null
+        if (!ensureCacheLink(target.worktreeDir, logger)) return null
         const files = filterCodeGraphFiles(target.worktreeDir, input.files)
         if (files.length === 0) return null
 
-        const affected = await runAffected(target, files)
-        const nodes: Array<{ file: string; text: string }> = []
-        for (const file of files) {
-          nodes.push({ file, text: await runNode(target, file) })
+        const result = await runSnapshot(target, files)
+        if (!result.ok) {
+          logger.error(`[code-graph] snapshot ${result.stage} failed in ${target.key}: ${result.error}`)
+          return null
         }
-        return formatCodeGraphReport({ title: input.title, takenAt: new Date(), files, affected, nodes })
+        if (result.index !== 'synced') logger.log(`[code-graph] index ${result.index} in ${target.key}`)
+        return formatCodeGraphReport({ title: input.title, takenAt: new Date(), files: result.files, affectedTests: result.affectedTests })
       } catch (err) {
         logger.error(`[code-graph] snapshot failed for ${target.key}`, err)
         return null

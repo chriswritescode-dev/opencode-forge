@@ -3,12 +3,14 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  CODE_GRAPH_PROBE_COMMAND,
   codeGraphReportPath,
   createCodeGraphSnapshotter,
   ensureCodeGraphReportFile,
   resolveLoopCodeGraphTarget,
   type CodeGraphTarget,
 } from '../../src/loop/code-graph'
+import { runCodeGraphSnapshot, type CodeGraphRunnerInput } from '../../src/loop/code-graph-runner'
 import type { SandboxContextManager } from '../../src/sandbox/context'
 import type { CommandResult } from '../../src/sandbox/process'
 import type { Logger } from '../../src/types'
@@ -36,26 +38,86 @@ interface RecordedCommand {
 
 interface RecordingTarget extends CodeGraphTarget {
   commands: RecordedCommand[]
+  runnerInputs: CodeGraphRunnerInput[]
+}
+
+function isRunnerCommand(command: string): boolean {
+  return command.includes('/opt/codegraph/node') && command.includes(' -e ')
+}
+
+function runnerInputOf(command: string): CodeGraphRunnerInput {
+  const match = /'([^']*)'$/.exec(command)
+  if (!match) throw new Error(`no runner input in ${command}`)
+  return JSON.parse(match[1]) as CodeGraphRunnerInput
+}
+
+const FAKE_DEPENDENTS: Record<string, string[]> = {
+  'a.ts': ['b.ts'],
+  'b.ts': ['test/a.test.ts'],
+}
+
+interface FakeIndexOptions {
+  initialized?: boolean
+  syncError?: string
+}
+
+/** A codegraph library stand-in for running the real runner function in-process. */
+function fakeLibraryLoader(options: FakeIndexOptions = {}): (path: string) => unknown {
+  const handle = {
+    indexAll: async () => ({ success: true, filesIndexed: 1, errors: [] }),
+    sync: async () => {
+      if (options.syncError) throw new Error(options.syncError)
+    },
+    getNodesInFile: (file: string) => [
+      { name: file, kind: 'file', startLine: 1 },
+      { name: `symbolOf_${file}`, kind: 'function', signature: '()', startLine: 3 },
+    ],
+    getFileDependents: (file: string) => FAKE_DEPENDENTS[file] ?? [],
+    destroy: () => {},
+  }
+  return (path) => {
+    if (path === 'fs') return { mkdirSync: () => {} }
+    if (path.endsWith('/dist/search/query-utils.js')) {
+      return { isTestPath: (file: string) => file.startsWith('test/') }
+    }
+    return {
+      setLogger: () => {},
+      silentLogger: {},
+      CodeGraph: {
+        isInitialized: () => options.initialized ?? false,
+        init: async () => handle,
+        open: async () => handle,
+        recreate: async () => handle,
+      },
+    }
+  }
 }
 
 function createTarget(
   worktreeDir: string,
   respond: (command: string) => CommandResult | Error | undefined = () => undefined,
+  options: { required?: boolean } & FakeIndexOptions = {},
 ): RecordingTarget {
   const commands: RecordedCommand[] = []
+  const runnerInputs: CodeGraphRunnerInput[] = []
   return {
     key: 'forge-test-container',
     worktreeDir,
+    required: options.required ?? false,
     commands,
+    runnerInputs,
     async exec(command, timeoutMs) {
       commands.push({ command, timeoutMs })
       const scripted = respond(command)
       if (scripted instanceof Error) throw scripted
       if (scripted) return scripted
-      if (command === 'command -v codegraph') return ok('/usr/local/bin/codegraph\n')
-      if (command.includes('codegraph.db')) return ok('missing\n')
-      if (command.includes('codegraph affected')) return ok(JSON.stringify({ affectedTests: ['test/a.test.ts'] }))
-      if (command.includes('codegraph node')) return ok(`symbols for ${command}`)
+      if (command === CODE_GRAPH_PROBE_COMMAND) return ok('present\n')
+      if (isRunnerCommand(command)) {
+        const input = runnerInputOf(command)
+        runnerInputs.push(input)
+        const result = await runCodeGraphSnapshot(fakeLibraryLoader(options), input)
+        return ok(`progress noise\n${JSON.stringify(result)}\n`)
+      }
       return ok()
     },
   }
@@ -74,98 +136,93 @@ afterEach(() => {
 })
 
 describe('createCodeGraphSnapshotter', () => {
-  it('initializes the index on the first snapshot and reports affected tests and node output', async () => {
+  it('builds a missing index and reports symbols, dependents and affected tests from one runner exec', async () => {
     const worktreeDir = createWorktree()
     writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
+    const infos: unknown[][] = []
+    const logger = createLogger()
+    logger.log = (...args: unknown[]) => {
+      infos.push(args)
+    }
     const target = createTarget(worktreeDir)
-    const snapshotter = createCodeGraphSnapshotter({ logger: createLogger() })
 
-    const report = await snapshotter.snapshotFiles(target, { title: 'section 1', files: ['a.ts'] })
+    const report = await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, { title: 'section 1', files: ['a.ts'] })
 
     expect(report).toContain('# Code graph: section 1')
-    expect(report).toContain('## Changed or planned files')
-    expect(report).toContain('- a.ts')
-    expect(report).toContain('## Affected test files')
-    expect(report).toContain('- test/a.test.ts')
-    expect(report).toContain('## a.ts')
-    expect(report).toContain('symbols for')
+    expect(report).toContain('## Changed or planned files\n\n- a.ts')
+    expect(report).toContain('## Affected test files\n\n- test/a.test.ts')
+    expect(report).toContain('## a.ts\n\nUsed by: b.ts')
+    expect(report).toContain('- `symbolOf_a.ts` (function) () — line 3')
+    expect(report).not.toContain('(file)')
 
-    const commands = target.commands.map((entry) => entry.command)
-    const initIndex = commands.findIndex((command) => command.includes('codegraph init'))
-    const affectedIndex = commands.findIndex((command) => command.includes('codegraph affected'))
-    const nodeIndex = commands.findIndex((command) => command.includes('codegraph node'))
-    expect(initIndex).toBeGreaterThanOrEqual(0)
-    expect(initIndex).toBeLessThan(affectedIndex)
-    expect(affectedIndex).toBeLessThan(nodeIndex)
+    expect(target.commands.map((entry) => entry.command)).toEqual([CODE_GRAPH_PROBE_COMMAND, expect.stringContaining('/opt/codegraph/node')])
+    expect(target.runnerInputs).toEqual([
+      {
+        libDir: '/opt/codegraph/lib',
+        projectRoot: worktreeDir,
+        indexDir: '/opt/forge/cache/codegraph',
+        files: ['a.ts'],
+        maxDepth: 5,
+      },
+    ])
     expect(readlinkSync(join(worktreeDir, '.codegraph'))).toBe('/opt/forge/cache/codegraph')
+    expect(String(infos.at(-1)?.[0])).toContain('index created')
   })
 
-  it('redirects codegraph git hooks to the cache disk for init and sync', async () => {
-    const initWorktree = createWorktree()
-    writeFileSync(join(initWorktree, 'a.ts'), 'export const a = 1\n')
-    const initTarget = createTarget(initWorktree)
-
-    await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(initTarget, {
-      title: 'init hooks',
-      files: ['a.ts'],
-    })
-
-    const initCommand = initTarget.commands.find((entry) => entry.command.includes('codegraph init --yes'))?.command
-    expect(initCommand).toContain('GIT_CONFIG_KEY_0=core.hooksPath')
-    expect(initCommand).toContain("GIT_CONFIG_VALUE_0='/opt/forge/cache/codegraph-git-hooks'")
-
-    const syncWorktree = createWorktree()
-    writeFileSync(join(syncWorktree, 'a.ts'), 'export const a = 1\n')
-    const syncTarget = createTarget(syncWorktree, (command) =>
-      command.includes('codegraph.db') ? ok('present\n') : undefined,
-    )
-
-    await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(syncTarget, {
-      title: 'sync hooks',
-      files: ['a.ts'],
-    })
-
-    const syncCommand = syncTarget.commands.find((entry) => entry.command.includes('codegraph sync --quiet'))?.command
-    expect(syncCommand).toContain('GIT_CONFIG_KEY_0=core.hooksPath')
-    expect(syncCommand).toContain("GIT_CONFIG_VALUE_0='/opt/forge/cache/codegraph-git-hooks'")
-  })
-
-  it('syncs instead of initializing when the index database already exists', async () => {
+  it('never runs the codegraph CLI or rewrites git config', async () => {
     const worktreeDir = createWorktree()
     writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
-    const target = createTarget(worktreeDir, (command) =>
-      command.includes('codegraph.db') ? ok('present\n') : undefined,
+    const target = createTarget(worktreeDir, () => undefined, { syncError: 'stale lock', initialized: true })
+
+    await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(target, { title: 'cli', files: ['a.ts'] })
+
+    for (const { command } of target.commands) {
+      expect(command).not.toMatch(/(^|[\s;&])codegraph\s/)
+      expect(command).not.toContain('GIT_CONFIG')
+    }
+    expect(target.commands.find((entry) => isRunnerCommand(entry.command))?.command).toContain(
+      'CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1',
     )
-    const snapshotter = createCodeGraphSnapshotter({ logger: createLogger() })
-
-    const report = await snapshotter.snapshotFiles(target, { title: 'section 2', files: ['a.ts'] })
-
-    expect(report).not.toBeNull()
-    const commands = target.commands.map((entry) => entry.command)
-    expect(commands.some((command) => command.includes('codegraph sync'))).toBe(true)
-    expect(commands.some((command) => command.includes('codegraph init'))).toBe(false)
   })
 
-  it('falls back to a full index when sync fails', async () => {
+  it('syncs an existing index inside the same runner exec', async () => {
     const worktreeDir = createWorktree()
     writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
-    const target = createTarget(worktreeDir, (command) => {
-      if (command.includes('codegraph.db')) return ok('present\n')
-      if (command.includes('codegraph sync')) return fail('stale lock')
-      return undefined
-    })
-    const snapshotter = createCodeGraphSnapshotter({ logger: createLogger() })
+    const infos: unknown[][] = []
+    const logger = createLogger()
+    logger.log = (...args: unknown[]) => {
+      infos.push(args)
+    }
+    const target = createTarget(worktreeDir, () => undefined, { initialized: true })
 
-    const report = await snapshotter.snapshotFiles(target, { title: 'section 3', files: ['a.ts'] })
+    expect(await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, { title: 'section 2', files: ['a.ts'] })).not.toBeNull()
 
-    expect(report).not.toBeNull()
-    const commands = target.commands.map((entry) => entry.command)
-    expect(commands.some((command) => command.includes('codegraph sync'))).toBe(true)
-    expect(commands.some((command) => command.includes('codegraph index --quiet'))).toBe(true)
+    expect(target.commands.filter((entry) => isRunnerCommand(entry.command))).toHaveLength(1)
+    expect(infos).toEqual([])
   })
 
-  it('refuses to initialize when the index probe cannot report the index state', async () => {
-    for (const dbProbe of [fail('probe exploded'), ok('unknown\n')]) {
+  it('reports a sync that fell back to a rebuild from the same runner exec', async () => {
+    const worktreeDir = createWorktree()
+    writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
+    const infos: unknown[][] = []
+    const logger = createLogger()
+    logger.log = (...args: unknown[]) => {
+      infos.push(args)
+    }
+    const target = createTarget(worktreeDir, () => undefined, { initialized: true, syncError: 'stale lock' })
+
+    const report = await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, { title: 'section 3', files: ['a.ts'] })
+
+    expect(report).toContain('# Code graph: section 3')
+    expect(target.commands.filter((entry) => isRunnerCommand(entry.command))).toHaveLength(1)
+    expect(String(infos.at(-1)?.[0])).toContain('index rebuilt')
+  })
+
+  it('returns null and logs when the runner reports a failure or its output is unreadable', async () => {
+    for (const runnerOutput of [
+      { stdout: '', stderr: 'Segmentation fault', exitCode: 139 },
+      ok(`${JSON.stringify({ ok: false, stage: 'index', error: 'disk full' })}\n`),
+    ]) {
       const worktreeDir = createWorktree()
       writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
       const errors: unknown[][] = []
@@ -173,26 +230,26 @@ describe('createCodeGraphSnapshotter', () => {
       logger.error = (...args: unknown[]) => {
         errors.push(args)
       }
-      const target = createTarget(worktreeDir, (command) => (command.includes('codegraph.db') ? dbProbe : undefined))
+      const target = createTarget(worktreeDir, (command) => (isRunnerCommand(command) ? runnerOutput : undefined))
 
-      const report = await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, {
-        title: 'probe',
-        files: ['a.ts'],
-      })
-
-      expect(report).toBeNull()
-      const commands = target.commands.map((entry) => entry.command)
-      expect(commands.some((command) => command.includes('codegraph init'))).toBe(false)
-      expect(commands.some((command) => command.includes('codegraph sync'))).toBe(false)
-      expect(errors.length).toBeGreaterThan(0)
+      expect(await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, { title: 'crash', files: ['a.ts'] })).toBeNull()
+      expect(String(errors.at(-1)?.[0])).toMatch(/Segmentation fault|index failed .*disk full/)
     }
+  })
+
+  it('skips the runner when no planned file exists in the worktree', async () => {
+    const worktreeDir = createWorktree()
+    const target = createTarget(worktreeDir)
+
+    expect(await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(target, { title: 'none', files: ['gone.ts'] })).toBeNull()
+    expect(target.commands.some((entry) => isRunnerCommand(entry.command))).toBe(false)
   })
 
   it('returns null when the binary is missing and probes it once across snapshots', async () => {
     const worktreeDir = createWorktree()
     writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
     const target = createTarget(worktreeDir, (command) =>
-      command === 'command -v codegraph' ? fail() : undefined,
+      command === CODE_GRAPH_PROBE_COMMAND ? fail() : undefined,
     )
     const snapshotter = createCodeGraphSnapshotter({ logger: createLogger() })
 
@@ -200,8 +257,39 @@ describe('createCodeGraphSnapshotter', () => {
     expect(await snapshotter.snapshotFiles(target, { title: 'two', files: ['a.ts'] })).toBeNull()
 
     const commands = target.commands.map((entry) => entry.command)
-    expect(commands.filter((command) => command === 'command -v codegraph')).toHaveLength(1)
-    expect(commands.some((command) => command.includes('codegraph init'))).toBe(false)
+    expect(commands.filter((command) => command === CODE_GRAPH_PROBE_COMMAND)).toHaveLength(1)
+    expect(commands.some(isRunnerCommand)).toBe(false)
+  })
+
+  it('probes only for the bundled node and the library the runner loads', () => {
+    expect(CODE_GRAPH_PROBE_COMMAND).not.toContain('command -v codegraph')
+    expect(CODE_GRAPH_PROBE_COMMAND).toContain('test -x /opt/codegraph/node')
+    expect(CODE_GRAPH_PROBE_COMMAND).toContain('test -f /opt/codegraph/lib/dist/index.js')
+  })
+
+  it('logs a missing binary as an error only when codegraph is required', async () => {
+    for (const required of [false, true]) {
+      const worktreeDir = createWorktree()
+      writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
+      const errors: unknown[][] = []
+      const infos: unknown[][] = []
+      const logger = createLogger()
+      logger.error = (...args: unknown[]) => {
+        errors.push(args)
+      }
+      logger.log = (...args: unknown[]) => {
+        infos.push(args)
+      }
+      const target = createTarget(
+        worktreeDir,
+        (command) => (command === CODE_GRAPH_PROBE_COMMAND ? fail() : undefined),
+        { required },
+      )
+
+      expect(await createCodeGraphSnapshotter({ logger }).snapshotFiles(target, { title: 'x', files: ['a.ts'] })).toBeNull()
+      expect(errors).toHaveLength(required ? 1 : 0)
+      expect(infos).toHaveLength(required ? 0 : 1)
+    }
   })
 
   it('retries the binary probe after a failed probe exec', async () => {
@@ -209,9 +297,9 @@ describe('createCodeGraphSnapshotter', () => {
     writeFileSync(join(worktreeDir, 'a.ts'), 'export const a = 1\n')
     let probes = 0
     const target = createTarget(worktreeDir, (command) => {
-      if (command !== 'command -v codegraph') return undefined
+      if (command !== CODE_GRAPH_PROBE_COMMAND) return undefined
       probes += 1
-      return probes === 1 ? new Error('msb exec failed') : ok('/usr/local/bin/codegraph\n')
+      return probes === 1 ? new Error('msb exec failed') : ok('present\n')
     })
     const snapshotter = createCodeGraphSnapshotter({ logger: createLogger() })
 
@@ -232,8 +320,7 @@ describe('createCodeGraphSnapshotter', () => {
     expect(await snapshotter.snapshotFiles(target, { title: 'blocked', files: ['a.ts'] })).toBeNull()
 
     expect(existsSync(join(worktreeDir, '.codegraph', 'user.txt'))).toBe(true)
-    const commands = target.commands.map((entry) => entry.command)
-    expect(commands.some((command) => command.includes('codegraph init'))).toBe(false)
+    expect(target.commands.some((entry) => isRunnerCommand(entry.command))).toBe(false)
   })
 
   it('returns null when the target exec throws', async () => {
@@ -244,7 +331,7 @@ describe('createCodeGraphSnapshotter', () => {
     expect(await snapshotter.snapshotFiles(target, { title: 'boom', files: ['a.ts'] })).toBeNull()
   })
 
-  it('drops missing files and never truncates the report', async () => {
+  it('drops missing files, queries the rest in one exec, and never truncates the report', async () => {
     const worktreeDir = createWorktree()
     mkdirSync(join(worktreeDir, 'f'))
     const files: string[] = []
@@ -263,9 +350,8 @@ describe('createCodeGraphSnapshotter', () => {
     expect(report!.match(/^## f\//gm)).toHaveLength(300)
     expect(report).not.toContain('missing.ts')
     expect(report).not.toContain('/etc/passwd')
-    const affected = target.commands.find((entry) => entry.command.includes('codegraph affected'))
-    expect(affected?.command).toContain('f/0.ts')
-    expect(affected?.command).not.toContain('missing.ts')
+    expect(target.commands.filter((entry) => isRunnerCommand(entry.command))).toHaveLength(1)
+    expect(target.runnerInputs[0].files).toHaveLength(300)
   })
 })
 
@@ -287,9 +373,23 @@ describe('resolveLoopCodeGraphTarget', () => {
     const target = resolveLoopCodeGraphTarget(
       createManager({ containerName: 'forge-one' }),
       { loopName: 'one', sandbox: true, worktreeDir: '/tmp/worktree' },
-      { loop: { codeGraph: { enabled: false } } },
+      { codeGraph: { enabled: false } },
     )
     expect(target).toBeNull()
+  })
+
+  it('requires the binary only when the config asks for codegraph explicitly', () => {
+    const resolve = (codeGraph: { install?: boolean; enabled?: boolean } | undefined) =>
+      resolveLoopCodeGraphTarget(
+        createManager({ containerName: 'forge-one' }),
+        { loopName: 'one', sandbox: true, worktreeDir: '/tmp/worktree' },
+        codeGraph ? { codeGraph } : undefined,
+      )?.required
+
+    expect(resolve(undefined)).toBe(false)
+    expect(resolve({ install: false })).toBe(false)
+    expect(resolve({ install: true })).toBe(true)
+    expect(resolve({ enabled: true })).toBe(true)
   })
 
   it('returns null when the loop is not sandboxed', () => {

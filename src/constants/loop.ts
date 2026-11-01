@@ -193,12 +193,14 @@ export function resolveLoopPermissionRules(config: PluginConfig | undefined): Pe
 }
 
 /**
- * Resolves the full ruleset options (configured `loop.permissions` rules) for a config. Single call
+ * Resolves the full ruleset options (configured `loop.permissions` rules and the code-graph MCP
+ * deny) for a config. Single call
  * every ruleset construction site uses so the configured rules can never diverge.
  */
 export function resolveLoopPermissionOptions(config: PluginConfig | undefined): LoopPermissionRulesetOptions {
   return {
     extraRules: resolveLoopPermissionRules(config),
+    denyCodeGraphMcp: isCodeGraphEnabled(config),
   }
 }
 
@@ -279,10 +281,20 @@ export function collectSessionReuseConfigWarnings(config: PluginConfig | undefin
   return parseSessionReuseConfig(config?.loop?.sessionReuse).warnings
 }
 
-/** Whether Forge code-graph snapshots run in loop worktrees. Default: true. */
-export function isLoopCodeGraphEnabled(config: PluginConfig | undefined): boolean {
-  return config?.loop?.codeGraph?.enabled !== false
+/**
+ * Whether the code-graph integration is on: snapshots in sandboxed loops and the loop deny of the
+ * `codegraph_*` MCP tools. Unset means on; only `codeGraph.enabled: false` turns it off.
+ */
+export function isCodeGraphEnabled(config: PluginConfig | undefined): boolean {
+  return config?.codeGraph?.enabled !== false
 }
+
+/**
+ * Permission pattern matching every tool of the `codegraph` MCP server. OpenCode names MCP tools
+ * `<server>_<tool>`, and a loop worktree's index lives on the sandbox cache disk the host-side MCP
+ * server cannot read, so loop sessions use the in-sandbox `codegraph` CLI instead.
+ */
+export const CODE_GRAPH_MCP_PERMISSION = 'codegraph_*'
 
 export interface LoopPermissionRulesetOptions {
   /**
@@ -290,6 +302,12 @@ export interface LoopPermissionRulesetOptions {
    * Forge's structural denies, so they can never override a structural deny.
    */
   extraRules?: PermissionRule[]
+  /** Deny the `codegraph_*` MCP tools alongside Forge's structural denies. */
+  denyCodeGraphMcp?: boolean
+}
+
+function codeGraphMcpDenyRules(options: LoopPermissionRulesetOptions): PermissionRule[] {
+  return options.denyCodeGraphMcp ? denyRulesFor([CODE_GRAPH_MCP_PERMISSION]) : []
 }
 
 /**
@@ -312,6 +330,7 @@ function buildWorktreePermissionRuleset(
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.
   rules.push(...denyRulesFor([...LOOP_ONLY_STRUCTURAL_DENY_PERMISSIONS, ...SHARED_STRUCTURAL_DENY_PERMISSIONS, deniedPhaseTool]))
+  rules.push(...codeGraphMcpDenyRules(options))
 
   return rules
 }
@@ -369,6 +388,7 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
     // Audit sessions must not mutate code, must never launch loops or manage other loops.
     // Placed after *:allow so findLast picks them up.
     ...denyRulesFor(AUDIT_SESSION_DENIED_TOOL_NAMES),
+    ...codeGraphMcpDenyRules(options),
   ]
   return rules
 }

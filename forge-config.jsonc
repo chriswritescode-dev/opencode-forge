@@ -56,10 +56,6 @@
       "coderContextPercent": 50,
       "auditorContextPercent": 50
     },
-    // Forge code-graph snapshots for sandboxed loops (default: true)
-    "codeGraph": {
-      "enabled": true
-    },
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
       "enabled": false,
@@ -153,6 +149,15 @@
   //     { "action": "shell", "resource": "rm -rf *" }
   //   ]
   // },
+
+  // codegraph integration. "install" (default true) puts codegraph in the sandbox template;
+  // rebuild the template after changing it. Unless "enabled" is false, loop sessions deny the
+  // codegraph_* MCP tools and sandboxed loops take code-graph snapshots when codegraph is in
+  // the sandbox.
+  "codeGraph": {
+    "install": true
+    // "enabled": false
+  },
 
   // TUI sidebar widget configuration
   "tui": {

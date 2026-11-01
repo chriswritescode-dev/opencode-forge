@@ -6,7 +6,7 @@
  */
 import { rmSync } from 'fs'
 import { join } from 'path'
-import type { Logger } from '../types'
+import type { Logger, PluginConfig } from '../types'
 import { runCommand, type CommandResult } from './process'
 
 const BUILD_TIMEOUT = 600000
@@ -34,6 +34,17 @@ export interface BuildTemplateDeps {
    * so callers that own a UI surface use this to prove the build is alive.
    */
   onProgress?: (progress: SandboxBuildProgress) => void
+  /** Extra `docker build` arguments, from `resolveTemplateBuildArgs`. */
+  buildArgs?: string[]
+}
+
+/**
+ * The single mapping from plugin configuration to sandbox template build
+ * arguments. The image installs codegraph by default, so only an explicit
+ * `codeGraph.install: false` adds a build argument, which skips it.
+ */
+export function resolveTemplateBuildArgs(config: PluginConfig | undefined): string[] {
+  return config?.codeGraph?.install === false ? ['--build-arg', 'INSTALL_CODEGRAPH=false'] : []
 }
 
 /**
@@ -72,8 +83,9 @@ function reportLines(stage: SandboxBuildStage, onProgress: (progress: SandboxBui
   }
 }
 
-export function formatTemplateBuildCommands(contextDir: string, tag: string): string {
-  const build = ['docker', 'build', '-t', tag, `"${contextDir}"`].join(' ')
+export function formatTemplateBuildCommands(contextDir: string, tag: string, buildArgs: string[] = []): string {
+  const args = buildArgs.length > 0 ? ` ${buildArgs.join(' ')}` : ''
+  const build = ['docker', `build${args}`, '-t', tag, `"${contextDir}"`].join(' ')
   return `${build} && docker save ${tag} -o <tar> && msb load --input <tar> --tag ${tag}`
 }
 
@@ -130,7 +142,8 @@ async function runBuildAndLoad(
     // `--progress=plain` is only added to the real invocation, not to
     // `formatTemplateBuildCommands`: it makes output line-oriented and parseable
     // here, but is noise in the copy-paste hint shown to a human.
-    const build = await deps.runCommand('docker', ['build', '--progress=plain', '-t', tag, contextDir], {
+    const buildArgs = deps.buildArgs ?? []
+    const build = await deps.runCommand('docker', ['build', '--progress=plain', ...buildArgs, '-t', tag, contextDir], {
       logger: deps.logger,
       logLabel: 'docker',
       timeout: BUILD_TIMEOUT,

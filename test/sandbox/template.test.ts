@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { buildAndLoadSandboxTemplate, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep } from '../../src/sandbox/template'
+import { buildAndLoadSandboxTemplate, CONCURRENT_BUILD_MESSAGE, formatTemplateBuildCommands, parseDockerBuildStep, resolveTemplateBuildArgs } from '../../src/sandbox/template'
 import type { BuildTemplateDeps, SandboxBuildProgress } from '../../src/sandbox/template'
 import type { Logger } from '../../src/types'
 
@@ -99,15 +99,24 @@ test('forge-cache-prune keeps uv tool installs and bin symlinks while wiping exp
   }
 })
 
-test('the image installs a pinned codegraph outside the shadowed cache disk with telemetry, daemon, and watcher off', () => {
+test('the image installs a pinned codegraph by default behind a build argument that can skip it', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
-  const installStart = dockerfile.indexOf('ARG CODEGRAPH_VERSION=v1.6.2')
 
-  expect(installStart).toBeGreaterThan(-1)
-  expect(dockerfile).toContain('/opt/codegraph')
-  expect(dockerfile).toContain('/usr/local/bin/codegraph')
+  expect(dockerfile).toContain('ARG CODEGRAPH_VERSION=v1.6.2')
+  expect(dockerfile).not.toMatch(/pnpm add -g fallow/)
+  expect(dockerfile).toContain('ARG INSTALL_CODEGRAPH=true')
+
+  const gateStart = dockerfile.indexOf('RUN if [ "$INSTALL_CODEGRAPH" = "true" ]')
+  expect(gateStart).toBeGreaterThan(dockerfile.indexOf('ARG INSTALL_CODEGRAPH=true'))
+  expect(gateStart).toBeLessThan(dockerfile.lastIndexOf('USER agent'))
+
+  const gated = dockerfile.slice(gateStart, dockerfile.indexOf('\n    fi', gateStart))
+  expect(gated).toContain('/opt/codegraph')
+  expect(gated).toContain('/usr/local/bin/codegraph')
+  expect(gated).toContain('${CODEGRAPH_VERSION}')
+  expect(gated).toContain('codegraph --version')
+  expect(dockerfile.match(/codegraph-linux-/g)).toHaveLength(1)
   expect(dockerfile).toContain('CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1')
-  expect(installStart).toBeLessThan(dockerfile.lastIndexOf('USER agent'))
 
   const pruneStart = dockerfile.indexOf('cat > /usr/local/bin/forge-cache-prune')
   const prune = dockerfile.slice(pruneStart, dockerfile.indexOf('\nEOF', pruneStart))
@@ -175,6 +184,35 @@ describe('buildAndLoadSandboxTemplate', () => {
       expect(loadTemplate).toHaveBeenCalledTimes(1)
       expect(loadTemplate.mock.calls[0][0]).toMatch(/forge-sandbox-template-\d+\.tar$/)
       expect(loadTemplate.mock.calls[0][1]).toBe('oc-forge-sandbox:latest')
+      expect(leftoverTars(tmp)).toHaveLength(0)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  test('passes the configured build args to the docker build invocation', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-tpl-'))
+    try {
+      const record: Array<{ command: string; args: string[] }> = []
+      const deps: BuildTemplateDeps = {
+        runCommand: makeFakeRun(record),
+        loadTemplate: vi.fn(async () => {}),
+        logger,
+        tmpDir: tmp,
+        buildArgs: ['--build-arg', 'INSTALL_CODEGRAPH=false'],
+      }
+
+      await buildAndLoadSandboxTemplate('/ctx', 'oc-forge-sandbox:latest', deps)
+
+      expect(record[0].args).toEqual([
+        'build',
+        '--progress=plain',
+        '--build-arg',
+        'INSTALL_CODEGRAPH=false',
+        '-t',
+        'oc-forge-sandbox:latest',
+        '/ctx',
+      ])
       expect(leftoverTars(tmp)).toHaveLength(0)
     } finally {
       rmSync(tmp, { recursive: true, force: true })
@@ -401,5 +439,27 @@ describe('template build command formatter', () => {
     expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest')).toBe(
       'docker build -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
     )
+  })
+
+  test('formatTemplateBuildCommands includes the build args in the docker build command', () => {
+    expect(formatTemplateBuildCommands('/ctx', 'oc-forge-sandbox:latest', resolveTemplateBuildArgs({ codeGraph: { install: false } }))).toBe(
+      'docker build --build-arg INSTALL_CODEGRAPH=false -t oc-forge-sandbox:latest "/ctx" && docker save oc-forge-sandbox:latest -o <tar> && msb load --input <tar> --tag oc-forge-sandbox:latest',
+    )
+  })
+})
+
+describe('resolveTemplateBuildArgs', () => {
+  test('is empty when codegraph installation is unset or true, so the image default installs it', () => {
+    expect(resolveTemplateBuildArgs(undefined)).toEqual([])
+    expect(resolveTemplateBuildArgs({})).toEqual([])
+    expect(resolveTemplateBuildArgs({ codeGraph: {} })).toEqual([])
+    expect(resolveTemplateBuildArgs({ codeGraph: { install: true } })).toEqual([])
+  })
+
+  test('passes INSTALL_CODEGRAPH=false when codegraph installation is turned off', () => {
+    expect(resolveTemplateBuildArgs({ codeGraph: { install: false } })).toEqual([
+      '--build-arg',
+      'INSTALL_CODEGRAPH=false',
+    ])
   })
 })

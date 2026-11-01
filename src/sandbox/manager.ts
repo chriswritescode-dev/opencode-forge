@@ -24,6 +24,12 @@ export interface SandboxManagerConfig {
   customMounts?: SandboxMountConfig[]
   buildContextDir?: string
   /**
+   * Extra `docker build` arguments for the image-missing hint, so the printed
+   * command reproduces the configured build (for example the opt-in codegraph
+   * install).
+   */
+  templateBuildArgs?: string[]
+  /**
    * Host path of opencode's tool-output (truncation) directory. When set and present, it is
    * bind-mounted read-only at the identical container path so the agent's in-container tools
    * (`sh`, `glob`, `grep`) can read overflow files that opencode references by absolute host path.
@@ -259,6 +265,7 @@ export function createSandboxManager(
       const buildHint = `  ${formatTemplateBuildCommands(
         config.buildContextDir ?? '<build-context-dir>',
         config.image,
+        config.templateBuildArgs ?? [],
       )}`
       throw new Error(
         `Sandbox template "${config.image}" not found. Build and load it first:\n${buildHint}\n\n` +

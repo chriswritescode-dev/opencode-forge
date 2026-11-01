@@ -4,7 +4,7 @@ import { existsSync } from 'fs'
 import { For, Show, createEffect, createMemo, createRoot, createSignal, onCleanup, type Accessor } from 'solid-js'
 import { createDashboardLauncher } from '../dashboard/launch'
 import { isSandboxConfigEnabled } from '../sandbox/context'
-import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
+import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
 import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
 import { resolveForgeDbPath } from '../storage'
 import {
@@ -237,7 +237,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   if (isSandboxConfigEnabled(pluginConfig) && !existsSync(buildContextDir)) {
     context.ui.toast.show({
       title: 'Sandbox build context missing',
-      message: `Sandboxing is enabled but the bundled build context is missing at ${buildContextDir}. Reinstall opencode-forge, then build the template: ${formatTemplateBuildCommands(buildContextDir, pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE)}`,
+      message: `Sandboxing is enabled but the bundled build context is missing at ${buildContextDir}. Reinstall opencode-forge, then build the template: ${formatTemplateBuildCommands(buildContextDir, pluginConfig.sandbox?.image ?? DEFAULT_SANDBOX_IMAGE, resolveTemplateBuildArgs(pluginConfig))}`,
       variant: 'warning',
       duration: 10_000,
     })

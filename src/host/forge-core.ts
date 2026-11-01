@@ -21,7 +21,7 @@ import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permissi
 import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
 import { publishToast } from '../utils/toast'
 import { createSandboxManager } from '../sandbox/manager'
-import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands } from '../sandbox/template'
+import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
 import { createSessionSandboxController, createUnavailableSandboxLifecycleManager, deriveManagerKey, type ResolveActiveLoopForSession, type SessionSandboxController } from '../sandbox/session-controller'
 import type { PluginConfig, CompactionConfig, AutoApproveDenyRule, Logger } from '../types'
 import { parseAutoApproveDenyRules } from '../utils/auto-approve-policy'
@@ -514,6 +514,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         ...(sandboxMountConfigs.length > 0 ? { customMounts: sandboxMountConfigs } : {}),
         ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
         buildContextDir: resolveBundledContainerDir(),
+        templateBuildArgs: resolveTemplateBuildArgs(config),
         ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
         resolveOverrides: (worktreeName) => worktreeName === hostSandboxManagerKey
           ? sandboxPreferences.getDesired(projectId)?.overrides
@@ -570,7 +571,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
             directory,
             logger,
             title: 'Sandbox template not found',
-            message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage)}`,
+            message: `Sandbox template "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox template", or run: ${formatTemplateBuildCommands(buildContextDir, sandboxImage, resolveTemplateBuildArgs(config))}`,
             variant: 'warning',
             duration: 10_000,
           })

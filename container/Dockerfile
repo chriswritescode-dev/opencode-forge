@@ -48,7 +48,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - \
 # path; the resulting /usr/local tree is readable by an arbitrary host UID.
 #
 # Pinned exactly instead of @latest: pnpm 12 removed the --global-bin-dir flag the
-# fallow install below relies on, so a floating tag silently breaks the image build
+# global CLI installs below rely on, so a floating tag silently breaks the image build
 # the moment the next major lands. An exact pin keeps the build reproducible; the
 # flag is guaranteed for the whole 11.x line.
 RUN npm install -g pnpm@11.28.1
@@ -118,17 +118,16 @@ RUN CARGO_HOME=/opt/forge/.cargo RUSTUP_HOME=/opt/forge/.rustup \
        /opt/forge/.cargo/bin/rustup component add clippy rustfmt \
     && chmod -R a+rX /opt/forge/.cargo /opt/forge/.rustup
 
-# fallow CLI — dead-code analysis tool — and Playwright's Chromium browser are
-# installed globally with the same pnpm setup used by the rest of the sandbox image.
-# Binaries are linked into /usr/local/bin so they are on PATH for arbitrary
-# container UIDs.
+# Playwright's Chromium browser is installed globally with the same pnpm setup
+# used by the rest of the sandbox image. Binaries are linked into /usr/local/bin
+# so they are on PATH for arbitrary container UIDs.
 #
 # --store-dir is load-bearing and must NOT be dropped to inherit the ENV store.
 # pnpm does not copy a globally installed package into PNPM_HOME: the global
 # node_modules entry is a symlink chain into the store's links/ directory. A
 # global installed against the cache-disk store therefore resolves to a dangling
 # symlink at runtime, because the dedicated cache disk is mounted over that path
-# and hides everything the build wrote there — `fallow --version` then dies with
+# and hides everything the build wrote there — the CLI then dies with
 # "Cannot find module". Pinning the build-time store under /opt/forge/.local,
 # which the image actually ships and no mount shadows, keeps every global CLI
 # working; the ENV store keeps agent installs on the cache disk.
@@ -149,8 +148,7 @@ RUN CARGO_HOME=/opt/forge/.cargo RUSTUP_HOME=/opt/forge/.rustup \
 # sandbox manager, which chowns and chmods the mounted cache disk at create time;
 # no build step establishes them.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/forge/.local/share/ms-playwright
-RUN pnpm add -g fallow@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
-    && pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
+RUN pnpm add -g playwright-core@latest --global-bin-dir /usr/local/bin --store-dir /opt/forge/.local/share/pnpm/store \
     && playwright_root="$(readlink -f "$(find "$(pnpm root -g)" -maxdepth 4 -path '*/node_modules/playwright-core' -print -quit)")" \
     && node "$playwright_root/cli.js" install --with-deps chromium \
     && ln -s "$(node --input-type=module -e "import { chromium } from 'file://$playwright_root/index.mjs'; console.log(chromium.executablePath())")" /usr/local/bin/chromium \
@@ -210,11 +208,11 @@ ENV GHIDRA_INSTALL_DIR=/opt/ghidra/ghidra_${GHIDRA_VERSION}_PUBLIC \
 
 # REA (`rea-agents`) — the reverse-engineering CLI for application and
 # native-binary investigation — installed globally with the same pnpm pattern as
-# fallow above. The package is pure JavaScript (Ghidra compiles REA's Java bridge
+# playwright-core above. The package is pure JavaScript (Ghidra compiles REA's Java bridge
 # at analysis time), so nothing native downloads at install. Node here is
 # NodeSource current (26.x), which satisfies REA's engines field; REA rejects
 # Node 23 and 25. The explicit --store-dir keeps the global on a path no runtime
-# mount shadows, for the same reason as fallow and playwright-core.
+# mount shadows, for the same reason as playwright-core.
 #
 # @latest is deliberately left to pnpm 11's default 1-day minimumReleaseAge
 # supply-chain gate, so the resolved version is the newest release at least a day
@@ -251,30 +249,37 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/*
 
 # codegraph — the code index Forge queries for symbols, callers and affected
-# tests. It is installed under /opt/codegraph, off /opt/forge/cache, because the
-# runtime cache-disk mount shadows everything the build writes under that path.
-# The release tarball is downloaded directly instead of piping install.sh from
-# main, so no part of the install is an unpinned input, and the version is pinned
-# exactly because Forge parses codegraph's `--json` output. Release targets are
-# named x64/arm64; any other architecture fails the build. The symlink lands in
-# /usr/local/bin so the binary is on PATH for any exec UID, the trailing chmod
-# keeps the tree readable by one, and `--version` is a build-time smoke check.
+# tests. It is installed by default; setting the `codeGraph.install` Forge option
+# to false builds this image with `--build-arg INSTALL_CODEGRAPH=false`, which
+# skips it. It is installed under /opt/codegraph, off /opt/forge/cache,
+# because the runtime cache-disk mount shadows everything the build writes under
+# that path. The release tarball is downloaded directly instead of piping
+# install.sh from main, so no part of the install is an unpinned input, and the
+# version is pinned exactly because Forge parses codegraph's `--json` output.
+# Release targets are named x64/arm64; any other architecture fails the build.
+# The symlink lands in /usr/local/bin so the binary is on PATH for any exec UID,
+# the trailing chmod keeps the tree readable by one, and `--version` is a
+# build-time smoke check.
 #
-# The env block is image-wide so both Forge's own calls and agent shell commands
-# run with telemetry, the background daemon, and the file watcher disabled.
+# The env block is image-wide and unconditional, so a sandbox that installs
+# codegraph separately at runtime still runs with telemetry, the background
+# daemon, and the file watcher disabled.
 ARG CODEGRAPH_VERSION=v1.6.2
-RUN case "$(dpkg --print-architecture)" in \
-        amd64) codegraph_arch=x64 ;; \
-        arm64) codegraph_arch=arm64 ;; \
-        *) echo "unsupported architecture for codegraph: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL -o /tmp/codegraph.tar.gz "https://github.com/colbymchenry/codegraph/releases/download/${CODEGRAPH_VERSION}/codegraph-linux-${codegraph_arch}.tar.gz" \
-    && mkdir -p /opt/codegraph \
-    && tar -xzf /tmp/codegraph.tar.gz -C /opt/codegraph --strip-components=1 \
-    && rm -f /tmp/codegraph.tar.gz \
-    && ln -sf /opt/codegraph/bin/codegraph /usr/local/bin/codegraph \
-    && chmod -R a+rX /opt/codegraph \
-    && codegraph --version
+ARG INSTALL_CODEGRAPH=true
+RUN if [ "$INSTALL_CODEGRAPH" = "true" ]; then \
+        case "$(dpkg --print-architecture)" in \
+            amd64) codegraph_arch=x64 ;; \
+            arm64) codegraph_arch=arm64 ;; \
+            *) echo "unsupported architecture for codegraph: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+        esac \
+        && curl -fsSL -o /tmp/codegraph.tar.gz "https://github.com/colbymchenry/codegraph/releases/download/${CODEGRAPH_VERSION}/codegraph-linux-${codegraph_arch}.tar.gz" \
+        && mkdir -p /opt/codegraph \
+        && tar -xzf /tmp/codegraph.tar.gz -C /opt/codegraph --strip-components=1 \
+        && rm -f /tmp/codegraph.tar.gz \
+        && ln -sf /opt/codegraph/bin/codegraph /usr/local/bin/codegraph \
+        && chmod -R a+rX /opt/codegraph \
+        && codegraph --version; \
+    fi
 ENV CODEGRAPH_TELEMETRY=0 CODEGRAPH_NO_DAEMON=1 CODEGRAPH_NO_WATCH=1
 
 # Docker Engine from Docker's official apt repository. The microVM boots a real

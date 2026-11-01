@@ -20,7 +20,7 @@ import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 import { canonicalizePath } from '../sandbox/path'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildPermissionRulesetForPhase, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopPhaseToolName, type LoopSessionReuseRole } from '../constants/loop'
+import { buildPermissionRulesetForPhase, isCodeGraphEnabled, LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME, resolveSessionReuseContextPercent, type LoopPermissionRulesetOptions, type LoopPhaseToolName, type LoopSessionReuseRole } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
@@ -211,6 +211,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   // in this function but is hoisted, so it's always available here.
   const loopService = deps.loopService ?? createLoopService(
     loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo, loopTransitionsRepo, planAmendmentsRepo, runExclusive, deps.loopAttemptsRepo,
+    isCodeGraphEnabled(getConfig()),
   )
   let getParentSessionId = deps.getParentSessionId
 
