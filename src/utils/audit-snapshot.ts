@@ -182,6 +182,14 @@ async function assertAuditRefAvailable(toplevel: string, refName: string, logger
   }
 }
 
+/** Whether Git ignores `path`; `git add` rejects an exclude pathspec that names an ignored path. */
+async function isPathIgnored(toplevel: string, path: string, logger: Logger): Promise<boolean> {
+  const probe = await runGitProbe(toplevel, ['check-ignore', '-q', '--', path], logger, 'check-ignore')
+  if (probe.exitCode === 0) return true
+  if (probe.exitCode === 1) return false
+  throw new Error(`git check-ignore failed (exit ${probe.exitCode}): ${probe.stderr.trim().slice(0, 500)}`)
+}
+
 async function removeIndexEntries(toplevel: string, paths: string[], env: Record<string, string>, logger: Logger): Promise<void> {
   if (paths.length === 0) return
   await runGitCommand(toplevel, ['update-index', '--force-remove', '--', ...paths], env, logger, 'update-index')
@@ -204,9 +212,11 @@ async function buildSnapshotTree(
   }
   const indexEnv = gitEnv({ GIT_INDEX_FILE: altIndex })
   await assertNoUntrackedSecrets(toplevel, logger)
-  const pathspecs = ['.', ':(exclude).forge']
-  if (!originalTracked.has(WORKTREE_OPENCODE_CONFIG_FILENAME)) {
-    pathspecs.push(`:(exclude)${WORKTREE_OPENCODE_CONFIG_FILENAME}`)
+  const excludedPaths = ['.forge']
+  if (!originalTracked.has(WORKTREE_OPENCODE_CONFIG_FILENAME)) excludedPaths.push(WORKTREE_OPENCODE_CONFIG_FILENAME)
+  const pathspecs = ['.']
+  for (const path of excludedPaths) {
+    if (!(await isPathIgnored(toplevel, path, logger))) pathspecs.push(`:(exclude)${path}`)
   }
   await runGitCommand(toplevel, ['add', '-A', '--', ...pathspecs], indexEnv, logger, 'add')
   const entries = (await runGitCommand(toplevel, ['ls-files', '-z'], indexEnv, logger, 'ls-files'))
@@ -226,7 +236,9 @@ async function buildSnapshotTree(
     throw new Error(`audit snapshot aborted: untracked nested git repositories discovered (${preview}); commit them as submodules or exclude them through repository ignore rules`)
   }
   await assertSubmodulesClean(toplevel, stagedGitlinks, logger)
-  const removals = entries.filter(isForgeTransientPath)
+  const removals = entries.filter(
+    (entry) => isForgeTransientPath(entry) || (entry === WORKTREE_OPENCODE_CONFIG_FILENAME && !originalTracked.has(entry)),
+  )
   await removeIndexEntries(toplevel, removals, indexEnv, logger)
   const tree = (await runGitCommand(toplevel, ['write-tree'], indexEnv, logger, 'write-tree')).trim()
   return validateCommitSha(tree, 'tree SHA')

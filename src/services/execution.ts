@@ -1053,6 +1053,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
     
     try {
+      // eslint-disable-next-line prefer-const
       let sessionId: string
 
       // Compute host session ID for metadata persistence only (not session parenting)
@@ -1125,7 +1126,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail('internal_error', 500, 'Failed to create loop session')
       }
 
-      // eslint-disable-next-line prefer-const
       sessionId = createResult.sessionId
       createdSessionId = sessionId
 
@@ -1655,6 +1655,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Create new session for restart
 
+      // eslint-disable-next-line prefer-const
       let newSessionId: string | undefined
 
       if (stoppedState.worktree) {
@@ -1707,7 +1708,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
 
-      // eslint-disable-next-line prefer-const
       newSessionId = createResult.sessionId
       if (createResult.bindFailed) {
         stoppedState.workspaceId = undefined
