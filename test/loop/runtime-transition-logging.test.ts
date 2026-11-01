@@ -106,7 +106,7 @@ describe('Runtime transition logging', () => {
       }
 
       await recordAuditorHandoff(loopInstance, 'audit-sess', {
-        summary: { done: ['completed section 1 cleanly'] },
+        summary: { done: ['completed section 1 cleanly'], deviations: [], followUps: [] },
       })
 
       await tickIdle(loopInstance, 'audit-sess')

@@ -796,6 +796,7 @@ describe('durable attempt handoff', () => {
       expect(handoffs).toHaveLength(1)
       expect(handoffs[0].role).toBe('auditor')
       expect(handoffs[0].status).toBe('applied')
+      if (handoffs[0].role !== 'auditor') throw new Error('expected auditor handoff')
       expect(handoffs[0].payload.summary?.done).toEqual(['Implemented the section'])
 
       const section = harness.service.getSectionPlan(harness.service.getAnyState(loopName)!, 0)!

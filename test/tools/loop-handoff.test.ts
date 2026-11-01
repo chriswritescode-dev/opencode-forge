@@ -22,7 +22,7 @@ const POST_ACTION_SESSION = 'post-action-session'
 const config: PluginConfig = {
   executionModel: 'test/model',
   auditorModel: 'test/auditor',
-  loop: { enabled: true, model: 'test/loop', defaultMaxIterations: 5 },
+  loop: { enabled: true, defaultMaxIterations: 5 },
 }
 
 describe('loop handoff tools', () => {
@@ -320,6 +320,7 @@ describe('loop handoff tools', () => {
       expect(result.ok).toBe(true)
       expect(result.message).toContain('Handoff recorded')
       const [record] = handoffs()
+      if (record.role !== 'coder') throw new Error('expected coder handoff')
       expect(record.role).toBe('coder')
       expect(record.phase).toBe('coding')
       expect(record.sectionIndex).toBe(1)

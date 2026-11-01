@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createLoopsRepo, type LoopRow, type LoopLargeFields } from '../src/storage/repos/loops-repo'
+import type { LoopHandoffWriteInputFor } from '../src/loop/handoff'
 import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('LoopsRepo', () => {
@@ -913,7 +914,9 @@ describe('LoopsRepo', () => {
       verification: [{ command: 'pnpm test', cwd: 'repo', outcome: 'pass' as const, changedAfter: false }],
     })
 
-    const handoffInput = (overrides: Partial<Parameters<typeof repo.upsertPendingHandoff>[0]> = {}) => ({
+    const handoffInput = (
+      overrides: Partial<LoopHandoffWriteInputFor<'coder'>> = {},
+    ): LoopHandoffWriteInputFor<'coder'> & { projectId: string } => ({
       projectId: testRow.projectId,
       loopName: testRow.loopName,
       sessionId: testRow.currentSessionId,

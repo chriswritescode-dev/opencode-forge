@@ -15,6 +15,7 @@ function makeFakeLoopService(): LoopService {
     getActiveState: vi.fn(() => null),
     getAnyState: vi.fn(() => null),
     setState: vi.fn(),
+    buildPlanInitialPrompt: vi.fn(() => ''),
     restoreState: vi.fn(),
     deleteState: vi.fn(),
     registerLoopSession: vi.fn(),
