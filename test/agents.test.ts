@@ -85,6 +85,8 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('explicit instruction to delegate')
       expect(prompt).toContain('identify bounded implementation tasks')
       expect(prompt).toContain('Delegate a single task even when no parallel work exists')
+      expect(prompt).toContain('already-understood, few-line change')
+      expect(prompt).toContain('when minions are unavailable')
       expect(prompt).toContain('up to four minions concurrently')
       expect(prompt).toContain('target files do not overlap')
       expect(prompt).toContain('inspect and reconcile')

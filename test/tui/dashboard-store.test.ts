@@ -253,6 +253,27 @@ describe('createDashboardStore', () => {
     store.dispose()
   })
 
+  test('the search narrows findings to the loops it keeps', async () => {
+    const finding = (loopName: string) => ({ loopName, findings: [] })
+    const deps = createDeps({
+      readProjectFindings: vi.fn(async () => ({ loops: [finding('loop-a'), finding('loop-b')] })),
+    })
+    const store = createDashboardStore(deps)
+
+    store.activate()
+    await vi.waitFor(() => expect(store.summary()).not.toBeNull())
+    store.selectProject('p1')
+    store.setSection('findings')
+    await vi.waitFor(() => expect(store.findings().map((group) => group.loopName)).toEqual(['loop-a', 'loop-b']))
+
+    store.setQuery('loop-b')
+    expect(store.findings().map((group) => group.loopName)).toEqual(['loop-b'])
+
+    store.setQuery('/work/p1')
+    expect(store.findings().map((group) => group.loopName)).toEqual(['loop-a', 'loop-b'])
+    store.dispose()
+  })
+
   test('invalidates a cached findings list when its loops event arrives on another section', async () => {
     const deps = createDeps()
     const store = createDashboardStore(deps)
@@ -494,6 +515,7 @@ describe('createDashboardStore', () => {
     await store.toggleAmendment(2)
     expect(deps.toast).toHaveBeenCalledWith({ message: 'diff unavailable', variant: 'error' })
     expect(store.amendmentDiff()).toBeNull()
+    expect(store.expandedAmendmentId()).toBeNull()
 
     await store.toggleAmendment(1)
 

@@ -438,6 +438,7 @@ export function createDashboardStore(deps: DashboardStoreDeps): DashboardStore {
       const result = await deps.readAmendmentDiff({ projectId, loopName: name, id })
       if (generation !== amendmentGeneration || expandedAmendmentId() !== id) return
       if ('error' in result) {
+        setExpandedAmendmentId(null)
         deps.toast({ message: result.error, variant: 'error' })
         return
       }
@@ -467,8 +468,12 @@ export function createDashboardStore(deps: DashboardStoreDeps): DashboardStore {
     const loopStatusCounts = createMemo(() => statusCounts(selectedProject()?.loops ?? []))
 
     const findings = createMemo(() => {
-      const projectId = selectedProjectId()
-      return projectId ? findingsByProject()[projectId]?.loops ?? [] : []
+      const project = selectedProject()
+      if (!project) return []
+      const groups = findingsByProject()[project.projectId]?.loops ?? []
+      if (query() === '') return groups
+      const loopNames = new Set(project.loops.map((loop) => loop.loopName))
+      return groups.filter((group) => loopNames.has(group.loopName))
     })
 
     return {

@@ -214,6 +214,47 @@ describe('FORGE_RPC', () => {
       .toEqual({ error: 'Forge returned an invalid dashboard summary' })
   })
 
+  test('readForgeDashboardSummary rejects a loop row missing a typed field and tolerates unknown fields', () => {
+    const loopRow = {
+      loopName: 'loop-a',
+      status: 'running',
+      phase: 'coding',
+      iteration: 1,
+      maxIterations: 5,
+      currentSectionIndex: 0,
+      totalSections: 1,
+      sectionCount: 1,
+      bugCount: 0,
+      hasPlan: true,
+      startedAt: 1,
+      activityAt: 2,
+    }
+    const project = {
+      projectId: 'p1',
+      loopCount: 1,
+      unexecutedPlanCount: 0,
+      bugCount: 0,
+      loops: [loopRow],
+      unexecutedPlans: [],
+    }
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [project] }))
+      .toEqual({ generatedAt: 1, projects: [project] })
+
+    const rowWithoutStatus: Record<string, unknown> = { ...loopRow }
+    delete rowWithoutStatus.status
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [rowWithoutStatus] }] }))
+      .toEqual({ error: 'Forge returned an invalid dashboard summary' })
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [{ ...loopRow, status: 'paused' }] }] }))
+      .toEqual({ error: 'Forge returned an invalid dashboard summary' })
+
+    const extended = {
+      generatedAt: 1,
+      serverBuild: 'next',
+      projects: [{ ...project, loops: [{ ...loopRow, queuedSections: 2 }] }],
+    }
+    expect(readForgeDashboardSummary(extended)).toEqual(extended)
+  })
+
   test('declares loopDetail, projectFindings and amendmentDiff inputs', () => {
     expect(FORGE_RPC.methods.loopDetail.input).toEqual({
       type: 'object',
@@ -310,6 +351,24 @@ describe('FORGE_RPC', () => {
     expect(readForgeLoopDetail({ ...detail, sections: [{ title: 'no index' }] }))
       .toEqual({ error: 'Forge returned an invalid loop detail' })
     expect(readForgeLoopDetail(null)).toEqual({ error: 'Forge returned an invalid loop detail' })
+
+    const finding = {
+      projectId: 'p1',
+      file: 'src/main.ts',
+      line: 3,
+      severity: 'bug',
+      description: 'broken',
+      createdAt: 1,
+    }
+    const withFinding = { ...detail, findings: [finding] }
+    expect(readForgeLoopDetail(withFinding)).toEqual(withFinding)
+    expect(readForgeLoopDetail({ ...withFinding, findings: [{ ...finding, severity: 1 }] }))
+      .toEqual({ error: 'Forge returned an invalid loop detail' })
+    expect(readForgeLoopDetail({ ...withFinding, findings: [{ file: 'src/main.ts' }] }))
+      .toEqual({ error: 'Forge returned an invalid loop detail' })
+
+    const extended = { ...withFinding, futureField: true }
+    expect(readForgeLoopDetail(extended)).toEqual(extended)
   })
 
   test('readForgeProjectFindings keeps grouped findings and surfaces errors', () => {
@@ -324,6 +383,10 @@ describe('FORGE_RPC', () => {
     expect(readForgeProjectFindings({ loops: 'none' }))
       .toEqual({ error: 'Forge returned an invalid project findings' })
     expect(readForgeProjectFindings(null)).toEqual({ error: 'Forge returned an invalid project findings' })
+    expect(readForgeProjectFindings({ loops: [{ loopName: 'loop-a', findings: [{ ...findings[0], severity: 'bogus' }] }] }))
+      .toEqual({ error: 'Forge returned an invalid project findings' })
+    const extended = { loops: [{ loopName: 'loop-a', findings, futureField: true }], futureField: true }
+    expect(readForgeProjectFindings(extended)).toEqual(extended)
   })
 
   test('readForgeAmendmentDiff keeps a valid diff and surfaces errors', () => {
@@ -346,6 +409,11 @@ describe('FORGE_RPC', () => {
     expect(readForgeAmendmentDiff({ sections: [{ index: 1 }], summary: diff.summary }))
       .toEqual({ error: 'Forge returned an invalid amendment diff' })
     expect(readForgeAmendmentDiff(null)).toEqual({ error: 'Forge returned an invalid amendment diff' })
+    expect(readForgeAmendmentDiff({ ...diff, sections: [{ ...diff.sections[0], lines: [{ text: 'new' }] }] }))
+      .toEqual({ error: 'Forge returned an invalid amendment diff' })
+
+    const extended = { ...diff, futureField: true }
+    expect(readForgeAmendmentDiff(extended)).toEqual(extended)
   })
 
   test('declares the project-scoped TUI push event schemas keyed by projectId', () => {

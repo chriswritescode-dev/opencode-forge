@@ -9,7 +9,11 @@ import type {
   AmendmentDiffLine,
   AmendmentSectionChange,
 } from '../utils/amendment-diff'
-import { isRecord } from '../utils/is-record'
+import {
+  findJsonSchemaMismatch,
+  type JsonSchemaShape,
+  type JsonSchemaValidationOptions,
+} from '../utils/json-schema'
 import { readForgeRpcResult, type ForgeRpcError } from './forge-rpc-result'
 
 /**
@@ -122,7 +126,7 @@ const DASHBOARD_LOOP_SUMMARY_SCHEMA = {
     'activityAt',
   ],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const DASHBOARD_UNEXECUTED_PLAN_SCHEMA = {
   type: 'object',
@@ -134,7 +138,7 @@ const DASHBOARD_UNEXECUTED_PLAN_SCHEMA = {
   },
   required: ['sessionId', 'title', 'updatedAt', 'charCount'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const DASHBOARD_PROJECT_SUMMARY_SCHEMA = {
   type: 'object',
@@ -149,7 +153,7 @@ const DASHBOARD_PROJECT_SUMMARY_SCHEMA = {
   },
   required: ['projectId', 'loopCount', 'unexecutedPlanCount', 'bugCount', 'loops', 'unexecutedPlans'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const DASHBOARD_SUMMARY_SCHEMA = {
   type: 'object',
@@ -159,7 +163,7 @@ const DASHBOARD_SUMMARY_SCHEMA = {
   },
   required: ['generatedAt', 'projects'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 export const DASHBOARD_SUMMARY_METHOD = {
   input: DASHBOARD_SUMMARY_INPUT,
@@ -173,35 +177,17 @@ export const DASHBOARD_SUMMARY_METHOD = {
   },
 } as const
 
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
-function hasCounts(row: Record<string, unknown>): boolean {
-  return isNumber(row.loopCount)
-    && isNumber(row.unexecutedPlanCount)
-    && isNumber(row.bugCount)
-}
-
-function hasRowKeys(row: unknown, key: string): boolean {
-  return isRecord(row) && typeof row[key] === 'string'
-}
-
-function isDashboardSummary(record: Record<string, unknown>): boolean {
-  if (!isNumber(record.generatedAt) || !Array.isArray(record.projects)) return false
-  return record.projects.every((project) =>
-    isRecord(project)
-    && typeof project.projectId === 'string'
-    && hasCounts(project)
-    && Array.isArray(project.loops)
-    && project.loops.every((loop) => hasRowKeys(loop, 'loopName'))
-    && Array.isArray(project.unexecutedPlans)
-    && project.unexecutedPlans.every((plan) => hasRowKeys(plan, 'sessionId')))
-}
+/**
+ * Readers tolerate unknown properties so a newer Forge server that adds fields does not
+ * break an older TUI; every declared property is still validated against its schema.
+ */
+const TOLERANT_READ_OPTIONS: JsonSchemaValidationOptions = { allowAdditionalProperties: true }
 
 export function readForgeDashboardSummary(value: unknown): ForgeDashboardSummaryOutput {
   return readForgeRpcResult(value, 'dashboard summary', (record) =>
-    isDashboardSummary(record) ? (record as unknown as ForgeDashboardSummary) : null)
+    findJsonSchemaMismatch(DASHBOARD_SUMMARY_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
+      ? (record as unknown as ForgeDashboardSummary)
+      : null)
 }
 
 const DASHBOARD_SECTION_STATUSES = enumList<SectionPlanRow['status']>()([
@@ -411,7 +397,7 @@ const LOOP_DETAIL_ROW_SCHEMA = {
     'totalSections',
   ],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const SECTION_PLAN_SCHEMA = {
   type: 'object',
@@ -431,7 +417,7 @@ const SECTION_PLAN_SCHEMA = {
   },
   required: ['projectId', 'loopName', 'sectionIndex', 'title', 'content', 'status', 'attempts'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const REVIEW_FINDING_SCHEMA = {
   type: 'object',
@@ -448,7 +434,7 @@ const REVIEW_FINDING_SCHEMA = {
   },
   required: ['projectId', 'file', 'line', 'severity', 'description', 'createdAt'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const USAGE_BUCKET_SCHEMA = {
   type: 'object',
@@ -463,7 +449,7 @@ const USAGE_BUCKET_SCHEMA = {
   },
   required: ['cost', 'inputTokens', 'outputTokens', 'reasoningTokens', 'cacheReadTokens', 'cacheWriteTokens', 'messageCount'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const LOOP_USAGE_SCHEMA = {
   type: 'object',
@@ -492,7 +478,7 @@ const LOOP_USAGE_SCHEMA = {
     'byRole',
   ],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const LOOP_TRANSITION_SCHEMA = {
   type: 'object',
@@ -512,7 +498,7 @@ const LOOP_TRANSITION_SCHEMA = {
   },
   required: ['id', 'projectId', 'loopName', 'eventType', 'transitionKind', 'fromPhase', 'iteration', 'createdAt'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const AMENDMENT_SUMMARY_SCHEMA = {
   type: 'object',
@@ -523,7 +509,7 @@ const AMENDMENT_SUMMARY_SCHEMA = {
   },
   required: ['added', 'removed', 'modified'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const PLAN_AMENDMENT_SCHEMA = {
   type: 'object',
@@ -539,7 +525,7 @@ const PLAN_AMENDMENT_SCHEMA = {
   },
   required: ['id', 'projectId', 'loopName', 'source', 'rationale', 'appliedAtSection', 'createdAt', 'summary'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const AMENDMENT_DIFF_LINE_SCHEMA = {
   type: 'object',
@@ -549,7 +535,7 @@ const AMENDMENT_DIFF_LINE_SCHEMA = {
   },
   required: ['kind', 'text'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const AMENDMENT_SECTION_DIFF_SCHEMA = {
   type: 'object',
@@ -562,7 +548,7 @@ const AMENDMENT_SECTION_DIFF_SCHEMA = {
   },
   required: ['index', 'change', 'title', 'lines'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const LOOP_DETAIL_SCHEMA = {
   type: 'object',
@@ -582,7 +568,7 @@ const LOOP_DETAIL_SCHEMA = {
   },
   required: ['loop', 'sections', 'findings', 'transitions', 'transitionsCapped', 'amendments'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const AMENDMENT_DIFF_SCHEMA = {
   type: 'object',
@@ -592,7 +578,7 @@ const AMENDMENT_DIFF_SCHEMA = {
   },
   required: ['sections', 'summary'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 const PROJECT_FINDINGS_SCHEMA = {
   type: 'object',
@@ -612,7 +598,7 @@ const PROJECT_FINDINGS_SCHEMA = {
   },
   required: ['loops'],
   additionalProperties: false,
-} as const
+} as const satisfies JsonSchemaShape
 
 export const DASHBOARD_LOOP_DETAIL_METHOD = {
   input: {
@@ -697,28 +683,17 @@ export const DASHBOARD_PLAN_DELETE_METHOD = {
 } as const
 
 export function readForgeLoopDetail(value: unknown): ForgeLoopDetailOutput {
-  return readForgeRpcResult(value, 'loop detail', (record) => {
-    const loop = record.loop
-    if (!isRecord(loop)
-      || typeof loop.projectId !== 'string'
-      || typeof loop.loopName !== 'string'
-      || typeof loop.status !== 'string') return null
-    if (!Array.isArray(record.sections) || !record.sections.every((row) => isRecord(row) && isNumber(row.sectionIndex))) return null
-    if (!Array.isArray(record.findings) || !record.findings.every((row) => isRecord(row) && typeof row.file === 'string')) return null
-    if (!Array.isArray(record.transitions) || !record.transitions.every((row) => isRecord(row) && isNumber(row.id))) return null
-    if (typeof record.transitionsCapped !== 'boolean') return null
-    if (!Array.isArray(record.amendments) || !record.amendments.every((row) => isRecord(row) && isNumber(row.id))) return null
-    return record as unknown as ForgeLoopDetail
-  })
+  return readForgeRpcResult(value, 'loop detail', (record) =>
+    findJsonSchemaMismatch(LOOP_DETAIL_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
+      ? (record as unknown as ForgeLoopDetail)
+      : null)
 }
 
 export function readForgeProjectFindings(value: unknown): ForgeProjectFindingsOutput {
-  return readForgeRpcResult(value, 'project findings', (record) => {
-    if (!Array.isArray(record.loops)) return null
-    const loops = record.loops
-    if (!loops.every((loop) => isRecord(loop) && typeof loop.loopName === 'string' && Array.isArray(loop.findings))) return null
-    return { loops } as unknown as ForgeProjectFindings
-  })
+  return readForgeRpcResult(value, 'project findings', (record) =>
+    findJsonSchemaMismatch(PROJECT_FINDINGS_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
+      ? (record as unknown as ForgeProjectFindings)
+      : null)
 }
 
 export function readForgePlanDeleteOutput(value: unknown): ForgePlanDeleteOutput {
@@ -727,16 +702,8 @@ export function readForgePlanDeleteOutput(value: unknown): ForgePlanDeleteOutput
 }
 
 export function readForgeAmendmentDiff(value: unknown): ForgeAmendmentDiffOutput {
-  return readForgeRpcResult(value, 'amendment diff', (record) => {
-    if (!Array.isArray(record.sections)) return null
-    const summary = record.summary
-    if (!isRecord(summary) || !isNumber(summary.added) || !isNumber(summary.removed) || !isNumber(summary.modified)) return null
-    const sections = record.sections
-    if (!sections.every((section) => isRecord(section)
-      && isNumber(section.index)
-      && typeof section.change === 'string'
-      && typeof section.title === 'string'
-      && Array.isArray(section.lines))) return null
-    return record as unknown as ForgeAmendmentDiff
-  })
+  return readForgeRpcResult(value, 'amendment diff', (record) =>
+    findJsonSchemaMismatch(AMENDMENT_DIFF_SCHEMA, record, TOLERANT_READ_OPTIONS) === null
+      ? (record as unknown as ForgeAmendmentDiff)
+      : null)
 }

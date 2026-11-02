@@ -12,7 +12,7 @@ Opening records the current TUI route, and when the current session's directory 
 
 ## Views
 
-Long lists stay bounded: Loops and each Plans block render at most 200 rows, and Findings at most 300, with a "narrow the search to see more" hint when a list is cut off. There is no show-all toggle; search and the status filter are how a list is narrowed.
+Long lists stay bounded: Loops and each Plans block render at most 200 rows, and Findings at most 300, with a "narrow the search to see more" hint when a list is cut off. There is no show-all toggle; search and the status filter are how a list is narrowed. In Findings, the search keeps only the groups of loops it keeps.
 
 ### Project list
 
@@ -85,7 +85,7 @@ Loop page:
 
 The dashboard never polls. It refetches when the server pushes `loopsChanged` or `plansChanged` for a project, and re-reads everything after the event stream reconnects. While no dashboard page is mounted, those pushes only mark cached state stale, so a closed dashboard never fetches.
 
-Those events come only from Forge plugin instances loaded in the same OpenCode server process. A change written by another OpenCode process that shares the same Forge database is not pushed: it appears after reopening the dashboard or after pressing `r`, which refreshes everything the current page shows.
+Those events come only from Forge plugin instances loaded in the same OpenCode server process. A change written by another OpenCode process that shares the same Forge database is not pushed. Reopening the dashboard refreshes the project summary only; cached findings and an open loop page keep their old data until you press `r`, which refreshes everything the current page shows.
 
 ## Deleting plans
 
