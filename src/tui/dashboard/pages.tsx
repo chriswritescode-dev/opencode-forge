@@ -704,9 +704,9 @@ function renderProjectRow(props: {
         <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>
           {repoLabel(props.labels(), props.row.project)}
         </text>
-        <text flexShrink={0} fg={running() > 0 ? props.colors.info : props.colors.muted}>{`running ${running()}`}</text>
+        <text flexShrink={0} fg={running() > 0 ? props.colors.info : props.colors.muted}>{`${running()} running`}</text>
         <text flexShrink={0} fg={props.colors.muted}>
-          {`loops ${props.row.project.loopCount} · plans ${props.row.project.unexecutedPlanCount} · bugs ${props.row.project.bugCount}`}
+          {`· ${props.row.project.loopCount} loops · plans ${props.row.project.unexecutedPlanCount} · bugs ${props.row.project.bugCount}`}
         </text>
       </box>
       <box flexDirection="row" paddingLeft={2}>
