@@ -5,15 +5,19 @@ import {
   readForgeAutoApproveChangedEvent,
   readForgeAutoApproveState,
   readForgeExecutePlanOutput,
-  readForgeHostSandboxChangedEvent,
   readForgeHostSandboxSetOutput,
   readForgeHostSandboxState,
   readForgeLoopDefaults,
   readForgeLoopRestartOutput,
   readForgeLoopSidebar,
+  readForgeLoopDetail,
   readForgeLoops,
-  readForgeLoopsChangedEvent,
+  readForgeProjectFindings,
+  readForgeAmendmentDiff,
+  readForgePlanDeleteOutput,
+  readForgeProjectChangedEvent,
   readForgeSessionPlan,
+  readForgeDashboardSummary,
   readForgeVersion,
   readForgeWorktrees,
   toForgeRpcJson,
@@ -36,6 +40,11 @@ describe('FORGE_RPC', () => {
       'hostSandboxSet',
       'worktrees',
       'version',
+      'dashboardSummary',
+      'loopDetail',
+      'projectFindings',
+      'amendmentDiff',
+      'planDelete',
     ])
   })
 
@@ -174,13 +183,248 @@ describe('FORGE_RPC', () => {
     expect(readForgeVersion(null)).toEqual({ error: 'Forge returned an invalid version' })
   })
 
-  test('declares the three TUI push event schemas keyed by projectId', () => {
-    expect(FORGE_RPC.events.loopsChanged.schema).toEqual({
+  test('declares the dashboardSummary method with an empty input and a summary output', () => {
+    const method = FORGE_RPC.methods.dashboardSummary
+    expect(method.input).toEqual({ type: 'object', properties: {}, additionalProperties: false })
+    expect(method.output.properties.generatedAt).toEqual({ type: 'number' })
+    expect(method.output.properties.projects.type).toBe('array')
+    expect(method.output.properties.error).toEqual({ type: 'string' })
+    expect(method.output.additionalProperties).toBe(false)
+  })
+
+  test('readForgeDashboardSummary keeps a valid summary and surfaces errors', () => {
+    const summary = {
+      generatedAt: 1,
+      projects: [{
+        projectId: 'p1',
+        loopCount: 0,
+        unexecutedPlanCount: 0,
+        bugCount: 0,
+        loops: [],
+        unexecutedPlans: [],
+      }],
+    }
+    expect(readForgeDashboardSummary(summary)).toEqual(summary)
+    expect(readForgeDashboardSummary({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ projectId: 'p1' }] }))
+      .toEqual({ error: 'Forge returned an invalid dashboard summary' })
+    expect(readForgeDashboardSummary({ generatedAt: 'now', projects: [] }))
+      .toEqual({ error: 'Forge returned an invalid dashboard summary' })
+    expect(readForgeDashboardSummary(null))
+      .toEqual({ error: 'Forge returned an invalid dashboard summary' })
+  })
+
+  test('readForgeDashboardSummary rejects a loop row missing a typed field and tolerates unknown fields', () => {
+    const loopRow = {
+      loopName: 'loop-a',
+      status: 'running',
+      phase: 'coding',
+      iteration: 1,
+      maxIterations: 5,
+      currentSectionIndex: 0,
+      totalSections: 1,
+      sectionCount: 1,
+      bugCount: 0,
+      hasPlan: true,
+      startedAt: 1,
+      activityAt: 2,
+    }
+    const project = {
+      projectId: 'p1',
+      loopCount: 1,
+      unexecutedPlanCount: 0,
+      bugCount: 0,
+      loops: [loopRow],
+      unexecutedPlans: [],
+    }
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [project] }))
+      .toEqual({ generatedAt: 1, projects: [project] })
+
+    const rowWithoutStatus: Record<string, unknown> = { ...loopRow }
+    delete rowWithoutStatus.status
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [rowWithoutStatus] }] }))
+      .toEqual({ error: 'Forge returned an invalid dashboard summary' })
+    expect(readForgeDashboardSummary({ generatedAt: 1, projects: [{ ...project, loops: [{ ...loopRow, status: 'paused' }] }] }))
+      .toEqual({ error: 'Forge returned an invalid dashboard summary' })
+
+    const extended = {
+      generatedAt: 1,
+      serverBuild: 'next',
+      projects: [{ ...project, loops: [{ ...loopRow, queuedSections: 2 }] }],
+    }
+    expect(readForgeDashboardSummary(extended)).toEqual(extended)
+  })
+
+  test('declares loopDetail, projectFindings and amendmentDiff inputs', () => {
+    expect(FORGE_RPC.methods.loopDetail.input).toEqual({
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', minLength: 1 },
+        loopName: { type: 'string', minLength: 1 },
+      },
+      required: ['projectId', 'loopName'],
+      additionalProperties: false,
+    })
+    expect(FORGE_RPC.methods.projectFindings.input).toEqual({
+      type: 'object',
+      properties: { projectId: { type: 'string', minLength: 1 } },
+      required: ['projectId'],
+      additionalProperties: false,
+    })
+    expect(FORGE_RPC.methods.amendmentDiff.input).toEqual({
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', minLength: 1 },
+        loopName: { type: 'string', minLength: 1 },
+        id: { type: 'integer', minimum: 1 },
+      },
+      required: ['projectId', 'loopName', 'id'],
+      additionalProperties: false,
+    })
+    for (const method of [FORGE_RPC.methods.loopDetail, FORGE_RPC.methods.projectFindings, FORGE_RPC.methods.amendmentDiff]) {
+      expect(method.output.properties.error).toEqual({ type: 'string' })
+      expect(method.output.additionalProperties).toBe(false)
+    }
+  })
+
+  test('declares planDelete over project and session and reads its envelope', () => {
+    expect(FORGE_RPC.methods.planDelete.input).toEqual({
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', minLength: 1 },
+        sessionId: { type: 'string', minLength: 1 },
+      },
+      required: ['projectId', 'sessionId'],
+      additionalProperties: false,
+    })
+    expect(FORGE_RPC.methods.planDelete.output).toEqual({
+      type: 'object',
+      properties: {
+        deleted: { type: 'boolean' },
+        error: { type: 'string' },
+      },
+      additionalProperties: false,
+    })
+    expect(readForgePlanDeleteOutput({ deleted: true })).toEqual({ deleted: true })
+    expect(readForgePlanDeleteOutput({ error: 'Plan not found' })).toEqual({ error: 'Plan not found' })
+    expect(readForgePlanDeleteOutput({ deleted: false }))
+      .toEqual({ error: 'Forge returned an invalid plan delete result' })
+    expect(readForgePlanDeleteOutput(null)).toEqual({ error: 'Forge returned an invalid plan delete result' })
+  })
+
+  test('sessionPlan accepts an optional projectId', () => {
+    expect(FORGE_RPC.methods.sessionPlan.input.properties.projectId).toEqual({ type: 'string', minLength: 1 })
+    expect(FORGE_RPC.methods.sessionPlan.input.required).toEqual(['sessionId'])
+    expect(FORGE_RPC.methods.sessionPlan.input.additionalProperties).toBe(false)
+  })
+
+  test('readForgeLoopDetail keeps a valid detail and surfaces errors', () => {
+    const loop = {
+      projectId: 'p1',
+      loopName: 'loop-a',
+      status: 'running',
+      currentSessionId: 'ses_1',
+      worktree: false,
+      worktreeDir: '/wt',
+      projectDir: '/project',
+      maxIterations: 5,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      auditorFallbackIndex: 0,
+      modelFailed: false,
+      sandbox: false,
+      startedAt: 100,
+      currentSectionIndex: 0,
+      totalSections: 1,
+    }
+    const detail = { loop, sections: [], findings: [], transitions: [], transitionsCapped: false, amendments: [] }
+    expect(readForgeLoopDetail(detail)).toEqual(detail)
+    expect(readForgeLoopDetail({ ...detail, durationText: '1s', plan: '# Plan' }))
+      .toEqual({ ...detail, durationText: '1s', plan: '# Plan' })
+    expect(readForgeLoopDetail({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeLoopDetail({ ...detail, transitionsCapped: 'yes' }))
+      .toEqual({ error: 'Forge returned an invalid loop detail' })
+    expect(readForgeLoopDetail({ ...detail, loop: { ...loop, projectId: 1 } }))
+      .toEqual({ error: 'Forge returned an invalid loop detail' })
+    expect(readForgeLoopDetail({ ...detail, sections: [{ title: 'no index' }] }))
+      .toEqual({ error: 'Forge returned an invalid loop detail' })
+    expect(readForgeLoopDetail(null)).toEqual({ error: 'Forge returned an invalid loop detail' })
+
+    const finding = {
+      projectId: 'p1',
+      file: 'src/main.ts',
+      line: 3,
+      severity: 'bug',
+      description: 'broken',
+      createdAt: 1,
+    }
+    const withFinding = { ...detail, findings: [finding] }
+    expect(readForgeLoopDetail(withFinding)).toEqual(withFinding)
+    expect(readForgeLoopDetail({ ...withFinding, findings: [{ ...finding, severity: 1 }] }))
+      .toEqual({ error: 'Forge returned an invalid loop detail' })
+    expect(readForgeLoopDetail({ ...withFinding, findings: [{ file: 'src/main.ts' }] }))
+      .toEqual({ error: 'Forge returned an invalid loop detail' })
+
+    const extended = { ...withFinding, futureField: true }
+    expect(readForgeLoopDetail(extended)).toEqual(extended)
+  })
+
+  test('readForgeProjectFindings keeps grouped findings and surfaces errors', () => {
+    const findings = [{
+      projectId: 'p1', file: 'src/main.ts', line: 10, severity: 'bug', description: 'broken', createdAt: 1,
+    }]
+    const result = { loops: [{ loopName: 'loop-a', findings }] }
+    expect(readForgeProjectFindings(result)).toEqual(result)
+    expect(readForgeProjectFindings({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeProjectFindings({ loops: [{ findings: [] }] }))
+      .toEqual({ error: 'Forge returned an invalid project findings' })
+    expect(readForgeProjectFindings({ loops: 'none' }))
+      .toEqual({ error: 'Forge returned an invalid project findings' })
+    expect(readForgeProjectFindings(null)).toEqual({ error: 'Forge returned an invalid project findings' })
+    expect(readForgeProjectFindings({ loops: [{ loopName: 'loop-a', findings: [{ ...findings[0], severity: 'bogus' }] }] }))
+      .toEqual({ error: 'Forge returned an invalid project findings' })
+    const extended = { loops: [{ loopName: 'loop-a', findings, futureField: true }], futureField: true }
+    expect(readForgeProjectFindings(extended)).toEqual(extended)
+  })
+
+  test('readForgeAmendmentDiff keeps a valid diff and surfaces errors', () => {
+    const diff = {
+      sections: [{
+        index: 4,
+        change: 'modified',
+        title: 'New Section',
+        previousTitle: 'Old Section',
+        lines: [{ kind: 'add', text: 'new' }, { kind: 'remove', text: 'old' }],
+      }],
+      summary: { added: 0, removed: 0, modified: 1 },
+    }
+    expect(readForgeAmendmentDiff(diff)).toEqual(diff)
+    expect(readForgeAmendmentDiff({ ...diff, sections: [] }))
+      .toEqual({ sections: [], summary: diff.summary })
+    expect(readForgeAmendmentDiff({ error: 'no db' })).toEqual({ error: 'no db' })
+    expect(readForgeAmendmentDiff({ sections: [], summary: { added: 0 } }))
+      .toEqual({ error: 'Forge returned an invalid amendment diff' })
+    expect(readForgeAmendmentDiff({ sections: [{ index: 1 }], summary: diff.summary }))
+      .toEqual({ error: 'Forge returned an invalid amendment diff' })
+    expect(readForgeAmendmentDiff(null)).toEqual({ error: 'Forge returned an invalid amendment diff' })
+    expect(readForgeAmendmentDiff({ ...diff, sections: [{ ...diff.sections[0], lines: [{ text: 'new' }] }] }))
+      .toEqual({ error: 'Forge returned an invalid amendment diff' })
+
+    const extended = { ...diff, futureField: true }
+    expect(readForgeAmendmentDiff(extended)).toEqual(extended)
+  })
+
+  test('declares the project-scoped TUI push event schemas keyed by projectId', () => {
+    const projectEventSchema = {
       type: 'object',
       properties: { projectId: { type: 'string' } },
       required: ['projectId'],
       additionalProperties: false,
-    })
+    }
+    expect(FORGE_RPC.events.loopsChanged.schema).toEqual(projectEventSchema)
+    expect(FORGE_RPC.events.plansChanged.schema).toEqual(projectEventSchema)
     expect(FORGE_RPC.events.autoApproveChanged.schema).toEqual({
       type: 'object',
       properties: { projectId: { type: 'string' }, sessionId: { type: 'string' } },
@@ -195,10 +439,10 @@ describe('FORGE_RPC', () => {
     })
   })
 
-  test('readForgeLoopsChangedEvent keeps a projectId and rejects a malformed payload', () => {
-    expect(readForgeLoopsChangedEvent({ projectId: 'proj_1' })).toEqual({ projectId: 'proj_1' })
-    expect(readForgeLoopsChangedEvent({})).toBeNull()
-    expect(readForgeLoopsChangedEvent({ projectId: 1 })).toBeNull()
+  test('readForgeProjectChangedEvent keeps a projectId and rejects a malformed payload', () => {
+    expect(readForgeProjectChangedEvent({ projectId: 'proj_1' })).toEqual({ projectId: 'proj_1' })
+    expect(readForgeProjectChangedEvent({})).toBeNull()
+    expect(readForgeProjectChangedEvent({ projectId: 1 })).toBeNull()
   })
 
   test('readForgeAutoApproveChangedEvent keeps a projectId and sessionId, and rejects a partial payload', () => {
@@ -206,11 +450,6 @@ describe('FORGE_RPC', () => {
       .toEqual({ projectId: 'proj_1', sessionId: 'ses_1' })
     expect(readForgeAutoApproveChangedEvent({ projectId: 'proj_1' })).toBeNull()
     expect(readForgeAutoApproveChangedEvent({ sessionId: 'ses_1' })).toBeNull()
-  })
-
-  test('readForgeHostSandboxChangedEvent keeps a projectId and rejects a malformed payload', () => {
-    expect(readForgeHostSandboxChangedEvent({ projectId: 'proj_1' })).toEqual({ projectId: 'proj_1' })
-    expect(readForgeHostSandboxChangedEvent({})).toBeNull()
   })
 
   test('declares a toast event schema keyed by projectId and message', () => {

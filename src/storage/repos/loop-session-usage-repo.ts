@@ -48,6 +48,8 @@ export interface LoopUsageAggregate {
 export interface LoopSessionUsageRepo {
   upsertSessionUsage(rows: LoopSessionUsageRow | LoopSessionUsageRow[]): void
   getAggregate(projectId: string, loopName: string): LoopUsageAggregate | null
+  /** Total cost per loop for this project, in one scan. */
+  totalCostsByLoop(projectId: string): Map<string, number>
   listSessionUsage(projectId: string, loopName: string): LoopSessionUsageRow[]
   hasSession(projectId: string, loopName: string, sessionId: string): boolean
   deleteLoop(projectId: string, loopName: string): void
@@ -143,8 +145,8 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
   `)
 
   // One scan of idx_loop_session_usage_project_loop produces the totals, the
-  // per-model split and the per-role split; the dashboard poll calls this once
-  // per loop, so a statement per shape tripled the work for no extra data.
+  // per-model split and the per-role split; the TUI dashboard loop detail calls
+  // this once per loop, so a statement per shape tripled the work for no extra data.
   const getAggregateStmt = db.prepare(`
     SELECT
       role,
@@ -159,6 +161,13 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     FROM loop_session_usage
     WHERE project_id = ? AND loop_name = ?
     GROUP BY role, model
+  `)
+
+  const totalCostsByLoopStmt = db.prepare(`
+    SELECT loop_name, SUM(cost) AS cost
+    FROM loop_session_usage
+    WHERE project_id = ?
+    GROUP BY loop_name
   `)
 
   const listSessionUsageStmt = db.prepare(`
@@ -242,6 +251,11 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
       }
 
       return aggregate
+    },
+
+    totalCostsByLoop(projectId: string): Map<string, number> {
+      const rows = totalCostsByLoopStmt.all(projectId) as { loop_name: string; cost: number }[]
+      return new Map(rows.map((row) => [row.loop_name, row.cost]))
     },
 
     listSessionUsage(projectId: string, loopName: string): LoopSessionUsageRow[] {

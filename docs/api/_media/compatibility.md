@@ -29,7 +29,7 @@ Forge declares a floor of OpenCode `>=2.0.14` (`engines.opencode`) and is verifi
 | TUI plugin (`src/tui.tsx`, `@opentui` 0.7.0 provided by the host) | `cli.json` directory entry resolution and TUI plugin setup | TUI load probe: palette search for `sandbox` lists "Toggle sandbox" and "Build sandbox template" in group `Forge`; no error naming forge, `@opentui`, or `solid` | Pass (load only; see *Not verified*) |
 | RPC (`FORGE_RPC`, `src/client/v2-workspaces.ts`) | `Plugin.Context` RPC/workspace types used by the TUI client | `pnpm typecheck` against `@opencode/plugin@2.2.2`; types only, no runtime contract | Pass |
 | Client types (`@opencode/client` `V2Event`) | Event union and `location` shape used by normalization and ownership | `pnpm typecheck`; event probe confirmed every observed type is in the union | Pass |
-| Dashboard | Independent of the OpenCode version; no `@opencode/*` runtime import | `pnpm test --project dom test/dashboard/app-dom.test.ts` | Pass |
+| TUI dashboard (`src/tui/dashboard/`) | Renders through the TUI plugin surface and reads only `FORGE_RPC`; store, view model, and machine diagram unit-tested | `pnpm test --project node test/tui` | Pass (logic only; see *Not verified*) |
 | Sandbox (`msb`) | Not exercised by these probes | `msb` runtime only; `pnpm test` covers the TypeScript facade | Not exercised |
 
 ## Reproducing the probes
@@ -283,6 +283,7 @@ These need a real model or `msb` and remain owner manual checks:
 - Patch-loop execution.
 - Sandbox start, `exec`, and network policy.
 - TUI sidebar rendering with live loops (only plugin load and palette commands were checked; the sidebar needs a loop row to render).
+- Dashboard page rendering: the test transform cannot compile Solid control flow, so no committed test covers the dashboard pages, and their layout and key handling need a manual TUI check.
 
 ## Follow-ups
 

@@ -17,7 +17,7 @@ OpenCode Forge is a plugin package: it exports a server plugin (`src/index.ts`) 
 | Export Path | Source File | Role |
 |---|---|---|
 | `.` / `./server` | `src/index.ts` | Server-side plugin: hooks, tools, agents, config |
-| `./tui` | `src/tui.tsx` | TUI plugin: sidebar, execution dialog, loop restart dialog |
+| `./tui` | `src/tui.tsx` | TUI plugin: sidebar, execution dialog, loop restart dialog, dashboard pages |
 
 ### Entry points
 
@@ -28,7 +28,7 @@ Both are thin adapters over one host-neutral core (`src/host/forge-core.ts`), so
 | Surface | Adapter files | Role |
 |---|---|---|
 | Server | `src/host/v2.ts` | Runs `setup(ctx)`, registers tools/agents/commands/hooks, and pumps normalized events into the core |
-| TUI | `src/tui/v2.tsx` | Registers the sidebar, execution dialog, loop restart, sandbox build, and host-sandbox toggle |
+| TUI | `src/tui/v2.tsx` | Registers the sidebar, execution dialog, loop restart, dashboard pages, sandbox build, and host-sandbox toggle |
 
 The server side is split by concern: `src/client/v2-adapter.ts` implements the `ForgeClient` port over the V2 context, `src/client/v2-workspaces.ts` adapts V2 worktrees and locations, `src/host/v2-events.ts` normalizes V2 events into Forge's event shape, and `src/host/v2-config.ts`, `src/host/v2-tools.ts`, and `src/host/v2-hooks.ts` handle agent/command registration, tool registration, and hooks.
 
@@ -65,10 +65,11 @@ The TUI plugin provides:
 - A sidebar listing the project's loops (up to three: running first, then most recent finished)
 - The current session's msb state next to the Forge title when sandboxing is configured
 - An execution dialog with plan paste, mode, model, variant, and per-loop settings (iterations, sandbox on/off, resources), also used to restart a loop
-- Command palette integration (`Execute plan`, `Open web dashboard`, `Build sandbox template`, `Toggle sandbox`)
+- The full-screen dashboard: a searchable project list, Loops/Findings/Plans sections, and per-loop detail with Overview, Timeline, Sections, Findings, Plan, and Usage tabs
+- Command palette integration (`Execute plan`, `Open dashboard`, `Build sandbox template`, `Toggle sandbox`)
 - Model selection with recent-model tracking
 
-The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches (an optional `branch`/`baseRef` picks the worktree branch and its base commit, and a loop launch reports the resulting `branch`), `loopDefaults` for the execution dialog's default iterations and sandbox resources, and `autoApproveState`/`autoApproveSet` for per-session auto-approve (served by the core in `src/host/forge-core.ts`), and, served by `src/services/tui-rpc-service.ts`, `loops`/`loopSidebar` for the loop list and sidebar, `sessionPlan` for the stored plan, `loopRestart` for loop restarts, `hostSandboxState`/`hostSandboxSet` for the host-session sandbox, and `worktrees` for the server's Forge worktree directories; `version` reports the server plugin version. The server pushes `toast`, `sessionDelete`, `loopsChanged`, `autoApproveChanged`, and `hostSandboxChanged` events; the TUI never polls — it fetches at startup, when one of these events arrives for its project, when the open session changes, and on `server.connected` after a reconnect. The OpenCode client ends an RPC event subscription for good when its shared event connection closes or the subscriber overflows, so `followRpcEvent` (`src/tui/v2-client.ts`) resubscribes each event stream and re-reads the state that stream drives. The TUI holds no Forge database of its own — its only `forge.db` reference is the path handed to the local dashboard launcher — so it works attached to a remote OpenCode server running Forge.
+The TUI talks to the server through the V2 plugin RPC port (`FORGE_RPC`): `executePlan` for plan launches (an optional `branch`/`baseRef` picks the worktree branch and its base commit, and a loop launch reports the resulting `branch`), `loopDefaults` for the execution dialog's default iterations and sandbox resources, and `autoApproveState`/`autoApproveSet` for per-session auto-approve (served by the core in `src/host/forge-core.ts`), and, served by `src/services/tui-rpc-service.ts`, `loops`/`loopSidebar` for the loop list and sidebar, `sessionPlan` for the stored plan (optionally another project's plan via `projectId`), `loopRestart` for loop restarts, `hostSandboxState`/`hostSandboxSet` for the host-session sandbox, and `worktrees` for the server's Forge worktree directories, plus, served by `src/host/forge-rpc-dashboard.ts` through `DashboardService` in `src/services/dashboard-service.ts`, `dashboardSummary`/`loopDetail`/`projectFindings`/`amendmentDiff`/`planDelete` for the dashboard; `version` reports the server plugin version. The server pushes `toast`, `sessionDelete`, `loopsChanged`, `plansChanged`, `autoApproveChanged`, and `hostSandboxChanged` events; the TUI never polls — it fetches at startup, when one of these events arrives for its project, when the open session changes, and on `server.connected` after a reconnect. The OpenCode client ends an RPC event subscription for good when its shared event connection closes or the subscriber overflows, so `followRpcEvent` (`src/tui/v2-client.ts`) resubscribes each event stream and re-reads the state that stream drives. The TUI holds no Forge database of its own: every value it shows, the dashboard included, arrives over `FORGE_RPC`, so it works attached to a remote OpenCode server running Forge.
 
 ## Module Layout
 
@@ -76,18 +77,18 @@ The codebase is organized into these module groups under `src/`:
 
 | Module | Purpose | Key Files |
 |--------|-----------|-----------|
-| `host/` | Host-neutral core plus the V2 adapter | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts`, `forge-rpc.ts` |
+| `host/` | Host-neutral core plus the V2 adapter | `forge-core.ts`, `v2.ts`, `v2-events.ts`, `v2-hooks.ts`, `v2-tools.ts`, `v2-config.ts`, `forge-rpc.ts`, `forge-rpc-dashboard.ts` |
 | `client/` | `ForgeClient` port and the V2 adapter | `port.ts`, `v2-adapter.ts`, `v2-workspaces.ts`, `errors.ts` |
 | `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant, minion) | `index.ts`, `types.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `minion.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `sandbox-message.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts`, `tool-hook-types.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
-| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `tui-rpc-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
+| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `section-bootstrap.ts`, `plan-capture.ts`, `tui-rpc-service.ts`, `dashboard-service.ts`, `unified-sandbox-resolver.ts`, `worktree-log.ts` |
 | `sandbox/` | msb sandbox management | `msb.ts`, `manager.ts`, `context.ts`, `reconcile.ts`, `session-controller.ts`, `shell-shim.ts`, `exec-fs.ts`, `env-probe.ts`, `process.ts`, `template.ts`, `loop-settings.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
 | `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `plan-adjust.ts`, `section-read.ts`, `tool.ts` |
 | `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `forge-naming.ts`, `forge-workspace-metadata.ts`, `loop-branch.ts`, `pending-teardown.ts`, `worktree-commit.ts`, `worktree-opencode-config.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
 | `utils/` | Shared utility modules (~40 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, `git-service.ts`, `toast.ts`, etc. |
-| `tui/` | TUI-specific components | `v2.tsx`, `host.tsx`, `execute-plan-panel.tsx`, `plan-commands.ts`, `loop-settings-dialog.ts`, `host-sandbox.ts`, `session-sandbox-store.ts`, `sandbox-build-dialog.tsx`, `session-follow.ts`, `project-client.ts`, `v2-client.ts`, `options.ts` |
+| `tui/` | TUI-specific components | `v2.tsx`, `host.tsx`, `execute-plan-panel.tsx`, `plan-commands.ts`, `loop-settings-dialog.ts`, `host-sandbox.ts`, `session-sandbox-store.ts`, `sandbox-build-dialog.tsx`, `session-follow.ts`, `project-client.ts`, `v2-client.ts`, `options.ts`, `dashboard/` (store, view model, machine diagram, pages) |
 
 All external consumers import through barrel files (`index.ts`) where available. See [Modules](modules.md) for full details.
 

@@ -5,7 +5,9 @@ import { createForgeCore, type ForgeCore } from '../../src/host/forge-core'
 import type { ForgeTuiEvent } from '../../src/host/forge-rpc'
 import {
   closeDatabase,
+  createLoopSessionUsageRepo,
   createLoopsRepo,
+  createPlansRepo,
   createSessionAutoApproveRepo,
   initializeDatabase,
   SESSION_AUTO_APPROVE_KEY_PREFIX,
@@ -98,7 +100,22 @@ describe('createForgeCore', () => {
       totalSections: 0,
       executionVariant: null,
       auditorVariant: null,
+      baseCommit: null,
+      standbySessionId: null,
     }
+  }
+
+  function seedRunningLoop(projectId: string, sessionId: string): void {
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createLoopsRepo(db).insert(runningLoopRow(projectId, sessionId), { lastAuditResult: null })
+    } finally {
+      closeDatabase(db)
+    }
+  }
+
+  async function settleTuiEvents(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
   test('registers the forge workspace adapter and writes the sandbox shim', async () => {
@@ -273,6 +290,150 @@ describe('createForgeCore', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(events.filter((event) => event.type === 'loopsChanged')).toEqual([
       { type: 'loopsChanged', projectId: built.projectId },
+    ])
+  })
+
+  test('emits one coalesced loopsChanged when a review finding is written inside a loop', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { enabled: false } }, undefined, { publishTuiEvent: (event) => events.push(event) })
+    seedRunningLoop(built.projectId, 'ses_host_1')
+
+    const result = await built.core.tools['review-write'].execute(
+      { file: 'src/core.ts', line: 7, severity: 'bug', description: 'A bug' },
+      { sessionID: 'ses_host_1', directory: testDir } as any,
+    )
+    expect(result).toContain('Stored review finding')
+
+    await settleTuiEvents()
+    expect(events.filter((event) => event.type === 'loopsChanged')).toEqual([
+      { type: 'loopsChanged', projectId: built.projectId },
+    ])
+  })
+
+  test('emits one coalesced loopsChanged when standby usage is captured on restart', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { enabled: false } }, {
+      session: {
+        create: async () => { throw new Error('session creation refused') },
+        messages: async () => ([{
+          info: {
+            role: 'assistant',
+            cost: 0.25,
+            tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+            model: 'prov/model',
+          },
+          parts: [],
+        }]),
+      },
+    }, { publishTuiEvent: (event) => events.push(event) })
+
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createLoopsRepo(db).insert({
+        ...runningLoopRow(built.projectId, 'ses_host_1'),
+        status: 'cancelled',
+        completedAt: Date.now(),
+        standbySessionId: 'ses_standby',
+      }, { lastAuditResult: null })
+    } finally {
+      closeDatabase(db)
+    }
+
+    const restarted = await built.core.tui.restartLoop({ loopName: 'core-loop' })
+    expect('error' in restarted).toBe(true)
+
+    await settleTuiEvents()
+    expect(events.filter((event) => event.type === 'loopsChanged')).toEqual([
+      { type: 'loopsChanged', projectId: built.projectId },
+    ])
+
+    const verifyDb = initializeDatabase(join(testDir, 'memory'))
+    try {
+      const rows = createLoopSessionUsageRepo(verifyDb).listSessionUsage(built.projectId, 'core-loop')
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ sessionId: 'ses_standby', cost: 0.25, model: 'prov/model' })
+    } finally {
+      closeDatabase(verifyDb)
+    }
+  })
+
+  test('emits one coalesced plansChanged when a session plan is written', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { enabled: false } }, undefined, { publishTuiEvent: (event) => events.push(event) })
+
+    const result = await built.core.tools['plan-write'].execute(
+      { content: '# Plan\n\n## Phase 1: Build\n\nDo the work.' },
+      { sessionID: 'ses_host_1', directory: testDir } as any,
+    )
+    expect(result).not.toContain('plan-write failed')
+
+    await settleTuiEvents()
+    expect(events.filter((event) => event.type === 'plansChanged')).toEqual([
+      { type: 'plansChanged', projectId: built.projectId },
+    ])
+  })
+
+  test('emits plansChanged when the dashboard deletes a plan', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { enabled: false } }, undefined, { publishTuiEvent: (event) => events.push(event) })
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createPlansRepo(db).writeForSession(built.projectId, 'ses_plan', '# Plan')
+    } finally {
+      closeDatabase(db)
+    }
+
+    expect(built.core.dashboard.deletePlan(built.projectId, 'ses_plan')).toEqual({ deleted: true })
+    await settleTuiEvents()
+    expect(events.filter((event) => event.type === 'plansChanged')).toEqual([
+      { type: 'plansChanged', projectId: built.projectId },
+    ])
+
+    expect(built.core.dashboard.deletePlan(built.projectId, 'ses_plan')).toEqual({ error: 'Plan not found' })
+    await settleTuiEvents()
+    expect(events.filter((event) => event.type === 'plansChanged')).toEqual([
+      { type: 'plansChanged', projectId: built.projectId },
+      { type: 'plansChanged', projectId: built.projectId },
+    ])
+  })
+
+  test('publishes plansChanged for the project the deleted plan belongs to', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { enabled: false } }, undefined, { publishTuiEvent: (event) => events.push(event) })
+    const otherProjectId = 'other-project'
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createPlansRepo(db).writeForSession(otherProjectId, 'ses_other_plan', '# Plan')
+    } finally {
+      closeDatabase(db)
+    }
+
+    expect(built.core.dashboard.deletePlan(otherProjectId, 'ses_other_plan')).toEqual({ deleted: true })
+    await settleTuiEvents()
+    expect(events.filter((event) => event.type === 'plansChanged')).toEqual([
+      { type: 'plansChanged', projectId: otherProjectId },
+    ])
+  })
+
+  test('coalesces plansChanged per project when plans for different projects change', async () => {
+    const events: ForgeTuiEvent[] = []
+    const built = await buildCore({ sandbox: { enabled: false } }, undefined, { publishTuiEvent: (event) => events.push(event) })
+    const otherProjectId = 'other-project'
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      const plansRepo = createPlansRepo(db)
+      plansRepo.writeForSession(built.projectId, 'ses_own_plan', '# Plan')
+      plansRepo.writeForSession(otherProjectId, 'ses_other_plan', '# Plan')
+    } finally {
+      closeDatabase(db)
+    }
+
+    expect(built.core.dashboard.deletePlan(built.projectId, 'ses_own_plan')).toEqual({ deleted: true })
+    expect(built.core.dashboard.deletePlan(otherProjectId, 'ses_other_plan')).toEqual({ deleted: true })
+    await settleTuiEvents()
+    expect(events.filter((event) => event.type === 'plansChanged')).toEqual([
+      { type: 'plansChanged', projectId: built.projectId },
+      { type: 'plansChanged', projectId: otherProjectId },
     ])
   })
 

@@ -2,7 +2,6 @@ import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync, chmodSync, 
 import { join } from 'path'
 import { execSync } from 'child_process'
 import solidPlugin from '@opentui/solid/bun-plugin'
-import { buildDashboardApp } from './build-dashboard-app'
 
 const packageJsonPath = join(__dirname, '..', 'package.json')
 const versionPath = join(__dirname, '..', 'src', 'version.ts')
@@ -18,22 +17,6 @@ const versionContent = `export const VERSION = '${version}'\n`
 writeFileSync(versionPath, versionContent, 'utf-8')
 
 console.log(`Version ${version} written to src/version.ts`)
-
-console.log('Generating dashboard marked-source...')
-const markedMinPath = join(__dirname, '..', 'src', 'dashboard', 'marked.min.js')
-const markedSourcePath = join(__dirname, '..', 'src', 'dashboard', 'marked-source.ts')
-const markedRaw = readFileSync(markedMinPath, 'utf-8')
-// Use JSON.stringify for proper JS string escaping (handles backticks, $, quotes, etc.)
-const markedEscaped = JSON.stringify(markedRaw)
-const markedSourceContent = `// Auto-generated from marked.min.js. Do not edit.
-export const MARKED_SOURCE: string = ${markedEscaped};
-`
-writeFileSync(markedSourcePath, markedSourceContent, 'utf-8')
-console.log('Dashboard marked-source generated.')
-
-console.log('Generating dashboard app bundle...')
-await buildDashboardApp()
-console.log('Dashboard app bundle generated.')
 
 console.log('Compiling main code...')
 execSync('tsc -p tsconfig.build.json', {

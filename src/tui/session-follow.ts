@@ -1,7 +1,7 @@
 import type { Plugin } from '@opencode/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
-import { resolveLogPath } from '../storage'
+import { resolveLogPath } from '../utils/opencode-paths'
 
 export interface FollowDecisionInput {
   /** Session that was just created (from a session.created event). */

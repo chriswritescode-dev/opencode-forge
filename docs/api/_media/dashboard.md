@@ -1,39 +1,98 @@
 # Dashboard
 
-Forge includes an observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open web dashboard`) or via `pnpm dashboard` (source checkouts only).
+Forge's dashboard is a full-screen TUI surface for watching loops, findings, and plans across every project that has Forge data. It is one of the TUI's own routes, not a service: there is no bind address, no HTTP endpoints, no separate process, no browser surface, and no LAN exposure.
 
-By default it binds loopback only. On a loopback bind it can edit the loop's persisted model columns and delete unexecuted session-scoped plans; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only. Set `dashboard.host` / `dashboard.port` in `forge-config.jsonc` to expose it on a LAN or VPN — see [Configuration → Dashboard](configuration.md#dashboard).
+Every value comes from the Forge server plugin over the TUI's `FORGE_RPC` contract: `dashboardSummary`, `loopDetail`, `projectFindings`, `amendmentDiff`, `sessionPlan` (with the project id, when reading another project's stored plan), and `planDelete`. The TUI holds no Forge database, so the dashboard also works when the TUI is attached to a remote OpenCode server running Forge.
 
-> **The dashboard has no authentication.** A non-loopback bind exposes every loop plan, audit result, finding, and session cost to anyone who can reach the port, so it must be protected at the network layer with a firewall, a private LAN, or a VPN.
+## Opening the dashboard
 
-See also: [Configuration](configuration.md#dashboard), [TUI](tui.md), [Loop System](loop-system.md).
+Run `Open dashboard` from the command palette (group **Forge**; description "Open the Forge dashboard: loops, findings and plans across all projects"), or use the optional `tui.keybinds.dashboard` binding when one is configured. That binding has no default: when it is empty the command is registered without a shortcut.
+
+Opening records the current TUI route, and when the current session's directory resolves to a project, pre-selects that project. `esc` at the top level — with nothing open or selected — returns to the recorded route.
 
 ## Views
 
-The dashboard is a **repo shell**: pick a repository, then move between its **Loops**, **Findings**, and **Plans** sections. The section nav sits directly beneath the app bar and the Loops-only filter bar beneath it, so switching sections never moves the nav. Loop detail opens as tabs (overview, timeline, sections, findings, plan, usage), with polled state on a 5 s interval. The loop header's **Plan adjusted** callout jumps to the Plan tab with the newest amendment's diff expanded and scrolled into view. The repo menu lists only repositories with at least one loop; a project discovered only from unexecuted plans has no `projectDir` to label it with, so the repo index lists the ones that still hold unexecuted plans under a single, collapsed-by-default **Unofficial projects** section instead — one block per project, each with its unexecuted plans inline. The **Plans** section groups a repo's plans into two labeled blocks: **Unexecuted** — session-scoped plans authored by `plan-write` that no loop has executed yet, listed above the loop plans — and **Executed**, the plans of loops that have run. Selecting an unexecuted plan opens its full stored markdown, fetched on demand; on a loopback bind each unexecuted plan can also be deleted (`bun scripts/cleanup-plans.ts` bulk-purges old session plans from a source checkout).
+Long lists stay bounded: Loops and each Plans block render at most 200 rows, and Findings at most 300, with a "narrow the search to see more" hint when a list is cut off. There is no show-all toggle; search and the status filter are how a list is narrowed. In Findings, the search keeps only the groups of loops it keeps.
 
-Deep links use the hash:
+### Project list
 
-| Hash | Opens |
+The first view lists one row per project with Forge data: the union of loop projects and projects with unexecuted plans. A row shows the shortest path label that is unique among projects, the running-loop count, the loop, unexecuted-plan, and bug counts, and the project directory (or the project id when it has no directory).
+
+`/` focuses the search. It matches project paths and labels, loop names and branches, and unexecuted plan titles. A project whose own path or label matches keeps all of its rows; otherwise only its matching loops and plans are kept, and a project with nothing left drops out.
+
+`enter` on a project opens its three sections, each with a count that matches the rows the section lists after the current search: **Loops** counts the matching loops, and **Plans** the matching unexecuted plans plus the matching loops that have a plan. **Findings** shows the project's bug count as `Findings (N bugs)`, because the section body lists bugs and warnings from the on-demand findings read, which may not be loaded yet.
+
+### Loops
+
+Each row shows the loop status, name, current phase (`—` once the loop has completed), an iteration meter, a 1-based section meter (`—` when the loop has no sections), the bug count, cost, duration, and last activity.
+
+- `s` cycles the sort: recent (server order), cost, duration, findings (bug count).
+- `f` cycles the status filter: all, running, completed, cancelled, errored, stalled.
+
+### Findings
+
+Findings are grouped per loop in the server's summary order. Each group is headed by the loop name and its finding count, and each finding shows its file and line, description, and scenario when one was recorded. Bugs render `✖`, warnings render `▲`; loops without findings are omitted. `enter` on a group opens that loop.
+
+### Plans
+
+The Plans section lists unexecuted session-scoped plans authored by `plan-write` first, each with its title, age, and character count, followed by executed plans — the loops that have a plan. `enter` on an unexecuted plan shows its stored markdown, fetched on demand. `enter` on an executed plan opens that loop on its Plan tab. Deleting an unexecuted plan is covered under [Deleting plans](#deleting-plans).
+
+### Loop page
+
+`enter` on a loop opens its page. The header shows the status, name, current phase while the loop runs, duration, cost, iteration and section meters (the section meter's label and fill both use the 1-based section number), bug and warning counts, the execution and auditor models (the auditor appends its fallback index when it is non-zero), branch, sandbox on/off, audit and error counts, and any termination reason.
+
+The tabs are Overview, Timeline, Sections (only when the loop has sections), Findings, Plan (only when the loop has a plan), and Usage.
+
+- **Overview:** a phase bar and legend with each phase's duration and percentage, a plan-adjusted callout when the loop's plan was amended, the post-action report (falling back to the completion summary), and the last audit result.
+- **Timeline:** a text state-machine diagram of coding → auditing → post_action with per-edge traversal counts and the current phase highlighted while the loop runs, the phase bar and legend, the most recent transitions, and a merged timeline of transitions and plan amendments.
+- **Sections:** the section list with each section's status, an `adjusted` marker when the plan changed it, duration, and attempt count; `enter` expands its captured done/deviations/follow-ups and stored section plan.
+- **Findings:** the current findings grouped by section, with severity.
+- **Plan:** the stored plan markdown and its amendments; `j`/`k` selects an amendment, `enter` loads and expands its before/after diff.
+- **Usage:** totals (cost, tokens, message count), then role-split bars, token-composition bars, and cost-by-model bars.
+
+## Key bindings
+
+Dashboard page:
+
+| Key | Action |
 | --- | --- |
-| `#<projectId>` | The repo's Loops section |
-| `#<projectId>/loops` \| `/findings` \| `/plans` | That repo section |
-| `#<projectId>/loop/<loopName>[/<tab>]` | A loop, optionally on a given tab |
-| `?status=running,errored&q=<text>` | Appended to any of the above to preserve filters |
+| `↑` / `↓`, `j` / `k` | Move the selection |
+| `enter` | Open the selected row |
+| `/` | Focus the search |
+| `esc` | Blur the search, else close an open plan, else deselect the project, else return to the previous route |
+| `tab` / `shift+tab` | Cycle sections |
+| `1`-`3` | Jump to Loops, Findings, Plans |
+| `s` | Cycle the sort (Loops only) |
+| `f` | Cycle the status filter (Loops only) |
+| `d` | Delete the selected unexecuted plan (Plans only) |
+| `r` | Refresh everything the current page shows |
 
-`loops`, `findings`, and `plans` are reserved as the second segment, so a loop with one of those names must be addressed as `#<projectId>/loop/<loopName>`.
+While the search is focused, the move, open, section, sort, filter, delete, and refresh keys are disabled; `esc` blurs the search.
 
-## API Endpoints
+Loop page:
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | HTML page (inlined SolidJS app) |
-| `GET /api/data` | JSON snapshot of Forge loop/project state. Accepts optional `project` and `loop` query parameters (`/api/data?project=<projectId>&loop=<loopName>`) to scope the payload: per-loop text (`plan`, `lastAuditResult`, `postActionReport`, `sections`, `amendments`) is materialised only for the scoped loop, and `findings` rows, `usage`, and `transitions` only for the scoped project. Projects are discovered from the union of loop projects and projects with unexecuted plans. `unexecutedPlans` rows ship for the scoped project and, when the payload is unscoped, for projects with no loops (the repo index's unofficial-projects section). `duration`, `hasPlan`, `sectionCount`, `bugCount`, and `unexecutedPlanCount` are always populated so the repo index, tab set, and section/bug counts render correctly while detail is in flight. |
-| `POST /api/loop/models` | Update the loop's persisted execution/auditor model (loopback bind only) |
-| `GET /api/amendment` | Fetch a plan amendment's before/after detail |
-| `GET /api/plan` | Fetch a session-scoped plan's stored content (`/api/plan?project=<projectId>&session=<sessionId>`), used by the Plans section for unexecuted plan bodies |
-| `POST /api/plan/delete` | Delete an unexecuted session-scoped plan (`{projectId, sessionId}`; loopback bind only) |
+| Key | Action |
+| --- | --- |
+| `tab` / `shift+tab` | Cycle tabs |
+| `↑` / `↓` | Scroll one line |
+| `pgup` / `pgdn` | Scroll one viewport |
+| `j` / `k` | Move the selection in Sections and Plan |
+| `enter` | Toggle a section's details or an amendment diff |
+| `r` | Refresh everything the current page shows |
+| `esc` | Return to the dashboard |
 
-All other non-GET paths return 404. Every mutating route is gated on a loopback bind.
+## Live updates
 
-In the browser, the loop table, repo findings list, plans list, unexecuted plans list, and loop picker cap their rendered rows behind a "Showing N of M" affordance (a "Show all" toggle expands the loop table, findings, plans, and unexecuted plans lists).
+The dashboard never polls. It refetches when the server pushes `loopsChanged` or `plansChanged` for a project, and re-reads everything after the event stream reconnects. While no dashboard page is mounted, those pushes only mark cached state stale, so a closed dashboard never fetches.
+
+Those events come only from Forge plugin instances loaded in the same OpenCode server process. A change written by another OpenCode process that shares the same Forge database is not pushed. Reopening the dashboard refreshes the project summary only; cached findings and an open loop page keep their old data until you press `r`, which refreshes everything the current page shows.
+
+## Deleting plans
+
+Only unexecuted session-scoped plans can be deleted, from the Plans section with `d`. The TUI opens the plan, asks for confirmation naming it and stating that the deletion cannot be undone, then sends `planDelete`. A cancelled or failed delete leaves the plan open (a failure also shows an error toast); a successful delete closes it and refreshes the summary. Executed plans have no delete action.
+
+## Removed: the former standalone dashboard
+
+Forge previously shipped the dashboard as a separate standalone server. That server, its separate start script, its HTTP endpoints, and the `dashboard` config block (`dashboard.host` / `dashboard.port`) are gone; the dashboard exists only as the TUI surface described above. A leftover `dashboard` key in `forge-config.jsonc` is ignored rather than rejected, because the config loader does not validate unknown top-level keys.
+
+See also: [Configuration → TUI](configuration.md#tui), [TUI](tui.md), [Loop System](loop-system.md).

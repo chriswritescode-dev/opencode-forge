@@ -2,9 +2,9 @@
  * Diffing for the plan-amendment audit trail. `plan_amendments` stores a full
  * `{ index, title, content }[]` snapshot of the affected sections either side of
  * an adjustment; this module turns a pair of those snapshots into what the
- * dashboard renders. Kept free of storage and HTTP concerns so it is unit
- * testable, and split into a summary pass (cheap enough for every poll) and a
- * full line diff (computed on demand).
+ * TUI dashboard renders. Kept free of storage and transport concerns so it is
+ * unit testable, and split into a summary pass (cheap enough for every summary
+ * request) and a full line diff (computed on demand).
  */
 
 interface AmendmentSnapshotSection {

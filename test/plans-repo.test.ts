@@ -390,5 +390,20 @@ describe('PlansRepo', () => {
       expect(rows[0].content).toBe('Unexecuted plan')
       expect(repo.unexecutedCountsByProject().get(projectId)).toBe(1)
     })
+
+    test('lists unexecuted plans newest first', () => {
+      repo.writeForSession(projectId, 'older-plan', 'older')
+      repo.writeForSession(projectId, 'newer-plan', 'newer')
+      db.run(
+        "UPDATE plans SET updated_at = ? WHERE project_id = ? AND session_id = ?",
+        [1000, projectId, 'older-plan']
+      )
+      db.run(
+        "UPDATE plans SET updated_at = ? WHERE project_id = ? AND session_id = ?",
+        [2000, projectId, 'newer-plan']
+      )
+
+      expect(repo.listUnexecuted(projectId).map(r => r.sessionId)).toEqual(['newer-plan', 'older-plan'])
+    })
   })
 })

@@ -46,8 +46,10 @@ import { createSandboxMessageHook } from '../hooks/sandbox-message'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
+import { createDashboardService, type DashboardService } from '../services/dashboard-service'
 import { processShared } from '../utils/process-shared'
 import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
+import { withWriteNotifications } from '../utils/write-notifications'
 import { errorMessage } from '../utils/error-message'
 
 /**
@@ -112,6 +114,8 @@ export interface ForgeCore {
   autoApproveDenyRules: ReadonlyArray<AutoApproveDenyRule>
   /** Read and control surface the TUI reaches through the FORGE_RPC plugin RPC. */
   tui: TuiRpcService
+  /** Read model the dashboard RPC serves, for every project in the database. */
+  dashboard: DashboardService
   cleanup(): Promise<void>
   shellShimPath: string | null
 }
@@ -270,6 +274,36 @@ Before designing, settle the route with grouped \`question\` rounds after resear
 </system-reminder>`
 }
 
+type CoalescedProjectEventType = 'loopsChanged' | 'plansChanged'
+
+/**
+ * Builds a publisher that emits at most one `{ type, projectId }` event per
+ * project per microtask, so a burst of writes makes the TUI re-read once
+ * instead of once per write. Writes for different projects in the same
+ * microtask each emit once. `emit` is the writing instance's TUI channel, so a
+ * write for another project still reaches the instance that performed it.
+ */
+function createCoalescedTuiEvent(
+  type: CoalescedProjectEventType,
+  emit: (event: ForgeTuiEvent) => void,
+): (projectId: string) => void {
+  let scheduled = false
+  const pending = new Set<string>()
+  return (projectId) => {
+    pending.add(projectId)
+    if (scheduled) return
+    scheduled = true
+    queueMicrotask(() => {
+      scheduled = false
+      const projectIds = [...pending]
+      pending.clear()
+      for (const id of projectIds) {
+        emit({ type, projectId: id })
+      }
+    })
+  }
+}
+
 /** Inputs the loop-change notifier needs. */
 export interface LoopChangeNotifierDeps {
   directory: string
@@ -403,16 +437,15 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     ? registerTuiEventEmitter(projectId, host.publishTuiEvent)
     : null
 
-  // Bursts of loop-row writes (phase rotation, section advance, error bookkeeping) collapse to a
-  // single loopsChanged per microtask so the TUI re-reads once instead of once per write.
-  let loopsChangedScheduled = false
-  const publishLoopsChanged = (): void => {
-    if (loopsChangedScheduled) return
-    loopsChangedScheduled = true
-    queueMicrotask(() => {
-      loopsChangedScheduled = false
-      emitTuiEvent(projectId, { type: 'loopsChanged', projectId })
-    })
+  // Bursts of writes (phase rotation, section advance, findings, usage, plans)
+  // collapse to one event per microtask so the TUI re-reads once instead of once per write.
+  const emitInstanceTuiEvent = (event: ForgeTuiEvent): void => emitTuiEvent(projectId, event)
+  const publishLoopsChanged = createCoalescedTuiEvent('loopsChanged', emitInstanceTuiEvent)
+  const publishPlansChanged = createCoalescedTuiEvent('plansChanged', emitInstanceTuiEvent)
+  const notifyLoopsChanged = (): void => publishLoopsChanged(projectId)
+  const notifyPlansChanged = (args: unknown[]): void => {
+    const planProjectId = args[0]
+    if (typeof planProjectId === 'string') publishPlansChanged(planProjectId)
   }
 
   const legacySandboxWarnings = collectLegacySandboxConfigWarnings(config.sandbox as unknown)
@@ -608,12 +641,26 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     }
   }
 
+  const PLANS_WRITE_METHODS = [
+    'writeForSession',
+    'deleteForSession',
+    'promote',
+  ] as const satisfies ReadonlyArray<keyof ReturnType<typeof createPlansRepo>>
+
   const loopsRepo = createLoopsRepo(db, logger)
   const sandboxPreferences = createSessionSandboxPreferencesRepo(db)
-  const plansRepo = createPlansRepo(db)
-  const reviewFindingsRepo = createReviewFindingsRepo(db)
+  const plansRepo = withWriteNotifications(createPlansRepo(db), PLANS_WRITE_METHODS, notifyPlansChanged)
+  const reviewFindingsRepo = withWriteNotifications(
+    createReviewFindingsRepo(db),
+    ['write', 'delete', 'deleteByLoopName'],
+    notifyLoopsChanged,
+  )
   const sectionPlansRepo = createSectionPlansRepo(db)
-  const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+  const loopSessionUsageRepo = withWriteNotifications(
+    createLoopSessionUsageRepo(db),
+    ['upsertSessionUsage', 'deleteLoop'],
+    notifyLoopsChanged,
+  )
   const loopTransitionsRepo = createLoopTransitionsRepo(db)
   const planAmendmentsRepo = createPlanAmendmentsRepo(db)
   const loopAttemptsRepo = createLoopAttemptsRepo(db)
@@ -621,7 +668,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
   const notifyLoopChange = createLoopChangeNotifier({
     directory,
     projectId,
-    publishLoopsChanged,
+    publishLoopsChanged: notifyLoopsChanged,
     logger,
   })
 
@@ -864,6 +911,17 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     },
     onHostSandboxChanged: () => emitTuiEvent(projectId, { type: 'hostSandboxChanged', projectId }),
     logger,
+  })
+
+  const dashboard = createDashboardService({
+    db,
+    loopsRepo,
+    plansRepo,
+    sectionPlansRepo,
+    reviewFindingsRepo,
+    loopSessionUsageRepo,
+    loopTransitionsRepo,
+    amendmentsRepo: planAmendmentsRepo,
   })
 
   // ── Tool context ──────────────────────────────────────────────────────────
@@ -1139,6 +1197,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     setSessionAutoApprove,
     autoApproveDenyRules,
     tui,
+    dashboard,
     cleanup,
     shellShimPath,
   }

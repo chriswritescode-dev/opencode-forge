@@ -3,52 +3,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo, createPlansRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
-import type { LoopsRepo, LoopRow } from '../../src/storage/repos/loops-repo'
+import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { SessionSandboxDesiredState } from '../../src/storage'
 import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
+import { makeLoopRow } from '../helpers/dashboard-fixtures'
 import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'project-a'
 const logger = createMockLogger()
-
-function loopRow(overrides: Partial<LoopRow> = {}): LoopRow {
-  return {
-    projectId: PROJECT,
-    loopName: 'loop-1',
-    status: 'cancelled',
-    currentSessionId: 'session-1',
-    worktree: false,
-    worktreeDir: '/tmp/forge/worktrees/loop-1',
-    worktreeBranch: null,
-    projectDir: '/tmp/forge',
-    maxIterations: 10,
-    iteration: 3,
-    auditCount: 1,
-    errorCount: 0,
-    phase: 'coding',
-    executionModel: 'anthropic/claude',
-    auditorModel: 'openai/gpt',
-    modelFailed: false,
-    sandbox: false,
-    sandboxContainer: null,
-    startedAt: 1_700_000_000_000,
-    completedAt: 1_700_000_100_000,
-    terminationReason: null,
-    completionSummary: null,
-    workspaceId: 'ws-1',
-    hostSessionId: 'host-1',
-    currentSectionIndex: 0,
-    totalSections: 1,
-    executionVariant: 'high',
-    auditorVariant: 'low',
-    baseCommit: null,
-    standbySessionId: null,
-    ...overrides,
-  }
-}
 
 describe('createTuiRpcService', () => {
   let tempDir: string
@@ -88,8 +53,18 @@ describe('createTuiRpcService', () => {
 
   describe('listLoops', () => {
     test('maps loop rows with restartability', () => {
-      loopsRepo.insert(loopRow({ loopName: 'loop-done' }), { lastAuditResult: null })
-      loopsRepo.insert(loopRow({ loopName: 'loop-running', status: 'running', currentSessionId: 'session-running' }), { lastAuditResult: null })
+      loopsRepo.insert(makeLoopRow({
+        projectId: PROJECT,
+        loopName: 'loop-done',
+        status: 'cancelled',
+        iteration: 3,
+        executionModel: 'anthropic/claude',
+        executionVariant: 'high',
+        auditorModel: 'openai/gpt',
+        auditorVariant: 'low',
+        startedAt: 1_700_000_000_000,
+      }), { lastAuditResult: null })
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-running', status: 'running', currentSessionId: 'session-running' }), { lastAuditResult: null })
 
       const result = createService().listLoops()
       if ('error' in result) throw new Error(result.error)
@@ -119,7 +94,8 @@ describe('createTuiRpcService', () => {
     })
 
     test('a loop with unset optional fields is JSON-clean after toForgeRpcJson', () => {
-      loopsRepo.insert(loopRow({
+      loopsRepo.insert(makeLoopRow({
+        projectId: PROJECT,
         loopName: 'loop-sparse',
         auditorVariant: null,
         executionVariant: null,
@@ -140,8 +116,8 @@ describe('createTuiRpcService', () => {
     })
 
     test('carries the loop worktree branch through to the loop info', () => {
-      loopsRepo.insert(loopRow({ loopName: 'loop-branched', worktreeBranch: 'pm-61-export' }), { lastAuditResult: null })
-      loopsRepo.insert(loopRow({ loopName: 'loop-unbranched', worktreeBranch: null }), { lastAuditResult: null })
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-branched', status: 'cancelled', worktreeBranch: 'pm-61-export' }), { lastAuditResult: null })
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-unbranched', status: 'cancelled', worktreeBranch: null }), { lastAuditResult: null })
 
       const result = createService().listLoops()
       if ('error' in result) throw new Error(result.error)
@@ -159,8 +135,8 @@ describe('createTuiRpcService', () => {
 
   describe('listLoopSidebar', () => {
     test('returns the sidebar rows for the project', () => {
-      loopsRepo.insert(loopRow({ loopName: 'loop-running', status: 'running', startedAt: 200 }), { lastAuditResult: null })
-      loopsRepo.insert(loopRow({ loopName: 'loop-done', status: 'completed', startedAt: 100 }), { lastAuditResult: null })
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-running', status: 'running', iteration: 3, startedAt: 200 }), { lastAuditResult: null })
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-done', status: 'completed', iteration: 3, startedAt: 100 }), { lastAuditResult: null })
 
       const result = createService().listLoopSidebar(5)
       if ('error' in result) throw new Error(result.error)
@@ -200,6 +176,15 @@ describe('createTuiRpcService', () => {
       plansRepo.writeForSession(PROJECT, 'session-plan', '# Plan')
 
       expect(createService().getSessionPlan('session-other')).toEqual({ plan: null })
+    })
+
+    test('reads another project plan when a projectId is provided', () => {
+      plansRepo.writeForSession(PROJECT, 'session-plan', '# Local')
+      plansRepo.writeForSession('project-b', 'session-plan', '# Remote')
+
+      const service = createService()
+      expect(service.getSessionPlan('session-plan', 'project-b')).toEqual({ plan: '# Remote' })
+      expect(service.getSessionPlan('session-plan')).toEqual({ plan: '# Local' })
     })
   })
 
@@ -254,7 +239,7 @@ describe('createTuiRpcService', () => {
         requestedAt: 1,
       }
       sandboxPreferences.setDesired(PROJECT, desired)
-      loopsRepo.insert(loopRow({ loopName: 'loop-sandboxed', status: 'running', currentSessionId: 'session-loop', sandbox: true }), { lastAuditResult: null })
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-sandboxed', status: 'running', currentSessionId: 'session-loop', sandbox: true }), { lastAuditResult: null })
 
       const result = createService().getHostSandboxState()
       if ('error' in result) throw new Error(result.error)

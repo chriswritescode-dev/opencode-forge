@@ -10,6 +10,39 @@ import type { LoopSandboxSettings, SandboxOverrides, SandboxResources } from '..
 import { isRecord } from '../utils/is-record'
 import { TOAST_VARIANTS, type ToastVariant } from '../utils/toast'
 import type { LoopInfo } from '../utils/tui-models'
+import { DASHBOARD_AMENDMENT_DIFF_METHOD, DASHBOARD_LOOP_DETAIL_METHOD, DASHBOARD_PLAN_DELETE_METHOD, DASHBOARD_PROJECT_FINDINGS_METHOD, DASHBOARD_SUMMARY_METHOD } from './forge-rpc-dashboard'
+import { readForgeRpcResult } from './forge-rpc-result'
+import type { ForgeRpcError } from './forge-rpc-result'
+
+export type {
+  ForgeAmendmentDiff,
+  ForgeAmendmentDiffOutput,
+  ForgeDashboardLoopSummary,
+  ForgeDashboardProjectSummary,
+  ForgeDashboardSummary,
+  ForgeDashboardSummaryOutput,
+  ForgeDashboardUnexecutedPlan,
+  ForgeLoopDetail,
+  ForgeLoopDetailOutput,
+  ForgeLoopDetailRow,
+  ForgeLoopTransition,
+  ForgeLoopUsage,
+  ForgePlanAmendment,
+  ForgePlanDeleteOutput,
+  ForgeProjectFindings,
+  ForgeProjectFindingsLoop,
+  ForgeProjectFindingsOutput,
+  ForgeReviewFinding,
+  ForgeSectionPlan,
+} from './forge-rpc-dashboard'
+export type { ForgeRpcError } from './forge-rpc-result'
+export {
+  readForgeAmendmentDiff,
+  readForgeDashboardSummary,
+  readForgeLoopDetail,
+  readForgePlanDeleteOutput,
+  readForgeProjectFindings,
+} from './forge-rpc-dashboard'
 
 export type ForgeToastInput = {
   title?: string
@@ -20,18 +53,16 @@ export type ForgeToastInput = {
 
 export type ForgeToastEvent = ForgeToastInput & { projectId: string }
 
-/** Server push: the project's loop rows changed and the TUI must re-read them. */
-export type ForgeLoopsChangedEvent = { projectId: string }
+/** Server push: a project-scoped collection changed and the TUI must re-read it. */
+export type ForgeProjectChangedEvent = { projectId: string }
 
 /** Server push: one session's per-session auto-approve flag changed. */
 export type ForgeAutoApproveChangedEvent = { projectId: string; sessionId: string }
 
-/** Server push: the project's host-sandbox desired/applied/controller state changed. */
-export type ForgeHostSandboxChangedEvent = { projectId: string }
-
 /** Host-neutral push event the server publishes to the TUI through the RPC registration. */
 export type ForgeTuiEvent =
   | { type: 'loopsChanged'; projectId: string }
+  | { type: 'plansChanged'; projectId: string }
   | { type: 'autoApproveChanged'; projectId: string; sessionId: string }
   | { type: 'hostSandboxChanged'; projectId: string }
 
@@ -82,8 +113,6 @@ export type ForgeLoopDefaultsOutput = ForgeLoopDefaults | ForgeRpcError
 export type ForgeAutoApproveState =
   | { enabled: boolean; ownerSessionId?: string; inherited: boolean }
   | { error: string }
-
-export type ForgeRpcError = { error: string }
 
 export type ForgeLoopsOutput = { loops: LoopInfo[] } | ForgeRpcError
 
@@ -171,6 +200,15 @@ const SANDBOX_SETTINGS_SCHEMA = {
 const EMPTY_INPUT = { type: 'object', properties: {}, additionalProperties: false } as const
 
 const OBJECT = { type: 'object' } as const
+
+const PROJECT_CHANGED_EVENT_SCHEMA = {
+  type: 'object',
+  properties: {
+    projectId: { type: 'string' },
+  },
+  required: ['projectId'],
+  additionalProperties: false,
+} as const
 
 const LOOP_INFO_SCHEMA = {
   type: 'object',
@@ -336,6 +374,7 @@ export const FORGE_RPC = {
         type: 'object',
         properties: {
           sessionId: { type: 'string' },
+          projectId: { type: 'string', minLength: 1 },
         },
         required: ['sessionId'],
         additionalProperties: false,
@@ -423,6 +462,11 @@ export const FORGE_RPC = {
         additionalProperties: false,
       },
     },
+    dashboardSummary: DASHBOARD_SUMMARY_METHOD,
+    loopDetail: DASHBOARD_LOOP_DETAIL_METHOD,
+    projectFindings: DASHBOARD_PROJECT_FINDINGS_METHOD,
+    amendmentDiff: DASHBOARD_AMENDMENT_DIFF_METHOD,
+    planDelete: DASHBOARD_PLAN_DELETE_METHOD,
   },
   events: {
     toast: {
@@ -450,14 +494,10 @@ export const FORGE_RPC = {
       },
     },
     loopsChanged: {
-      schema: {
-        type: 'object',
-        properties: {
-          projectId: { type: 'string' },
-        },
-        required: ['projectId'],
-        additionalProperties: false,
-      },
+      schema: PROJECT_CHANGED_EVENT_SCHEMA,
+    },
+    plansChanged: {
+      schema: PROJECT_CHANGED_EVENT_SCHEMA,
     },
     autoApproveChanged: {
       schema: {
@@ -471,35 +511,10 @@ export const FORGE_RPC = {
       },
     },
     hostSandboxChanged: {
-      schema: {
-        type: 'object',
-        properties: {
-          projectId: { type: 'string' },
-        },
-        required: ['projectId'],
-        additionalProperties: false,
-      },
+      schema: PROJECT_CHANGED_EVENT_SCHEMA,
     },
   },
 } as const satisfies Rpc.PortableDefinition
-
-/** Envelope every TUI-side reader returns: a validated result or a server-reported error. */
-type ForgeRpcResult<T> = T | ForgeRpcError
-
-/**
- * Shared envelope handling for the TUI-side Forge RPC readers. A non-record payload
- * and a `null` from `parse` both become the same invalid-result error, while a
- * server-reported `{ error }` passes through unchanged.
- */
-function readForgeRpcResult<T>(
-  value: unknown,
-  label: string,
-  parse: (record: Record<string, unknown>) => T | ForgeRpcError | null,
-): ForgeRpcResult<T> {
-  if (!isRecord(value)) return { error: `Forge returned an invalid ${label}` }
-  if (typeof value.error === 'string') return { error: value.error }
-  return parse(value) ?? { error: `Forge returned an invalid ${label}` }
-}
 
 export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutput {
   return readForgeRpcResult(value, 'plan execution result', (record) => {
@@ -644,7 +659,7 @@ export function readForgeVersion(value: unknown): { version: string } | ForgeRpc
     typeof record.version === 'string' ? { version: record.version } : null)
 }
 
-export function readForgeLoopsChangedEvent(data: Readonly<Record<string, unknown>>): ForgeLoopsChangedEvent | null {
+export function readForgeProjectChangedEvent(data: Readonly<Record<string, unknown>>): ForgeProjectChangedEvent | null {
   return typeof data.projectId === 'string' ? { projectId: data.projectId } : null
 }
 
@@ -652,8 +667,4 @@ export function readForgeAutoApproveChangedEvent(data: Readonly<Record<string, u
   return typeof data.projectId === 'string' && typeof data.sessionId === 'string'
     ? { projectId: data.projectId, sessionId: data.sessionId }
     : null
-}
-
-export function readForgeHostSandboxChangedEvent(data: Readonly<Record<string, unknown>>): ForgeHostSandboxChangedEvent | null {
-  return typeof data.projectId === 'string' ? { projectId: data.projectId } : null
 }
