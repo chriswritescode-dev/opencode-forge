@@ -47,8 +47,8 @@ export function resolveForgeDataDir(configuredDataDir?: string): string {
 
 /**
  * The single builder for the forge database path. `configuredDataDir` is
- * `PluginConfig.dataDir`; every entry point (plugin, TUI, dashboard, loop
- * execution) resolves through here so a configured `dataDir` cannot be honoured
+ * `PluginConfig.dataDir`; every entry point (plugin, TUI, loop execution)
+ * resolves through here so a configured `dataDir` cannot be honoured
  * by some readers and ignored by others.
  */
 export function resolveForgeDbPath(configuredDataDir?: string): string {

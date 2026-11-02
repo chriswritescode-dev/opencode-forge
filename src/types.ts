@@ -278,20 +278,6 @@ export interface TuiConfig {
 }
 
 /**
- * Configuration for the database-backed observability dashboard HTTP server.
- * The dashboard is unauthenticated: binding to a non-loopback address exposes
- * every loop plan, audit result, finding, and cost to anyone who can reach
- * the port. Protect it with a firewall or VPN. See `DASHBOARD_EXPOSED_WARNING`
- * for the canonical warning text rendered by launch surfaces.
- */
-export interface DashboardConfig {
-  /** Bind hostname or IP. Defaults to "localhost". Use "0.0.0.0" to listen on all interfaces. */
-  host?: string
-  /** Base bind port. Defaults to 4747. Consecutive ports are tried when busy. */
-  port?: number
-}
-
-/**
  * Per-agent configuration overrides.
  */
 export interface AgentOverrideConfig {
@@ -339,8 +325,6 @@ export interface PluginConfig {
   completedLoopTtlMs?: number
   /** TUI display configuration. */
   tui?: TuiConfig
-  /** Dashboard HTTP server bind configuration. */
-  dashboard?: DashboardConfig
   /** Per-agent configuration overrides. */
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */

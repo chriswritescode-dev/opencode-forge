@@ -55,8 +55,9 @@ Source: [src/index.ts](../src/index.ts)
 The TUI plugin entry, providing the sidebar widget and dialog system. It talks to the server plugin through the V2 plugin RPC port.
 
 - Exports `{ id: 'oc-forge', setup: setupForgeTuiV2 }`
-- Registers commands: `Execute plan`, `Open web dashboard`, `Build sandbox template`, and `Toggle sandbox`
+- Registers commands: `Execute plan`, `Open dashboard`, `Build sandbox template`, and `Toggle sandbox`
 - Provides the loop sidebar, session-rotation following, and the missing-build-context toast
+- `src/tui/dashboard/` holds the dashboard: `store.ts` keeps all state, performs every `FORGE_RPC` fetch, and tracks staleness because pages remount on navigation; `view-model.ts` and `machine-diagram.ts` hold pure computations; `pages.tsx` renders the `forge-dashboard` and `forge-dashboard-loop` pages. Every value comes from `FORGE_RPC`; nothing is read from a local database.
 
 Source: [src/tui.tsx](../src/tui.tsx), [src/tui/v2.tsx](../src/tui/v2.tsx)
 
@@ -73,7 +74,8 @@ Host-neutral core plus the thin adapter that maps the OpenCode V2 plugin context
 | `forge-core.ts` | `createForgeCore()` — shared services, handlers, tools, cleanup, sandbox resolution, lookups |
 | `v2.ts` | `setupForgeV2(ctx)` — V2 setup: client, registrations, event pump, cleanup |
 | `v2-events.ts` | Normalizes V2 events into Forge's event shape; busy, idle, and retry derive only from `session.execution.*` and `session.retry.scheduled` |
-| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `loopDefaults`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `version`); `executePlan` takes the optional `branch` and `baseRef` (validated before any side effect) and reports the loop's `branch` in its result, and `loops` reports each loop's `branch`; it also declares the `toast`/`sessionDelete`/`loopsChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
+| `forge-rpc.ts` | `FORGE_RPC` contract: the TUI methods (`executePlan`, `loopDefaults`, `autoApproveState`/`autoApproveSet`, `loops`, `loopSidebar`, `sessionPlan`, `loopRestart`, `hostSandboxState`/`hostSandboxSet`, `worktrees`, `dashboardSummary`, `loopDetail`, `projectFindings`, `amendmentDiff`, `planDelete`, `version`); `executePlan` takes the optional `branch` and `baseRef` (validated before any side effect) and reports the loop's `branch` in its result, and `loops` reports each loop's `branch`; `sessionPlan` accepts an optional `projectId`; it also declares the `toast`/`sessionDelete`/`loopsChanged`/`plansChanged`/`autoApproveChanged`/`hostSandboxChanged` events the V2 server emits and the V2 TUI consumes |
+| `forge-rpc-dashboard.ts` | Dashboard RPC method schemas, null-free DTOs, and result readers |
 | `v2-hooks.ts` | Registers the core handlers through V2's hook API |
 | `v2-tools.ts` | Registers the shared Forge tools on V2 |
 | `v2-config.ts` | Resolves and registers agents and commands on V2 |
@@ -313,6 +315,7 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | `section-bootstrap.ts` | Build the initial milestone rows for a loop |
 | `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
 | `tui-rpc-service.ts` | Server-side TUI RPC service: loop list/sidebar, session plan, loop restart (rejected when the loop was restarted after the dialog read it, checked under the shared loop lock), host-sandbox desired/applied state, and the worktree list |
+| `dashboard-service.ts` | Bulk per-project read model for the dashboard (`dashboardSummary`, loop detail, project findings, amendment diff, plan delete) |
 | `worktree-log.ts` | Log worktree completions |
 
 ### Key Interfaces

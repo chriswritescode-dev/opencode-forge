@@ -16,7 +16,6 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
 | `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries are either a `provider/model` string or `{ "model": "provider/model", "variant": "high" }` to pin a variant to that fallback; the primary `auditorVariant` is never inherited, so a string entry runs with no variant. Applies only to `auditing`. The fallback index resets to `0` after any successful audit (so the preferred model and its variant are retried on the next audit) and on loop restart. Empty/omitted means a limited auditor terminates the loop. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
-| `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
 | `autoApprove` | unset | Deny rules applied while per-session auto-approve is on. See [Auto-Approve](#auto-approve). |
 | `codeGraph` | unset | `codegraph` installation in the sandbox template and its loop integration. See [Code Graph](#code-graph). |
 
@@ -180,51 +179,15 @@ Notes:
 | `tui.sidebar` | `true` | Show the Forge sidebar widget. |
 | `tui.showVersion` | `true` | Show the Forge version in the sidebar title. |
 | `tui.keybinds.executePlan` | `"<leader>f"` | Open the execution dialog. Avoid `<leader>e`, which conflicts with opencode's built-in `editor_open`. |
-| `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
+| `tui.keybinds.dashboard` | `""` | Optional keybind for `Open dashboard`, which opens the TUI dashboard. Empty registers the command without a default binding. |
 | `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle sandbox`, which opens the menu that turns the project host-session sandbox on or off for the current session and sets its CPUs, memory, and LAN access. Empty registers the command without a default binding. Requires `sandbox.enabled`. |
 | `tui.keybinds.toggleAutoApprove` | `""` | Optional keybind for `Toggle auto-approve`, which turns per-session auto-approve on or off for the current session. Empty registers the command without a default binding. |
+
+The dashboard has no configuration of its own: it is a TUI route that reads every value from the attached server over `FORGE_RPC`. Open it with `Open dashboard` or the `tui.keybinds.dashboard` binding; see [Dashboard](dashboard.md). A `dashboard` block left over from an older config is ignored.
 
 The host-session sandbox applies only to sessions outside active loops. Its desired and applied state is stored per project, and one selected session (including its descendants) can use it at a time. Shell, `glob`, and `grep` calls route through the sandbox; file tools remain host-side but are refused outside the sandbox mounts. A failed enable request blocks those routed tools rather than falling back to the host until the request is disabled or succeeds on retry.
 
 The TUI surface reads `tui.sidebar`, `tui.showVersion`, and the `tui.keybinds` entries from this config; plugin options on the `cli.json` entry override them, with keybinds merged per key — see [TUI](tui.md).
-
-## Dashboard
-
-`dashboard` controls the bind address of the observability dashboard, served by both `pnpm dashboard` and the TUI `Open web dashboard` command. The default binds loopback only. On a loopback bind the dashboard can edit the loop's persisted model columns and delete unexecuted session-scoped plans; on a non-loopback bind every mutating route is disabled and the dashboard is strictly read-only.
-
-| Option | Default | Description |
-|---|---:|---|
-| `dashboard.host` | `"localhost"` | Bind hostname or IP. Use `"0.0.0.0"` to listen on all interfaces so the dashboard is reachable over a LAN or VPN. Blank falls back to the default. |
-| `dashboard.port` | `4747` | Base bind port. Consecutive ports (`port`..`port+9`) are tried when the port is busy. `0` lets the OS pick an ephemeral port. Invalid values fall back to the default and are reported. |
-
-> **The dashboard has no authentication.** Binding a non-loopback address exposes every loop plan, audit result, finding, and session cost to anyone who can reach the port. Restrict access at the network layer with a firewall, a private LAN, or a VPN. Forge prints a warning whenever the bind is not loopback.
-
-A value that is present but unusable — a quoted `"port": "4747"`, a fractional or out-of-range port, a non-string host — is never dropped silently: Forge falls back to the next candidate and reports which value it ignored on stderr (`pnpm dashboard`) or in the toast (TUI).
-
-When bound to a wildcard host (`0.0.0.0` / `::`), the advertised URL uses this machine's best-guess LAN IPv4 address so it can be typed on another device; the TUI still opens `http://localhost:<port>` locally and shows both URLs. Candidates are ranked to prefer a physical interface with a private address over VPN tunnels and container bridges, and the choice is deterministic across launches. That ranking is a heuristic — set `dashboard.host` to an explicit address when a machine has several and the wrong one is advertised.
-
-`dashboard.host` and `dashboard.port` are the supported way to change the bind, and the only one available to an installed package.
-
-For a **source checkout**, `pnpm dashboard` additionally accepts `--host` and `--port`, which override the config values (precedence: CLI flag > `dashboard.*` config > default):
-
-```bash
-pnpm dashboard --host 0.0.0.0 --port 4747
-```
-
-It also accepts `--db` to point at a specific database file. That has no `dashboard.*` counterpart; its precedence is `--db` > `FORGE_DB` environment variable > `<dataDir>/forge.db`.
-
-These flags are unavailable to users who installed the package, because `scripts/dashboard.ts` runs from the repository sources rather than the published bundle.
-
-Example:
-
-```jsonc
-{
-  "dashboard": {
-    "host": "0.0.0.0",
-    "port": 4747
-  }
-}
-```
 
 ## Sandbox
 

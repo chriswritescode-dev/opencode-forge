@@ -2,27 +2,32 @@
 import type { Plugin } from '@opencode/plugin/tui'
 import { existsSync } from 'fs'
 import { For, Show, createEffect, createMemo, createRoot, createSignal, onCleanup, type Accessor } from 'solid-js'
-import { createDashboardLauncher } from '../dashboard/launch'
 import { isSandboxConfigEnabled } from '../sandbox/context'
 import { DEFAULT_SANDBOX_IMAGE, formatTemplateBuildCommands, resolveTemplateBuildArgs } from '../sandbox/template'
 import { loadPluginConfig, resolveBundledContainerDir } from '../setup'
-import { resolveForgeDbPath } from '../storage'
 import {
   FORGE_RPC,
+  readForgeAmendmentDiff,
   readForgeAutoApproveChangedEvent,
   readForgeAutoApproveState,
-  readForgeHostSandboxChangedEvent,
+  readForgeDashboardSummary,
   readForgeHostSandboxSetOutput,
   readForgeHostSandboxState,
   readForgeLoopDefaults,
+  readForgeLoopDetail,
   readForgeLoopSidebar,
-  readForgeLoopsChangedEvent,
+  readForgePlanDeleteOutput,
+  readForgeProjectChangedEvent,
+  readForgeProjectFindings,
+  readForgeSessionPlan,
   readForgeVersion,
   readForgeWorktrees,
   type ForgeToastEvent,
   type ForgeWorktreesOutput,
 } from '../host/forge-rpc'
 import { FORGE_DASHBOARD_COMMAND, formatForgeTitle, resolveTuiOptions } from './options'
+import { createDashboardStore } from './dashboard/store'
+import { DashboardLoopPage, DashboardPage } from './dashboard/pages'
 import type { LoopSidebarRow } from '../storage/repos/loops-repo'
 import { formatDuration } from '../utils/duration'
 import { phaseLabel } from '../utils/phase-label'
@@ -224,14 +229,14 @@ function ForgeLoopsSidebar(props: {
 }
 
 /**
- * V2 TUI surface: the dashboard, execute-plan (which also pastes plans and restarts loops), and sandbox-build
- * commands, loop session auto-follow, a loop sidebar, and the missing-build-context
- * toast. Returns the cleanup for all of them.
+ * V2 TUI surface: the dashboard pages and their `forge.dashboard` entry point,
+ * execute-plan (which also pastes plans and restarts loops), sandbox-build
+ * commands, loop session auto-follow, a loop sidebar, and the
+ * missing-build-context toast. Returns the cleanup for all of them.
  */
 export function setupForgeTuiV2(context: Plugin.Context): () => void {
   const pluginConfig = loadPluginConfig()
   const opts = resolveTuiOptions(pluginConfig.tui, context.options)
-  const forgeDbPath = resolveForgeDbPath(pluginConfig.dataDir)
 
   const buildContextDir = resolveBundledContainerDir()
   if (isSandboxConfigEnabled(pluginConfig) && !existsSync(buildContextDir)) {
@@ -242,12 +247,6 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       duration: 10_000,
     })
   }
-
-  const dashboard = createDashboardLauncher({
-    dbPath: forgeDbPath,
-    config: pluginConfig,
-    toast: (input) => context.ui.toast.show(input),
-  })
 
   const lifecycle = new AbortController()
   const host = createV2TuiHost(context)
@@ -285,6 +284,37 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
   }
 
   const call = createForgeRpcCaller(context, () => resolveV2TuiDirectory(context))
+
+  const dashboardStore = createDashboardStore({
+    readSummary: () => call((rpc, location) => rpc.dashboardSummary({}, location), readForgeDashboardSummary),
+    readLoopDetail: (input) => call((rpc, location) => rpc.loopDetail(input, location), readForgeLoopDetail),
+    readProjectFindings: (input) => call(
+      (rpc, location) => rpc.projectFindings(input, location),
+      readForgeProjectFindings,
+    ),
+    readAmendmentDiff: (input) => call((rpc, location) => rpc.amendmentDiff(input, location), readForgeAmendmentDiff),
+    readSessionPlan: ({ projectId, sessionId }) => call(
+      (rpc, location) => rpc.sessionPlan({ sessionId, projectId }, location),
+      readForgeSessionPlan,
+    ),
+    deletePlan: ({ projectId, sessionId }) => call(
+      (rpc, location) => rpc.planDelete({ projectId, sessionId }, location),
+      readForgePlanDeleteOutput,
+    ),
+    currentDirectory: () => resolveV2TuiDirectory(context),
+    resolveProjectId: (directory) => resolveV2TuiProjectIdForDirectory(context, directory),
+    confirm: async (input) => (await context.ui.dialog.confirm(input)) === true,
+    toast: (input) => host.toast(input),
+  })
+
+  const unregisterDashboardPage = context.ui.router.register({
+    name: 'forge-dashboard',
+    render: () => <DashboardPage context={context} store={dashboardStore} />,
+  })
+  const unregisterDashboardLoopPage = context.ui.router.register({
+    name: 'forge-dashboard-loop',
+    render: (input) => <DashboardLoopPage context={context} store={dashboardStore} data={input.data} />,
+  })
 
   let worktreesCache: ForgeWorktreeList | null = null
   let worktreesFailure: { at: number; error: string } | null = null
@@ -393,7 +423,10 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
             group: FORGE_DASHBOARD_COMMAND.group,
             palette: true,
             ...(opts.keybinds.dashboard ? { bind: opts.keybinds.dashboard } : {}),
-            run: () => dashboard.open(),
+            run: () => {
+              dashboardStore.open(context.ui.router.current())
+              context.ui.router.navigate({ type: 'plugin', name: 'forge-dashboard' })
+            },
           },
           {
             id: 'forge.plan.execute',
@@ -508,20 +541,26 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
       if (sessionID) void removeSessionBestEffort(context, sessionID)
     }, { signal })
     followRpcEvent((s) => rpcEvents.subscribe('loopsChanged', { signal: s }), (event) => {
-      const changed = readForgeLoopsChangedEvent(event.data)
+      const changed = readForgeProjectChangedEvent(event.data)
       if (!changed) return
+      dashboardStore.handleChange('loops', changed.projectId)
       refreshForProject(changed.projectId, refreshLoops)
-    }, { signal, onResubscribed: refreshLoops })
+    }, { signal, onResubscribed: () => { refreshLoops(); dashboardStore.handleResubscribed() } })
+    followRpcEvent((s) => rpcEvents.subscribe('plansChanged', { signal: s }), (event) => {
+      const changed = readForgeProjectChangedEvent(event.data)
+      if (!changed) return
+      dashboardStore.handleChange('plans', changed.projectId)
+    }, { signal, onResubscribed: dashboardStore.handleResubscribed })
     followRpcEvent((s) => rpcEvents.subscribe('autoApproveChanged', { signal: s }), (event) => {
       const changed = readForgeAutoApproveChangedEvent(event.data)
       if (!changed) return
       refreshForProject(changed.projectId, autoApprove.refresh)
-    }, { signal, onResubscribed: autoApprove.refresh })
+    }, { signal, onResubscribed: () => { autoApprove.refresh(); dashboardStore.handleResubscribed() } })
     followRpcEvent((s) => rpcEvents.subscribe('hostSandboxChanged', { signal: s }), (event) => {
-      const changed = readForgeHostSandboxChangedEvent(event.data)
+      const changed = readForgeProjectChangedEvent(event.data)
       if (!changed) return
       refreshForProject(changed.projectId, hostSandbox.refresh)
-    }, { signal, onResubscribed: hostSandbox.refresh })
+    }, { signal, onResubscribed: () => { hostSandbox.refresh(); dashboardStore.handleResubscribed() } })
   } catch (err) {
     console.error('[forge] failed to subscribe to Forge RPC events', err)
   }
@@ -530,6 +569,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     loopSidebar?.refresh()
     autoApprove.refresh()
     hostSandbox.refresh()
+    dashboardStore.handleResubscribed()
   })
 
   let sessionChangeSeen = false
@@ -569,10 +609,12 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
     hostSandbox.dispose()
     autoApprove.dispose()
     loopSidebar?.dispose()
+    unregisterDashboardPage()
+    unregisterDashboardLoopPage()
+    dashboardStore.dispose()
     detachSessionFollower()
     detachConnected()
     disposeSessionChange()
     eventController.abort()
-    dashboard.dispose()
   }
 }

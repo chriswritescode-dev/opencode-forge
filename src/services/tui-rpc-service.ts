@@ -40,7 +40,7 @@ export interface TuiRpcService {
   listLoops(): ForgeLoopsOutput
   listLoopSidebar(limit: number): ForgeLoopSidebarOutput
   listWorktrees(): ForgeWorktreesOutput
-  getSessionPlan(sessionId: string): ForgeSessionPlanOutput
+  getSessionPlan(sessionId: string, projectId?: string): ForgeSessionPlanOutput
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
   getHostSandboxState(): ForgeHostSandboxStateOutput
   requestHostSandbox(request: ForgeHostSandboxSetInput): ForgeHostSandboxSetOutput
@@ -103,9 +103,9 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
       }
     },
 
-    getSessionPlan(sessionId: string): ForgeSessionPlanOutput {
+    getSessionPlan(sessionId: string, projectId?: string): ForgeSessionPlanOutput {
       try {
-        return { plan: deps.plansRepo.getForSession(deps.projectId, sessionId)?.content ?? null }
+        return { plan: deps.plansRepo.getForSession(projectId ?? deps.projectId, sessionId)?.content ?? null }
       } catch (err) {
         return { error: errorMessage(err) }
       }

@@ -16,9 +16,7 @@
     "node_modules/**",
     "*.d.ts",
     "test/**",
-    ".msb/**",
-    "src/dashboard/marked.min.js",
-    "src/dashboard/app-bundle.ts"
+    ".msb/**"
   ],
   "rules": {
     "constructor-super": "error",

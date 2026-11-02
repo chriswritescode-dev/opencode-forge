@@ -81,7 +81,6 @@
     "better-sqlite3": "^12.9.0",
     "bun-types": "latest",
     "eslint-plugin-solid": "^0.14.5",
-    "happy-dom": "^20.10.3",
     "oxlint": "^1.90.0",
     "oxlint-tsgolint": "7.0.2005",
     "solid-js": "^1.9.12",
@@ -94,7 +93,6 @@
   "scripts": {
     "build": "bun scripts/build.ts",
     "setup": "bun src/install/cli.ts",
-    "dashboard": "bun scripts/dashboard.ts",
     "lint": "oxlint",
     "prepublishOnly": "pnpm build",
     "test": "vitest run",

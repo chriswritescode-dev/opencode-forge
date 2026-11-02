@@ -1,6 +1,22 @@
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('solid-js', async () => await import('solid-js/dist/dev.js'))
+
+const dashboardStoreMock = vi.hoisted(() => {
+  const store = {
+    open: vi.fn(),
+    activate: vi.fn(),
+    deactivate: vi.fn(),
+    handleChange: vi.fn(),
+    handleResubscribed: vi.fn(),
+    dispose: vi.fn(),
+  }
+  return { store, createDashboardStore: vi.fn(() => store) }
+})
+
+vi.mock('../../src/tui/dashboard/store', () => ({
+  createDashboardStore: dashboardStoreMock.createDashboardStore,
+}))
 
 import { createSignal } from 'solid-js'
 import type { Plugin } from '@opencode/plugin/tui'
@@ -43,6 +59,16 @@ interface RecordedRpcSubscription {
   end: () => void
 }
 
+interface RecordedPage {
+  name: string
+  render: (input: { data?: Record<string, unknown> }) => unknown
+}
+
+type FakeRoute =
+  | { type: 'home' }
+  | { type: 'session'; sessionID: string }
+  | { type: 'plugin'; name: string; data?: Record<string, unknown> }
+
 const SLOT_PLACEMENTS = ['prepend', 'append', 'before', 'after', 'replace'] as const
 
 function recordSlot(claim: Record<string, unknown>, slots: RecordedSlot[]): void {
@@ -79,7 +105,9 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const dataHandlers = new Map<string, DataHandler[]>()
   const navigations: unknown[] = []
   const prompts: Array<Record<string, unknown>> = []
-  const [route, setRoute] = createSignal<{ type: 'home' } | { type: 'session'; sessionID: string }>(
+  const pages: RecordedPage[] = []
+  const unregisterPage = vi.fn()
+  const [route, setRoute] = createSignal<FakeRoute>(
     fakeOptions.route ?? { type: 'home' as const },
   )
   const [location, setLocation] = createSignal(fakeOptions.location)
@@ -198,7 +226,11 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       },
       router: {
         current: () => route(),
-        navigate: vi.fn((destination: { type: 'home' } | { type: 'session'; sessionID: string }) => {
+        register: vi.fn((page: RecordedPage) => {
+          pages.push(page)
+          return unregisterPage
+        }),
+        navigate: vi.fn((destination: FakeRoute) => {
           navigations.push(destination)
           setRoute(destination)
         }),
@@ -233,6 +265,8 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     rpcSubscriptions,
     navigations,
     prompts,
+    pages,
+    unregisterPage,
     emit,
     dataHandlers,
     worktrees: worktreesMock,
@@ -265,6 +299,10 @@ function findSlot(slots: RecordedSlot[], target: string): RecordedSlot {
 describe('V2 TUI setup', () => {
   useTempConfigHome('forge-v2-tui')
 
+  beforeEach(() => {
+    for (const mock of Object.values(dashboardStoreMock.store)) mock.mockClear()
+  })
+
   test('the TUI module exports the V2 setup', () => {
     expect(tuiModule.id).toBe('oc-forge')
     expect(typeof tuiModule.setup).toBe('function')
@@ -280,10 +318,33 @@ describe('V2 TUI setup', () => {
     expect(fake.layers[0]?.mode).toBe('global')
     const dashboard = fake.layers[0]?.commands?.find((command) => command.id === 'forge.dashboard')
     expect(dashboard).toMatchObject({
-      title: 'Open web dashboard',
+      title: 'Open dashboard',
       group: 'Forge',
       palette: true,
     })
+    cleanup()
+  })
+
+  test('registers both dashboard pages and unregisters them on cleanup', () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    expect(fake.pages.map((page) => page.name)).toEqual(['forge-dashboard', 'forge-dashboard-loop'])
+    expect(fake.unregisterPage).not.toHaveBeenCalled()
+
+    cleanup()
+    expect(fake.unregisterPage).toHaveBeenCalledTimes(2)
+  })
+
+  test('opens the dashboard route from the palette command and records the previous route', () => {
+    const fake = createFakeV2TuiContext({ route: { type: 'session', sessionID: 'ses_1' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    findCommand(fake, 'forge.dashboard').run?.()
+
+    expect(dashboardStoreMock.store.open).toHaveBeenCalledWith({ type: 'session', sessionID: 'ses_1' })
+    expect(fake.navigations).toEqual([{ type: 'plugin', name: 'forge-dashboard' }])
     cleanup()
   })
 
@@ -314,6 +375,7 @@ describe('V2 TUI setup', () => {
       'toast',
       'sessionDelete',
       'loopsChanged',
+      'plansChanged',
       'autoApproveChanged',
       'hostSandboxChanged',
     ])
@@ -398,6 +460,46 @@ describe('V2 TUI setup', () => {
 
     subscriptions[1]?.handler({ data: { projectId: 'proj-1' } })
     await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(3))
+    cleanup()
+  })
+
+  test('subscribes to plansChanged and forwards it to the dashboard store', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+
+    expect(fake.findRpcSubscription('plansChanged')).toBeDefined()
+
+    fake.findRpcSubscription('plansChanged')?.handler({ data: { projectId: 'proj-2' } })
+    fake.findRpcSubscription('plansChanged')?.handler({ data: {} })
+
+    await vi.waitFor(() => expect(dashboardStoreMock.store.handleChange.mock.calls).toEqual([
+      ['plans', 'proj-2'],
+    ]))
+    cleanup()
+  })
+
+  test('forwards a loopsChanged event from another project to the dashboard store while the sidebar ignores it', async () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    await vi.waitFor(() => expect(fake.loopSidebar).toHaveBeenCalledTimes(1))
+
+    fake.findRpcSubscription('loopsChanged')?.handler({ data: { projectId: 'proj-2' } })
+
+    await vi.waitFor(() => expect(dashboardStoreMock.store.handleChange).toHaveBeenCalledWith('loops', 'proj-2'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fake.loopSidebar).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
+
+  test('refreshes the dashboard store on server.connected', () => {
+    const fake = createFakeV2TuiContext()
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    fake.emit('server.connected', {})
+
+    expect(dashboardStoreMock.store.handleResubscribed).toHaveBeenCalledTimes(1)
     cleanup()
   })
 

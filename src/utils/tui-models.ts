@@ -60,9 +60,8 @@ export type LoopInfo = {
 }
 
 /**
- * Maps a raw `provider.list` payload to connected providers and their models.
- * Shared by the TUI model picker and the dashboard model controls so both see
- * the same catalogue.
+ * Maps a raw `provider.list` payload to connected providers and their models
+ * for the TUI model picker.
  */
 export function providersFromProviderList(data: ProviderList): {
   providers: ProviderInfo[]

@@ -419,6 +419,33 @@ describe('LoopSessionUsageRepo', () => {
     })
   })
 
+  describe('totalCostsByLoop', () => {
+    test('sums cost per loop and excludes other projects', () => {
+      db.run(`
+        INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, phase, started_at)
+        VALUES ('other-project', 'other-loop', 'running', 'session-other', 1, '/tmp/other', '/tmp/other', 10, 0, 'coding', ?)
+      `, [Date.now()])
+
+      repo.upsertSessionUsage([
+        createUsageRow({ cost: 0.002 }),
+        createUsageRow({ sessionId: 'session-2', cost: 0.008 }),
+      ])
+      repo.upsertSessionUsage(createUsageRow({
+        projectId: 'other-project',
+        loopName: 'other-loop',
+        sessionId: 'session-other',
+        cost: 0.5,
+      }))
+
+      expect(repo.totalCostsByLoop(projectId)).toEqual(new Map([[loopName, 0.01]]))
+      expect(repo.totalCostsByLoop('other-project')).toEqual(new Map([['other-loop', 0.5]]))
+    })
+
+    test('returns an empty map when no usage exists', () => {
+      expect(repo.totalCostsByLoop(projectId).size).toBe(0)
+    })
+  })
+
   describe('role field validation', () => {
     test('accepts code role', () => {
       const row = createUsageRow({ role: 'code' })

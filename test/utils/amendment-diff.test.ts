@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   diffAmendmentSnapshots,
   summarizeAmendmentSnapshots,
-} from '../../src/dashboard/amendment-diff'
+} from '../../src/utils/amendment-diff'
 
 function snapshot(sections: Array<{ index: number; title: string; content?: string }>): string {
   return JSON.stringify(sections.map(s => ({ index: s.index, title: s.title, content: s.content ?? '' })))

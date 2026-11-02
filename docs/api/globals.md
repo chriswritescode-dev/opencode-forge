@@ -9,7 +9,6 @@
 - [CompactionConfig](interfaces/CompactionConfig.md)
 - [CreateParentSessionLookupOptions](interfaces/CreateParentSessionLookupOptions.md)
 - [CreateSessionDirectoryLookupOptions](interfaces/CreateSessionDirectoryLookupOptions.md)
-- [DashboardConfig](interfaces/DashboardConfig.md)
 - [PluginConfig](interfaces/PluginConfig.md)
 
 ## Variables

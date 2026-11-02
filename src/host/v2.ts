@@ -104,8 +104,10 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       loops: async () => withCore(core, (active) => active.tui.listLoops()),
       loopSidebar: async (input) => withCore(core, (active) =>
         active.tui.listLoopSidebar((input as { limit: number }).limit)),
-      sessionPlan: async (input) => withCore(core, (active) =>
-        active.tui.getSessionPlan((input as { sessionId: string }).sessionId)),
+      sessionPlan: async (input) => withCore(core, (active) => {
+        const { sessionId, projectId } = input as { sessionId: string; projectId?: string }
+        return active.tui.getSessionPlan(sessionId, projectId)
+      }),
       loopRestart: async (input) => withCore(core, (active) =>
         active.tui.restartLoop(input as ForgeLoopRestartInput)),
       hostSandboxState: async () => withCore(core, (active) => active.tui.getHostSandboxState()),
@@ -113,6 +115,21 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
         active.tui.requestHostSandbox(input as ForgeHostSandboxSetInput)),
       worktrees: async () => withCore(core, (active) => active.tui.listWorktrees()),
       version: async () => ({ version: VERSION }),
+      dashboardSummary: async () => withCore(core, (active) => active.dashboard.getSummary()),
+      loopDetail: async (input) => withCore(core, (active) => {
+        const { projectId, loopName } = input as { projectId: string; loopName: string }
+        return active.dashboard.getLoopDetail(projectId, loopName)
+      }),
+      projectFindings: async (input) => withCore(core, (active) =>
+        active.dashboard.getProjectFindings((input as { projectId: string }).projectId)),
+      amendmentDiff: async (input) => withCore(core, (active) => {
+        const { projectId, loopName, id } = input as { projectId: string; loopName: string; id: number }
+        return active.dashboard.getAmendmentDiff(projectId, loopName, id)
+      }),
+      planDelete: async (input) => withCore(core, (active) => {
+        const { projectId, sessionId } = input as { projectId: string; sessionId: string }
+        return active.dashboard.deletePlan(projectId, sessionId)
+      }),
     }))
     publishToast = (toast) => registration.events.emit('toast', { projectId, ...toast })
     requestSessionDelete = (sessionID) => registration.events.emit('sessionDelete', { sessionID })

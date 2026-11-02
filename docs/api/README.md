@@ -60,16 +60,16 @@ Loop worktrees use OpenCode 2's native worktree and location model: no environme
 
 ### Upgrading
 
-Migration 157 drops the `goals` and `goal_chunks` tables: goals and the `architect-auto` agent are removed. A goal in progress stops after its current chunk loop, which finishes as an ordinary loop. On the version you are upgrading from, cancel running goals with `goal-cancel`. Forge does not remove a leftover `.goal-plan-*` planning checkout under `<dataDir>/worktrees`; remove it from the project repository with `git worktree remove --force <dir>` (or delete the directory and run `git worktree prune`), and delete any kept chunk planner session in OpenCode.
+Migration 157 drops the `goals` and `goal_chunks` tables: goals and the `architect-auto` agent are removed. On the version you are upgrading from, cancel running goals with `goal-cancel` before upgrading, so no chunk loop is left mid-flight. A chunk loop that is still running when you restart the OpenCode server into the new version is not resumed — plugin boot never recovers a loop persisted before the process started — so it keeps its `running` status until you restart it with `loop-status name=<loop> restart=true force=true` (a running loop requires `force`), or cancel it with `loop-cancel`. Forge does not remove a leftover `.goal-plan-*` planning checkout under `<dataDir>/worktrees`; remove it from the project repository with `git worktree remove --force <dir>` (or delete the directory and run `git worktree prune`), and delete any kept chunk planner session in OpenCode.
 
 ## What Forge Adds
 
 Forge ships two plugin entrypoints plus standalone management surfaces:
 
 - **Server plugin** — enabled through the `plugins` array in `opencode.json`. Provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support.
-- **TUI plugin** — the loop sidebar, the unified execution dialog (launch, restart, and per-loop launch settings), and the per-session host-sandbox and auto-approve toggles. It loads from the server plugin entry, or from the `cli.json` `plugins` array, and reads and changes Forge state over the server's RPC surface, so it also works attached to a remote OpenCode server.
+- **TUI plugin** — the loop sidebar, the unified execution dialog (launch, restart, and per-loop launch settings), and the per-session host-sandbox and auto-approve toggles. It loads from the server plugin entry, or from the `cli.json` `plugins` array, and reads and changes Forge state over the server's RPC surface, so it also works attached to a remote OpenCode server. It also hosts the [Dashboard](_media/dashboard.md): a project list with search, plus Loops, Findings and Plans sections and per-loop detail.
 - **Installer CLI** — installs/upgrades bundled prompts and skills, and registers the plugin in opencode's config directory (`--link`/`--vendor`/`--unlink`).
-- **Dashboard** — an observability interface launchable from the TUI command palette (`Open web dashboard`) or via `pnpm dashboard` (source checkouts only).
+- **Dashboard** — a TUI observability surface opened from the command palette (`Open dashboard`) or a keybind, covering every project's loops, findings, and plans.
 
 For a quick tour of the loop itself, see [Loop Flow](#loop-flow) below.
 
@@ -88,7 +88,7 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 - **Loops** — iterative coding/auditing with an isolated git worktree and optional msb sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — loop sidebar, a unified execution dialog with model, variant, and per-loop launch settings, and per-session host-sandbox and auto-approve toggles
-- **Dashboard** — a repo shell for loops, findings, and plans, with loop state
+- **Dashboard** — a TUI repo shell for loops, findings, and plans, with live loop state, a text state-machine view, and stored plan diffs
 
 ## Documentation
 
@@ -97,7 +97,7 @@ The server side — loops, plans, review findings, tools, agents, commands, perm
 - [Tools Reference](_media/tools.md) — full arguments, section-scoping behavior, restart options, and sandbox shell details.
 - [Loop System](_media/loop-system.md) — phases, section lifecycle, review findings, session rotation, stall detection, model configuration, and termination.
 - [TUI Plugin](_media/tui.md) — sidebar, palette commands, the execution dialog, per-loop launch settings, per-session auto-approve, model selection, and setup.
-- [Dashboard](_media/dashboard.md) — views, hash deep links, and the HTTP API.
+- [Dashboard](_media/dashboard.md) — opening the TUI dashboard, its views and key bindings, live updates, and plan deletion.
 - [Workspace Integration](_media/workspaces.md) — OpenCode workspace registration, requirements, and failure behavior.
 - [Sandbox](_media/sandbox.md) — host requirements, image building and loading, network access, secrets, bind mounts, and resource defaults.
 - [Configuration Reference](_media/configuration.md) — every option in `forge-config.jsonc`, plus the installer and bundled-asset sync.
@@ -128,7 +128,7 @@ The diagram below shows the overall flow of the Forge loop system — from loop 
 
 ## Development
 
-Install pnpm and Bun; build, setup, and dashboard scripts require Bun. Use pnpm for dependencies and run the build before tests so the generated dashboard bundle is current.
+Install pnpm and Bun; build and setup scripts require Bun. Use pnpm for dependencies.
 
 ```bash
 pnpm install --frozen-lockfile
