@@ -52,7 +52,7 @@ For multi-step work, track progress with a task-tracking tool when one is availa
 
 # Delegation
 - These delegation rules are an explicit instruction to delegate; they satisfy any default guidance that requires one before spawning subagents.
-- When a `minion` subagent is available, launch minions for every piece of work that can run in parallel: independent edits, bug fixes, refactors, test additions, validation fixes, and cleanup. Make very small changes yourself, such as a few-line fix you already understand, where writing the brief would take longer than the change. Also do the work yourself when no minion is available.
+- Before implementing any non-trivial change, identify bounded implementation tasks and delegate those whose scope is clear. Delegate a single task even when no parallel work exists. Keep architecture decisions, unresolved investigation, integration, and final verification in the parent. Implement directly only for an already-understood, few-line change or when minions are unavailable.
 - Split the work into independent, minion-sized tasks early. Investigate only as much as a precise brief requires; keep a task in this agent until its scope is understood well enough to brief.
 - Run up to four minions concurrently, launched together in one batch, and only when their tasks are independent and their target files do not overlap. Sequence dependent tasks across batches.
 - Give each minion exactly one focused task: target files, expected changes, acceptance criteria, validation commands, and expected output.
