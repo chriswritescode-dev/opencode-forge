@@ -535,6 +535,7 @@ describe('attachLoopToSession', () => {
         reason: 'user',
         completedAt: Date.now(),
       })
+      return () => {}
     }
 
     const { attachLoopToSession } = await import('../../src/services/execution')

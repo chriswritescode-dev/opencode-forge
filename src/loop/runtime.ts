@@ -143,8 +143,10 @@ export interface Loop {
   /**
    * Take this loop's code-graph snapshot A for the current section and store it
    * on the section row. Best-effort: any failure leaves the prompt unchanged.
+   * Resolves to the release of the hold that keeps idle events from prompting the
+   * loop; call it once the first prompt is marked sent or abandoned.
    */
-  snapshotSectionCodeGraph(state: LoopState): Promise<void>
+  snapshotSectionCodeGraph(state: LoopState): Promise<() => void>
   startWatchdog(name: string): void
   /**
    * Starts the watchdog for every active loop whose worktree this instance owns and
@@ -2108,21 +2110,31 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * Snapshot A at loop attach, before the loop's first prompt. Attach does not hold the state
    * lock, so this waits for the snapshot inline; the caller re-checks that the loop is still
-   * active before prompting. The loop is already persisted, so while the snapshot runs the
-   * coding phase runner ignores it at its persisted state: an idle event for the still-unprompted
-   * session must not send a missing-handoff prompt ahead of the first one.
+   * active before prompting. The loop is already persisted, so from the snapshot until the caller
+   * marks its first prompt as sent, the coding phase runner ignores it at its persisted state: an
+   * idle event for the still-unprompted session must not send a missing-handoff prompt ahead of
+   * the first one. Returns the release for that hold, which the caller must run once the first
+   * prompt is marked sent or abandoned. A loop that restarted into another session is left alone.
    */
-  async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
+  async function snapshotSectionCodeGraph(state: LoopState): Promise<() => void> {
+    const noHold = (): void => {}
     const plan = planCodeGraphSnapshot(state.loopName, () => planSectionCodeGraph(state))
-    if (!plan) return
+    if (!plan) return noHold
+    const active = loopService.getActiveState(state.loopName)
+    if (active && active.sessionId !== state.sessionId) return noHold
     const key = stateLockKey(state.loopName)
-    const token = codeGraphTransitionToken(loopService.getActiveState(state.loopName) ?? state)
+    const token = codeGraphTransitionToken(active ?? state)
     pendingCodeGraphSnapshots.set(key, token)
-    try {
-      recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
-    } finally {
+    const release = (): void => {
       if (pendingCodeGraphSnapshots.get(key) === token) pendingCodeGraphSnapshots.delete(key)
     }
+    try {
+      recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
+    } catch (err) {
+      release()
+      throw err
+    }
+    return release
   }
 
   /**

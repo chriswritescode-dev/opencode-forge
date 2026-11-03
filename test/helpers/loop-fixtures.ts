@@ -214,7 +214,7 @@ export function buildExecutionDeps(
     registerSessionReverseIndex: () => {},
     unregisterSessionReverseIndex: () => {},
     handleAuditorProviderLimit: async () => false,
-    snapshotSectionCodeGraph: async () => {},
+    snapshotSectionCodeGraph: async () => () => {},
     ...loopOverrides,
   } as unknown as Loop
   const loopHandler = {

@@ -666,49 +666,56 @@ export async function attachLoopToSession(
       return { ok: true, loopName }
     }
 
-    let promptText: string
-    if (totalSections > 0) {
-      const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
-      await deps.loop.snapshotSectionCodeGraph(updatedState as import('../loop/state').LoopState)
-      if (!deps.loop.service.getActiveState(loopName)) {
-        deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled before its first prompt was built; skipping prompt and watchdog`)
-        return { ok: true, loopName }
-      }
-      promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
-    } else {
-      promptText = deps.loop.service.buildPlanInitialPrompt(planText)
-    }
-
-    // Send initial prompt with fallback
-    const sessionDir = worktreeDir
-    const promptParts = [{ type: 'text' as const, text: promptText }]
-    const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
-
-    const promptResult = await sendLoopPrompt({
-      projectId: ctx.projectId,
-      loopName,
-      sessionId,
-      agent: 'code',
-      logger: deps.logger,
-      primaryModel: loopModel,
-      useInFlightGuard: false,
-      performPrompt: async (model) => {
-        markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
-        try {
-          await deps.client.session.promptAsync({
-            sessionID: sessionId,
-            directory: sessionDir,
-            parts: promptParts,
-            agent: 'code',
-            ...workspaceParam,
-            ...(model ? { model } : {}),
-          })
-          return {}
-        } catch (err) {
-          return { error: err }
+    let releaseSnapshotHold = (): void => {}
+    let promptResult: Awaited<ReturnType<typeof sendLoopPrompt>>
+    try {
+      let promptText: string
+      if (totalSections > 0) {
+        const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
+        releaseSnapshotHold = await deps.loop.snapshotSectionCodeGraph(updatedState as import('../loop/state').LoopState)
+        if (!deps.loop.service.getActiveState(loopName)) {
+          deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled before its first prompt was built; skipping prompt and watchdog`)
+          return { ok: true, loopName }
         }
-      },
-    })
+        promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
+      } else {
+        promptText = deps.loop.service.buildPlanInitialPrompt(planText)
+      }
+
+      // Send initial prompt with fallback
+      const sessionDir = worktreeDir
+      const promptParts = [{ type: 'text' as const, text: promptText }]
+      const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
+
+      promptResult = await sendLoopPrompt({
+        projectId: ctx.projectId,
+        loopName,
+        sessionId,
+        agent: 'code',
+        logger: deps.logger,
+        primaryModel: loopModel,
+        useInFlightGuard: false,
+        performPrompt: async (model) => {
+          markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
+          releaseSnapshotHold()
+          try {
+            await deps.client.session.promptAsync({
+              sessionID: sessionId,
+              directory: sessionDir,
+              parts: promptParts,
+              agent: 'code',
+              ...workspaceParam,
+              ...(model ? { model } : {}),
+            })
+            return {}
+          } catch (err) {
+            return { error: err }
+          }
+        },
+      })
+    } finally {
+      releaseSnapshotHold()
+    }
 
     if (promptResult.result.error) {
       const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
