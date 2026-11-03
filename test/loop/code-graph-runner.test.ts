@@ -358,6 +358,7 @@ describe('runCodeGraphSnapshot impact', () => {
           path: 'src/lib.ts',
           startLine: 3,
           callerCount: 2,
+          callerQueryLimit: 6,
           callers: [
             { name: 'run', kind: 'function', path: 'src/app.ts', line: 14 },
             { name: 'elsewhere', kind: 'function', path: 'src/other.ts', line: 40 },
@@ -366,6 +367,9 @@ describe('runCodeGraphSnapshot impact', () => {
       ],
       removedSymbols: [],
     })
+    const keepMeImpact = result.ok ? result.impact?.changedSymbols[0] : undefined
+    expect(keepMeImpact?.callerCount).toBe(2)
+    expect(keepMeImpact?.callerQueryLimit).toBe(6)
   })
 
   it('lists at most callerLimit callers, counts the rest, and includes changed symbols with no callers', async () => {
@@ -395,12 +399,13 @@ describe('runCodeGraphSnapshot impact', () => {
           path: 'src/lib.ts',
           startLine: 2,
           callerCount: 3,
+          callerQueryLimit: 3,
           callers: [
             { name: 'a', kind: 'function', path: 'src/a.ts', line: 11 },
             { name: 'b', kind: 'function', path: 'src/a.ts', line: 21 },
           ],
         },
-        { name: 'orphan', kind: 'function', path: 'src/lib.ts', startLine: 10, callerCount: 0, callers: [] },
+        { name: 'orphan', kind: 'function', path: 'src/lib.ts', startLine: 10, callerCount: 0, callerQueryLimit: 0, callers: [] },
       ],
       removedSymbols: [],
     })
@@ -461,6 +466,32 @@ describe('runCodeGraphSnapshot impact', () => {
         path: 'src/lib.ts',
         references: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }],
       },
+    ])
+  })
+
+  it('ignores vanished members that still have unresolved references by name', async () => {
+    const closeMethod: FakeNode = { id: 'method:close', name: 'close', kind: 'method', filePath: 'src/lib.ts', startLine: 6, endLine: 6 }
+    const sourceProperty: FakeNode = { id: 'property:source', name: 'source', kind: 'property', filePath: 'src/lib.ts', startLine: 7, endLine: 7 }
+    const removeMe: FakeNode = { id: 'function:removeMe', name: 'removeMe', kind: 'function', filePath: 'src/lib.ts', startLine: 1, endLine: 1 }
+    const { load } = fakeLoader({
+      nodes: { 'src/lib.ts': [keepMe] },
+      preSyncNodes: { 'src/lib.ts': [removeMe, keepMe, closeMethod, sourceProperty] },
+      definitions: [run],
+      unresolvedNames: ['removeMe', 'close', 'source'],
+      unresolvedReferences: {
+        'src/app.ts': [
+          { fromNodeId: 'function:run', referenceName: 'removeMe', referenceKind: 'calls', line: 4 },
+          { fromNodeId: 'function:run', referenceName: 'close', referenceKind: 'calls', line: 5 },
+          { fromNodeId: 'function:run', referenceName: 'source', referenceKind: 'references', line: 6 },
+        ],
+      },
+    })
+
+    const result = await runCodeGraphSnapshot(load, input({ files: ['src/lib.ts'], impact: impact({ 'src/lib.ts': [{ start: 3, end: 3 }] }) }))
+
+    expect(result.ok && result.impact && result.impact.changedSymbols.map((symbol) => symbol.name)).toEqual(['keepMe'])
+    expect(result.ok && result.impact && result.impact.removedSymbols).toEqual([
+      { name: 'removeMe', path: 'src/lib.ts', references: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }] },
     ])
   })
 
@@ -563,7 +594,17 @@ describe('parseCodeGraphRunnerResult', () => {
     const base = { ok: true, index: 'synced', files: [], affectedTests: [] }
     const reference = { name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }
     const impact = {
-      changedSymbols: [{ name: 'keepMe', kind: 'function', path: 'src/lib.ts', startLine: 2, callers: [reference], callerCount: 1 }],
+      changedSymbols: [
+        {
+          name: 'keepMe',
+          kind: 'function',
+          path: 'src/lib.ts',
+          startLine: 2,
+          callers: [reference],
+          callerCount: 1,
+          callerQueryLimit: 4,
+        },
+      ],
       removedSymbols: [{ name: 'removeMe', path: 'src/lib.ts', references: [reference] }],
     }
 
@@ -575,6 +616,8 @@ describe('parseCodeGraphRunnerResult', () => {
       { changedSymbols: impact.changedSymbols },
       { changedSymbols: [], removedSymbols: [{ name: 'removeMe', path: 'src/lib.ts' }] },
       { changedSymbols: [{ ...impact.changedSymbols[0], callerCount: '1' }], removedSymbols: [] },
+      { changedSymbols: [{ ...impact.changedSymbols[0], callerQueryLimit: undefined }], removedSymbols: [] },
+      { changedSymbols: [{ ...impact.changedSymbols[0], callerQueryLimit: '4' }], removedSymbols: [] },
       { changedSymbols: [{ ...impact.changedSymbols[0], callers: [{ name: 'run', kind: 'function', path: 'src/app.ts' }] }], removedSymbols: [] },
       { changedSymbols: [], removedSymbols: [{ name: 'removeMe', path: 'src/lib.ts', references: [{ ...reference, line: '4' }] }] },
     ]
@@ -763,6 +806,7 @@ exports.CodeGraph = { isInitialized: () => true, open: () => new Promise(() => {
     expect(keep).toMatchObject({ kind: 'function', path: 'src/lib.ts', startLine: 2 })
     expect(keep?.callers).toEqual([{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }])
     expect(keep?.callerCount).toBe(1)
+    expect(keep?.callerQueryLimit).toBe(1)
     expect(report?.removedSymbols.map((symbol) => `${symbol.path}:${symbol.name}`)).toEqual(['src/lib.ts:removeMe', 'src/lib.ts:renameMe'])
     for (const removed of report?.removedSymbols ?? []) {
       expect(removed.references).toContainEqual({ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 })

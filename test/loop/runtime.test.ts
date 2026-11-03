@@ -4996,6 +4996,54 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(auditorPrompts(calls)[0]).toContain('## Code graph')
     })
 
+    test('an idle event while the first prompt is held sends nothing, through and after the attach snapshot', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-attach-'))
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const gated = gatedSandboxManager()
+      const { loop } = buildRuntime({ client, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-attach-idle'
+      const sessionId = 'codegraph-attach-idle-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+      const releaseHold = loop.holdUntilFirstPrompt(loopService.getActiveState(loopName)!)
+
+      await loop.tick(idleEvent(sessionId))
+      expect(promptCount(calls)).toBe(0)
+
+      const snapshotting = loop.snapshotSectionCodeGraph(loopService.getActiveState(loopName)!)
+      await gated.started
+      await loop.tick(idleEvent(sessionId))
+      expect(promptCount(calls)).toBe(0)
+
+      gated.release()
+      await snapshotting
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.codeGraph).toContain('# Code graph: section 1')
+      await loop.tick(idleEvent(sessionId))
+      expect(promptCount(calls)).toBe(0)
+
+      releaseHold()
+      await loop.tick(idleEvent(sessionId))
+      expect(promptCount(calls)).toBe(1)
+    })
+
+    test('a first-prompt hold never covers a loop restarted into another session', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-attach-restart-'))
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const { loop } = buildRuntime({ client, sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)) })
+
+      const loopName = 'codegraph-attach-restarted'
+      seedSectionedAudit(loopName, 'codegraph-attach-new-session', worktreeDir, 'coding')
+      const planned = { ...loopService.getActiveState(loopName)!, sessionId: 'codegraph-attach-old-session' }
+
+      const releaseHold = loop.holdUntilFirstPrompt(planned)
+      await loop.snapshotSectionCodeGraph(planned)
+      await loop.tick(idleEvent('codegraph-attach-new-session'))
+
+      expect(promptCount(calls)).toBe(1)
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.codeGraph).toBeNull()
+      releaseHold()
+    })
+
     test('an idle event from the finished audit session during snapshot A is ignored', async () => {
       const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-gap-'))
       const { client, calls } = createFakeForgeClient({

@@ -410,8 +410,9 @@ describe('createCodeGraphSnapshotter', () => {
             startLine: 9,
             callers: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }],
             callerCount: 13,
+            callerQueryLimit: 15,
           },
-          { name: 'quiet', kind: 'function', path: 'src/lib.ts', startLine: 20, callers: [], callerCount: 0 },
+          { name: 'quiet', kind: 'function', path: 'src/lib.ts', startLine: 20, callers: [], callerCount: 0, callerQueryLimit: 0 },
         ],
         removedSymbols: [
           {
@@ -432,7 +433,7 @@ describe('createCodeGraphSnapshotter', () => {
         '### `keepMe` (function) — src/lib.ts:9',
         '',
         '- `run` (function) — src/app.ts:4',
-        '- … and 12 more: run `codegraph callers keepMe -f src/lib.ts`',
+        "- … and 12 more: run `codegraph callers 'keepMe' -f 'src/lib.ts' -l 15`",
         '',
         '1 other changed symbol has no callers outside the changed files.',
         '',
@@ -454,8 +455,8 @@ describe('createCodeGraphSnapshotter', () => {
       createWorktree(),
       auditResult({
         changedSymbols: [
-          { name: 'one', kind: 'function', path: 'src/lib.ts', startLine: 1, callers: [], callerCount: 0 },
-          { name: 'two', kind: 'function', path: 'src/lib.ts', startLine: 2, callers: [], callerCount: 0 },
+          { name: 'one', kind: 'function', path: 'src/lib.ts', startLine: 1, callers: [], callerCount: 0, callerQueryLimit: 0 },
+          { name: 'two', kind: 'function', path: 'src/lib.ts', startLine: 2, callers: [], callerCount: 0, callerQueryLimit: 0 },
         ],
         removedSymbols: [],
       }),
@@ -552,6 +553,68 @@ describe('createCodeGraphSnapshotter', () => {
     expect(report).toContain('## src/api.ts\n\n- `fetchThing` (function) — line 1')
     expect(report).not.toContain('## src/own.test.ts')
     expect(report).not.toContain('mockHelper')
+  })
+
+  it('caps the symbols of a generated file in line order and points at a quoted source read for the rest', async () => {
+    const worktreeDir = createWorktree()
+    const path = 'app/[id] gen/schema.d.ts'
+    mkdirSync(join(worktreeDir, 'app/[id] gen'), { recursive: true })
+    writeFileSync(join(worktreeDir, path), 'export {}\n')
+    const symbols = Array.from({ length: 150 }, (_, index) => ({
+      name: `sym${index}`,
+      kind: 'interface',
+      signature: null,
+      startLine: index + 1,
+    })).reverse()
+    const dependents = Array.from({ length: 80 }, (_, index) => `src/user${index}.ts`)
+
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(
+      scriptedTarget(worktreeDir, {
+        ok: true,
+        index: 'synced',
+        files: [{ path, symbols, dependents }],
+        affectedTests: [],
+      }),
+      { title: 'generated', files: [path] },
+    )
+
+    const section = report!.slice(report!.indexOf(`## ${path}`))
+    expect(section.match(/^- `sym\d+` \(interface\)/gm)).toHaveLength(100)
+    expect(section).toContain('- `sym0` (interface) — line 1')
+    expect(section).toContain('- `sym99` (interface) — line 100')
+    expect(section).not.toContain('`sym100`')
+    expect(section).toContain(
+      "- … and 50 more from line 101: run `codegraph node --file 'app/[id] gen/schema.d.ts' --offset 101` and page on with `--offset`/`--limit`",
+    )
+    expect(section).toContain(`Used by: ${dependents.join(', ')}\n`)
+  })
+
+  it('renders a small file unchanged, without overflow lines', async () => {
+    const worktreeDir = createWorktree()
+    mkdirSync(join(worktreeDir, 'src'), { recursive: true })
+    writeFileSync(join(worktreeDir, 'src/small.ts'), 'export function small() {}\n')
+
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(
+      scriptedTarget(worktreeDir, {
+        ok: true,
+        index: 'synced',
+        files: [
+          {
+            path: 'src/small.ts',
+            symbols: [{ name: 'small', kind: 'function', signature: '()', startLine: 1 }],
+            dependents: ['src/one.ts', 'src/two.ts'],
+          },
+        ],
+        affectedTests: [],
+      }),
+      { title: 'small', files: ['src/small.ts'] },
+    )
+
+    expect(report).toContain(
+      ['## src/small.ts', '', 'Used by: src/one.ts, src/two.ts', '', '- `small` (function) () — line 1'].join('\n'),
+    )
+    expect(report).not.toContain('… and')
+    expect(report).not.toContain('--offset')
   })
 
   it('drops missing files, queries the rest in one exec, and never truncates the report', async () => {

@@ -37,6 +37,13 @@ const SNAPSHOT_TIMEOUT_MS = 600000
 const AFFECTED_MAX_DEPTH = 1
 /** Callers listed per changed symbol at an audit checkpoint; the rest are only counted. */
 const CALLER_LIMIT = 20
+/**
+ * Symbols listed per file; a generated file would otherwise fill the whole report. The rest are
+ * reached by reading the source from the first omitted symbol, because codegraph's own symbol map
+ * is capped too. Dependents are never capped: no codegraph command lists them all, and they are a
+ * small share of a large report.
+ */
+const SYMBOL_LIMIT = 100
 const PROBED_CONTAINER_LIMIT = 100
 
 export interface CodeGraphTarget {
@@ -210,13 +217,22 @@ function formatFileSection(file: CodeGraphFileReport, tests: Set<string>): strin
   const lines = ['', `## ${file.path}`]
   if (dependents.length > 0) lines.push('', `Used by: ${dependents.join(', ')}`)
   if (file.symbols.length > 0) {
+    const symbols = [...file.symbols].sort((a, b) => a.startLine - b.startLine)
+    const listed = symbols.slice(0, SYMBOL_LIMIT)
     lines.push(
       '',
-      ...file.symbols.map((symbol) => {
+      ...listed.map((symbol) => {
         const signature = symbol.signature ? ` ${symbol.signature}` : ''
         return `- \`${symbol.name}\` (${symbol.kind})${signature} — line ${symbol.startLine}`
       }),
     )
+    const omitted = symbols.slice(SYMBOL_LIMIT)
+    if (omitted.length > 0) {
+      const from = omitted[0].startLine
+      lines.push(
+        `- … and ${omitted.length} more from line ${from}: run \`codegraph node --file ${quoteShellArg(file.path)} --offset ${from}\` and page on with \`--offset\`/\`--limit\``,
+      )
+    }
   }
   return lines
 }
@@ -230,7 +246,9 @@ function formatCallerSections(impact: CodeGraphImpactReport): string[] {
     lines.push('', `### \`${symbol.name}\` (${symbol.kind}) — ${symbol.path}:${symbol.startLine}`, '')
     for (const caller of symbol.callers) lines.push(`- \`${caller.name}\` (${caller.kind}) — ${caller.path}:${caller.line}`)
     if (symbol.callerCount > symbol.callers.length) {
-      lines.push(`- … and ${symbol.callerCount - symbol.callers.length} more: run \`codegraph callers ${symbol.name} -f ${symbol.path}\``)
+      lines.push(
+        `- … and ${symbol.callerCount - symbol.callers.length} more: run \`codegraph callers ${quoteShellArg(symbol.name)} -f ${quoteShellArg(symbol.path)} -l ${symbol.callerQueryLimit}\``,
+      )
     }
   }
   if (withoutCallers > 0) {

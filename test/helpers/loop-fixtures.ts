@@ -215,6 +215,7 @@ export function buildExecutionDeps(
     unregisterSessionReverseIndex: () => {},
     handleAuditorProviderLimit: async () => false,
     snapshotSectionCodeGraph: async () => {},
+    holdUntilFirstPrompt: () => () => {},
     ...loopOverrides,
   } as unknown as Loop
   const loopHandler = {
