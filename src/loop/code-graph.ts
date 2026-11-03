@@ -37,6 +37,10 @@ const SNAPSHOT_TIMEOUT_MS = 600000
 const AFFECTED_MAX_DEPTH = 1
 /** Callers listed per changed symbol at an audit checkpoint; the rest are only counted. */
 const CALLER_LIMIT = 20
+/** Symbols listed per file; a generated file would otherwise fill the whole report. */
+const SYMBOL_LIMIT = 100
+/** Dependents listed per file; a widely imported file would otherwise fill the whole report. */
+const DEPENDENT_LIMIT = 50
 const PROBED_CONTAINER_LIMIT = 100
 
 export interface CodeGraphTarget {
@@ -207,16 +211,24 @@ function formatFileSection(file: CodeGraphFileReport, tests: Set<string>): strin
   if (tests.has(file.path)) return []
   const dependents = file.dependents.filter((dependent) => !tests.has(dependent))
   if (dependents.length === 0 && file.symbols.length === 0) return []
+  const followUp = `run \`codegraph node --file ${file.path} --symbols-only\``
   const lines = ['', `## ${file.path}`]
-  if (dependents.length > 0) lines.push('', `Used by: ${dependents.join(', ')}`)
+  if (dependents.length > 0) {
+    const listed = dependents.slice(0, DEPENDENT_LIMIT)
+    const overflow = dependents.length - listed.length
+    lines.push('', `Used by: ${listed.join(', ')}${overflow > 0 ? `, … and ${overflow} more (${followUp})` : ''}`)
+  }
   if (file.symbols.length > 0) {
+    const listed = file.symbols.slice(0, SYMBOL_LIMIT)
+    const overflow = file.symbols.length - listed.length
     lines.push(
       '',
-      ...file.symbols.map((symbol) => {
+      ...listed.map((symbol) => {
         const signature = symbol.signature ? ` ${symbol.signature}` : ''
         return `- \`${symbol.name}\` (${symbol.kind})${signature} — line ${symbol.startLine}`
       }),
     )
+    if (overflow > 0) lines.push(`- … and ${overflow} more: ${followUp}`)
   }
   return lines
 }

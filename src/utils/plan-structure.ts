@@ -95,15 +95,16 @@ function findAbsolutePath(lines: string[]): string | null {
 function isRepoRelativeNonGlobPath(file: string): boolean {
   if (file.startsWith('/') || file.startsWith('~') || file.startsWith('\\\\')) return false
   if (/^[a-z]:[\\/]/i.test(file)) return false
-  return !/[*?[\]]/.test(file)
+  return !/[*?]/.test(file)
 }
 
 /**
  * The repo-relative files a section's `### Files` list plans to touch. Backtick
  * tokens win over the bullet text, so ``- `src/a.ts` — add helper`` still
- * resolves, and a trailing `(new)` annotation is dropped. Absolute paths, globs,
- * and fenced examples are ignored: the code-graph snapshotter only queries
- * repo-relative files that exist in the worktree.
+ * resolves, and a trailing `(new)` annotation is dropped. Absolute paths, `*`/`?`
+ * globs, and fenced examples are ignored: the code-graph snapshotter only queries
+ * repo-relative files that exist in the worktree, so bracketed dynamic-route
+ * segments such as `[videoId]` stay valid file paths.
  */
 export function extractSectionFiles(sectionContent: string): string[] {
   const body = collectHeadingBodies(sectionContent, 3, 0, { skipFencedContent: true }).get('Files') ?? []

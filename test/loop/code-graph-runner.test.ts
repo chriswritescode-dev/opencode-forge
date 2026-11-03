@@ -464,6 +464,32 @@ describe('runCodeGraphSnapshot impact', () => {
     ])
   })
 
+  it('ignores vanished members that still have unresolved references by name', async () => {
+    const closeMethod: FakeNode = { id: 'method:close', name: 'close', kind: 'method', filePath: 'src/lib.ts', startLine: 6, endLine: 6 }
+    const sourceProperty: FakeNode = { id: 'property:source', name: 'source', kind: 'property', filePath: 'src/lib.ts', startLine: 7, endLine: 7 }
+    const removeMe: FakeNode = { id: 'function:removeMe', name: 'removeMe', kind: 'function', filePath: 'src/lib.ts', startLine: 1, endLine: 1 }
+    const { load } = fakeLoader({
+      nodes: { 'src/lib.ts': [keepMe] },
+      preSyncNodes: { 'src/lib.ts': [removeMe, keepMe, closeMethod, sourceProperty] },
+      definitions: [run],
+      unresolvedNames: ['removeMe', 'close', 'source'],
+      unresolvedReferences: {
+        'src/app.ts': [
+          { fromNodeId: 'function:run', referenceName: 'removeMe', referenceKind: 'calls', line: 4 },
+          { fromNodeId: 'function:run', referenceName: 'close', referenceKind: 'calls', line: 5 },
+          { fromNodeId: 'function:run', referenceName: 'source', referenceKind: 'references', line: 6 },
+        ],
+      },
+    })
+
+    const result = await runCodeGraphSnapshot(load, input({ files: ['src/lib.ts'], impact: impact({ 'src/lib.ts': [{ start: 3, end: 3 }] }) }))
+
+    expect(result.ok && result.impact && result.impact.changedSymbols.map((symbol) => symbol.name)).toEqual(['keepMe'])
+    expect(result.ok && result.impact && result.impact.removedSymbols).toEqual([
+      { name: 'removeMe', path: 'src/lib.ts', references: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }] },
+    ])
+  })
+
   it('scans no files for references when no vanished name is still referenced', async () => {
     const { load, calls } = fakeLoader({
       nodes: { 'src/lib.ts': [keepMe] },

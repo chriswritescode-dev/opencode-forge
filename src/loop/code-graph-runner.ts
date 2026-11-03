@@ -136,7 +136,12 @@ export interface CodeGraphChangedSymbol {
   callerCount: number
 }
 
-/** A symbol present in a changed file before the run's sync and gone after it, still referenced elsewhere. */
+/**
+ * A symbol present in a changed file before the run's sync and gone after it, still referenced elsewhere.
+ * Members are never reported: they are matched only by bare name, so a vanished `method`, `property`,
+ * `field`, `parameter`, or `enum_member` name collides with unrelated local variables, parameters, and
+ * property accesses across the repo.
+ */
 export interface CodeGraphRemovedSymbol {
   name: string
   /** The file the symbol was defined in before the change. */
@@ -191,7 +196,7 @@ export type CodeGraphRunnerResult =
  * Brings the index up to date and collects each file's symbols, direct dependents, and the test
  * files reachable through reverse imports (the same walk as `codegraph affected`: a changed test
  * file counts itself, and the walk stops at test files and at `maxDepth`). With `impact`, it also
- * reports the symbols overlapping the changed ranges with their callers, and the symbols the
+ * reports the symbols overlapping the changed ranges with their callers, and the non-member symbols the
  * change removed or renamed that still have references.
  *
  * A missing index is created with a full index; an existing one is synced, and a failed sync is
@@ -221,6 +226,7 @@ export async function runCodeGraphSnapshot(
     }
   }
   const hiddenKinds = new Set(['file', 'import'])
+  const memberKinds = new Set(['method', 'property', 'field', 'parameter', 'enum_member'])
   const unresolvedReferenceKinds = [
     'calls',
     'imports',
@@ -235,6 +241,11 @@ export async function runCodeGraphSnapshot(
     a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1
   const visibleSymbols = (handle: CodeGraphHandle, filePath: string): CodeGraphNodeRecord[] =>
     handle.getNodesInFile(filePath).filter((node) => !hiddenKinds.has(node.kind))
+  /** Names eligible for the removed-symbol check: members are excluded because they are matched by bare name only. */
+  const trackedSymbolNames = (handle: CodeGraphHandle, filePath: string): string[] =>
+    visibleSymbols(handle, filePath)
+      .filter((node) => !memberKinds.has(node.kind))
+      .map((node) => node.name)
 
   const collectImpact = (
     handle: CodeGraphHandle,
@@ -277,7 +288,7 @@ export async function runCodeGraphSnapshot(
       const vanished = new Map<string, string[]>()
       const vanishedNames = new Set<string>()
       for (const [path, names] of previous) {
-        const current = new Set(visibleSymbols(handle, path).map((node) => node.name))
+        const current = new Set(trackedSymbolNames(handle, path))
         const gone = names.filter((name) => !current.has(name))
         if (gone.length === 0) continue
         vanished.set(path, gone)
@@ -340,7 +351,7 @@ export async function runCodeGraphSnapshot(
 
   let graph: CodeGraphHandle | null = null
   let index: CodeGraphIndexAction
-  /** Symbol names each impact file had before this run's sync; null when there was no index to read. */
+  /** Names of each impact file's non-member symbols before this run's sync; null when there was no index to read. */
   let baseline: Map<string, string[]> | null = null
   /** A baseline read failure is reported with the other impact queries, after the index is up to date. */
   let baselineError: unknown = null
@@ -357,7 +368,7 @@ export async function runCodeGraphSnapshot(
         try {
           const previous = new Map<string, string[]>()
           for (const path of Object.keys(input.impact.ranges)) {
-            previous.set(path, visibleSymbols(openedIndex, path).map((node) => node.name))
+            previous.set(path, trackedSymbolNames(openedIndex, path))
           }
           baseline = previous
         } catch (err) {

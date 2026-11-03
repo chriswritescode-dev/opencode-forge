@@ -153,6 +153,95 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
+  function readGitExcludeLines(directory: string): string[] {
+    let excludePath = execSync(`git -C "${directory}" rev-parse --git-path info/exclude`, {
+      encoding: 'utf-8',
+    }).trim()
+    if (!isAbsolute(excludePath)) {
+      excludePath = join(directory, excludePath)
+    }
+    return readFileSync(excludePath, 'utf-8')
+      .split('\n')
+      .map((line) => line.trim())
+  }
+
+  it('create adds .codegraph to git exclude once when a sandbox is provisioned', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-codegraph-exclude-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'forge-codegraph-exclude-loop' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const configured = adapter.configure(makeInfo('codegraph-exclude-loop', tmpRepo))
+
+      await adapter.create(configured)
+      await adapter.create(configured)
+
+      const lines = readGitExcludeLines(configured.directory!)
+      expect(lines.filter((line) => line === '.codegraph')).toHaveLength(1)
+      expect(lines).toContain('.forge/')
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create leaves .codegraph out of git exclude when the loop opts out of the sandbox', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-codegraph-optout-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'unused' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const info = makeInfo('codegraph-optout-loop', tmpRepo)
+      info.extra = { ...info.extra, forgeLoop: { sandboxEnabled: false } }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured)
+
+      const lines = readGitExcludeLines(configured.directory!)
+      expect(lines.filter((line) => line === '.codegraph')).toHaveLength(0)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create leaves .codegraph out of git exclude when the code-graph integration is disabled', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-codegraph-disabled-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'forge-codegraph-disabled-loop' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+        codeGraphEnabled: false,
+      })
+      const configured = adapter.configure(makeInfo('codegraph-disabled-loop', tmpRepo))
+
+      await adapter.create(configured)
+
+      const lines = readGitExcludeLines(configured.directory!)
+      expect(lines.filter((line) => line === '.codegraph')).toHaveLength(0)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
   it('create branches the worktree from extra.baseRef, not the project HEAD', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-based-'))
     try {

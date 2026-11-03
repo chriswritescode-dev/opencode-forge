@@ -11,6 +11,7 @@ import { defaultGitService, type GitService } from '../utils/git-service'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
 import { commitWorktreeChanges } from './worktree-commit'
 import { sandboxContainerName } from '../sandbox/msb'
+import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
 
 export interface ForgeWorkspaceInfo {
   id: string
@@ -59,6 +60,12 @@ export interface ForgeAdapterDeps {
   gitService?: GitService
   /** Inline opencode config written as opencode.jsonc into each worktree (skip-if-exists). */
   worktreeOpencodeConfig?: Record<string, unknown>
+  /**
+   * Whether the code-graph integration is on (`isCodeGraphEnabled(config)`). A provisioned sandbox
+   * links `CODE_GRAPH_LINK_NAME` into the worktree, so it is excluded from git only when this is not
+   * `false`. Unset means on.
+   */
+  codeGraphEnabled?: boolean
 }
 
 const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
@@ -104,7 +111,7 @@ function worktreeAddFailure(branch: string, directory: string, stderr: string): 
 }
 
 export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorkspaceAdapter {
-  const { dataDir, logger, sandboxManager, getTeardownContext, gitService: gitServiceOpt, worktreeOpencodeConfig } = deps
+  const { dataDir, logger, sandboxManager, getTeardownContext, gitService: gitServiceOpt, worktreeOpencodeConfig, codeGraphEnabled } = deps
   const git = gitServiceOpt ?? defaultGitService
 
   function deriveLoopName(info: ForgeWorkspaceInfo): string {
@@ -334,10 +341,14 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
         logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)
       }
 
-      // Idempotently add .forge/ (overflow/scratch) and any forge-written
-      // opencode config to git exclude so they never enter loop commits.
+      // Idempotently add .forge/ (overflow/scratch), the sandbox code-graph link,
+      // and any forge-written opencode config to git exclude so they never enter
+      // loop commits.
       const excludePatterns = ['.forge/']
       const sandboxProvisioned = Boolean(sandboxManager) && !isLoopSandboxOptedOut(info)
+      if (sandboxProvisioned && codeGraphEnabled !== false) {
+        excludePatterns.push(CODE_GRAPH_LINK_NAME)
+      }
       const cfgResult = writeWorktreeOpencodeConfig({
         directory: info.directory,
         config: worktreeOpencodeConfig,

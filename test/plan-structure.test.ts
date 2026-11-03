@@ -448,6 +448,22 @@ describe('extractSectionFiles', () => {
     expect(extractSectionFiles(section)).toEqual(['src/a.ts', 'src/b.ts'])
   })
 
+  test('keeps bracketed dynamic-route paths while still dropping globs', () => {
+    const section = [
+      '## Phase 1: Snapshot',
+      '### Files',
+      '- `apps/web/src/app/(site)/videos/[videoId]/page.tsx`',
+      '- `apps/web/src/app/docs/[...slug]/page.tsx`',
+      '- `src/**/*.ts`',
+      '- `src/a?.ts`',
+    ].join('\n')
+
+    expect(extractSectionFiles(section)).toEqual([
+      'apps/web/src/app/(site)/videos/[videoId]/page.tsx',
+      'apps/web/src/app/docs/[...slug]/page.tsx',
+    ])
+  })
+
   test('returns an empty list without a Files heading', () => {
     expect(extractSectionFiles('## Phase 1\n### Edits\n- Do the work.')).toEqual([])
     expect(extractSectionFiles('')).toEqual([])

@@ -554,6 +554,66 @@ describe('createCodeGraphSnapshotter', () => {
     expect(report).not.toContain('mockHelper')
   })
 
+  it('caps the symbols and dependents of a generated file and points at the CLI for the rest', async () => {
+    const worktreeDir = createWorktree()
+    writeFileSync(join(worktreeDir, 'schema.d.ts'), 'export {}\n')
+    const symbols = Array.from({ length: 150 }, (_, index) => ({
+      name: `sym${index}`,
+      kind: 'interface',
+      signature: null,
+      startLine: index + 1,
+    }))
+    const dependents = Array.from({ length: 80 }, (_, index) => `src/user${index}.ts`)
+
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(
+      scriptedTarget(worktreeDir, {
+        ok: true,
+        index: 'synced',
+        files: [{ path: 'schema.d.ts', symbols, dependents }],
+        affectedTests: [],
+      }),
+      { title: 'generated', files: ['schema.d.ts'] },
+    )
+
+    const section = report!.slice(report!.indexOf('## schema.d.ts'))
+    expect(section.match(/^- `sym\d+` \(interface\)/gm)).toHaveLength(100)
+    expect(section).toContain('- `sym99` (interface) — line 100')
+    expect(section).not.toContain('`sym100`')
+    expect(section).toContain('- … and 50 more: run `codegraph node --file schema.d.ts --symbols-only`')
+    expect(section).toContain(
+      `Used by: ${dependents.slice(0, 50).join(', ')}, … and 30 more (run \`codegraph node --file schema.d.ts --symbols-only\`)`,
+    )
+    expect(section).not.toContain('src/user50.ts')
+  })
+
+  it('renders a small file unchanged, without overflow lines', async () => {
+    const worktreeDir = createWorktree()
+    mkdirSync(join(worktreeDir, 'src'), { recursive: true })
+    writeFileSync(join(worktreeDir, 'src/small.ts'), 'export function small() {}\n')
+
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(
+      scriptedTarget(worktreeDir, {
+        ok: true,
+        index: 'synced',
+        files: [
+          {
+            path: 'src/small.ts',
+            symbols: [{ name: 'small', kind: 'function', signature: '()', startLine: 1 }],
+            dependents: ['src/one.ts', 'src/two.ts'],
+          },
+        ],
+        affectedTests: [],
+      }),
+      { title: 'small', files: ['src/small.ts'] },
+    )
+
+    expect(report).toContain(
+      ['## src/small.ts', '', 'Used by: src/one.ts, src/two.ts', '', '- `small` (function) () — line 1'].join('\n'),
+    )
+    expect(report).not.toContain('… and')
+    expect(report).not.toContain('--symbols-only')
+  })
+
   it('drops missing files, queries the rest in one exec, and never truncates the report', async () => {
     const worktreeDir = createWorktree()
     mkdirSync(join(worktreeDir, 'f'))

@@ -16,7 +16,7 @@ import { readLoopSandboxSettings, readSandboxOverrides, resolveSandboxAllowLan, 
 import { createEnvironmentProbe } from '../sandbox/env-probe'
 import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
 import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
-import { MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { MAX_TOTAL_SECTIONS, isCodeGraphEnabled } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
 import { publishToast } from '../utils/toast'
@@ -612,6 +612,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     gitService: defaultGitService,
     getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
     worktreeOpencodeConfig: config.loop?.worktreeOpencodeConfig,
+    codeGraphEnabled: isCodeGraphEnabled(config),
   }))
   logger.log(`Registered forge workspace adapter (worktrees under ${forgeWorktreesRoot(dataDir)})`)
 
