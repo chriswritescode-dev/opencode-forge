@@ -4996,6 +4996,28 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(auditorPrompts(calls)[0]).toContain('## Code graph')
     })
 
+    test('an idle event during the attach snapshot sends no prompt ahead of the first one', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-attach-'))
+      const { client, calls } = createFakeForgeClient({ session: { messages: async () => assistantIdleMessages() } })
+      const gated = gatedSandboxManager()
+      const { loop } = buildRuntime({ client, sandboxManager: gated.manager })
+
+      const loopName = 'codegraph-attach-idle'
+      const sessionId = 'codegraph-attach-idle-coder'
+      seedSectionedAudit(loopName, sessionId, worktreeDir, 'coding')
+
+      const snapshotting = loop.snapshotSectionCodeGraph(loopService.getActiveState(loopName)!)
+      await gated.started
+      await loop.tick(idleEvent(sessionId))
+
+      expect(promptCount(calls)).toBe(0)
+
+      gated.release()
+      await snapshotting
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.codeGraph).toContain('# Code graph: section 1')
+      expect(promptCount(calls)).toBe(0)
+    })
+
     test('an idle event from the finished audit session during snapshot A is ignored', async () => {
       const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-gap-'))
       const { client, calls } = createFakeForgeClient({

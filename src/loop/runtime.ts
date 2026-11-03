@@ -2108,12 +2108,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * Snapshot A at loop attach, before the loop's first prompt. Attach does not hold the state
    * lock, so this waits for the snapshot inline; the caller re-checks that the loop is still
-   * active before prompting.
+   * active before prompting. The loop is already persisted, so while the snapshot runs the
+   * coding phase runner ignores it at its persisted state: an idle event for the still-unprompted
+   * session must not send a missing-handoff prompt ahead of the first one.
    */
   async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
     const plan = planCodeGraphSnapshot(state.loopName, () => planSectionCodeGraph(state))
     if (!plan) return
-    recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
+    const key = stateLockKey(state.loopName)
+    const token = codeGraphTransitionToken(loopService.getActiveState(state.loopName) ?? state)
+    pendingCodeGraphSnapshots.set(key, token)
+    try {
+      recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
+    } finally {
+      if (pendingCodeGraphSnapshots.get(key) === token) pendingCodeGraphSnapshots.delete(key)
+    }
   }
 
   /**
