@@ -535,7 +535,6 @@ describe('attachLoopToSession', () => {
         reason: 'user',
         completedAt: Date.now(),
       })
-      return () => {}
     }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
@@ -577,5 +576,102 @@ describe('attachLoopToSession', () => {
     const row = loopsRepo.get(PROJECT_ID, loopName)
     expect(row).not.toBeNull()
     expect(row!.status).toBe('cancelled')
+  })
+
+  const SECTIONED_PLAN = [
+    '<!-- forge-section -->',
+    '## Setup',
+    '### Files',
+    '- package.json',
+    'Install dependencies.',
+    '<!-- forge-section -->',
+    '## Build',
+    '### Files',
+    '- src/index.ts',
+    'Compile project.',
+  ].join('\n')
+
+  function sectionedAttachInput(loopName: string, sessionId: string) {
+    return {
+      sessionId,
+      workspaceId: `ws_${loopName}`,
+      worktreeDir: `/tmp/wt/${loopName}`,
+      loopName,
+      displayName: loopName,
+      executionName: loopName,
+      maxIterations: 10,
+      sandboxEnabled: false,
+      planText: SECTIONED_PLAN,
+      startWatchdog: true,
+    }
+  }
+
+  test('holds the loop from registration through the snapshot and releases it once the first prompt is marked sent', async () => {
+    const { deps, promptAsyncMock } = setupAttach()
+    const loopName = 'held-until-first-prompt'
+    const release = vi.fn()
+    const hold = vi.fn((_state: { sessionId: string }) => release)
+    deps.loop.holdUntilFirstPrompt = hold
+    let heldDuringSnapshot = false
+    deps.loop.snapshotSectionCodeGraph = async () => {
+      heldDuringSnapshot = hold.mock.calls.length === 1 && release.mock.calls.length === 0
+    }
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      sectionedAttachInput(loopName, 'sess_held'),
+    )
+
+    expect(result.ok).toBe(true)
+    expect(hold).toHaveBeenCalledTimes(1)
+    expect(hold.mock.calls[0]![0].sessionId).toBe('sess_held')
+    expect(heldDuringSnapshot).toBe(true)
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    expect(release).toHaveBeenCalled()
+    expect(release.mock.invocationCallOrder[0]!).toBeLessThan(promptAsyncMock.mock.invocationCallOrder[0]!)
+  })
+
+  test('a loop restarted into another session during the snapshot gets no prompt and keeps its state', async () => {
+    const { deps, promptAsyncMock } = setupAttach()
+    const loopName = 'restarted-during-snapshot'
+    const release = vi.fn()
+    deps.loop.holdUntilFirstPrompt = () => release
+    deps.loop.snapshotSectionCodeGraph = async () => {
+      deps.loop.service.registerLoopSession('sess_restarted', loopName)
+    }
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      sectionedAttachInput(loopName, 'sess_stale'),
+    )
+
+    expect(result.ok).toBe(true)
+    expect(promptAsyncMock).not.toHaveBeenCalled()
+    expect(deps.loopHandler!.startWatchdog).not.toHaveBeenCalled()
+    expect((deps.loop.service as any).getActiveState(loopName)?.sessionId).toBe('sess_restarted')
+    expect(release).toHaveBeenCalled()
+  })
+
+  test('a failed first prompt leaves the state of a loop restarted into another session alone', async () => {
+    const { deps, promptAsyncMock } = setupAttach()
+    const loopName = 'restarted-during-prompt'
+    promptAsyncMock.mockImplementation(async () => {
+      deps.loop.service.registerLoopSession('sess_restarted', loopName)
+      throw new Error('session aborted')
+    })
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      sectionedAttachInput(loopName, 'sess_stale_prompt'),
+    )
+
+    expect(result).toMatchObject({ ok: false, code: 'prompt_failed' })
+    expect((deps.loop.service as any).getActiveState(loopName)?.sessionId).toBe('sess_restarted')
   })
 })

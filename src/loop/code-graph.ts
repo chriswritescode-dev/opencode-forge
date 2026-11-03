@@ -247,7 +247,7 @@ function formatCallerSections(impact: CodeGraphImpactReport): string[] {
     for (const caller of symbol.callers) lines.push(`- \`${caller.name}\` (${caller.kind}) — ${caller.path}:${caller.line}`)
     if (symbol.callerCount > symbol.callers.length) {
       lines.push(
-        `- … and ${symbol.callerCount - symbol.callers.length} more: run \`codegraph callers ${quoteShellArg(symbol.name)} -f ${quoteShellArg(symbol.path)} -l ${symbol.callerCount}\``,
+        `- … and ${symbol.callerCount - symbol.callers.length} more: run \`codegraph callers ${quoteShellArg(symbol.name)} -f ${quoteShellArg(symbol.path)} -l ${symbol.callerQueryLimit}\``,
       )
     }
   }

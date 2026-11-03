@@ -143,10 +143,13 @@ export interface Loop {
   /**
    * Take this loop's code-graph snapshot A for the current section and store it
    * on the section row. Best-effort: any failure leaves the prompt unchanged.
-   * Resolves to the release of the hold that keeps idle events from prompting the
-   * loop; call it once the first prompt is marked sent or abandoned.
    */
-  snapshotSectionCodeGraph(state: LoopState): Promise<() => void>
+  snapshotSectionCodeGraph(state: LoopState): Promise<void>
+  /**
+   * Keep idle events from prompting a just-attached loop at exactly `state` until its first
+   * prompt is sent. Returns the release; call it once the first prompt is marked sent or abandoned.
+   */
+  holdUntilFirstPrompt(state: LoopState): () => void
   startWatchdog(name: string): void
   /**
    * Starts the watchdog for every active loop whose worktree this instance owns and
@@ -1986,9 +1989,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const codeGraphSnapshotter = createCodeGraphSnapshotter({ logger })
 
   /**
-   * Loops whose phase transition is waiting for a code-graph snapshot, mapped to the
-   * transition token of the state the snapshot was planned for. Process-wide because every
-   * instance's phase runners must see it.
+   * Loops whose phase transition is waiting for a code-graph snapshot, or whose attach has not
+   * sent its first prompt yet, mapped to the transition token of the state they were held at.
+   * Process-wide because every instance's phase runners must see it.
    */
   const pendingCodeGraphSnapshots = processShared<Map<string, string>>(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map())
 
@@ -2110,31 +2113,32 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * Snapshot A at loop attach, before the loop's first prompt. Attach does not hold the state
    * lock, so this waits for the snapshot inline; the caller re-checks that the loop is still
-   * active before prompting. The loop is already persisted, so from the snapshot until the caller
-   * marks its first prompt as sent, the coding phase runner ignores it at its persisted state: an
-   * idle event for the still-unprompted session must not send a missing-handoff prompt ahead of
-   * the first one. Returns the release for that hold, which the caller must run once the first
-   * prompt is marked sent or abandoned. A loop that restarted into another session is left alone.
+   * active before prompting. A loop that restarted into another session is left to snapshot
+   * itself.
    */
-  async function snapshotSectionCodeGraph(state: LoopState): Promise<() => void> {
-    const noHold = (): void => {}
-    const plan = planCodeGraphSnapshot(state.loopName, () => planSectionCodeGraph(state))
-    if (!plan) return noHold
+  async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
     const active = loopService.getActiveState(state.loopName)
-    if (active && active.sessionId !== state.sessionId) return noHold
+    if (active && active.sessionId !== state.sessionId) return
+    const plan = planCodeGraphSnapshot(state.loopName, () => planSectionCodeGraph(state))
+    if (!plan) return
+    recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
+  }
+
+  /**
+   * Keeps the coding phase runner from prompting a just-attached loop until attach sends its first
+   * prompt: the loop is persisted and its session registered before the sandbox is ready and the
+   * attach snapshot runs, so an idle event for the still-unprompted session would otherwise send a
+   * missing-handoff prompt ahead of the first one. The hold matches only `state` (its session,
+   * phase, iteration and section), so a restart into another session is never held. Returns the
+   * release, which attach runs once the first prompt is marked sent or abandoned.
+   */
+  function holdUntilFirstPrompt(state: LoopState): () => void {
     const key = stateLockKey(state.loopName)
-    const token = codeGraphTransitionToken(active ?? state)
+    const token = codeGraphTransitionToken(state)
     pendingCodeGraphSnapshots.set(key, token)
-    const release = (): void => {
+    return () => {
       if (pendingCodeGraphSnapshots.get(key) === token) pendingCodeGraphSnapshots.delete(key)
     }
-    try {
-      recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
-    } catch (err) {
-      release()
-      throw err
-    }
-    return release
   }
 
   /**
@@ -2317,7 +2321,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     if (isAwaitingCodeGraphSnapshot(currentState)) {
-      logger.log(`Loop: ${loopName} is waiting for a code-graph snapshot to finish its transition, ignoring`)
+      logger.log(`Loop: ${loopName} is waiting for a code-graph snapshot or its first prompt, ignoring`)
       return
     }
 
@@ -3596,6 +3600,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearAllRetryTimeouts,
     recordActivity,
     snapshotSectionCodeGraph,
+    holdUntilFirstPrompt,
     startWatchdog,
     superviseOwnedLoops,
     getStallInfo,

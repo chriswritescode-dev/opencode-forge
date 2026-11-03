@@ -410,8 +410,9 @@ describe('createCodeGraphSnapshotter', () => {
             startLine: 9,
             callers: [{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }],
             callerCount: 13,
+            callerQueryLimit: 15,
           },
-          { name: 'quiet', kind: 'function', path: 'src/lib.ts', startLine: 20, callers: [], callerCount: 0 },
+          { name: 'quiet', kind: 'function', path: 'src/lib.ts', startLine: 20, callers: [], callerCount: 0, callerQueryLimit: 0 },
         ],
         removedSymbols: [
           {
@@ -432,7 +433,7 @@ describe('createCodeGraphSnapshotter', () => {
         '### `keepMe` (function) — src/lib.ts:9',
         '',
         '- `run` (function) — src/app.ts:4',
-        "- … and 12 more: run `codegraph callers 'keepMe' -f 'src/lib.ts' -l 13`",
+        "- … and 12 more: run `codegraph callers 'keepMe' -f 'src/lib.ts' -l 15`",
         '',
         '1 other changed symbol has no callers outside the changed files.',
         '',
@@ -454,8 +455,8 @@ describe('createCodeGraphSnapshotter', () => {
       createWorktree(),
       auditResult({
         changedSymbols: [
-          { name: 'one', kind: 'function', path: 'src/lib.ts', startLine: 1, callers: [], callerCount: 0 },
-          { name: 'two', kind: 'function', path: 'src/lib.ts', startLine: 2, callers: [], callerCount: 0 },
+          { name: 'one', kind: 'function', path: 'src/lib.ts', startLine: 1, callers: [], callerCount: 0, callerQueryLimit: 0 },
+          { name: 'two', kind: 'function', path: 'src/lib.ts', startLine: 2, callers: [], callerCount: 0, callerQueryLimit: 0 },
         ],
         removedSymbols: [],
       }),

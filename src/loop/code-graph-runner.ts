@@ -134,6 +134,12 @@ export interface CodeGraphChangedSymbol {
   callers: CodeGraphReference[]
   /** All callers outside the changed files, including those beyond `callerLimit`. */
   callerCount: number
+  /**
+   * The number of raw callers codegraph reports for the symbol before Forge's filtering. An upper
+   * bound for `codegraph callers -l`, which applies its limit before the filtering, so it covers
+   * every caller.
+   */
+  callerQueryLimit: number
 }
 
 /**
@@ -260,7 +266,8 @@ export async function runCodeGraphSnapshot(
         if (!ranges.some((range) => node.startLine <= range.end && node.endLine >= range.start)) continue
         const seen = new Set([node.id])
         const callers: CodeGraphReference[] = []
-        for (const caller of handle.getCallers(node.id)) {
+        const rawCallers = handle.getCallers(node.id)
+        for (const caller of rawCallers) {
           if (!caller.node || hiddenKinds.has(caller.node.kind) || changed.has(caller.node.filePath) || seen.has(caller.node.id)) continue
           seen.add(caller.node.id)
           callers.push({
@@ -278,6 +285,7 @@ export async function runCodeGraphSnapshot(
           startLine: node.startLine,
           callers: callers.slice(0, request.callerLimit),
           callerCount: callers.length,
+          callerQueryLimit: rawCallers.length,
         })
       }
     }
@@ -504,6 +512,7 @@ function isChangedSymbol(value: unknown): value is CodeGraphChangedSymbol {
     typeof symbol.path === 'string' &&
     typeof symbol.startLine === 'number' &&
     typeof symbol.callerCount === 'number' &&
+    typeof symbol.callerQueryLimit === 'number' &&
     Array.isArray(symbol.callers) &&
     symbol.callers.every(isReference)
   )

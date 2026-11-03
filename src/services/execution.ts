@@ -579,6 +579,9 @@ export async function attachLoopToSession(
   const resolvedProjectDir =
     (await resolveHostSessionDirectory(deps.client, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
 
+  let releaseFirstPromptHold = (): void => {}
+  const attachOwnsLoop = (): boolean => deps.loop.service.getActiveState(loopName)?.sessionId === sessionId
+
   try {
     // Persist loop state
     const state: import('../loop/state').LoopState = {
@@ -614,6 +617,7 @@ export async function attachLoopToSession(
     deps.loop.service.setState(loopName, state)
     deps.loop.service.registerLoopSession(sessionId, loopName)
     deps.loop.registerSessionReverseIndex(sessionId, loopName)
+    if (sendInitialPrompt) releaseFirstPromptHold = deps.loop.holdUntilFirstPrompt(state)
 
     deps.logger.log(`attachLoopToSession: state stored for loop=${loopName}`)
 
@@ -650,7 +654,7 @@ export async function attachLoopToSession(
           deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason}${waitResult.error ? `: ${waitResult.error}` : ''})`)
           await deps.sandboxManager.stop(loopName).catch((err) => deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', err))
           deps.loop.unregisterSessionReverseIndex(sessionId)
-          deps.loop.service.deleteState(loopName)
+          if (attachOwnsLoop()) deps.loop.service.deleteState(loopName)
           return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
         }
 
@@ -666,58 +670,53 @@ export async function attachLoopToSession(
       return { ok: true, loopName }
     }
 
-    let releaseSnapshotHold = (): void => {}
-    let promptResult: Awaited<ReturnType<typeof sendLoopPrompt>>
-    try {
-      let promptText: string
-      if (totalSections > 0) {
-        const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
-        releaseSnapshotHold = await deps.loop.snapshotSectionCodeGraph(updatedState as import('../loop/state').LoopState)
-        if (!deps.loop.service.getActiveState(loopName)) {
-          deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled before its first prompt was built; skipping prompt and watchdog`)
-          return { ok: true, loopName }
-        }
-        promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
-      } else {
-        promptText = deps.loop.service.buildPlanInitialPrompt(planText)
-      }
-
-      // Send initial prompt with fallback
-      const sessionDir = worktreeDir
-      const promptParts = [{ type: 'text' as const, text: promptText }]
-      const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
-
-      promptResult = await sendLoopPrompt({
-        projectId: ctx.projectId,
-        loopName,
-        sessionId,
-        agent: 'code',
-        logger: deps.logger,
-        primaryModel: loopModel,
-        useInFlightGuard: false,
-        performPrompt: async (model) => {
-          markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
-          releaseSnapshotHold()
-          try {
-            await deps.client.session.promptAsync({
-              sessionID: sessionId,
-              directory: sessionDir,
-              parts: promptParts,
-              agent: 'code',
-              ...workspaceParam,
-              ...(model ? { model } : {}),
-            })
-            return {}
-          } catch (err) {
-            return { error: err }
-          }
-        },
-      })
-    } finally {
-      releaseSnapshotHold()
+    const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
+    if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
+    if (!attachOwnsLoop()) {
+      deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
+      return { ok: true, loopName }
     }
+    const promptText = totalSections > 0
+      ? deps.loop.service.buildSectionInitialPrompt(updatedState)
+      : deps.loop.service.buildPlanInitialPrompt(planText)
+
+    // Send initial prompt with fallback
+    const sessionDir = worktreeDir
+    const promptParts = [{ type: 'text' as const, text: promptText }]
+    const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
+
+    const promptResult = await sendLoopPrompt({
+      projectId: ctx.projectId,
+      loopName,
+      sessionId,
+      agent: 'code',
+      logger: deps.logger,
+      primaryModel: loopModel,
+      useInFlightGuard: false,
+      performPrompt: async (model) => {
+        markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
+        releaseFirstPromptHold()
+        try {
+          await deps.client.session.promptAsync({
+            sessionID: sessionId,
+            directory: sessionDir,
+            parts: promptParts,
+            agent: 'code',
+            ...workspaceParam,
+            ...(model ? { model } : {}),
+          })
+          return {}
+        } catch (err) {
+          return { error: err }
+        }
+      },
+    })
 
     if (promptResult.result.error) {
+      if (!attachOwnsLoop()) {
+        deps.logger.error(`attachLoopToSession: initial prompt failed after loop ${loopName} moved to another session; leaving its state alone`, promptResult.result.error)
+        return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
+      }
       const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
       if (limitReason) {
         deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
@@ -758,6 +757,8 @@ export async function attachLoopToSession(
       code: isAlreadyExists ? 'already_attached' : 'internal_error',
       message: isAlreadyExists ? `Loop ${loopName} already attached` : 'Failed to attach loop to session',
     }
+  } finally {
+    releaseFirstPromptHold()
   }
 }
 
