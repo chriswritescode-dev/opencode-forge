@@ -352,6 +352,54 @@ describe('SectionPlansRepo', () => {
     })
   })
 
+  describe('setCheckpointCommit', () => {
+    test('round-trips the checkpoint sha through get and list', () => {
+      const sections: ParsedSection[] = [
+        { index: 0, title: 'A', content: 'A content' },
+        { index: 1, title: 'B', content: 'B content' },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections })
+
+      repo.setCheckpointCommit(projectId, loopName, 0, 'a'.repeat(40))
+
+      expect(repo.get(projectId, loopName, 0)?.checkpointCommit).toBe('a'.repeat(40))
+      expect(repo.list(projectId, loopName)[0].checkpointCommit).toBe('a'.repeat(40))
+      expect(repo.list(projectId, loopName)[1].checkpointCommit).toBeNull()
+    })
+
+    test('survives a content and title replacement', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCheckpointCommit(projectId, loopName, 0, 'b'.repeat(40))
+
+      repo.updateContent(projectId, loopName, [{ index: 0, title: 'S renamed', content: 'C changed' }])
+
+      expect(repo.get(projectId, loopName, 0)?.checkpointCommit).toBe('b'.repeat(40))
+    })
+
+    test('is cleared when the section is reset for rewind', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCheckpointCommit(projectId, loopName, 0, 'c'.repeat(40))
+
+      repo.resetForRewind(projectId, loopName, 0)
+
+      expect(repo.get(projectId, loopName, 0)?.checkpointCommit).toBeNull()
+    })
+
+    test('is preserved by restoreAll', () => {
+      const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setCheckpointCommit(projectId, loopName, 0, 'd'.repeat(40))
+      const saved = repo.list(projectId, loopName)
+
+      repo.deleteAll(projectId, loopName)
+      repo.restoreAll(saved)
+
+      expect(repo.get(projectId, loopName, 0)?.checkpointCommit).toBe('d'.repeat(40))
+    })
+  })
+
   describe('restoreAll', () => {
     test('preserves the stored code graph report', () => {
       const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]

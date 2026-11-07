@@ -30,6 +30,7 @@ import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
 import { attemptCodeGraphReportPath, buildCodeGraphPromptBlock, sectionCodeGraphReportPath } from './code-graph'
 import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
+import { stripLeadingStructuralOrdinal } from '../utils/format'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -132,6 +133,8 @@ export interface LoopService {
   getSectionPlans(state: LoopState): SectionPlanRow[]
   /** Persist a section's code-graph report and write it into the loop worktree. */
   recordSectionCodeGraph(state: LoopState, index: number, text: string): void
+  /** Record the commit sha of a completed section's checkpoint commit. */
+  setSectionCheckpointCommit(loopName: string, index: number, sha: string): void
   /** Persist an audit attempt's code-graph report and write it into the loop worktree. */
   recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void
   /** The newest attempt row for the state's current audit scope, or null when attempts are not stored. */
@@ -720,6 +723,11 @@ export function createLoopService(
     sectionPlansRepo.setCodeGraph(projectId, state.loopName, index, text)
   }
 
+  function setSectionCheckpointCommit(loopName: string, index: number, sha: string): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.setCheckpointCommit(projectId, loopName, index, sha)
+  }
+
   /**
    * The `## Code graph` pointer rendered into this section's coder prompts. The
    * snapshot wrote the report inside the sandbox before the row was stored; the
@@ -1032,7 +1040,10 @@ export function createLoopService(
             }
           }
 
-          const replacementSections = args.sections
+          const replacementSections = args.sections?.map((section) => ({
+            ...section,
+            title: stripLeadingStructuralOrdinal(section.title) || section.title,
+          }))
           const newTotal = replacementSections !== undefined ? fromIndex + replacementSections.length : row.totalSections
           if (replacementSections !== undefined) {
             if (newTotal > MAX_TOTAL_SECTIONS) {
@@ -1067,7 +1078,7 @@ export function createLoopService(
           if (args.currentSection) {
             sectionPlansRepo!.updateContent(projectId, name, [{
               index: currentIndex,
-              title: args.currentSection.title,
+              title: stripLeadingStructuralOrdinal(args.currentSection.title) || args.currentSection.title,
               content: args.currentSection.content,
             }])
           }
@@ -1177,6 +1188,7 @@ export function createLoopService(
     getSectionPlan,
     getSectionPlans,
     recordSectionCodeGraph,
+    setSectionCheckpointCommit,
     recordAttemptCodeGraph,
     getLatestAttempt,
     getNextIncompleteSectionPlan,

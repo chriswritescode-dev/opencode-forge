@@ -253,7 +253,22 @@ function auditChangeScope(state: Pick<LoopState, 'baseCommit'>): string {
   if (state.baseCommit) {
     return `every commit since base commit \`${state.baseCommit}\` (\`git diff ${state.baseCommit}\` covers committed, staged and unstaged tracked changes) plus untracked files`
   }
-  return "every `section <N>:` checkpoint commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes"
+  return "every commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes"
+}
+
+/**
+ * The section audit's review scope: everything since the nearest earlier
+ * section's recorded checkpoint commit, or the base-commit / legacy
+ * merge-base scope when no earlier section has one yet.
+ */
+function sectionAuditScope(ctx: Pick<PromptContext, 'getSectionPlan'>, state: LoopState): string {
+  for (let index = state.currentSectionIndex - 1; index >= 0; index--) {
+    const checkpoint = ctx.getSectionPlan(state, index)?.checkpointCommit
+    if (checkpoint) {
+      return `every commit since \`${checkpoint}\` and all uncommitted changes (\`git diff ${checkpoint}\` covers committed, staged and unstaged tracked changes; read untracked files in full)`
+    }
+  }
+  return auditChangeScope(state)
 }
 
 export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -386,7 +401,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
     ? `call \`section-read\` with \`section_index: ${idx + 1}\` and verify its plan against the current worktree`
     : 'this is the last section, so skip the proactive next-section check'
 
-  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\`; the first section has no checkpoint yet). Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to a later, not-yet-started section do not block this audit.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck}.\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
+  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is ${sectionAuditScope(ctx, state)}. Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to a later, not-yet-started section do not block this audit.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck}.\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {

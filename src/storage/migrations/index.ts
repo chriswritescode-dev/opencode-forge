@@ -563,4 +563,11 @@ export const migrations: Migration[] = [
       addColumnIfMissing(db, 'loop_attempts', 'code_graph', '158_add_code_graph_to_loop_attempts.sql')
     },
   },
+  {
+    id: '159',
+    description: 'Add nullable checkpoint_commit to section_plans: the checkpoint commit a section audit scopes from',
+    apply: (db: Database) => {
+      addColumnIfMissing(db, 'section_plans', 'checkpoint_commit', '159_add_section_plan_checkpoint_commit.sql')
+    },
+  },
 ]
