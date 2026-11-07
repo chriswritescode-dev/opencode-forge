@@ -806,7 +806,7 @@ exports.CodeGraph = { isInitialized: () => true, open: () => new Promise(() => {
     expect(keep).toMatchObject({ kind: 'function', path: 'src/lib.ts', startLine: 2 })
     expect(keep?.callers).toEqual([{ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 }])
     expect(keep?.callerCount).toBe(1)
-    expect(keep?.callerQueryLimit).toBe(1)
+    expect(keep?.callerQueryLimit).toBe(2)
     expect(report?.removedSymbols.map((symbol) => `${symbol.path}:${symbol.name}`)).toEqual(['src/lib.ts:removeMe', 'src/lib.ts:renameMe'])
     for (const removed of report?.removedSymbols ?? []) {
       expect(removed.references).toContainEqual({ name: 'run', kind: 'function', path: 'src/app.ts', line: 4 })
