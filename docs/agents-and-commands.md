@@ -8,7 +8,7 @@ See also: [Tools](tools.md), [Configuration](configuration.md), [Loop System](lo
 
 | Agent | Mode | Description |
 |---|---|---|
-| `code` | `all` | Primary implementation agent. |
+| `code` | `all` | Primary implementation agent. Orchestrates `minion` subagents for implementation, reviews and fixes their output, and edits directly only when needed. |
 | `architect` | `primary` | Read-only planning agent. Researches the goal, settles the implementation route with grouped `question` rounds, then authors and validates the stored plan with `plan-write`/`plan-edit` before approval. |
 | `auditor` | `subagent` | Read-only code review agent for convention-aware reviews. |
 | `auditor-loop` | `primary`, hidden | Internal auditor used by loop audit sessions. |
