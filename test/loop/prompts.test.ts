@@ -801,6 +801,7 @@ describe('prompt builders (src/loop/prompts)', () => {
       const base = 'b'.repeat(40)
       const result = buildSectionAuditPrompt(makeCtx(), { ...sectionState, currentSectionIndex: 1, baseCommit: base })
       expect(result).toContain("this section's work is all uncommitted changes plus any commits made after the most recent `section <N>:` checkpoint commit")
+      expect(result).toContain(`\`git log --oneline ${base}..HEAD\` to find it`)
       expect(result).toContain(`If no such commit exists, the scope is every commit since base commit \`${base}\``)
     })
 

@@ -274,7 +274,8 @@ function sectionAuditScope(ctx: Pick<PromptContext, 'getSectionPlan'>, state: Lo
     }
   }
   if (state.currentSectionIndex > 0) {
-    return `all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\` to find it; read untracked files in full). If no such commit exists, the scope is ${auditChangeScope(state)}, which may include earlier sections' work`
+    const logRange = state.baseCommit ? ` ${state.baseCommit}..HEAD` : ''
+    return `all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline${logRange}\` to find it; read untracked files in full). If no such commit exists, the scope is ${auditChangeScope(state)}, which may include earlier sections' work`
   }
   return auditChangeScope(state)
 }

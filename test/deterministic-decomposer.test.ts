@@ -163,6 +163,11 @@ describe('decomposeDeterministically', () => {
     expect(plan.split('\n')[1]).toContain(r[0].title)
   })
 
+  test('a dotted phase ordinal is stripped whole', () => {
+    const r = decomposeDeterministically('<!-- forge-section -->\n## Phase 2.1: Setup\nbody')
+    expect(r[0].title).toBe('Setup')
+  })
+
   test('a word ending exactly at the 60-char cap is kept whole', () => {
     const title = `${'x'.repeat(55)} abcd`
     const r = decomposeDeterministically(`<!-- forge-section -->\n## ${title} more words\nbody`)

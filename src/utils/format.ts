@@ -17,7 +17,7 @@ export function truncateAtWordBoundary(text: string, maxLen: number): string {
   return cut.replace(/[\s,;:\-–—]+$/, '') || head
 }
 
-const LEADING_STRUCTURAL_ORDINAL = /^(phase|section|step)\s+\d+[a-z]?\s*[:.)\-–—]\s*/i
+const LEADING_STRUCTURAL_ORDINAL = /^(phase|section|step)\s+\d+(?:\.\d+)*[a-z]?\s*[:.)\-–—]\s*/i
 
 /**
  * Drops a leading structural ordinal such as `Phase 2:` or `Step 3 -` from a
