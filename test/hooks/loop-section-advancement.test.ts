@@ -105,7 +105,7 @@ describe('Loop Section Advancement', () => {
   describe('Section checkpoint commits', () => {
     const CHECKPOINT_SHA = 'a'.repeat(40)
 
-    function createFakeGitService(overrides: { statusStdout?: string } = {}) {
+    function createFakeGitService(overrides: { statusStdout?: string; commitFails?: boolean } = {}) {
       const commits: Array<{ cwd: string; message: string }> = []
       const ok = { ok: true, status: 0, stdout: '', stderr: '' }
       const git = {
@@ -113,7 +113,7 @@ describe('Loop Section Advancement', () => {
         statusPorcelain: () => ({ ...ok, stdout: overrides.statusStdout ?? ' M src/file.ts' }),
         commit: (cwd: string, message: string) => {
           commits.push({ cwd, message })
-          return { ...ok }
+          return overrides.commitFails ? { ok: false, status: 1, stdout: '', stderr: 'index.lock exists' } : { ...ok }
         },
         isPathTracked: () => false,
         revParseHead: () => ({ ...ok, stdout: `${CHECKPOINT_SHA}\n` }),
@@ -223,6 +223,24 @@ describe('Loop Section Advancement', () => {
       // The section still advanced — the checkpoint is bookkeeping, not a gate.
       const after = loopService.getActiveState('test-loop')!
       expect(after.currentSectionIndex).toBe(1)
+
+      handler.clearAllRetryTimeouts()
+    })
+
+    test('a failed checkpoint commit replaces a sha left by an earlier run with HEAD', async () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+      sectionPlansRepo.setCheckpointCommit(projectId, 'test-loop', 0, 'f'.repeat(40))
+
+      const { git, commits } = createFakeGitService({ commitFails: true })
+      const handler = buildHandler(git)
+      await recordAuditorHandoff(handler.loop, 'sess-1', { summary: CLEAN_AUDIT_SUMMARY })
+      await advance(handler)
+
+      expect(commits).toHaveLength(1)
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.checkpointCommit).toBe(CHECKPOINT_SHA)
+      expect(loopService.getActiveState('test-loop')!.currentSectionIndex).toBe(1)
 
       handler.clearAllRetryTimeouts()
     })

@@ -783,6 +783,25 @@ describe('prompt builders (src/loop/prompts)', () => {
       const result = buildSectionAuditPrompt(ctx, { ...sectionState, currentSectionIndex: 1, baseCommit: 'b'.repeat(40) })
       expect(result).toContain(`this section's work is every commit since \`${firstCheckpoint}\` and all uncommitted changes (\`git diff ${firstCheckpoint}\` covers committed, staged and unstaged tracked changes; read untracked files in full).`)
       expect(result).not.toContain('b'.repeat(40))
+      expect(result).not.toContain("may include earlier sections' work")
+    })
+
+    test('section audit warns when it falls back to an older section checkpoint', () => {
+      const firstCheckpoint = 'c'.repeat(40)
+      const ctx = makeCtx({
+        getSectionPlan: (_state, index) =>
+          index === 0 ? { ...makeSectionPlanRow(0, 'Section 1', 'Content 1'), checkpointCommit: firstCheckpoint } : makeSectionPlanRow(index, `Section ${index + 1}`, `Content ${index + 1}`),
+      })
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState, currentSectionIndex: 2, totalSections: 3 })
+      expect(result).toContain(`every commit since \`${firstCheckpoint}\``)
+      expect(result).toContain("which may include earlier sections' work")
+    })
+
+    test('a later section with no recorded checkpoint keeps the section-titled checkpoint scope of loops started before checkpoints were stored', () => {
+      const base = 'b'.repeat(40)
+      const result = buildSectionAuditPrompt(makeCtx(), { ...sectionState, currentSectionIndex: 1, baseCommit: base })
+      expect(result).toContain("this section's work is all uncommitted changes plus any commits made after the most recent `section <N>:` checkpoint commit")
+      expect(result).toContain(`If no such commit exists, the scope is every commit since base commit \`${base}\``)
     })
 
     test('audit prompts point to the attempts pagination usage of review-read', () => {

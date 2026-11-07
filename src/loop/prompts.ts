@@ -259,14 +259,22 @@ function auditChangeScope(state: Pick<LoopState, 'baseCommit'>): string {
 /**
  * The section audit's review scope: everything since the nearest earlier
  * section's recorded checkpoint commit, or the base-commit / legacy
- * merge-base scope when no earlier section has one yet.
+ * merge-base scope on the first section. A later section with no recorded
+ * checkpoint either belongs to a loop started before checkpoints were stored,
+ * whose checkpoint commits are titled `section <N>:`, or failed to record one;
+ * the prompt names both scopes so the auditor never searches for a commit
+ * that does not exist.
  */
 function sectionAuditScope(ctx: Pick<PromptContext, 'getSectionPlan'>, state: LoopState): string {
   for (let index = state.currentSectionIndex - 1; index >= 0; index--) {
     const checkpoint = ctx.getSectionPlan(state, index)?.checkpointCommit
     if (checkpoint) {
-      return `every commit since \`${checkpoint}\` and all uncommitted changes (\`git diff ${checkpoint}\` covers committed, staged and unstaged tracked changes; read untracked files in full)`
+      const widened = index < state.currentSectionIndex - 1 ? ", which may include earlier sections' work" : ''
+      return `every commit since \`${checkpoint}\` and all uncommitted changes (\`git diff ${checkpoint}\` covers committed, staged and unstaged tracked changes; read untracked files in full)${widened}`
     }
+  }
+  if (state.currentSectionIndex > 0) {
+    return `all uncommitted changes plus any commits made after the most recent \`section <N>:\` checkpoint commit (\`git log --oneline\` to find it; read untracked files in full). If no such commit exists, the scope is ${auditChangeScope(state)}, which may include earlier sections' work`
   }
   return auditChangeScope(state)
 }
