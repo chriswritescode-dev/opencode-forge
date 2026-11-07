@@ -104,7 +104,13 @@ describe('review section scoping', () => {
     sectionPlansRepo.bulkInsert({
       projectId,
       loopName,
-      sections: statuses.map((_, index) => ({ index, title: `Section ${index + 1}`, content: `Content ${index + 1}` })),
+      sections: statuses.map((_, index) => ({
+        index,
+        id: `section-${index + 1}`,
+        after: index === 0 ? [] : [`section-${index}`],
+        title: `Section ${index + 1}`,
+        content: `Content ${index + 1}`,
+      })),
     })
     statuses.forEach((status, index) => {
       sectionPlansRepo.setStatus(projectId, loopName, index, status)
@@ -246,6 +252,33 @@ describe('review section scoping', () => {
       // Current section 1 plus the earlier section 0 are in the blocking scope.
       expect(result).toContain('Section 0 bug')
       expect(result).toContain('Section 1 warning')
+    })
+
+    test('excludes a sibling section in a diamond dependency graph', async () => {
+      const loopName = 'diamond-read'
+      insertLoop(loopName, { currentSectionIndex: 2, totalSections: 4, sessionId: `${loopName}-session` })
+      sectionPlansRepo.bulkInsert({
+        projectId,
+        loopName,
+        sections: [
+          { index: 0, id: 'a', after: [], title: 'A', content: 'A content' },
+          { index: 1, id: 'b', after: ['a'], title: 'B', content: 'B content' },
+          { index: 2, id: 'c', after: ['a'], title: 'C', content: 'C content' },
+          { index: 3, id: 'd', after: ['b', 'c'], title: 'D', content: 'D content' },
+        ],
+      })
+      sectionPlansRepo.setStatus(projectId, loopName, 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, loopName, 1, 'completed')
+      sectionPlansRepo.setStatus(projectId, loopName, 2, 'in_progress')
+
+      reviewFindingsRepo.write({ projectId, file: 'src/a.ts', line: 1, severity: 'bug', description: 'A bug', loopName, sectionIndex: 0 })
+      reviewFindingsRepo.write({ projectId, file: 'src/b.ts', line: 2, severity: 'bug', description: 'B bug', loopName, sectionIndex: 1 })
+      reviewFindingsRepo.write({ projectId, file: 'src/c.ts', line: 3, severity: 'bug', description: 'C bug', loopName, sectionIndex: 2 })
+
+      const result = await tools['review-read'].execute({}, makeToolContext(`${loopName}-session`))
+      expect(result).toContain('A bug')
+      expect(result).toContain('C bug')
+      expect(result).not.toContain('B bug')
     })
 
     test('explicit loopName returns all sections when read from outside the loop', async () => {

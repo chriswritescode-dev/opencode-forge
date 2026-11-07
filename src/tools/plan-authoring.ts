@@ -69,7 +69,7 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, ToolD
         content: z
           .string()
           .describe(
-            'Stored plan markdown. Use <!-- forge-section --> markers before each ## Phase heading.',
+            'Stored plan markdown. Put one <!-- forge-section id="slug" after="a,b" --> marker before each ## Phase heading. Both attributes are optional: id is a stable lowercase slug (letters, digits, hyphens; at most 64 characters) and defaults to section-<n>; after lists earlier section ids this phase depends on, defaults to the previous section, and after="" declares no dependencies.',
           ),
       },
       execute: async (args, context) => {

@@ -7,9 +7,9 @@ export function createSectionReadTool(ctx: ToolContext): ToolDefinition {
   const loop = ctx.loop
 
   return tool({
-    description: 'Read a section plan and its status for the active loop session. If section_index is omitted, returns the lowest-index incomplete section. With pending_suffix: true, returns the ordered pending sections after the current one instead.',
+    description: 'Read a section plan and its status for the active loop session. If section_index is omitted, returns the next ready section (the first open section whose dependencies are all completed). With pending_suffix: true, returns the ordered pending sections after the current one instead.',
     args: {
-      section_index: z.number().optional().describe('Section index to read (0-based). If omitted, reads the lowest-index incomplete section.'),
+      section_index: z.number().optional().describe('Section index to read (0-based). If omitted, reads the next ready section (the first open section whose dependencies are all completed).'),
       pending_suffix: z.boolean().optional().describe('When true, return one JSON object with from_index (current section + 1) and every pending section after the current one, in order. Cannot be combined with section_index.'),
     },
     execute: async (args, toolCtx) => {
@@ -33,13 +33,13 @@ export function createSectionReadTool(ctx: ToolContext): ToolDefinition {
         }
         const sections = loop.service.getSectionPlans(state)
           .filter(r => r.sectionIndex > state.currentSectionIndex && r.status === 'pending')
-          .map(r => ({ index: r.sectionIndex, title: r.title, content: r.content, status: r.status }))
+          .map(r => ({ index: r.sectionIndex, id: r.sectionId, after: r.dependsOn, title: r.title, content: r.content, status: r.status }))
         return JSON.stringify({ from_index: state.currentSectionIndex + 1, sections })
       }
 
       const explicitIndex = args.section_index
       const selectedSection = explicitIndex === undefined
-        ? loop.service.getNextIncompleteSectionPlan(state)
+        ? loop.service.getNextReadySectionPlan(state)
         : null
 
       const idx = explicitIndex ?? selectedSection?.sectionIndex ?? state.currentSectionIndex
@@ -57,6 +57,8 @@ export function createSectionReadTool(ctx: ToolContext): ToolDefinition {
 
       const result = {
         index: idx,
+        id: section.sectionId,
+        after: section.dependsOn,
         title: section.title,
         content: section.content,
         status: section.status,

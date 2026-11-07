@@ -557,8 +557,8 @@ describe('Loop', () => {
 
     function insertSectionPlan(index: number, title: string, content: string, status: string = 'pending') {
       db.run(
-        `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ['test-project', 'adj-loop', index, title, content, status, 0, Date.now()]
+        `INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ['test-project', 'adj-loop', index, `section-${index + 1}`, title, content, status, 0, Date.now()]
       )
     }
 
@@ -1221,8 +1221,8 @@ describe('Loop', () => {
         executionVariant: null, auditorVariant: null,
       } as any, { lastAuditResult: null, postActionReport: null })
 
-      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj', 0, 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])
-      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj', 1, 'S1', 'c1', 'pending', 0, ?)`, [Date.now()])
+      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at) VALUES ('p', 'adj', 0, 'section-1', 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])
+      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at) VALUES ('p', 'adj', 1, 'section-2', 'S1', 'c1', 'pending', 0, ?)`, [Date.now()])
 
       // Launch two adjustments concurrently but serialised by runExclusive.
       // Caller A replaces section 1 with 'A' (fromIndex = 1, newTotal = 2 → ok)
@@ -1289,9 +1289,9 @@ describe('Loop', () => {
         executionVariant: null, auditorVariant: null,
       } as any, { lastAuditResult: null, postActionReport: null })
 
-      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 0, 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])
-      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 1, 'S1', 'c1', 'pending', 0, ?)`, [Date.now()])
-      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 2, 'S2', 'c2', 'pending', 0, ?)`, [Date.now()])
+      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 0, 'section-1', 'S0', 'c0', 'pending', 0, ?)`, [Date.now()])
+      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 1, 'section-2', 'S1', 'c1', 'pending', 0, ?)`, [Date.now()])
+      dbLocal.run(`INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at) VALUES ('p', 'adj2', 2, 'section-3', 'S2', 'c2', 'pending', 0, ?)`, [Date.now()])
 
       let result = await service.adjustRemainingSections('adj2', {
         sections: [{ title: 'N1', content: 'n1' }],

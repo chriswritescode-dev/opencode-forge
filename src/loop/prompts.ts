@@ -5,7 +5,7 @@ import type { SectionPlanRow } from '../storage/repos/section-plans-repo'
 import type { LoopHandoffRole } from './handoff'
 import { findingRecurrenceKey, isRecurrenceEscalated } from './finding-recurrence'
 import { formatFindingDetails } from '../utils/review-format'
-import { blockingBugFindings } from './section-scope'
+import { blockingBugFindings, type SectionScope } from './section-scope'
 import { LOOP_COMPLETE_TOOL_NAME, LOOP_HANDOFF_TOOL_NAME } from '../constants/loop'
 
 export interface SectionDigestEntry {
@@ -26,6 +26,7 @@ export interface PromptContext {
   getFindingRecurrence(loopName?: string): Map<string, number>
   getAttemptHistory?(state: LoopState, limit?: number): LoopAttemptRow[]
   getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
+  getSectionScope(state: LoopState): SectionScope
   /** Rendered `## Code graph` pointer for the current section, or `''` when no snapshot was stored. */
   getSectionCodeGraphBlock?(state: LoopState): string
   /** Rendered `## Code graph` pointer for the latest audit attempt, or `''` when no report was stored. */
@@ -410,7 +411,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
     ? `call \`section-read\` with \`section_index: ${idx + 1}\` and verify its plan against the current worktree`
     : 'this is the last section, so skip the proactive next-section check'
 
-  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is ${sectionAuditScope(ctx, state)}. Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to a later, not-yet-started section do not block this audit.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck}.\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain. A rationale is required. Prefer the existing plan when it remains viable.`
+  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is ${sectionAuditScope(ctx, state)}. Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every section it depends on (directly or through other sections), and the cross-section findings are free of outstanding bugs; when this is the last open section, every outstanding bug finding blocks. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to other sections this section does not depend on do not block this audit unless it is the last open section.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck}.\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain, copying its \`id\` and \`after\` so its identity and dependencies survive renumbering unless the dependency itself changes. \`after\` may name only completed sections, the current section, or earlier entries in the replacement list, and the current section's dependencies cannot change. A rationale is required. Prefer the existing plan when it remains viable.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {
@@ -440,7 +441,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   header += ctx.getSectionCodeGraphBlock?.(state) ?? ''
   header += buildLoopNoticeBlock(notice)
   header += buildAttemptHistoryBlock(ctx, state, 'coder')
-  const blockingBugs = outstandingBugs ? blockingBugFindings(outstandingBugs, state) : ctx.getBlockingBugFindings(state)
+  const blockingBugs = outstandingBugs ? blockingBugFindings(outstandingBugs, state, ctx.getSectionScope(state)) : ctx.getBlockingBugFindings(state)
   header += buildOutstandingFindingsCoderBlock(blockingBugs)
   header += buildRecurringFindingsCoderBlock(ctx, state, blockingBugs)
   header += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
@@ -466,7 +467,7 @@ export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, o
     : `[${iterationSystemLine(state)} (follow-up)]`
 
   const findings = state.totalSections > 0
-    ? (outstandingBugs ? blockingBugFindings(outstandingBugs, state) : ctx.getBlockingBugFindings(state))
+    ? (outstandingBugs ? blockingBugFindings(outstandingBugs, state, ctx.getSectionScope(state)) : ctx.getBlockingBugFindings(state))
     : ctx.getOutstandingFindings(state.loopName)
 
   const intro = findings.length > 0

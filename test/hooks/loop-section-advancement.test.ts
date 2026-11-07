@@ -97,8 +97,8 @@ describe('Loop Section Advancement', () => {
 
   function insertSectionPlan(index: number, title: string, content: string, status: string = 'pending') {
     db.run(
-      `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [projectId, 'test-loop', index, title, content, status, 0, Date.now()]
+      `INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [projectId, 'test-loop', index, `section-${index + 1}`, title, content, status, 0, Date.now()]
     )
   }
 

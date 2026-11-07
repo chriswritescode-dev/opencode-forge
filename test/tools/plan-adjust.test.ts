@@ -91,7 +91,7 @@ describe('plan-adjust tool', () => {
 
   async function executePlanAdjust(
     args: {
-      sections?: Array<{ title: string; content: string }>
+      sections?: Array<{ title: string; content: string; id?: string; after?: string[] }>
       currentSection?: { title: string; content: string }
       rationale: string
     },
@@ -108,6 +108,39 @@ describe('plan-adjust tool', () => {
       loopName,
       sections: sections.map((s, index) => ({ index, title: s.title, content: s.content })),
     })
+  }
+
+  function seedGraph(loopName: string, rows: Array<{ index: number; id: string; after: string[]; title: string }>) {
+    sectionPlansRepo.bulkInsert({
+      projectId,
+      loopName,
+      sections: rows.map((row) => ({
+        index: row.index,
+        id: row.id,
+        after: row.after,
+        title: row.title,
+        content: `${row.title} content`,
+      })),
+    })
+    loopsRepo.setTotalSections(projectId, loopName, rows.length)
+  }
+
+  function graphRows(loopName: string) {
+    return sectionPlansRepo.list(projectId, loopName)
+      .map((row) => ({ index: row.sectionIndex, id: row.sectionId, after: row.dependsOn }))
+  }
+
+  /** a (completed) / b (current) / x / c / d, with c and d depending on earlier milestones. */
+  function seedDiamondSuffix(loopName: string) {
+    seedGraph(loopName, [
+      { index: 0, id: 'a', after: [], title: 'A' },
+      { index: 1, id: 'b', after: ['a'], title: 'B' },
+      { index: 2, id: 'x', after: ['b'], title: 'X' },
+      { index: 3, id: 'c', after: ['b', 'x'], title: 'C' },
+      { index: 4, id: 'd', after: ['b', 'c'], title: 'D' },
+    ])
+    loopService.completeSection(loopName, 0, { done: 'a done', deviations: null, followUps: null })
+    loopService.startSection(loopName, 1)
   }
 
   function parseJson(result: string) {
@@ -433,6 +466,177 @@ describe('plan-adjust tool', () => {
       expect(result.total_sections).toBe(2)
       expect(sectionPlansRepo.get(projectId, 'test-loop', 1)!.content).toBe('c1-new')
       expect(sectionPlansRepo.get(projectId, 'test-loop', 2)).toBeNull()
+    })
+  })
+
+  describe('section graph edges', () => {
+    test('preserves retained ids and dependency edges across renumbering', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 5, currentSectionIndex: 1 })
+      seedDiamondSuffix('test-loop')
+
+      const result = parseJson(await executePlanAdjust(
+        {
+          sections: [
+            { id: 'c', after: ['b'], title: 'C', content: 'C content' },
+            { id: 'd', after: ['b', 'c'], title: 'D', content: 'D content' },
+          ],
+          rationale: 'drop x and keep c/d identities',
+        },
+        'test-loop-session',
+      ))
+
+      expect(result.ok).toBe(true)
+      expect(result.total_sections).toBe(4)
+      expect(graphRows('test-loop')).toEqual([
+        { index: 0, id: 'a', after: [] },
+        { index: 1, id: 'b', after: ['a'] },
+        { index: 2, id: 'c', after: ['b'] },
+        { index: 3, id: 'd', after: ['b', 'c'] },
+      ])
+    })
+
+    test('omitting id/after keeps the generated chain to the previous section', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedGraph('test-loop', [
+        { index: 0, id: 'a', after: [], title: 'A' },
+        { index: 1, id: 'b', after: ['a'], title: 'B' },
+        { index: 2, id: 'x', after: ['b'], title: 'X' },
+      ])
+      loopService.startSection('test-loop', 1)
+
+      const result = parseJson(await executePlanAdjust(
+        {
+          sections: [
+            { title: 'New C', content: 'c' },
+            { title: 'New D', content: 'd' },
+          ],
+          rationale: 'regenerate the suffix',
+        },
+        'test-loop-session',
+      ))
+
+      expect(result.ok).toBe(true)
+      expect(graphRows('test-loop')).toEqual([
+        { index: 0, id: 'a', after: [] },
+        { index: 1, id: 'b', after: ['a'] },
+        { index: 2, id: 'section-3', after: ['b'] },
+        { index: 3, id: 'section-4', after: ['section-3'] },
+      ])
+    })
+
+    test('generates an unused id when the index-derived id is already taken by an earlier section', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedGraph('test-loop', [
+        { index: 0, id: 'a', after: [], title: 'A' },
+        { index: 1, id: 'section-3', after: ['a'], title: 'B' },
+        { index: 2, id: 'x', after: ['section-3'], title: 'X' },
+      ])
+      loopService.startSection('test-loop', 1)
+
+      const result = parseJson(await executePlanAdjust(
+        {
+          sections: [{ title: 'New C', content: 'c' }],
+          rationale: 'replace the suffix without colliding with an earlier explicit id',
+        },
+        'test-loop-session',
+      ))
+
+      expect(result.ok).toBe(true)
+      expect(graphRows('test-loop')).toEqual([
+        { index: 0, id: 'a', after: [] },
+        { index: 1, id: 'section-3', after: ['a'] },
+        { index: 2, id: 'section-4', after: ['section-3'] },
+      ])
+    })
+
+    test('skips an index-derived id taken by an explicit id in the same replacement list', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 5, currentSectionIndex: 1 })
+      seedDiamondSuffix('test-loop')
+
+      const result = parseJson(await executePlanAdjust(
+        {
+          sections: [
+            { id: 'section-4', title: 'New C', content: 'c' },
+            { title: 'New D', content: 'd' },
+          ],
+          rationale: 'keep an explicit id that collides with the next generated id',
+        },
+        'test-loop-session',
+      ))
+
+      expect(result.ok).toBe(true)
+      expect(graphRows('test-loop')).toEqual([
+        { index: 0, id: 'a', after: [] },
+        { index: 1, id: 'b', after: ['a'] },
+        { index: 2, id: 'section-4', after: ['b'] },
+        { index: 3, id: 'section-5', after: ['section-4'] },
+      ])
+    })
+
+    test('rejects an invalid replacement graph and writes nothing', async () => {
+      const cases: Array<{
+        label: string
+        sections: Array<{ id?: string; after?: string[] }>
+        expected: string
+      }> = [
+        {
+          label: 'duplicate id',
+          sections: [{ id: 'a' }],
+          expected: 'reuses id "a"',
+        },
+        {
+          label: 'unknown after id',
+          sections: [{ id: 'n', after: ['ghost'] }],
+          expected: 'depends on unknown id "ghost"',
+        },
+        {
+          label: 'after a replaced pending section',
+          sections: [{ id: 'n', after: ['x'] }],
+          expected: 'depends on unknown id "x"',
+        },
+        {
+          label: 'forward dependency',
+          sections: [{ id: 'p', after: ['q'] }, { id: 'q' }],
+          expected: 'may only depend on sections above it',
+        },
+        {
+          label: 'self dependency',
+          sections: [{ id: 'p', after: ['p'] }],
+          expected: 'may only depend on sections above it',
+        },
+      ]
+
+      for (const [i, testCase] of cases.entries()) {
+        const loopName = `graph-case-${i}`
+        insertLoop(loopName, {
+          currentSessionId: `${loopName}-session`,
+          totalSections: 5,
+          currentSectionIndex: 1,
+        })
+        seedDiamondSuffix(loopName)
+
+        const beforeRows = graphRows(loopName)
+        const beforeTotal = loopsRepo.get(projectId, loopName)!.totalSections
+        const beforeAmendments = planAmendmentsRepo.listForLoop(projectId, loopName).length
+
+        const result = parseJson(await executePlanAdjust(
+          {
+            sections: testCase.sections.map((section, index) => ({
+              ...section,
+              title: `Replacement ${index}`,
+              content: `Content ${index}`,
+            })),
+            rationale: testCase.label,
+          },
+          `${loopName}-session`,
+        ))
+
+        expect(result.error).toContain('invalid section graph')
+        expect(result.error).toContain(testCase.expected)
+        expect(graphRows(loopName)).toEqual(beforeRows)
+        expect(loopsRepo.get(projectId, loopName)!.totalSections).toBe(beforeTotal)
+        expect(planAmendmentsRepo.listForLoop(projectId, loopName)).toHaveLength(beforeAmendments)
+      }
     })
   })
 })

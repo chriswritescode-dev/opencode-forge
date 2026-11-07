@@ -570,4 +570,17 @@ export const migrations: Migration[] = [
       addColumnIfMissing(db, 'section_plans', 'checkpoint_commit', '159_add_section_plan_checkpoint_commit.sql')
     },
   },
+  {
+    id: '160',
+    description: 'Add section ids and section_dependencies edges; backfill the existing chain',
+    apply: (db: Database) => {
+      const hasSectionPlans =
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all() as unknown[]).length > 0
+      if (!hasSectionPlans) return
+      addColumnIfMissing(db, 'section_plans', 'section_id', '160_add_section_id_to_section_plans.sql')
+      const hasDependencies =
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_dependencies'").all() as unknown[]).length > 0
+      if (!hasDependencies) db.run(loadSql('160_create_section_dependencies.sql'))
+    },
+  },
 ]

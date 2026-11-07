@@ -277,6 +277,55 @@ describe('summarizePlanStructure', () => {
     expect(summary.lines).toBe(3)
     expect(summary.characters).toBe(5)
   })
+
+  test('outlines carry generated ids and predecessor chains without attributes', () => {
+    const summary = summarizePlanStructure(planWithMarkers(2))
+    expect(summary.hasSectionAttributes).toBe(false)
+    expect(summary.sections.map((s) => [s.id, s.after])).toEqual([
+      ['section-1', []],
+      ['section-2', ['section-1']],
+    ])
+  })
+
+  test('outlines carry explicit id and after attributes', () => {
+    const summary = summarizePlanStructure([
+      '<!-- forge-section id="a" -->', '## Phase 1', 'body',
+      '<!-- forge-section id="b" after="a" -->', '## Phase 2', 'body',
+    ].join('\n'))
+    expect(summary.hasSectionAttributes).toBe(true)
+    expect(summary.sections.map((s) => [s.id, s.after])).toEqual([
+      ['a', []],
+      ['b', ['a']],
+    ])
+  })
+
+  test('graph validation errors surface as Section graph warnings', () => {
+    const summary = summarizePlanStructure([
+      '<!-- forge-section id="a" -->', '## Phase 1', 'body',
+      '<!-- forge-section id="a" -->', '## Phase 2', 'body',
+    ].join('\n'))
+    expect(summary.warnings).toContain(
+      'Section graph: Section 2 reuses id "a" already used by section 1; ids must be unique.',
+    )
+  })
+
+  test('the cap is reported once as a graph warning', () => {
+    const summary = summarizePlanStructure(planWithMarkers(26))
+    expect(summary.warnings).toContain(
+      `Section graph: 26 sections exceed the cap of ${MAX_TOTAL_SECTIONS}: consolidate phases.`,
+    )
+    expect(summary.warnings.filter((w) => w.includes('exceed the cap'))).toHaveLength(1)
+  })
+
+  test('marker parse errors surface as Section graph warnings', () => {
+    const summary = summarizePlanStructure([
+      '<!-- forge-section id=a -->',
+      '<!-- forge-section -->', '## Phase 1', 'body',
+    ].join('\n'))
+    expect(summary.warnings).toContain(
+      'Section graph: Plan line 1: Malformed section marker: expected <!-- forge-section id="..." after="..." -->',
+    )
+  })
 })
 
 describe('formatPlanStructureSummary', () => {
@@ -306,7 +355,8 @@ describe('formatPlanStructureSummary', () => {
       lines: 10,
       characters: 100,
       sectionMarkers: 1,
-      sections: [{ index: 0, title: 'Phase 1', startLine: 0, endLine: 1 }],
+      sections: [{ index: 0, id: 'section-1', title: 'Phase 1', after: [], startLine: 0, endLine: 1 }],
+      hasSectionAttributes: false,
       loopName: 'foo',
       warnings: [],
     }
@@ -362,6 +412,28 @@ describe('formatPlanStructureSummary', () => {
     expect(formatted).toContain('Sections (3):')
     expect(formatted).not.toMatch(/^\s+\d+\./m)
   })
+
+  test('leaves attribute-free section lines unchanged', () => {
+    const formatted = formatPlanStructureSummary(summarizePlanStructure(completePlan(2)))
+    expect(formatted).toContain('  1. Implement behavior\n  2. Implement behavior')
+    expect(formatted).not.toContain('[id:')
+  })
+
+  test('appends the graph attributes when a marker declares them', () => {
+    const plan = completePlan(2)
+      .replace('<!-- forge-section -->', '<!-- forge-section id="a" -->')
+      .replace('<!-- forge-section -->', '<!-- forge-section id="b" after="a" -->')
+    const formatted = formatPlanStructureSummary(summarizePlanStructure(plan))
+    expect(formatted).toContain('  1. Implement behavior [id: a; after: none]')
+    expect(formatted).toContain('  2. Implement behavior [id: b; after: a]')
+  })
+
+  test('shows attributes even when they match the generated defaults', () => {
+    const plan = completePlan(1)
+      .replace('<!-- forge-section -->', '<!-- forge-section id="section-1" after="" -->')
+    const formatted = formatPlanStructureSummary(summarizePlanStructure(plan))
+    expect(formatted).toContain('  1. Implement behavior [id: section-1; after: none]')
+  })
 })
 
 describe('findSectionsForLineRange', () => {
@@ -379,6 +451,15 @@ describe('findSectionsForLineRange', () => {
     const matched = findSectionsForLineRange(plan, first.startLine, first.startLine + 1)
     expect(matched.map((s) => s.index)).toEqual([0])
     expect(matched[0].title).toBe(first.title)
+  })
+
+  test('matched outlines carry ids and dependencies', () => {
+    const plan = completePlan(2)
+      .replace('<!-- forge-section -->', '<!-- forge-section id="a" -->')
+      .replace('<!-- forge-section -->', '<!-- forge-section id="b" after="a" -->')
+    const summary = summarizePlanStructure(plan)
+    const matched = findSectionsForLineRange(plan, summary.sections[1].startLine, summary.sections[1].endLine)
+    expect(matched.map((s) => [s.id, s.after])).toEqual([['b', ['a']]])
   })
 
   test('returns an empty list for preamble and trailing content', () => {
