@@ -4,7 +4,6 @@ import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
 import type { LoopState } from './state'
 import { transitionSectionIndex } from './state'
-import { isFindingInSectionScope } from './section-scope'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
@@ -1162,9 +1161,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
-  function bumpDirtyAuditRecurrence(loopName: string, bugFindings: ReviewFindingRow[], sectionIndex?: number): void {
-    const findings = sectionIndex === undefined ? bugFindings : bugFindings.filter(f => isFindingInSectionScope(f, sectionIndex))
-    loopService.bumpFindingRecurrence(loopName, findings)
+  function bumpDirtyAuditRecurrence(loopName: string, bugFindings: ReviewFindingRow[]): void {
+    loopService.bumpFindingRecurrence(loopName, bugFindings)
   }
 
   /**
@@ -2682,7 +2680,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
         if (sectionTrans.kind !== 'advance-section') return
 
-        const nextSection = loopService.getNextIncompleteSectionPlan(currentState)
+        const nextSection = loopService.getNextReadySectionPlan(currentState)
         const nextIdx = nextSection?.sectionIndex ?? idx + 1
         const nextIter = await nextIterationOrTerminate(loopName, currentState)
         if (nextIter === null) return

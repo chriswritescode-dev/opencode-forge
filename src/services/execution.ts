@@ -30,11 +30,11 @@ import { aggregateToUsageSummary } from '../utils/loop-format'
 import { resolveForgeDbPath } from '../utils/opencode-paths'
 import { existsSync } from 'fs'
 import { applyPlanDecomposition } from './section-bootstrap'
+import { decomposePlanSections } from './deterministic-decomposer'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
-import { blockingBugFindings } from '../loop/section-scope'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists, forgeBranchName } from '../workspace/forge-naming'
 import { validateLoopBranchRequest } from '../workspace/loop-branch'
@@ -630,13 +630,24 @@ export async function attachLoopToSession(
     })
 
     // === Initial prompt ===
-    const { totalSections } = applyPlanDecomposition({
+    const decomposition = applyPlanDecomposition({
       projectId: ctx.projectId,
       loopName,
       planText,
       loopsRepo: deps.loopsRepo,
       sectionPlansRepo: deps.sectionPlansRepo,
     })
+    if (!decomposition.ok) {
+      deps.logger.error(`attachLoopToSession: plan section graph is invalid: ${decomposition.errors.join('; ')}`)
+      deps.loop.unregisterSessionReverseIndex(sessionId)
+      if (attachOwnsLoop()) deps.loop.service.deleteState(loopName)
+      return {
+        ok: false,
+        code: 'internal_error',
+        message: `Plan section graph is invalid:\n- ${decomposition.errors.join('\n- ')}`,
+      }
+    }
+    const { totalSections } = decomposition
 
     // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
     if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
@@ -960,7 +971,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
     const planText = planResult.planText
-    
+
+    const graphErrors = decomposePlanSections(planText).graphErrors
+    if (graphErrors.length > 0) {
+      return fail('bad_request', 400, `Plan section graph is invalid:\n- ${graphErrors.join('\n- ')}`)
+    }
+
     // Extract loop names first so the session title can prefer the explicit Loop Name
     const { displayName, executionName } = extractPlanExecutionMetadata(planText)
     const title = command.title ?? displayName
@@ -1536,6 +1552,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
+      const graphState = latestState ?? stoppedState
+      if (!graphState.totalSections) {
+        const graphErrors = decomposePlanSections(graphState.prompt ?? '').graphErrors
+        if (graphErrors.length > 0) {
+          return { ok: false, error: `Plan section graph is invalid:\n- ${graphErrors.join('\n- ')}` }
+        }
+      }
+
       if (stoppedState.active && latestState) {
         // The pre-lock snapshot was active — the original code already ran this
         // block to abort and refresh from latestState.
@@ -1693,15 +1717,18 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // Unified section extraction on restart — preserve existing progress if sections exist.
       if (!stoppedState.totalSections) {
         const planText = stoppedState.prompt ?? ''
-        const { totalSections } = applyPlanDecomposition({
+        const decomposition = applyPlanDecomposition({
           projectId: ctx.projectId,
           loopName: stoppedState.loopName,
           planText,
           loopsRepo: deps.loopsRepo,
           sectionPlansRepo: deps.sectionPlansRepo,
         })
-        stoppedState.totalSections = totalSections
-        if (totalSections > 0) {
+        if (!decomposition.ok) {
+          return { ok: false, error: `Plan section graph is invalid:\n- ${decomposition.errors.join('\n- ')}` }
+        }
+        stoppedState.totalSections = decomposition.totalSections
+        if (stoppedState.totalSections > 0) {
           stoppedState.currentSectionIndex = 0
         }
       }
@@ -1749,7 +1776,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       } else if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
         const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
-        if (blockingBugFindings(outstandingBugs, stoppedState).length > 0) {
+        if (deps.loop.service.getBlockingBugFindings(stoppedState).length > 0) {
           promptText = deps.loop.service.buildSectionContinuationPrompt(newState, undefined, outstandingBugs)
         } else {
           promptText = deps.loop.service.buildSectionInitialPrompt(newState)

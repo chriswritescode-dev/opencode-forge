@@ -58,13 +58,13 @@ describe('loadPrompt', () => {
     expect(prompt).toContain('**Verification**')
   })
 
-  test('auditor-loop-addendum blocks a section on bugs at or before it, with no final-audit special case', () => {
+  test('auditor-loop-addendum blocks a section on bugs in its dependency scope, with no final-audit special case', () => {
     const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
-    expect(prompt).toContain('A clean section means no outstanding bugs at or before it')
-    expect(prompt).toContain('attributed to this section or any earlier section')
-    expect(prompt).toContain('later, not-yet-started section do not block')
-    expect(prompt).toContain('`review-read` returns the current and earlier sections')
-    expect(prompt).toContain('Every section, including the last, follows this same rule')
+    expect(prompt).toContain('A clean section means no outstanding bugs in its dependency scope')
+    expect(prompt).toContain('attributed to this section or any section it depends on, directly or through other sections')
+    expect(prompt).toContain('findings attributed to other sections it does not depend on do not block unless it is the last open section')
+    expect(prompt).toContain("`review-read` returns the current dependency scope's findings")
+    expect(prompt).toContain('Every section follows this same rule')
     expect(prompt).not.toContain('Last open section')
     expect(prompt).not.toContain("Confirm the master plan's top-level Verification commands")
     expect(prompt).not.toContain('final audit')

@@ -86,6 +86,18 @@ describe('LoopService section management', () => {
     loopsRepo.setTotalSections(projectId, loopName, count)
   }
 
+  function insertGraphSections(loopName: string, graph: Array<{ id: string; after: string[] }>) {
+    const sections = graph.map((node, index) => ({
+      index,
+      id: node.id,
+      after: node.after,
+      title: `Section ${node.id}`,
+      content: `Content for ${node.id}`,
+    }))
+    sectionPlansRepo.bulkInsert({ projectId, loopName, sections })
+    loopsRepo.setTotalSections(projectId, loopName, graph.length)
+  }
+
   describe('completeSection', () => {
     test('marks section as completed with summary', () => {
       insertLoop('test-loop')
@@ -371,7 +383,7 @@ describe('LoopService section management', () => {
       expect(prompt).toContain('Loop section audit 2/2')
       expect(prompt).toContain('Section 1: Section 1')
       expect(prompt).toContain('Feature A implemented')
-      expect(prompt).toContain('This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs')
+      expect(prompt).toContain('This section is clean only when this section, every section it depends on (directly or through other sections), and the cross-section findings are free of outstanding bugs')
       expect(prompt).not.toContain('Last open section:')
     })
   })
@@ -465,14 +477,14 @@ describe('LoopService section management', () => {
     })
   })
 
-  describe('getNextIncompleteSectionPlan', () => {
+  describe('getNextReadySectionPlan', () => {
     test('returns lowest-index non-completed section', () => {
       insertLoop('test-loop')
       insertSections('test-loop', 3)
       sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
 
       const state = loopService.getActiveState('test-loop')!
-      const result = loopService.getNextIncompleteSectionPlan(state)
+      const result = loopService.getNextReadySectionPlan(state)
       expect(result).not.toBeNull()
       expect(result!.sectionIndex).toBe(1)
     })
@@ -483,7 +495,7 @@ describe('LoopService section management', () => {
       sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'failed')
 
       const state = loopService.getActiveState('test-loop')!
-      const result = loopService.getNextIncompleteSectionPlan(state)
+      const result = loopService.getNextReadySectionPlan(state)
       expect(result).not.toBeNull()
       expect(result!.sectionIndex).toBe(0)
       expect(result!.status).toBe('failed')
@@ -496,7 +508,7 @@ describe('LoopService section management', () => {
       sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'completed')
 
       const state = loopService.getActiveState('test-loop')!
-      const result = loopService.getNextIncompleteSectionPlan(state)
+      const result = loopService.getNextReadySectionPlan(state)
       expect(result).toBeNull()
     })
 
@@ -508,7 +520,7 @@ describe('LoopService section management', () => {
       const stateBefore = loopService.getActiveState('test-loop')!
       expect(stateBefore.currentSectionIndex).toBe(0)
 
-      loopService.getNextIncompleteSectionPlan(stateBefore)
+      loopService.getNextReadySectionPlan(stateBefore)
 
       const stateAfter = loopService.getActiveState('test-loop')!
       expect(stateAfter.currentSectionIndex).toBe(0)
@@ -524,10 +536,105 @@ describe('LoopService section management', () => {
       ]
 
       const state = loopService.getActiveState('test-loop')!
-      loopService.getNextIncompleteSectionPlan(state)
+      loopService.getNextReadySectionPlan(state)
 
       expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.status).toBe(beforeStatuses[0])
       expect(sectionPlansRepo.get(projectId, 'test-loop', 1)?.status).toBe(beforeStatuses[1])
+    })
+
+    test('skips a section whose dependencies are still open', () => {
+      insertLoop('diamond')
+      insertGraphSections('diamond', [
+        { id: 'a', after: [] },
+        { id: 'b', after: ['a'] },
+        { id: 'c', after: ['a'] },
+        { id: 'd', after: ['b', 'c'] },
+      ])
+      sectionPlansRepo.setStatus(projectId, 'diamond', 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'diamond', 1, 'completed')
+
+      const state = loopService.getActiveState('diamond')!
+      expect(loopService.getNextReadySectionPlan(state)!.sectionIndex).toBe(2)
+    })
+  })
+
+  describe('getSectionScope', () => {
+    function scopeIndexes(scope: ReturnType<typeof loopService.getSectionScope>): number[] {
+      if (scope.kind === 'all') return [-1]
+      return [...scope.indexes].sort((a, b) => a - b)
+    }
+
+    function seedDiamond(loopName: string) {
+      insertLoop(loopName)
+      insertGraphSections(loopName, [
+        { id: 'a', after: [] },
+        { id: 'b', after: ['a'] },
+        { id: 'c', after: ['a'] },
+        { id: 'd', after: ['b', 'c'] },
+      ])
+      sectionPlansRepo.setStatus(projectId, loopName, 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, loopName, 1, 'completed')
+      sectionPlansRepo.setStatus(projectId, loopName, 2, 'in_progress')
+      loopsRepo.setCurrentSectionIndex(projectId, loopName, 2)
+    }
+
+    test('includes the current section and its transitive dependencies', () => {
+      insertLoop('chain-scope')
+      insertGraphSections('chain-scope', [
+        { id: 'a', after: [] },
+        { id: 'b', after: ['a'] },
+        { id: 'c', after: ['b'] },
+      ])
+      sectionPlansRepo.setStatus(projectId, 'chain-scope', 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'chain-scope', 1, 'in_progress')
+      loopsRepo.setCurrentSectionIndex(projectId, 'chain-scope', 1)
+
+      const state = loopService.getActiveState('chain-scope')!
+      expect(scopeIndexes(loopService.getSectionScope(state))).toEqual([0, 1])
+    })
+
+    test('scopes out a sibling section in a diamond', () => {
+      seedDiamond('diamond-scope')
+      const state = loopService.getActiveState('diamond-scope')!
+
+      expect(scopeIndexes(loopService.getSectionScope(state))).toEqual([0, 2])
+    })
+
+    test('a sibling bug does not block while auditing a dependency-scoped section', () => {
+      seedDiamond('diamond-blocking')
+      reviewFindingsRepo.write({ projectId, loopName: 'diamond-blocking', file: 'src/a.ts', line: 1, severity: 'bug', description: 'A bug', sectionIndex: 0 })
+      reviewFindingsRepo.write({ projectId, loopName: 'diamond-blocking', file: 'src/b.ts', line: 2, severity: 'bug', description: 'B bug', sectionIndex: 1 })
+
+      const state = loopService.getActiveState('diamond-blocking')!
+      expect(loopService.getBlockingBugFindings(state).map(f => f.sectionIndex)).toEqual([0])
+    })
+
+    test('the last open section blocks on every finding', () => {
+      insertLoop('last-open-scope')
+      insertGraphSections('last-open-scope', [
+        { id: 'a', after: [] },
+        { id: 'b', after: ['a'] },
+        { id: 'c', after: ['a'] },
+        { id: 'd', after: ['b', 'c'] },
+      ])
+      sectionPlansRepo.setStatus(projectId, 'last-open-scope', 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'last-open-scope', 1, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'last-open-scope', 2, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'last-open-scope', 3, 'in_progress')
+      loopsRepo.setCurrentSectionIndex(projectId, 'last-open-scope', 3)
+      reviewFindingsRepo.write({ projectId, loopName: 'last-open-scope', file: 'src/b.ts', line: 2, severity: 'bug', description: 'B bug', sectionIndex: 1 })
+
+      const state = loopService.getActiveState('last-open-scope')!
+      expect(loopService.getSectionScope(state).kind).toBe('all')
+      expect(loopService.getBlockingBugFindings(state)).toHaveLength(1)
+    })
+
+    test('falls back to the current and earlier indexes without rows', () => {
+      insertLoop('no-rows-scope')
+      loopsRepo.setCurrentSectionIndex(projectId, 'no-rows-scope', 2)
+
+      const state = loopService.getActiveState('no-rows-scope')!
+      expect(scopeIndexes(loopService.getSectionScope(state))).toEqual([0, 1, 2])
     })
   })
 })

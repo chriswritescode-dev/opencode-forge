@@ -147,6 +147,8 @@ describe('section-read tool', () => {
       insertSections('test-loop', 2)
       const result = parseJson(await executeSectionRead({ section_index: 0 }, 'test-loop-session'))
       expect(result.index).toBe(0)
+      expect(result.id).toBe('section-1')
+      expect(result.after).toEqual([])
       expect(result.title).toBe('Section 1')
       expect(result.content).toBe('Content for section 1')
       expect(result.status).toBe('pending')
@@ -247,9 +249,33 @@ describe('section-read tool', () => {
       const result = parseJson(await executeSectionRead({ pending_suffix: true }, 'test-loop-session'))
       expect(result.from_index).toBe(2)
       expect(result.sections).toEqual([
-        { index: 2, title: 'Section 3', content: 'Content for section 3', status: 'pending' },
-        { index: 3, title: 'Section 4', content: 'Content for section 4', status: 'pending' },
+        { index: 2, id: 'section-3', after: [], title: 'Section 3', content: 'Content for section 3', status: 'pending' },
+        { index: 3, id: 'section-4', after: [], title: 'Section 4', content: 'Content for section 4', status: 'pending' },
       ])
+    })
+
+    test('returns ids and dependency edges for the suffix and for a single section', async () => {
+      insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 0 })
+      sectionPlansRepo.bulkInsert({
+        projectId,
+        loopName: 'test-loop',
+        sections: [
+          { index: 0, id: 'base', after: [], title: 'Base', content: 'base' },
+          { index: 1, id: 'parse', after: ['base'], title: 'Parse', content: 'parse' },
+          { index: 2, id: 'emit', after: ['base', 'parse'], title: 'Emit', content: 'emit' },
+        ],
+      })
+      loopsRepo.setTotalSections(projectId, 'test-loop', 3)
+
+      const suffix = parseJson(await executeSectionRead({ pending_suffix: true }, 'test-loop-session'))
+      expect(suffix.sections.map((s: { id: string; after: string[] }) => ({ id: s.id, after: s.after }))).toEqual([
+        { id: 'parse', after: ['base'] },
+        { id: 'emit', after: ['base', 'parse'] },
+      ])
+
+      const single = parseJson(await executeSectionRead({ section_index: 2 }, 'test-loop-session'))
+      expect(single.id).toBe('emit')
+      expect(single.after).toEqual(['base', 'parse'])
     })
 
     test('returns an empty suffix when the current section is the last', async () => {
@@ -294,7 +320,7 @@ describe('section-read tool', () => {
   })
 
   describe('state-driven behavior', () => {
-    test('returns lowest-index incomplete section instead of currentSectionIndex', async () => {
+    test('returns the next ready section instead of currentSectionIndex', async () => {
       insertLoop('test-loop', { currentSectionIndex: 2, totalSections: 5 })
       insertSections('test-loop', 5)
       const result = parseJson(await executeSectionRead({}, 'test-loop-session'))

@@ -27,7 +27,9 @@ import { terminationStatusFor, terminationReasonToString, type TerminationReason
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
-import { blockingBugFindings, isFindingInSectionScope } from './section-scope'
+import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
+import { generatedSectionId, isLastOpenSectionIndex, selectNextSection, validateSectionGraph, type SectionGraphNode } from './section-graph'
+import type { PlanSection } from '../services/deterministic-decomposer'
 import { attemptCodeGraphReportPath, buildCodeGraphPromptBlock, sectionCodeGraphReportPath } from './code-graph'
 import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
 import { stripLeadingStructuralOrdinal } from '../utils/format'
@@ -88,11 +90,13 @@ export interface LoopService {
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   /**
    * Bug findings that block the current section: cross-section findings and
-   * findings attributed to the current or an earlier section. Findings from a
-   * later, not-yet-started section do not block. Every bug blocks a
+   * findings attributed to the current section or a section it depends on. On
+   * the last open section every finding blocks. Every bug blocks a
    * non-sectioned loop.
    */
   getBlockingBugFindings(state: LoopState): ReviewFindingRow[]
+  /** The sections whose findings block the current section (see `resolveSectionScope`). */
+  getSectionScope(state: LoopState): SectionScope
   /**
    * Whether any bug finding that blocks the current section (sectioned loops)
    * or the plan (non-sectioned loops) has reached the recurrence escalation
@@ -139,7 +143,7 @@ export interface LoopService {
   recordAttemptCodeGraph(state: LoopState, attempt: LoopAttemptRow, text: string): void
   /** The newest attempt row for the state's current audit scope, or null when attempts are not stored. */
   getLatestAttempt(state: LoopState): LoopAttemptRow | null
-  getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
+  getNextReadySectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
 
   buildPlanInitialPrompt(planText: string): string
@@ -158,7 +162,7 @@ export interface LoopService {
    */
   isLastOpenSection(state: LoopState): boolean
   startSection(loopName: string, index: number): void
-  bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
+  bulkInsertSections(loopName: string, sections: PlanSection[]): void
   setTotalSections(loopName: string, total: number): void
   recordTransition(name: string, entry: {
     eventType: string
@@ -184,7 +188,7 @@ export interface LoopService {
   discardPendingHandoff(loopName: string): void
   listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[]
   adjustRemainingSections(name: string, args: {
-    sections?: { title: string; content: string }[]
+    sections?: { title: string; content: string; id?: string; after?: string[] }[]
     currentSection?: { title: string; content: string }
     rationale: string
     auditorSessionId: string
@@ -365,7 +369,7 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionCodeGraphBlock, getAttemptCodeGraphBlock }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionScope, getSectionCodeGraphBlock, getAttemptCodeGraphBlock }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
@@ -463,8 +467,12 @@ export function createLoopService(
     return severity ? rows.filter((r) => r.severity === severity) : rows
   }
 
+  function getSectionScope(state: LoopState): SectionScope {
+    return resolveSectionScope(getSectionPlans(state), state.currentSectionIndex)
+  }
+
   function getBlockingBugFindings(state: LoopState): ReviewFindingRow[] {
-    return blockingBugFindings(getOutstandingFindings(state.loopName), state)
+    return blockingBugFindings(getOutstandingFindings(state.loopName), state, getSectionScope(state))
   }
 
   function hasEscalatedBugFindings(state: LoopState): boolean {
@@ -564,7 +572,9 @@ export function createLoopService(
 
   function attemptFindings(state: LoopState): ReviewFindingRow[] {
     const findings = getOutstandingFindings(state.loopName)
-    return auditScope(state).startsWith('section:') ? findings.filter(f => isFindingInSectionScope(f, state.currentSectionIndex)) : findings
+    if (!auditScope(state).startsWith('section:')) return findings
+    const sectionScope = getSectionScope(state)
+    return findings.filter(f => isFindingInSectionScope(f, sectionScope))
   }
 
   function finishAttempt(state: LoopState, outcome: 'clean' | 'dirty'): void {
@@ -758,9 +768,8 @@ export function createLoopService(
     return buildCodeGraphPromptBlock(attemptCodeGraphReportPath(attempt), 'audit checkpoint')
   }
 
-  function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {
-    if (!sectionPlansRepo) return null
-    return sectionPlansRepo.getNextIncomplete(projectId, state.loopName)
+  function getNextReadySectionPlan(state: LoopState): SectionPlanRow | null {
+    return selectNextSection(getSectionPlans(state))
   }
 
   function isLastOpenSection(state: LoopState): boolean {
@@ -769,7 +778,7 @@ export function createLoopService(
     if (sections.length === 0) return state.currentSectionIndex >= state.totalSections - 1
     const completed = sections.filter(s => s.status === 'completed').length
     if (completed < state.totalSections - 1) return false
-    return sections.every(s => s.sectionIndex === state.currentSectionIndex || s.status === 'completed')
+    return isLastOpenSectionIndex(sections, state.currentSectionIndex)
   }
 
   function getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[] {
@@ -843,7 +852,7 @@ export function createLoopService(
     sectionPlansRepo.setStartedAt(projectId, loopName, index, Date.now())
   }
 
-  function bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void {
+  function bulkInsertSections(loopName: string, sections: PlanSection[]): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.bulkInsert({ projectId, loopName, sections })
   }
@@ -945,7 +954,7 @@ export function createLoopService(
   }
 
     async function adjustRemainingSections(name: string, args: {
-    sections?: { title: string; content: string }[]
+    sections?: { title: string; content: string; id?: string; after?: string[] }[]
     currentSection?: { title: string; content: string }
     rationale: string
     auditorSessionId: string
@@ -1063,11 +1072,46 @@ export function createLoopService(
           const sectionsBefore = JSON.stringify(beforeRows)
 
           if (replacementSections !== undefined) {
+            const existingNodes: SectionGraphNode[] = sectionPlansRepo!.list(projectId, name)
+              .filter((r) => r.sectionIndex < fromIndex)
+              .map((r) => ({ index: r.sectionIndex, id: r.sectionId, after: r.dependsOn }))
+            const currentRow = sectionPlansRepo!.get(projectId, name, currentIndex)
+            const lastExisting = existingNodes.at(-1)
+            let previousId = currentRow?.sectionId ?? lastExisting?.id ?? generatedSectionId(currentIndex)
+            let previousExists = currentRow != null || lastExisting !== undefined
+            const usedIds = new Set(existingNodes.map((node) => node.id))
+            for (const section of replacementSections) {
+              if (section.id !== undefined) usedIds.add(section.id)
+            }
+            const replacementNodes = replacementSections.map((section, i) => {
+              let id: string
+              if (section.id !== undefined) {
+                id = section.id
+              } else {
+                let candidateIndex = fromIndex + i
+                while (usedIds.has(generatedSectionId(candidateIndex))) candidateIndex += 1
+                id = generatedSectionId(candidateIndex)
+                usedIds.add(id)
+              }
+              const after = section.after ?? (previousExists ? [previousId] : [])
+              previousId = id
+              previousExists = true
+              return { index: fromIndex + i, id, after }
+            })
+            const graphErrors = validateSectionGraph([...existingNodes, ...replacementNodes])
+            if (graphErrors.length > 0) {
+              return { ok: false as const, error: 'invalid section graph: ' + graphErrors.join('; ') }
+            }
+            const chainedSections = replacementSections.map((section, i) => ({
+              ...section,
+              id: replacementNodes[i].id,
+              after: replacementNodes[i].after,
+            }))
             const replaceResult = sectionPlansRepo!.replacePendingSections({
               projectId,
               loopName: name,
               fromIndex,
-              sections: replacementSections,
+              sections: chainedSections,
             })
             if (!replaceResult.ok) {
               return replaceResult
@@ -1161,6 +1205,7 @@ export function createLoopService(
     hasOutstandingFindings,
     getOutstandingFindings,
     getBlockingBugFindings,
+    getSectionScope,
     hasEscalatedBugFindings,
     setCoderDecisions,
     captureAttempt,
@@ -1191,7 +1236,7 @@ export function createLoopService(
     setSectionCheckpointCommit,
     recordAttemptCodeGraph,
     getLatestAttempt,
-    getNextIncompleteSectionPlan,
+    getNextReadySectionPlan,
     getCompletedSectionDigest,
 
     buildPlanInitialPrompt,

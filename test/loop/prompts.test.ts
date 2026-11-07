@@ -17,7 +17,7 @@ import {
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
 import type { LoopAttemptRow } from '../../src/storage/repos/loop-attempts-repo'
-import { blockingBugFindings } from '../../src/loop/section-scope'
+import { blockingBugFindings, resolveSectionScope } from '../../src/loop/section-scope'
 
 const defaultState = {
   active: true,
@@ -53,15 +53,16 @@ function makeCtx(overrides?: Partial<PromptContext>): PromptContext {
     getFindingRecurrence: () => new Map(),
     ...overrides,
   } as PromptContext
-  ctx.getBlockingBugFindings ??= (state) => blockingBugFindings(ctx.getOutstandingFindings(state.loopName, 'bug'), state)
+  ctx.getBlockingBugFindings ??= (state) => blockingBugFindings(ctx.getOutstandingFindings(state.loopName, 'bug'), state, ctx.getSectionScope(state))
+  ctx.getSectionScope ??= (state) => resolveSectionScope(ctx.getSectionPlans(state), state.currentSectionIndex)
   return ctx
 }
 
 function makeSectionPlanRow(index: number, title: string, content: string) {
   return {
-    projectId: 'p', loopName: 'test-loop', sectionIndex: index, title, content,
+    projectId: 'p', loopName: 'test-loop', sectionIndex: index, sectionId: `section-${index + 1}`, dependsOn: [], title, content,
     status: 'pending' as const, attempts: 0,
-    summaryDone: null, summaryDeviations: null, summaryFollowUps: null,
+    summaryDone: null, summaryDeviations: null, summaryFollowUps: null, codeGraph: null,
     checkpointCommit: null as string | null,
     startedAt: null, completedAt: null, createdAt: Date.now(),
   }
@@ -274,8 +275,8 @@ describe('prompt builders (src/loop/prompts)', () => {
     test('section audit states the section-wide blocking scope', () => {
       const ctx = makeCtx()
       const result = buildSectionAuditPrompt(ctx, { ...sectionState, totalSections: 3, currentSectionIndex: 1 })
-      expect(result).toContain('This section is clean only when this section, every earlier section, and the cross-section findings are free of outstanding bugs')
-      expect(result).toContain('Findings attributed to a later, not-yet-started section do not block this audit')
+      expect(result).toContain('This section is clean only when this section, every section it depends on (directly or through other sections), and the cross-section findings are free of outstanding bugs')
+      expect(result).toContain('Findings attributed to other sections this section does not depend on do not block this audit unless it is the last open section')
       expect(result).toContain('`review-read` returns exactly that scope')
       expect(result).not.toContain('Last open section:')
     })

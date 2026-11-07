@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { generateUniqueName } from '../../src/loop/name-uniqueness'
 import { createForgeExecutionService } from '../../src/services/execution'
 import type { Logger } from '../../src/types'
-import { buildLoopPermissionRuleset, resolveLoopPermissionOptions } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS } from '../../src/constants/loop'
 import type { LoopService } from '../../src/loop/service'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -1095,5 +1095,143 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.data.loopName).toBe('taken-branch-1')
+  })
+})
+
+describe('handleStartLoop section graph validation', () => {
+  function buildSectionHarness() {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
+    const branchExists = vi.fn(() => false)
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({ id: 'ws_sections', directory: '/tmp/wt/sections', branch: 'forge/sections-loop' }),
+        warp: async () => {},
+      },
+      session: {
+        create: async () => ({ id: 'sess-sections' }),
+        get: async () => ({}),
+      },
+    })
+    const built = buildExecutionDeps(db, {
+      client,
+      gitService: { ...mockGitService, branchExists },
+      loop: {
+        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
+      },
+    })
+    return { ...built, client, branchExists }
+  }
+
+  test('an invalid graph returns 400 bad_request listing every error and creates nothing', async () => {
+    const h = buildSectionHarness()
+    const service = createForgeExecutionService(h.deps)
+
+    const planText = [
+      '<!-- forge-section id="a" -->',
+      '## Phase 1',
+      '',
+      'Body 1.',
+      '<!-- forge-section id="b" after="c" -->',
+      '## Phase 2',
+      '',
+      'Body 2.',
+      '<!-- forge-section id="b" after="missing,a" -->',
+      '## Phase 3',
+      '',
+      'Body 3.',
+      '<!-- forge-section id="c" -->',
+      '## Phase 4',
+      '',
+      'Body 4.',
+    ].join('\n')
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText } },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('bad_request')
+    expect(result.error.message).toContain('Plan section graph is invalid')
+    expect(result.error.message).toContain('depends on "c", which is section 4')
+    expect(result.error.message).toContain('reuses id "b"')
+    expect(result.error.message).toContain('depends on unknown id "missing"')
+    expect(h.client.workspace.create).not.toHaveBeenCalled()
+    expect(h.client.session.create).not.toHaveBeenCalled()
+    expect(h.branchExists).not.toHaveBeenCalled()
+    expect(h.loopService.listActive()).toHaveLength(0)
+  })
+
+  test('a plan over MAX_TOTAL_SECTIONS returns 400 bad_request and creates nothing', async () => {
+    const h = buildSectionHarness()
+    const service = createForgeExecutionService(h.deps)
+
+    const planText = Array.from({ length: MAX_TOTAL_SECTIONS + 1 }, (_, i) =>
+      [
+        '<!-- forge-section -->',
+        `## Phase ${i + 1}`,
+        '',
+        `Body ${i + 1}.`,
+      ].join('\n'),
+    ).join('\n')
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText } },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('bad_request')
+    expect(result.error.message).toContain('Plan section graph is invalid')
+    expect(result.error.message).toContain(`exceed the cap of ${MAX_TOTAL_SECTIONS}`)
+    expect(h.client.workspace.create).not.toHaveBeenCalled()
+    expect(h.client.session.create).not.toHaveBeenCalled()
+    expect(h.loopService.listActive()).toHaveLength(0)
+  })
+
+  test('a valid diamond persists the four rows with their ids and after edges', async () => {
+    const h = buildSectionHarness()
+    const service = createForgeExecutionService(h.deps)
+
+    const planText = [
+      '<!-- forge-section id="a" -->',
+      '## Phase A',
+      '',
+      'Body A.',
+      '<!-- forge-section id="b" after="a" -->',
+      '## Phase B',
+      '',
+      'Body B.',
+      '<!-- forge-section id="c" after="a" -->',
+      '## Phase C',
+      '',
+      'Body C.',
+      '<!-- forge-section id="d" after="b,c" -->',
+      '## Phase D',
+      '',
+      'Body D.',
+    ].join('\n')
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const rows = h.sectionPlansRepo.list(PROJECT_ID, result.data.loopName)
+    expect(rows.map((row) => ({ id: row.sectionId, after: row.dependsOn }))).toEqual([
+      { id: 'a', after: [] },
+      { id: 'b', after: ['a'] },
+      { id: 'c', after: ['a'] },
+      { id: 'd', after: ['b', 'c'] },
+    ])
+    expect(rows[0].status).toBe('in_progress')
+    expect(h.loopService.getActiveState(result.data.loopName)!.totalSections).toBe(4)
   })
 })
