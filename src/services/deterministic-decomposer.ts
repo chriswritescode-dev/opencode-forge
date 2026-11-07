@@ -1,6 +1,7 @@
 import type { ParsedSection } from '../utils/section-capture'
 import { computeFenceMask } from '../utils/markdown-fences'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { truncateAtWordBoundary, stripLeadingStructuralOrdinal } from '../utils/format'
 
 const SECTION_MARKER_REGEX = /^<!--\s*forge-section\s*-->$/
 const LEGACY_SECTION_PAIR_REGEX = /^<!--\s*forge-section:(?:start|end)\s*-->$/
@@ -89,9 +90,10 @@ export function decomposePlanSections(planText: string, opts?: { maxSections?: n
     for (const line of bodyLines) {
       const m = line.match(/^##\s+(.+)$/)
       if (m) {
-        const candidate = m[1].trim()
+        const candidate = stripLeadingStructuralOrdinal(m[1].trim())
+        if (candidate.length === 0) continue
         if (STRUCTURAL_TITLES.has(candidate.toLowerCase())) continue
-        title = candidate.substring(0, 60)
+        title = truncateAtWordBoundary(candidate, 60)
         break
       }
     }

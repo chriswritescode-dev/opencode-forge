@@ -748,7 +748,7 @@ describe('createForgeWorkspaceAdapter', () => {
 
       // The branch is preserved as-is (no rename) and contains the teardown commit.
       const log = execSync('git log custom/work --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
-      expect(log).toMatch(/loop: commit-loop completed after 3 iterations/)
+      expect(log).toMatch(/^Apply remaining changes$/m)
       expect(logger.log).toHaveBeenCalledWith(
         expect.stringContaining('committed pending changes'),
       )
@@ -775,7 +775,7 @@ describe('createForgeWorkspaceAdapter', () => {
       await adapter.remove(configured)
 
       const log = execSync('git log custom/default --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
-      expect(log).toMatch(/loop: default-ctx-loop removed after 0 iterations/)
+      expect(log).toMatch(/^Apply remaining changes$/m)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

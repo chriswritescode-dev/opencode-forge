@@ -15,6 +15,8 @@ export interface SectionPlanRow {
   summaryDeviations: string | null
   summaryFollowUps: string | null
   codeGraph: string | null
+  /** Commit sha of the section's checkpoint commit; section audits scope from it. */
+  checkpointCommit: string | null
   startedAt: number | null
   completedAt: number | null
   createdAt: number
@@ -30,6 +32,7 @@ export interface SectionPlansRepo {
   incrementAttempts(projectId: string, loopName: string, index: number): void
   setSummary(projectId: string, loopName: string, index: number, parts: { done?: string; deviations?: string; followUps?: string }): void
   setCodeGraph(projectId: string, loopName: string, index: number, text: string | null): void
+  setCheckpointCommit(projectId: string, loopName: string, index: number, sha: string): void
   resetForRewind(projectId: string, loopName: string, index: number): void
   setStartedAt(projectId: string, loopName: string, index: number, ms: number): void
   setCompletedAt(projectId: string, loopName: string, index: number, ms: number): void
@@ -68,7 +71,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtList = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           code_graph, started_at, completed_at, created_at
+           code_graph, checkpoint_commit, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ?
     ORDER BY section_index ASC
@@ -77,7 +80,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtListCompleted = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           code_graph, started_at, completed_at, created_at
+           code_graph, checkpoint_commit, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND status = 'completed'
     ORDER BY section_index ASC
@@ -86,7 +89,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtGet = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           code_graph, started_at, completed_at, created_at
+           code_graph, checkpoint_commit, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND section_index = ?
   `)
@@ -94,7 +97,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtGetNextIncomplete = db.prepare(`
     SELECT project_id, loop_name, section_index, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
-           code_graph, started_at, completed_at, created_at
+           code_graph, checkpoint_commit, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND status != 'completed'
     ORDER BY section_index ASC
@@ -116,7 +119,8 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
   const stmtResetForRewind = db.prepare(`
     UPDATE section_plans SET status = 'in_progress', attempts = 0, summary_done = NULL,
-    summary_deviations = NULL, summary_follow_ups = NULL, code_graph = NULL, completed_at = NULL
+    summary_deviations = NULL, summary_follow_ups = NULL, code_graph = NULL, checkpoint_commit = NULL,
+    completed_at = NULL
     WHERE project_id = ? AND loop_name = ? AND section_index = ?
   `)
 
@@ -136,6 +140,10 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
   const stmtSetCodeGraph = db.prepare(`
     UPDATE section_plans SET code_graph = ? WHERE project_id = ? AND loop_name = ? AND section_index = ?
+  `)
+
+  const stmtSetCheckpointCommit = db.prepare(`
+    UPDATE section_plans SET checkpoint_commit = ? WHERE project_id = ? AND loop_name = ? AND section_index = ?
   `)
 
   const stmtCount = db.prepare(`
@@ -180,6 +188,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
       summaryDeviations: row.summary_deviations as string | null,
       summaryFollowUps: row.summary_follow_ups as string | null,
       codeGraph: row.code_graph as string | null,
+      checkpointCommit: row.checkpoint_commit as string | null,
       startedAt: row.started_at as number | null,
       completedAt: row.completed_at as number | null,
       createdAt: row.created_at as number,
@@ -256,6 +265,10 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
       stmtSetCodeGraph.run(text, projectId, loopName, index)
     },
 
+    setCheckpointCommit(projectId, loopName, index, sha) {
+      stmtSetCheckpointCommit.run(sha, projectId, loopName, index)
+    },
+
     setStartedAt(projectId, loopName, index, ms) {
       stmtSetStartedAt.run(ms, projectId, loopName, index)
     },
@@ -282,14 +295,14 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     restoreAll(rows: SectionPlanRow[]): void {
       const stmtRestore = db.prepare(`
         INSERT OR REPLACE INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts,
-          summary_done, summary_deviations, summary_follow_ups, code_graph, started_at, completed_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          summary_done, summary_deviations, summary_follow_ups, code_graph, checkpoint_commit, started_at, completed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const row of rows) {
         stmtRestore.run(
           row.projectId, row.loopName, row.sectionIndex, row.title, row.content,
           row.status, row.attempts, row.summaryDone, row.summaryDeviations,
-          row.summaryFollowUps, row.codeGraph, row.startedAt, row.completedAt, row.createdAt,
+          row.summaryFollowUps, row.codeGraph, row.checkpointCommit, row.startedAt, row.completedAt, row.createdAt,
         )
       }
     },

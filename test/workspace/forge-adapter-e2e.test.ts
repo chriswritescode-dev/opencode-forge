@@ -190,7 +190,7 @@ describe('forge workspace adapter e2e', () => {
       const teardownTip = execSync(`git rev-parse ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' }).trim()
       expect(teardownTip).not.toBe(originTip)
       const logSubjects = execSync(`git log ${branchName} --format=%s`, { cwd: tmpRepo, encoding: 'utf-8' })
-      expect(logSubjects).toMatch(/loop: custom-branch-loop completed after 1 iteration/)
+      expect(logSubjects).toMatch(/^Apply remaining changes$/m)
       const committedFiles = execSync(`git ls-tree --name-only ${branchName}`, { cwd: tmpRepo, encoding: 'utf-8' })
         .split('\n')
         .map((line) => line.trim())

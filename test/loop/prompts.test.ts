@@ -62,6 +62,7 @@ function makeSectionPlanRow(index: number, title: string, content: string) {
     projectId: 'p', loopName: 'test-loop', sectionIndex: index, title, content,
     status: 'pending' as const, attempts: 0,
     summaryDone: null, summaryDeviations: null, summaryFollowUps: null,
+    checkpointCommit: null as string | null,
     startedAt: null, completedAt: null, createdAt: Date.now(),
   }
 }
@@ -761,9 +762,27 @@ describe('prompt builders (src/loop/prompts)', () => {
 
     test('section audit retains the full acceptance scope and clarifies repeat ordering', () => {
       const result = buildSectionAuditPrompt(makeCtx(), { ...sectionState })
-      expect(result).toContain("this section's work is all uncommitted changes plus any commits made after the most recent")
+      expect(result).toContain("this section's work is every commit since this branch's merge-base with its base branch, plus all uncommitted and untracked changes.")
       expect(result).toContain('full scope is the acceptance scope on every section audit')
       expect(result).toContain('the delta orders the review, it does not replace the full scope')
+    })
+
+    test('section audit scopes the first section from the base commit when recorded', () => {
+      const base = 'b'.repeat(40)
+      const result = buildSectionAuditPrompt(makeCtx(), { ...sectionState, baseCommit: base })
+      expect(result).toContain(`this section's work is every commit since base commit \`${base}\` (\`git diff ${base}\` covers committed, staged and unstaged tracked changes) plus untracked files.`)
+      expect(result).not.toContain('`section <N>:`')
+    })
+
+    test('section audit scopes from the nearest earlier section checkpoint commit', () => {
+      const firstCheckpoint = 'c'.repeat(40)
+      const ctx = makeCtx({
+        getSectionPlan: (_state, index) =>
+          index === 0 ? { ...makeSectionPlanRow(0, 'Section 1', 'Content 1'), checkpointCommit: firstCheckpoint } : makeSectionPlanRow(index, `Section ${index + 1}`, `Content ${index + 1}`),
+      })
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState, currentSectionIndex: 1, baseCommit: 'b'.repeat(40) })
+      expect(result).toContain(`this section's work is every commit since \`${firstCheckpoint}\` and all uncommitted changes (\`git diff ${firstCheckpoint}\` covers committed, staged and unstaged tracked changes; read untracked files in full).`)
+      expect(result).not.toContain('b'.repeat(40))
     })
 
     test('audit prompts point to the attempts pagination usage of review-read', () => {

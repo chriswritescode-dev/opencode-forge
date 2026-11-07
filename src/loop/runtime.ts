@@ -56,6 +56,7 @@ import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { resolvePostActionConfig } from './post-action-config'
 import type { GitService } from '../utils/git-service'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
+import { truncateAtWordBoundary } from '../utils/format'
 import { buildHandoffNudgePrompt } from './prompts'
 import { formatAuditHandoffResult, formatCoderHandoff, formatPostActionReport, formatPostActionSummary, formatSectionSummary, handoffCompletionKey, handoffRoleForPhase, parseHandoffWriteInput, type LoopHandoffRecordFor, type LoopHandoffRole } from './handoff'
 import type { ZodError } from 'zod'
@@ -252,21 +253,35 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Commit the just-completed section's work as a `section <N>: <title>`
-   * checkpoint so the next section's audit can scope its review to changes
-   * made after this commit. Best-effort: failures are logged and never block
-   * section advancement — the next audit then simply sees the accumulated diff.
+   * Commit the just-completed section's work under its short human title, then
+   * store the resulting `HEAD` sha on the section row so the next section's
+   * audit can scope its review from that exact commit. Best-effort: failures
+   * are logged and never block section advancement — the next audit then
+   * simply sees the accumulated diff.
    */
   function commitSectionCheckpoint(state: LoopState, idx: number): void {
     if (!gitService) return
     if (!state.worktree || !state.worktreeDir) return
-    const title = loopService.getSectionPlan(state, idx)?.title.trim()
-    const message = `section ${idx + 1}: ${title || 'checkpoint'}`
+    const title = loopService.getSectionPlan(state, idx)?.title.trim() ?? ''
+    const message = truncateAtWordBoundary(title, 72) || `Section ${idx + 1}`
     const outcome = commitWorktreeChanges(gitService, logger, state.worktreeDir, message)
+    if (outcome === 'failed') {
+      logger.log(`Loop: section checkpoint commit failed for ${state.loopName ?? 'unknown'}; next section audit will see the accumulated diff`)
+      return
+    }
     if (outcome === 'committed') {
       logger.log(`Loop: committed section checkpoint "${message}" for ${state.loopName ?? 'unknown'}`)
-    } else if (outcome === 'failed') {
-      logger.log(`Loop: section checkpoint commit failed for ${state.loopName ?? 'unknown'}; next section audit will see the accumulated diff`)
+    }
+    try {
+      const head = gitService.revParseHead(state.worktreeDir)
+      const sha = head.ok ? head.stdout.trim() : ''
+      if (!sha) {
+        logger.log(`Loop: could not record the section checkpoint commit for ${state.loopName ?? 'unknown'}: ${head.stderr.trim() || 'unknown error'}`)
+        return
+      }
+      loopService.setSectionCheckpointCommit(state.loopName, idx, sha)
+    } catch (err) {
+      logger.log(`Loop: could not record the section checkpoint commit for ${state.loopName ?? 'unknown'}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

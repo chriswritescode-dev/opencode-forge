@@ -128,11 +128,39 @@ describe('decomposeDeterministically', () => {
     expect(decomposeDeterministically(plan)).toEqual([])
   })
 
+  test('strips the leading structural ordinal from a Phase heading', () => {
+    const plan = [
+      '<!-- forge-section -->', '## Phase 2: Remove the goal tools', 'a',
+      '<!-- forge-section -->', '## Step 3 - Update docs', 'b',
+      '<!-- forge-section -->', '## Section 4) Run tests', 'c',
+    ].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r.map((s) => s.title)).toEqual(['Remove the goal tools', 'Update docs', 'Run tests'])
+  })
+
+  test('keeps a heading with a numeric-only phase marker', () => {
+    const plan = ['<!-- forge-section -->', '## Phase 1', 'body'].join('\n')
+    expect(decomposeDeterministically(plan)[0].title).toBe('Phase 1')
+  })
+
+  test('skips a structural heading whose ordinal strip leaves a structural title', () => {
+    const plan = ['<!-- forge-section -->', '## Phase 1: Verification', '- cmd', 'body'].join('\n')
+    expect(decomposeDeterministically(plan)[0].title).toBe('Section 1')
+  })
+
   test('title truncated to 60 chars', () => {
     const plan = '<!-- forge-section -->\n## ' + 'A'.repeat(100) + '\nbody'
     const r = decomposeDeterministically(plan)
     expect(r[0].title).toHaveLength(60)
     expect(r[0].title).toBe('A'.repeat(60))
+  })
+
+  test('title truncation lands on a word boundary, never mid-word', () => {
+    const plan = '<!-- forge-section -->\n## Update docs, regenerate API docs, and run the full validation suite\nbody'
+    const r = decomposeDeterministically(plan)
+    expect(r[0].title.length).toBeLessThanOrEqual(60)
+    expect(r[0].title).toBe('Update docs, regenerate API docs, and run the full')
+    expect(plan.split('\n')[1]).toContain(r[0].title)
   })
 
   test('marker tolerates surrounding whitespace', () => {

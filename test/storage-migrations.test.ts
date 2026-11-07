@@ -1990,6 +1990,39 @@ test('migration 158 is a no-op when applied twice and skips a missing section_pl
   db.close()
 })
 
+test('migration 159 adds a nullable checkpoint_commit to section_plans', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(section_plans)').all() as Array<{ name: string; notnull: number }>
+  const col = cols.find((c) => c.name === 'checkpoint_commit')
+  expect(col).toBeDefined()
+  expect(col!.notnull).toBe(0)
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('159') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 159 is a no-op when applied twice and skips a missing section_plans table', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '158')
+
+  applySingleMigration(db, '159')
+  expect(() => applySingleMigration(db, '159')).not.toThrow()
+
+  const cols = db.prepare('PRAGMA table_info(section_plans)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'checkpoint_commit').length).toBe(1)
+
+  db.run('DROP TABLE section_plans')
+  expect(() => applySingleMigration(db, '159')).not.toThrow()
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all()).toHaveLength(0)
+
+  db.close()
+})
+
 test('deleting a loop cascades its handoff rows away', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)

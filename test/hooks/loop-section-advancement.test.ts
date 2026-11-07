@@ -103,6 +103,8 @@ describe('Loop Section Advancement', () => {
   }
 
   describe('Section checkpoint commits', () => {
+    const CHECKPOINT_SHA = 'a'.repeat(40)
+
     function createFakeGitService(overrides: { statusStdout?: string } = {}) {
       const commits: Array<{ cwd: string; message: string }> = []
       const ok = { ok: true, status: 0, stdout: '', stderr: '' }
@@ -114,6 +116,7 @@ describe('Loop Section Advancement', () => {
           return { ...ok }
         },
         isPathTracked: () => false,
+        revParseHead: () => ({ ...ok, stdout: `${CHECKPOINT_SHA}\n` }),
       } as unknown as import('../../src/utils/git-service').GitService
       return { git, commits }
     }
@@ -144,7 +147,16 @@ describe('Loop Section Advancement', () => {
       )
     }
 
-    test('a clean section advance commits a "section N: title" checkpoint in the worktree', async () => {
+    async function advance(handler: ReturnType<typeof buildHandler>): Promise<void> {
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { status: { type: 'idle' }, sessionID: 'sess-1' },
+        },
+      })
+    }
+
+    test('a clean section advance commits a short-title checkpoint and stores its commit sha on the section row', async () => {
       insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
@@ -152,22 +164,50 @@ describe('Loop Section Advancement', () => {
       const { git, commits } = createFakeGitService()
       const handler = buildHandler(git)
       await recordAuditorHandoff(handler.loop, 'sess-1', { summary: CLEAN_AUDIT_SUMMARY })
-
-      await handler.onEvent({
-        event: {
-          type: 'session.status',
-          properties: { status: { type: 'idle' }, sessionID: 'sess-1' },
-        },
-      })
+      await advance(handler)
 
       expect(commits).toHaveLength(1)
       expect(commits[0].cwd).toBe(tempDir)
-      expect(commits[0].message).toBe('section 1: Section 1')
+      expect(commits[0].message).toBe('Section 1')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.checkpointCommit).toBe(CHECKPOINT_SHA)
 
       handler.clearAllRetryTimeouts()
     })
 
-    test('no checkpoint commit when the worktree has no pending changes', async () => {
+    test('a plan-derived section title lands in the checkpoint subject', async () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertSectionPlan(0, 'Remove the goal tools', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+
+      const { git, commits } = createFakeGitService()
+      const handler = buildHandler(git)
+      await recordAuditorHandoff(handler.loop, 'sess-1', { summary: CLEAN_AUDIT_SUMMARY })
+      await advance(handler)
+
+      expect(commits).toHaveLength(1)
+      expect(commits[0].message).toBe('Remove the goal tools')
+
+      handler.clearAllRetryTimeouts()
+    })
+
+    test('a checkpoint subject longer than 72 characters caps at a word boundary', async () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertSectionPlan(0, 'Update every module and document with a very long descriptive human readable title that keeps going', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+
+      const { git, commits } = createFakeGitService()
+      const handler = buildHandler(git)
+      await recordAuditorHandoff(handler.loop, 'sess-1', { summary: CLEAN_AUDIT_SUMMARY })
+      await advance(handler)
+
+      expect(commits).toHaveLength(1)
+      expect(commits[0].message.length).toBeLessThanOrEqual(72)
+      expect(commits[0].message).toBe('Update every module and document with a very long descriptive human')
+
+      handler.clearAllRetryTimeouts()
+    })
+
+    test('no checkpoint commit when the worktree has no pending changes, but the section sha is still stored', async () => {
       insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
@@ -175,15 +215,10 @@ describe('Loop Section Advancement', () => {
       const { git, commits } = createFakeGitService({ statusStdout: '' })
       const handler = buildHandler(git)
       await recordAuditorHandoff(handler.loop, 'sess-1', { summary: CLEAN_AUDIT_SUMMARY })
-
-      await handler.onEvent({
-        event: {
-          type: 'session.status',
-          properties: { status: { type: 'idle' }, sessionID: 'sess-1' },
-        },
-      })
+      await advance(handler)
 
       expect(commits).toHaveLength(0)
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.checkpointCommit).toBe(CHECKPOINT_SHA)
 
       // The section still advanced — the checkpoint is bookkeeping, not a gate.
       const after = loopService.getActiveState('test-loop')!

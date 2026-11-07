@@ -176,12 +176,11 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
     }
   }
 
-  async function stepCommitChanges(loopName: string, directory: string, branchLabel: string, ctx: TeardownContext): Promise<void> {
+  async function stepCommitChanges(directory: string, branchLabel: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doCommit || !existsSync(directory)) return
 
     try {
-      const iterLabel = ctx.iteration === 1 ? 'iteration' : 'iterations'
-      const message = `loop: ${loopName} ${ctx.reasonLabel} after ${ctx.iteration} ${iterLabel}`
+      const message = 'Apply remaining changes'
       const outcome = commitWorktreeChanges(git, logger, directory, message)
 
       if (outcome === 'committed') {
@@ -391,7 +390,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
 
       // Always commit changes so work isn't lost — skip only when the worktree
       // directory itself is already gone.
-      await stepCommitChanges(loopName, info.directory, info.branch ?? '<branch>', ctx)
+      await stepCommitChanges(info.directory, info.branch ?? '<branch>', ctx)
 
       // Stop sandbox container if running.
       await stepStopSandbox(sandboxManager, info.name)

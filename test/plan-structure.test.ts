@@ -286,8 +286,8 @@ describe('formatPlanStructureSummary', () => {
     expect(formatted).toContain(`Plan stored: ${summary.lines} lines, ${summary.characters} chars.`)
     expect(formatted).toContain('Loop Name: complete-plan')
     expect(formatted).toContain('Sections (2):')
-    expect(formatted).toContain('  1. Phase 1: Implement behavior')
-    expect(formatted).toContain('  2. Phase 2: Implement behavior')
+    expect(formatted).toContain('  1. Implement behavior')
+    expect(formatted).toContain('  2. Implement behavior')
     // No warnings in this case (markers and loop name present, no path).
     expect(formatted).not.toContain('Warnings:')
   })
@@ -335,18 +335,18 @@ describe('formatPlanStructureSummary', () => {
     const summary = summarizePlanStructure(completePlan(3))
     const formatted = formatPlanStructureSummary(summary, { sectionIndexes: [1] })
     expect(formatted).toContain('Sections (3):')
-    expect(formatted).toContain('  2. Phase 2: Implement behavior')
-    expect(formatted).not.toContain('  1. Phase 1')
-    expect(formatted).not.toContain('  3. Phase 3')
+    expect(formatted).toContain('  2. Implement behavior')
+    expect(formatted).not.toContain('  1. Implement behavior')
+    expect(formatted).not.toContain('  3. Implement behavior')
   })
 
   test('renders the full outline when no focused indexes are given', () => {
     const summary = summarizePlanStructure(completePlan(3))
     const formatted = formatPlanStructureSummary(summary)
     expect(formatted).toContain('Sections (3):')
-    expect(formatted).toContain('  1. Phase 1: Implement behavior')
-    expect(formatted).toContain('  2. Phase 2: Implement behavior')
-    expect(formatted).toContain('  3. Phase 3: Implement behavior')
+    expect(formatted).toContain('  1. Implement behavior')
+    expect(formatted).toContain('  2. Implement behavior')
+    expect(formatted).toContain('  3. Implement behavior')
   })
 
   test('renders only the count line when focused indexes match no sections', () => {

@@ -439,7 +439,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–158; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `157` drops the removed goals feature's `goals` and `goal_chunks` tables; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–159; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `157` drops the removed goals feature's `goals` and `goal_chunks` tables; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`; `159` adds the nullable `checkpoint_commit` sha section audits scope from.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -516,7 +516,7 @@ Creates and manages git worktrees for isolated loop execution, registered throug
 | `forge-workspace-metadata.ts` | `<worktree>/.forge/workspace.json` read/write/list |
 | `loop-branch.ts` | `describeBranchInUse()`, `describeBranchReuseConflict()`, `validateLoopBranchRequest()` — branch reuse and `execute-plan` branch/base-ref validation |
 | `pending-teardown.ts` | Registry of pending teardown contexts for commit message building |
-| `worktree-commit.ts` | `commitWorktreeChanges`: the teardown and section checkpoint commits; strips the forge-written `opencode.jsonc`, unstages Forge's `.codegraph` cache link (`isForgeCodeGraphLink`), and commits only when something is staged |
+| `worktree-commit.ts` | `commitWorktreeChanges`: the teardown and section checkpoint commits; strips the forge-written `opencode.jsonc`, unstages Forge's `.codegraph` cache link (`isForgeCodeGraphLink`), and commits only when something is staged. Section checkpoints commit the section's short title; the teardown commit uses the fixed subject `Apply remaining changes` |
 | `worktree-opencode-config.ts` | Writes `opencode.jsonc` into a fresh worktree |
 | `classify-stale.ts` | Decision function for stale forge workspace handling |
 | `remove-with-context.ts` | Workspace removal with teardown context |

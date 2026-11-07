@@ -101,9 +101,9 @@ describe('applyPlanDecomposition', () => {
     expect(bulkInsertArgs.loopName).toBe(LOOP_NAME)
     expect(bulkInsertArgs.sections).toHaveLength(2)
     expect(bulkInsertArgs.sections[0].index).toBe(0)
-    expect(bulkInsertArgs.sections[0].title).toContain('Phase 1')
+    expect(bulkInsertArgs.sections[0].title).toBe('Setup')
     expect(bulkInsertArgs.sections[1].index).toBe(1)
-    expect(bulkInsertArgs.sections[1].title).toContain('Phase 2')
+    expect(bulkInsertArgs.sections[1].title).toBe('Build')
 
     // loopsRepo.setTotalSections called
     expect(loopsRepo.setTotalSections).toHaveBeenCalledTimes(1)
