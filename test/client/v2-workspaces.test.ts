@@ -176,7 +176,6 @@ describe('createV2ForgeWorkspaces', () => {
         workspaceId: created.id,
         loopName: RESTARTABLE_LOOP_NAME,
         action: 'remove-registration-only',
-        reasonLabel: 'attach-safety-net-restartable',
       },
     )
 

@@ -29,7 +29,6 @@ export interface SweepStaleInput {
   projectId: string
   projectDirectory: string
   excludeLoopName?: string
-  reasonLabel?: string
 }
 
 export interface SweepStaleReport {
@@ -55,7 +54,7 @@ export async function sweepStaleForgeWorkspaces(
   input: SweepStaleInput,
 ): Promise<SweepStaleReport> {
   const { client, loopsRepo, pendingTeardowns, logger } = deps
-  const { projectId, projectDirectory, excludeLoopName, reasonLabel = 'orphan-sweep' } = input
+  const { projectId, projectDirectory, excludeLoopName } = input
 
   const swept: SweepStaleReport['swept'] = []
   const skipped: SweepStaleReport['skipped'] = []
@@ -98,7 +97,6 @@ export async function sweepStaleForgeWorkspaces(
         workspaceId: entry.id,
         loopName: action.loopName,
         action: action.action,
-        reasonLabel,
       },
     )
 

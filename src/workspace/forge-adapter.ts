@@ -30,16 +30,15 @@ export interface ForgeWorkspaceAdapter {
 }
 
 /**
- * Runtime context for a forge workspace teardown. Populated by the caller
- * (loop termination side-effects, etc.) before `client.workspace.remove`
- * is invoked so the adapter can produce informative commit messages.
+ * Runtime context for a forge workspace teardown: whether the adapter commits
+ * pending changes and whether it removes the worktree directory. Populated by
+ * the caller (loop termination side-effects, etc.) before
+ * `client.workspace.remove` is invoked.
  *
  * When no context is registered (orphan sweep, TUI delete without an active
  * loop), the adapter falls back to sensible defaults.
  */
 export interface TeardownContext {
-  iteration: number
-  reasonLabel: string
   doCommit: boolean
   /** When false the worktree directory stays in place for restart. */
   doRemoveWorktree: boolean
@@ -52,7 +51,7 @@ export interface ForgeAdapterDeps {
   logger: Logger
   sandboxManager?: Pick<SandboxManager, 'start' | 'stop'> | null
   /**
-   * Lookup runtime teardown context (iteration, reason, doCommit) for a loop.
+   * Lookup runtime teardown context (doCommit, doRemoveWorktree) for a loop.
    * Optional: when absent or returning undefined, the adapter uses defaults.
    */
   getTeardownContext?: TeardownContextProvider
@@ -69,8 +68,6 @@ export interface ForgeAdapterDeps {
 }
 
 const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
-  iteration: 0,
-  reasonLabel: 'removed',
   doCommit: true,
   doRemoveWorktree: true,
 }
