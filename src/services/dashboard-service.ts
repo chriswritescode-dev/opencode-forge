@@ -175,6 +175,8 @@ function sectionPlanRow(row: SectionPlanRow): ForgeSectionPlan {
     projectId: row.projectId,
     loopName: row.loopName,
     sectionIndex: row.sectionIndex,
+    sectionId: row.sectionId,
+    dependsOn: row.dependsOn,
     title: row.title,
     content: row.content,
     status: row.status,

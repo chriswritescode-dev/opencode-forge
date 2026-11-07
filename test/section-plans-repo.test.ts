@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
+import type { PlanSection } from '../src/services/deterministic-decomposer'
 import type { ParsedSection } from '../src/utils/section-capture'
 import { createTestDb, type TestDb } from './helpers/test-db'
 
@@ -338,7 +339,7 @@ describe('SectionPlansRepo', () => {
       expect(repo.get(projectId, loopName, 0)?.codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
       expect(repo.list(projectId, loopName)[0].codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
       expect(repo.list(projectId, loopName)[1].codeGraph).toBeNull()
-      expect(repo.getNextIncomplete(projectId, loopName)?.codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
+      expect(repo.list(projectId, loopName)[0].codeGraph).toBe('# Code graph\n\nchanged: src/a.ts')
     })
 
     test('clears a stored report when set to null', () => {
@@ -363,78 +364,6 @@ describe('SectionPlansRepo', () => {
       repo.restoreAll(saved)
 
       expect(repo.get(projectId, loopName, 0)?.codeGraph).toBe('# report')
-    })
-  })
-
-  describe('getNextIncomplete', () => {
-    test('returns null when no sections exist', () => {
-      expect(repo.getNextIncomplete(projectId, loopName)).toBeNull()
-    })
-
-    test('returns section 0 when all sections are initially pending', () => {
-      const sections: ParsedSection[] = [
-        { index: 0, title: 'A', content: 'A content' },
-        { index: 1, title: 'B', content: 'B content' },
-      ]
-      repo.bulkInsert({ projectId, loopName, sections })
-
-      const result = repo.getNextIncomplete(projectId, loopName)
-      expect(result).not.toBeNull()
-      expect(result!.sectionIndex).toBe(0)
-    })
-
-    test('skips completed sections and returns the lowest-index pending', () => {
-      const sections: ParsedSection[] = [
-        { index: 0, title: 'A', content: 'A content' },
-        { index: 1, title: 'B', content: 'B content' },
-        { index: 2, title: 'C', content: 'C content' },
-      ]
-      repo.bulkInsert({ projectId, loopName, sections })
-      repo.setStatus(projectId, loopName, 0, 'completed')
-
-      const result = repo.getNextIncomplete(projectId, loopName)
-      expect(result).not.toBeNull()
-      expect(result!.sectionIndex).toBe(1)
-    })
-
-    test('treats failed as incomplete and returns a lower-index failed before a later pending', () => {
-      const sections: ParsedSection[] = [
-        { index: 0, title: 'A', content: 'A content' },
-        { index: 1, title: 'B', content: 'B content' },
-      ]
-      repo.bulkInsert({ projectId, loopName, sections })
-      repo.setStatus(projectId, loopName, 0, 'failed')
-      repo.setStatus(projectId, loopName, 1, 'pending')
-
-      const result = repo.getNextIncomplete(projectId, loopName)
-      expect(result).not.toBeNull()
-      expect(result!.sectionIndex).toBe(0)
-      expect(result!.status).toBe('failed')
-    })
-
-    test('returns null when all sections are completed', () => {
-      const sections: ParsedSection[] = [
-        { index: 0, title: 'A', content: 'A content' },
-        { index: 1, title: 'B', content: 'B content' },
-      ]
-      repo.bulkInsert({ projectId, loopName, sections })
-      repo.setStatus(projectId, loopName, 0, 'completed')
-      repo.setStatus(projectId, loopName, 1, 'completed')
-
-      expect(repo.getNextIncomplete(projectId, loopName)).toBeNull()
-    })
-
-    test('scopes by projectId and loopName', () => {
-      const otherProject = 'other-project'
-      insertLoop(otherProject, loopName)
-
-      const sections: ParsedSection[] = [{ index: 0, title: 'A', content: 'A content' }]
-      repo.bulkInsert({ projectId, loopName, sections })
-      repo.bulkInsert({ projectId: otherProject, loopName, sections })
-      repo.setStatus(projectId, loopName, 0, 'completed')
-
-      expect(repo.getNextIncomplete(projectId, loopName)).toBeNull()
-      expect(repo.getNextIncomplete(otherProject, loopName)!.sectionIndex).toBe(0)
     })
   })
 
@@ -588,6 +517,94 @@ describe('SectionPlansRepo', () => {
       // Other loop untouched.
       expect(repo.list(projectId, otherLoop)).toHaveLength(4)
       expect(repo.get(projectId, otherLoop, 2)?.title).toBe('Phase Two')
+    })
+  })
+
+  describe('section ids and dependency edges', () => {
+    const graphSections: PlanSection[] = [
+      { index: 0, title: 'Root', content: 'root content', id: 'root', after: [] },
+      { index: 1, title: 'Left', content: 'left content', id: 'left', after: ['root'] },
+      { index: 2, title: 'Right', content: 'right content', id: 'right', after: ['root'] },
+      { index: 3, title: 'Join', content: 'join content', id: 'join', after: ['right', 'left'] },
+    ]
+
+    test('round-trips section ids and diamond dependencies through list, get, and listCompleted', () => {
+      repo.bulkInsert({ projectId, loopName, sections: graphSections })
+
+      const list = repo.list(projectId, loopName)
+      expect(list.map((row) => [row.sectionId, row.dependsOn])).toEqual([
+        ['root', []],
+        ['left', ['root']],
+        ['right', ['root']],
+        ['join', ['left', 'right']],
+      ])
+
+      expect(repo.get(projectId, loopName, 3)?.dependsOn).toEqual(['left', 'right'])
+
+      repo.setStatus(projectId, loopName, 1, 'completed')
+      const completed = repo.listCompleted(projectId, loopName)
+      expect(completed).toHaveLength(1)
+      expect(completed[0]).toMatchObject({ sectionId: 'left', dependsOn: ['root'] })
+    })
+
+    test('ignores a repeated bulk insert without duplicating edges', () => {
+      repo.bulkInsert({ projectId, loopName, sections: graphSections })
+      const result = repo.bulkInsert({ projectId, loopName, sections: graphSections })
+
+      expect(result.inserted).toBe(0)
+      expect(repo.get(projectId, loopName, 3)?.dependsOn).toEqual(['left', 'right'])
+    })
+
+    test('replacePendingSections replaces edges only for the pending suffix', () => {
+      repo.bulkInsert({ projectId, loopName, sections: graphSections })
+      repo.setStatus(projectId, loopName, 0, 'completed')
+      repo.setStatus(projectId, loopName, 1, 'in_progress')
+
+      const result = repo.replacePendingSections({
+        projectId,
+        loopName,
+        fromIndex: 2,
+        sections: [
+          { title: 'New Right', content: 'new right', id: 'new-right', after: ['left'] },
+          { title: 'New Join', content: 'new join', id: 'new-join', after: ['new-right'] },
+        ],
+      })
+
+      expect(result).toEqual({ ok: true, removed: 2, inserted: 2 })
+
+      const list = repo.list(projectId, loopName)
+      expect(list.map((row) => [row.sectionId, row.dependsOn])).toEqual([
+        ['root', []],
+        ['left', ['root']],
+        ['new-right', ['left']],
+        ['new-join', ['new-right']],
+      ])
+
+      const remainingEdges = db.prepare(
+        "SELECT COUNT(*) AS c FROM section_dependencies WHERE project_id = ? AND loop_name = ? AND section_id IN ('right', 'join')",
+      ).get(projectId, loopName) as { c: number }
+      expect(remainingEdges.c).toBe(0)
+    })
+
+    test('deleteAll and restoreAll keep rows and edges consistent', () => {
+      repo.bulkInsert({ projectId, loopName, sections: graphSections })
+      const saved = repo.list(projectId, loopName)
+
+      expect(repo.deleteAll(projectId, loopName)).toBe(4)
+      expect(repo.count(projectId, loopName)).toBe(0)
+      const edgesAfterDelete = db.prepare(
+        'SELECT COUNT(*) AS c FROM section_dependencies WHERE project_id = ? AND loop_name = ?',
+      ).get(projectId, loopName) as { c: number }
+      expect(edgesAfterDelete.c).toBe(0)
+
+      repo.restoreAll(saved)
+
+      expect(repo.list(projectId, loopName).map((row) => [row.sectionId, row.dependsOn])).toEqual([
+        ['root', []],
+        ['left', ['root']],
+        ['right', ['root']],
+        ['join', ['left', 'right']],
+      ])
     })
   })
 

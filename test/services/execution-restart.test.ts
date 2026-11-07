@@ -228,6 +228,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -306,6 +307,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client, calls } = createFakeForgeClient({
@@ -402,6 +404,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -469,6 +472,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -521,9 +525,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       projectId: PROJECT_ID,
       loopName: 'bug-restart-loop',
       sections: [
-        { index: 0, title: 'A', content: 'content A' },
-        { index: 1, title: 'B', content: 'content B' },
-        { index: 2, title: 'C', content: 'content C' },
+        { index: 0, id: 'section-1', after: [], title: 'A', content: 'content A' },
+        { index: 1, id: 'section-2', after: ['section-1'], title: 'B', content: 'content B' },
+        { index: 2, id: 'section-3', after: ['section-2'], title: 'C', content: 'content C' },
       ],
     })
     sectionPlansRepo.setStatus(PROJECT_ID, 'bug-restart-loop', 0, 'completed')
@@ -602,6 +606,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -699,6 +704,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -768,6 +774,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -843,6 +850,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -911,6 +919,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -990,6 +999,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -1091,6 +1101,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -1188,6 +1199,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     let capturedResolvedNew: string | null | undefined
@@ -1277,6 +1289,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
@@ -1359,6 +1372,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
       buildPostActionPrompt: () => 'should-not-be-called',
       buildSectionInitialPrompt: () => 'should-not-be-called',
     }
@@ -1432,6 +1446,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -1904,6 +1919,7 @@ describe('handleLoopRestart restartability rules', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({
@@ -1985,6 +2001,37 @@ describe('handleLoopRestart restartability rules', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.data.sessionId).toBe('new-session-restart')
+  })
+
+  test('restart refuses an invalid section graph before creating a workspace, sandbox, or session', async () => {
+    insertLoop({
+      loopName: 'invalid-graph-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+    })
+    plansRepo.writeForLoop(
+      PROJECT_ID,
+      'invalid-graph-loop',
+      '# Objective\n\nLoop Name: invalid-graph-loop\n\n<!-- forge-section id="a" -->\n## Phase 1\nA\n\n<!-- forge-section id="a" -->\n## Phase 2\nB\n',
+    )
+    const sandboxStart = vi.fn()
+
+    const { service, client } = await createMockService({ sandboxManager: { start: sandboxStart, stop: vi.fn() } })
+    const sessionCreate = vi.spyOn(client.session, 'create')
+    const workspaceCreate = vi.spyOn(client.workspace, 'create')
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: 'invalid-graph-loop' } },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('Plan section graph is invalid')
+    expect(result.error.message).toContain('reuses id "a"')
+    expect(sessionCreate).not.toHaveBeenCalled()
+    expect(workspaceCreate).not.toHaveBeenCalled()
+    expect(sandboxStart).not.toHaveBeenCalled()
   })
 
   test('stale expectedStartedAt is rejected before aborting the active session', async () => {
@@ -2760,6 +2807,7 @@ describe('handleLoopRestart restartability rules', () => {
       recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
       restoreState: (name, state) => loopService.restoreState(name, state),
       getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      getBlockingBugFindings: (state) => loopService.getBlockingBugFindings(state),
     }
 
     const { client } = createFakeForgeClient({

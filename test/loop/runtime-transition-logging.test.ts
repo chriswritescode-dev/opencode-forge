@@ -100,8 +100,8 @@ describe('Runtime transition logging', () => {
       const statuses = ['completed', 'in_progress', 'completed']
       for (let i = 0; i < 3; i++) {
         db.run(
-          `INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, started_at, completed_at, summary_done, summary_deviations, summary_follow_ups, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [projectId, loopName, i, `Section ${i + 1}`, `Content ${i + 1}`, statuses[i], 0, Date.now(), statuses[i] === 'completed' ? Date.now() : null, statuses[i] === 'completed' ? `Done ${i}` : null, null, null, Date.now()],
+          `INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, started_at, completed_at, summary_done, summary_deviations, summary_follow_ups, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [projectId, loopName, i, `section-${i + 1}`, `Section ${i + 1}`, `Content ${i + 1}`, statuses[i], 0, Date.now(), statuses[i] === 'completed' ? Date.now() : null, statuses[i] === 'completed' ? `Done ${i}` : null, null, null, Date.now()],
         )
       }
 

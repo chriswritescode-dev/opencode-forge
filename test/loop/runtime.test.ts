@@ -509,7 +509,13 @@ describe('post-action phase', () => {
       sectionPlansRepo.bulkInsert({
         projectId: PROJECT_ID,
         loopName,
-        sections: statuses.map((_, index) => ({ index, title: `Section ${index + 1}`, content: `Content ${index + 1}` })),
+        sections: statuses.map((_, index) => ({
+          index,
+          id: `section-${index + 1}`,
+          after: index === 0 ? [] : [`section-${index}`],
+          title: `Section ${index + 1}`,
+          content: `Content ${index + 1}`,
+        })),
       })
       statuses.forEach((status, index) => {
         sectionPlansRepo.setStatus(PROJECT_ID, loopName, index, status)
@@ -557,6 +563,59 @@ describe('post-action phase', () => {
         .filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
         .map(c => (c.params as any)?.parts?.[0]?.text ?? '')
     }
+
+    test('diamond graph schedules ready sections and scopes a sibling bug', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },
+      })
+      const { loop } = buildRuntime({ client })
+
+      const loopName = 'diamond-scheduler'
+      seedAuditingLoop(loopName, 'diamond-audit', 4, 0)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [
+          { index: 0, id: 'a', after: [], title: 'Section A', content: 'Content A' },
+          { index: 1, id: 'b', after: ['a'], title: 'Section B', content: 'Content B' },
+          { index: 2, id: 'c', after: ['a'], title: 'Section C', content: 'Content C' },
+          { index: 3, id: 'd', after: ['b', 'c'], title: 'Section D', content: 'Content D' },
+        ],
+      })
+      sectionPlansRepo.setStatus(PROJECT_ID, loopName, 0, 'in_progress')
+
+      async function auditClean(sessionId: string) {
+        loopService.replaceSession(loopName, { newSessionId: sessionId, phase: 'auditing' })
+        await recordAuditorHandoff(loop, sessionId, cleanSectionHandoff)
+        await auditTick(loop, sessionId)
+      }
+
+      await auditClean('diamond-audit-a')
+      expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(1)
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.status).toBe('completed')
+
+      await auditClean('diamond-audit-b')
+      expect(loopService.getActiveState(loopName)!.currentSectionIndex).toBe(2)
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.status).toBe('completed')
+
+      // While auditing c, a bug on sibling b is outside c's dependency scope.
+      seedFinding(loopName, 'src/b.ts', 21, 1)
+      await auditClean('diamond-audit-c')
+      const afterC = loopService.getActiveState(loopName)!
+      expect(afterC.currentSectionIndex).toBe(3)
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 2)!.status).toBe('completed')
+      expect(sectionPlansRepo.get(PROJECT_ID, loopName, 1)!.status).toBe('completed')
+
+      // d is the last open section: every outstanding bug blocks.
+      loopService.replaceSession(loopName, { newSessionId: 'diamond-audit-d', phase: 'auditing' })
+      await recordAuditorHandoff(loop, 'diamond-audit-d')
+      await auditTick(loop, 'diamond-audit-d')
+
+      const afterD = loopService.getActiveState(loopName)!
+      expect(afterD.currentSectionIndex).toBe(3)
+      expect(afterD.phase).toBe('coding')
+      expect(codePrompts(calls).at(-1)).toContain('src/b.ts:21')
+    })
 
     test('clean last open section enters post_action when configured', async () => {
       const { client, calls } = createFakeForgeClient({

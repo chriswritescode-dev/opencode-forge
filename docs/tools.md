@@ -50,7 +50,7 @@ Arguments:
 
 | Argument | Description |
 |---|---|
-| `content` | Stored plan markdown. Use `<!-- forge-section -->` markers before each `## Phase` heading. |
+| `content` | Stored plan markdown. Put one `<!-- forge-section id="slug" after="a,b" -->` marker before each `## Phase` heading. Both attributes are optional: `id` is a stable lowercase slug (letters, digits, hyphens; at most 64 characters) and defaults to `section-<n>`; `after` lists earlier section ids this phase depends on, defaults to the previous section, and `after=""` declares no dependencies. Ids must be unique and dependencies must point at earlier sections; loop start refuses an invalid graph. |
 
 ### `plan-edit`
 
@@ -70,32 +70,32 @@ Arguments:
 
 ### `section-read`
 
-Reads a section plan and its status for the active loop session. Without arguments it returns the lowest-index incomplete section. Titles are display labels; the content under each section is the executable requirement.
+Reads a section plan and its status for the active loop session. Without arguments it returns the next ready section (the first open section whose dependencies are all completed). Titles are display labels; the content under each section is the executable requirement. Every returned section includes `id` and `after`: its stable section id and the ids of the sections it depends on.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
-| `section_index` | Optional 0-based section index. If omitted, returns the lowest-index incomplete section. |
-| `pending_suffix` | When `true`, returns one JSON object with `from_index` (current section index + 1) and every pending section after the current one, ordered, each with `index`, `title`, `content`, and `status`. Cannot be combined with `section_index`. |
+| `section_index` | Optional 0-based section index. If omitted, returns the next ready section (the first open section whose dependencies are all completed). |
+| `pending_suffix` | When `true`, returns one JSON object with `from_index` (current section index + 1) and every pending section after the current one, ordered, each with `index`, `id`, `after`, `title`, `content`, and `status`. Cannot be combined with `section_index`. |
 
 `section-read` never mutates loop state: section statuses and summaries are unchanged by reads.
 
 ### `plan-adjust`
 
-Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in non-sectioned loops and outside the auditing phase). Revises the executable section instructions only: the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or the pending section suffix from the current section + 1 onward (`sections`). `sections` is destructive — it replaces the entire pending suffix, so any omitted milestone is deleted; confirm the retained list with `section-read` `pending_suffix: true` before calling. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. The tool performs no semantic validation of the adjusted instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots and a required rationale.
+Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in non-sectioned loops and outside the auditing phase). Revises the executable section instructions only: the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or the pending section suffix from the current section + 1 onward (`sections`). `sections` is destructive — it replaces the entire pending suffix, so any omitted milestone is deleted; confirm the retained list with `section-read` `pending_suffix: true` before calling, and copy each retained milestone's `id` and `after` so its identity and dependencies stay stable as indexes renumber. The resulting section graph is validated before anything is written — ids must be unique, and every `after` target must be a completed section, the current section, or an earlier entry in the replacement list — and an invalid graph writes nothing and reports every error. The stored master plan row is unchanged, so the master objective and top-level Verification remain authoritative; the amended current/pending sections form the effective plan that supersedes the original per-section instructions. The tool performs no semantic validation of the adjusted instructions; auditor policy forbids weakening acceptance criteria merely to obtain a clean audit. Already-completed sections cannot be changed. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots and a required rationale.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
-| `sections` | Optional replacement list of `{ title, content }` for the not-yet-started sections after the current one. Replaces the entire pending suffix — omissions delete milestones, so include every later milestone to retain. Omit to leave future sections unchanged; an empty list removes the entire pending suffix. |
-| `currentSection` | Optional `{ title, content }` revision of the section currently under audit, edited in place. If the revision requires code, write severity: bug findings in the same audit so the section is re-coded. Revisions must not weaken acceptance criteria or verification merely to obtain a clean audit. |
+| `sections` | Optional replacement list of `{ title, content, id?, after? }` for the not-yet-started sections after the current one. Replaces the entire pending suffix — omissions delete milestones, so include every later milestone to retain. Omit to leave future sections unchanged; an empty list removes the entire pending suffix. `id` is the stable slug copied from `section-read`; omit it to generate `section-<n>` from the new index. `after` lists the ids this section depends on; omit it to depend on the previous section (the current section for the first entry), or pass an empty array for no dependencies. |
+| `currentSection` | Optional `{ title, content }` revision of the section currently under audit, edited in place. Its id and dependencies cannot change. If the revision requires code, write severity: bug findings in the same audit so the section is re-coded. Revisions must not weaken acceptance criteria or verification merely to obtain a clean audit. |
 | `rationale` | Why the plan needs adjustment. Required for every adjustment. |
 
 ## Review Tools
 
-Review findings are scoped to the current loop when invoked from a loop session. Sectioned loops scope findings to the current and earlier sections plus cross-section findings unless overridden; bugs attributed to a later, not-yet-started section are excluded, and `allSections` reads everything.
+Review findings are scoped to the current loop when invoked from a loop session. Sectioned loops scope findings to the current section, the sections it depends on (directly or through other sections), and cross-section findings unless overridden; on the last open section every finding is in scope, and `allSections` reads everything.
 
 ### `review-write`
 

@@ -2049,3 +2049,97 @@ test('migration 157 drops both goal tables and their rows', () => {
 
   db.close()
 })
+
+test('migration 159 backfills section ids and chain edges on a database migrated through 158', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '158')
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-159', 'running', 'sess-159', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  for (const index of [0, 1, 2]) {
+    db.prepare(`
+      INSERT INTO section_plans (project_id, loop_name, section_index, title, content, created_at)
+      VALUES ('proj-1', 'loop-159', ?, ?, ?, 1)
+    `).run(index, `Section ${index + 1}`, `Content ${index + 1}`)
+  }
+
+  applySingleMigration(db, '159')
+
+  const rows = db.prepare(`
+    SELECT section_index, section_id FROM section_plans
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-159'
+    ORDER BY section_index ASC
+  `).all() as Array<{ section_index: number; section_id: string }>
+  expect(rows).toEqual([
+    { section_index: 0, section_id: 'section-1' },
+    { section_index: 1, section_id: 'section-2' },
+    { section_index: 2, section_id: 'section-3' },
+  ])
+  expect(indexExists(db, 'idx_section_plans_section_id')).toBe(true)
+
+  const dependencies = db.prepare(`
+    SELECT section_id, depends_on_section_id FROM section_dependencies
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-159'
+    ORDER BY section_id ASC
+  `).all() as Array<{ section_id: string; depends_on_section_id: string }>
+  expect(dependencies).toEqual([
+    { section_id: 'section-2', depends_on_section_id: 'section-1' },
+    { section_id: 'section-3', depends_on_section_id: 'section-2' },
+  ])
+
+  applySingleMigration(db, '159')
+  const count = db.prepare(`
+    SELECT COUNT(*) AS c FROM section_dependencies WHERE project_id = 'proj-1' AND loop_name = 'loop-159'
+  `).get() as { c: number }
+  expect(count.c).toBe(2)
+
+  db.close()
+})
+
+test('migration 159 skips a database without section_plans', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '158')
+
+  db.run('DROP TABLE section_plans')
+  applySingleMigration(db, '159')
+  expect(() => applySingleMigration(db, '159')).not.toThrow()
+
+  expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_dependencies'").all()).toHaveLength(0)
+
+  db.close()
+})
+
+test('deleting a loop cascades its section_dependencies rows away', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-deps', 'running', 'sess-deps', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, created_at)
+    VALUES ('proj-1', 'loop-deps', 0, 'section-1', 'S1', 'c1', 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, created_at)
+    VALUES ('proj-1', 'loop-deps', 1, 'section-2', 'S2', 'c2', 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO section_dependencies (project_id, loop_name, section_id, depends_on_section_id)
+    VALUES ('proj-1', 'loop-deps', 'section-2', 'section-1')
+  `).run()
+
+  db.prepare("DELETE FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-deps'").run()
+
+  const remaining = db.prepare(
+    "SELECT COUNT(*) AS c FROM section_dependencies WHERE project_id = 'proj-1' AND loop_name = 'loop-deps'",
+  ).get() as { c: number }
+  expect(remaining.c).toBe(0)
+
+  db.close()
+})

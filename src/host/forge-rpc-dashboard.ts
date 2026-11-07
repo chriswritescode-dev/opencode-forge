@@ -249,6 +249,8 @@ export interface ForgeSectionPlan {
   projectId: string
   loopName: string
   sectionIndex: number
+  sectionId: string
+  dependsOn: string[]
   title: string
   content: string
   status: SectionPlanRow['status']
@@ -405,6 +407,8 @@ const SECTION_PLAN_SCHEMA = {
     projectId: { type: 'string' },
     loopName: { type: 'string' },
     sectionIndex: { type: 'integer' },
+    sectionId: { type: 'string' },
+    dependsOn: { type: 'array', items: { type: 'string' } },
     title: { type: 'string' },
     content: { type: 'string' },
     status: { type: 'string', enum: DASHBOARD_SECTION_STATUSES },
@@ -415,7 +419,7 @@ const SECTION_PLAN_SCHEMA = {
     startedAt: { type: 'number' },
     completedAt: { type: 'number' },
   },
-  required: ['projectId', 'loopName', 'sectionIndex', 'title', 'content', 'status', 'attempts'],
+  required: ['projectId', 'loopName', 'sectionIndex', 'sectionId', 'dependsOn', 'title', 'content', 'status', 'attempts'],
   additionalProperties: false,
 } as const satisfies JsonSchemaShape
 

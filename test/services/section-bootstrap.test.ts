@@ -44,7 +44,6 @@ function buildSpySectionPlansRepo(): SectionPlansRepo {
     list: vi.fn(),
     listCompleted: vi.fn(),
     get: vi.fn(),
-    getNextIncomplete: vi.fn(),
     setStatus: vi.fn(),
     incrementAttempts: vi.fn(),
     setSummary: vi.fn(),
@@ -92,7 +91,7 @@ describe('applyPlanDecomposition', () => {
       sectionPlansRepo,
     })
 
-    expect(result).toEqual({ totalSections: 2 })
+    expect(result).toEqual({ ok: true, totalSections: 2 })
 
     // bulkInsert called with sections matching the two phases
     expect(sectionPlansRepo.bulkInsert).toHaveBeenCalledTimes(1)
@@ -102,8 +101,12 @@ describe('applyPlanDecomposition', () => {
     expect(bulkInsertArgs.sections).toHaveLength(2)
     expect(bulkInsertArgs.sections[0].index).toBe(0)
     expect(bulkInsertArgs.sections[0].title).toContain('Phase 1')
+    expect(bulkInsertArgs.sections[0].id).toBe('section-1')
+    expect(bulkInsertArgs.sections[0].after).toEqual([])
     expect(bulkInsertArgs.sections[1].index).toBe(1)
     expect(bulkInsertArgs.sections[1].title).toContain('Phase 2')
+    expect(bulkInsertArgs.sections[1].id).toBe('section-2')
+    expect(bulkInsertArgs.sections[1].after).toEqual(['section-1'])
 
     // loopsRepo.setTotalSections called
     expect(loopsRepo.setTotalSections).toHaveBeenCalledTimes(1)
@@ -143,7 +146,7 @@ describe('applyPlanDecomposition', () => {
       sectionPlansRepo,
     })
 
-    expect(result).toEqual({ totalSections: 20 })
+    expect(result).toEqual({ ok: true, totalSections: 20 })
 
     expect(sectionPlansRepo.bulkInsert).toHaveBeenCalledTimes(1)
     const bulkInsertArgs = vi.mocked(sectionPlansRepo.bulkInsert).mock.calls[0][0]
@@ -155,7 +158,7 @@ describe('applyPlanDecomposition', () => {
     expect(loopsRepo.setTotalSections).toHaveBeenCalledWith(PROJECT_ID, LOOP_NAME, 20)
   })
 
-  test('30-section plan is capped at MAX_TOTAL_SECTIONS', () => {
+  test('30-section plan over MAX_TOTAL_SECTIONS is rejected and writes nothing', () => {
     const loopsRepo = buildSpyLoopsRepo()
     const sectionPlansRepo = buildSpySectionPlansRepo()
 
@@ -176,10 +179,92 @@ describe('applyPlanDecomposition', () => {
       sectionPlansRepo,
     })
 
-    expect(result).toEqual({ totalSections: MAX_TOTAL_SECTIONS })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.errors).toEqual([
+      `30 sections exceed the cap of ${MAX_TOTAL_SECTIONS}: consolidate phases.`,
+    ])
+    expect(sectionPlansRepo.bulkInsert).not.toHaveBeenCalled()
+    expect(sectionPlansRepo.setStatus).not.toHaveBeenCalled()
+    expect(sectionPlansRepo.setStartedAt).not.toHaveBeenCalled()
+    expect(loopsRepo.setTotalSections).not.toHaveBeenCalled()
+    expect(loopsRepo.setCurrentSectionIndex).not.toHaveBeenCalled()
+  })
+
+  test('invalid graph (duplicate id) is rejected and writes nothing', () => {
+    const loopsRepo = buildSpyLoopsRepo()
+    const sectionPlansRepo = buildSpySectionPlansRepo()
+
+    const planText = [
+      '<!-- forge-section id="setup" -->',
+      '## Phase 1',
+      '',
+      'Body 1.',
+      '<!-- forge-section id="setup" -->',
+      '## Phase 2',
+      '',
+      'Body 2.',
+    ].join('\n')
+
+    const result = applyPlanDecomposition({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      planText,
+      loopsRepo,
+      sectionPlansRepo,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.errors).toEqual([
+      'Section 2 reuses id "setup" already used by section 1; ids must be unique.',
+    ])
+    expect(sectionPlansRepo.bulkInsert).not.toHaveBeenCalled()
+    expect(sectionPlansRepo.setStatus).not.toHaveBeenCalled()
+    expect(sectionPlansRepo.setStartedAt).not.toHaveBeenCalled()
+    expect(loopsRepo.setTotalSections).not.toHaveBeenCalled()
+    expect(loopsRepo.setCurrentSectionIndex).not.toHaveBeenCalled()
+  })
+
+  test('diamond graph persists the four rows with their ids and after edges', () => {
+    const loopsRepo = buildSpyLoopsRepo()
+    const sectionPlansRepo = buildSpySectionPlansRepo()
+
+    const planText = [
+      '<!-- forge-section id="a" -->',
+      '## Phase A',
+      '',
+      'Body A.',
+      '<!-- forge-section id="b" after="a" -->',
+      '## Phase B',
+      '',
+      'Body B.',
+      '<!-- forge-section id="c" after="a" -->',
+      '## Phase C',
+      '',
+      'Body C.',
+      '<!-- forge-section id="d" after="b,c" -->',
+      '## Phase D',
+      '',
+      'Body D.',
+    ].join('\n')
+
+    const result = applyPlanDecomposition({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      planText,
+      loopsRepo,
+      sectionPlansRepo,
+    })
+
+    expect(result).toEqual({ ok: true, totalSections: 4 })
     const bulkInsertArgs = vi.mocked(sectionPlansRepo.bulkInsert).mock.calls[0][0]
-    expect(bulkInsertArgs.sections).toHaveLength(MAX_TOTAL_SECTIONS)
-    expect(loopsRepo.setTotalSections).toHaveBeenCalledWith(PROJECT_ID, LOOP_NAME, MAX_TOTAL_SECTIONS)
+    expect(bulkInsertArgs.sections.map((section) => ({ id: section.id, after: section.after }))).toEqual([
+      { id: 'a', after: [] },
+      { id: 'b', after: ['a'] },
+      { id: 'c', after: ['a'] },
+      { id: 'd', after: ['b', 'c'] },
+    ])
   })
 
   test('no-marker plan: returns 0, does not persist sections', () => {
@@ -196,7 +281,7 @@ describe('applyPlanDecomposition', () => {
       sectionPlansRepo,
     })
 
-    expect(result).toEqual({ totalSections: 0 })
+    expect(result).toEqual({ ok: true, totalSections: 0 })
 
     // loopsRepo.setTotalSections(projectId, loopName, 0)
     expect(loopsRepo.setTotalSections).toHaveBeenCalledTimes(1)
@@ -227,7 +312,7 @@ describe('applyPlanDecomposition', () => {
       sectionPlansRepo: undefined,
     })
 
-    expect(result).toEqual({ totalSections: 0 })
+    expect(result).toEqual({ ok: true, totalSections: 0 })
 
     // loopsRepo.setTotalSections(projectId, loopName, 0)
     expect(loopsRepo.setTotalSections).toHaveBeenCalledTimes(1)

@@ -563,4 +563,17 @@ export const migrations: Migration[] = [
       addColumnIfMissing(db, 'loop_attempts', 'code_graph', '158_add_code_graph_to_loop_attempts.sql')
     },
   },
+  {
+    id: '159',
+    description: 'Add section ids and section_dependencies edges; backfill the existing chain',
+    apply: (db: Database) => {
+      const hasSectionPlans =
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all() as unknown[]).length > 0
+      if (!hasSectionPlans) return
+      addColumnIfMissing(db, 'section_plans', 'section_id', '159_add_section_id_to_section_plans.sql')
+      const hasDependencies =
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_dependencies'").all() as unknown[]).length > 0
+      if (!hasDependencies) db.run(loadSql('159_create_section_dependencies.sql'))
+    },
+  },
 ]

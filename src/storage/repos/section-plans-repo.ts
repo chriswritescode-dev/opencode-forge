@@ -1,12 +1,16 @@
 import type { Database } from 'bun:sqlite'
 import type { Logger } from '../../types'
 import type { ParsedSection } from '../../utils/section-capture'
+import type { PlanSection } from '../../services/deterministic-decomposer'
+import { generatedSectionId } from '../../loop/section-graph'
 import { runImmediateTransaction } from '../sqlite-open'
 
 export interface SectionPlanRow {
   projectId: string
   loopName: string
   sectionIndex: number
+  sectionId: string
+  dependsOn: string[]
   title: string
   content: string
   status: 'pending' | 'in_progress' | 'completed' | 'failed'
@@ -21,11 +25,10 @@ export interface SectionPlanRow {
 }
 
 export interface SectionPlansRepo {
-  bulkInsert(args: { projectId: string; loopName: string; sections: ParsedSection[] }): { inserted: number }
+  bulkInsert(args: { projectId: string; loopName: string; sections: PlanSection[] }): { inserted: number }
   list(projectId: string, loopName: string): SectionPlanRow[]
   listCompleted(projectId: string, loopName: string): SectionPlanRow[]
   get(projectId: string, loopName: string, index: number): SectionPlanRow | null
-  getNextIncomplete(projectId: string, loopName: string): SectionPlanRow | null
   setStatus(projectId: string, loopName: string, index: number, status: SectionPlanRow['status']): void
   incrementAttempts(projectId: string, loopName: string, index: number): void
   setSummary(projectId: string, loopName: string, index: number, parts: { done?: string; deviations?: string; followUps?: string }): void
@@ -55,18 +58,32 @@ export interface SectionPlansRepo {
     projectId: string
     loopName: string
     fromIndex: number
-    sections: { title: string; content: string }[]
+    sections: { title: string; content: string; id: string; after: string[] }[]
   }): { ok: true; removed: number; inserted: number } | { ok: false; error: string }
 }
 
 export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionPlansRepo {
   const stmtBulkInsert = db.prepare(`
-    INSERT OR IGNORE INTO section_plans (project_id, loop_name, section_index, title, content, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO section_plans (project_id, loop_name, section_index, title, content, section_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  const stmtInsertDependency = db.prepare(`
+    INSERT OR IGNORE INTO section_dependencies (project_id, loop_name, section_id, depends_on_section_id)
+    VALUES (?, ?, ?, ?)
+  `)
+
+  const stmtListDependencies = db.prepare(`
+    SELECT d.section_id AS section_id, d.depends_on_section_id AS depends_on_section_id
+    FROM section_dependencies d
+    LEFT JOIN section_plans p
+      ON p.project_id = d.project_id AND p.loop_name = d.loop_name AND p.section_id = d.depends_on_section_id
+    WHERE d.project_id = ? AND d.loop_name = ?
+    ORDER BY d.section_id ASC, p.section_index ASC, d.depends_on_section_id ASC
   `)
 
   const stmtList = db.prepare(`
-    SELECT project_id, loop_name, section_index, title, content, status, attempts,
+    SELECT project_id, loop_name, section_index, section_id, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
            code_graph, started_at, completed_at, created_at
     FROM section_plans
@@ -75,7 +92,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   `)
 
   const stmtListCompleted = db.prepare(`
-    SELECT project_id, loop_name, section_index, title, content, status, attempts,
+    SELECT project_id, loop_name, section_index, section_id, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
            code_graph, started_at, completed_at, created_at
     FROM section_plans
@@ -84,21 +101,11 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   `)
 
   const stmtGet = db.prepare(`
-    SELECT project_id, loop_name, section_index, title, content, status, attempts,
+    SELECT project_id, loop_name, section_index, section_id, title, content, status, attempts,
            summary_done, summary_deviations, summary_follow_ups,
            code_graph, started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND section_index = ?
-  `)
-
-  const stmtGetNextIncomplete = db.prepare(`
-    SELECT project_id, loop_name, section_index, title, content, status, attempts,
-           summary_done, summary_deviations, summary_follow_ups,
-           code_graph, started_at, completed_at, created_at
-    FROM section_plans
-    WHERE project_id = ? AND loop_name = ? AND status != 'completed'
-    ORDER BY section_index ASC
-    LIMIT 1
   `)
 
   const stmtSetStatus = db.prepare(`
@@ -151,10 +158,21 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
   const stmtDeleteAll = db.prepare('DELETE FROM section_plans WHERE project_id = ? AND loop_name = ?')
 
+  const stmtDeleteDependencies = db.prepare('DELETE FROM section_dependencies WHERE project_id = ? AND loop_name = ?')
+
   const stmtListForReplace = db.prepare(`
     SELECT section_index, status FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND section_index >= ?
     ORDER BY section_index ASC
+  `)
+
+  const stmtDeletePendingEdges = db.prepare(`
+    DELETE FROM section_dependencies
+    WHERE project_id = ? AND loop_name = ?
+      AND section_id IN (
+        SELECT section_id FROM section_plans
+        WHERE project_id = ? AND loop_name = ? AND section_index >= ? AND status = 'pending'
+      )
   `)
 
   const stmtDeletePendingFrom = db.prepare(`
@@ -163,15 +181,31 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   `)
 
   const stmtInsertReplacement = db.prepare(`
-    INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at)
-    VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)
+    INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)
   `)
 
-  function mapRow(row: Record<string, unknown>): SectionPlanRow {
+  function dependenciesBySection(projectId: string, loopName: string): Map<string, string[]> {
+    const rows = stmtListDependencies.all(projectId, loopName) as Array<{
+      section_id: string
+      depends_on_section_id: string
+    }>
+    const bySection = new Map<string, string[]>()
+    for (const row of rows) {
+      const dependencies = bySection.get(row.section_id) ?? []
+      dependencies.push(row.depends_on_section_id)
+      bySection.set(row.section_id, dependencies)
+    }
+    return bySection
+  }
+
+  function mapRow(row: Record<string, unknown>, dependsOn: string[]): SectionPlanRow {
     return {
       projectId: row.project_id as string,
       loopName: row.loop_name as string,
       sectionIndex: row.section_index as number,
+      sectionId: row.section_id as string,
+      dependsOn,
       title: row.title as string,
       content: row.content as string,
       status: row.status as SectionPlanRow['status'],
@@ -188,13 +222,24 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
   return {
     bulkInsert(args) {
-      let inserted = 0
-      const now = Date.now()
-      for (const section of args.sections) {
-        const result = stmtBulkInsert.run(args.projectId, args.loopName, section.index, section.title, section.content, now) as unknown as { changes: number }
-        if (result.changes > 0) inserted++
-      }
-      return { inserted }
+      const run = db.transaction(() => {
+        let inserted = 0
+        const now = Date.now()
+        for (const section of args.sections) {
+          const id = section.id ?? generatedSectionId(section.index)
+          const after = section.after ?? []
+          const result = stmtBulkInsert.run(
+            args.projectId, args.loopName, section.index, section.title, section.content, id, now,
+          ) as unknown as { changes: number }
+          if (result.changes === 0) continue
+          inserted++
+          for (const dependency of after) {
+            stmtInsertDependency.run(args.projectId, args.loopName, id, dependency)
+          }
+        }
+        return { inserted }
+      })
+      return run()
     },
 
     updateContent(projectId, loopName, sections) {
@@ -211,22 +256,21 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
     list(projectId, loopName) {
       const rows = stmtList.all(projectId, loopName) as Array<Record<string, unknown>>
-      return rows.map(mapRow)
+      const dependencies = dependenciesBySection(projectId, loopName)
+      return rows.map((row) => mapRow(row, dependencies.get(row.section_id as string) ?? []))
     },
 
     listCompleted(projectId, loopName) {
       const rows = stmtListCompleted.all(projectId, loopName) as Array<Record<string, unknown>>
-      return rows.map(mapRow)
+      const dependencies = dependenciesBySection(projectId, loopName)
+      return rows.map((row) => mapRow(row, dependencies.get(row.section_id as string) ?? []))
     },
 
     get(projectId, loopName, index) {
       const row = stmtGet.get(projectId, loopName, index) as Record<string, unknown> | null
-      return row ? mapRow(row) : null
-    },
-
-    getNextIncomplete(projectId, loopName) {
-      const row = stmtGetNextIncomplete.get(projectId, loopName) as Record<string, unknown> | null
-      return row ? mapRow(row) : null
+      if (!row) return null
+      const dependencies = dependenciesBySection(projectId, loopName)
+      return mapRow(row, dependencies.get(row.section_id as string) ?? [])
     },
 
     setStatus(projectId, loopName, index, status) {
@@ -275,23 +319,33 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     },
 
     deleteAll(projectId, loopName) {
-      const result = stmtDeleteAll.run(projectId, loopName) as unknown as { changes: number }
-      return result.changes
+      const run = db.transaction(() => {
+        stmtDeleteDependencies.run(projectId, loopName)
+        const result = stmtDeleteAll.run(projectId, loopName) as unknown as { changes: number }
+        return result.changes
+      })
+      return run()
     },
 
     restoreAll(rows: SectionPlanRow[]): void {
       const stmtRestore = db.prepare(`
-        INSERT OR REPLACE INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts,
+        INSERT OR REPLACE INTO section_plans (project_id, loop_name, section_index, section_id, title, content, status, attempts,
           summary_done, summary_deviations, summary_follow_ups, code_graph, started_at, completed_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      for (const row of rows) {
-        stmtRestore.run(
-          row.projectId, row.loopName, row.sectionIndex, row.title, row.content,
-          row.status, row.attempts, row.summaryDone, row.summaryDeviations,
-          row.summaryFollowUps, row.codeGraph, row.startedAt, row.completedAt, row.createdAt,
-        )
-      }
+      const run = db.transaction(() => {
+        for (const row of rows) {
+          stmtRestore.run(
+            row.projectId, row.loopName, row.sectionIndex, row.sectionId, row.title, row.content,
+            row.status, row.attempts, row.summaryDone, row.summaryDeviations,
+            row.summaryFollowUps, row.codeGraph, row.startedAt, row.completedAt, row.createdAt,
+          )
+          for (const dependency of row.dependsOn) {
+            stmtInsertDependency.run(row.projectId, row.loopName, row.sectionId, dependency)
+          }
+        }
+      })
+      run()
     },
 
     immediateTransaction<T>(fn: () => T): T {
@@ -309,13 +363,22 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
             return { ok: false as const, error: `section ${row.section_index} is not pending (status=${row.status})` }
           }
         }
+        stmtDeletePendingEdges.run(args.projectId, args.loopName, args.projectId, args.loopName, args.fromIndex)
         const deleteResult = stmtDeletePendingFrom.run(args.projectId, args.loopName, args.fromIndex) as unknown as { changes: number }
         const removed = deleteResult.changes
         const now = Date.now()
         let inserted = 0
         for (let i = 0; i < args.sections.length; i++) {
           const section = args.sections[i]
-          stmtInsertReplacement.run(args.projectId, args.loopName, args.fromIndex + i, section.title, section.content, now)
+          const sectionIndex = args.fromIndex + i
+          const id = section.id ?? generatedSectionId(sectionIndex)
+          const after = section.after ?? []
+          stmtInsertReplacement.run(
+            args.projectId, args.loopName, sectionIndex, id, section.title, section.content, now,
+          )
+          for (const dependency of after) {
+            stmtInsertDependency.run(args.projectId, args.loopName, id, dependency)
+          }
           inserted++
         }
         return { ok: true as const, removed, inserted }

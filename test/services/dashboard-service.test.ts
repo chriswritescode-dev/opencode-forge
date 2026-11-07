@@ -362,6 +362,29 @@ describe('DashboardService', () => {
       expect(service().getLoopDetail('p1', 'missing-loop')).toEqual({ error: 'Loop not found' })
     })
 
+    test('ships each section id and its dependency ids', () => {
+      const loopsRepo = createLoopsRepo(db)
+      const sectionsRepo = createSectionPlansRepo(db)
+      loopsRepo.insert(makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }), { lastAuditResult: null })
+      sectionsRepo.bulkInsert({
+        projectId: 'p1',
+        loopName: 'loop-a',
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A', id: 'schema', after: [] },
+          { index: 1, title: 'Section B', content: 'Content B', id: 'api', after: ['schema'] },
+        ],
+      })
+
+      const result = detail()
+
+      expect(result.sections.map(({ sectionId, dependsOn }) => ({ sectionId, dependsOn })))
+        .toEqual([
+          { sectionId: 'schema', dependsOn: [] },
+          { sectionId: 'api', dependsOn: ['schema'] },
+        ])
+      expectMatchesJsonSchema(FORGE_RPC.methods.loopDetail.output, result)
+    })
+
     test('caps transitions at the newest 100 and flags the window', () => {
       const loopsRepo = createLoopsRepo(db)
       const transitionsRepo = createLoopTransitionsRepo(db)

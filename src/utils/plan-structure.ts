@@ -1,11 +1,14 @@
-import { decomposePlanSections } from '../services/deterministic-decomposer'
+import { decomposePlanSections, isSectionMarkerLine, parseSectionMarker } from '../services/deterministic-decomposer'
 import { findCanonicalLoopNameDeclarations, findExplicitLoopName, MAX_LOOP_NAME_LENGTH } from './plan-execution'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { computeFenceMask } from './markdown-fences'
 
 export interface PlanSectionOutline {
   index: number
+  id: string
   title: string
+  /** Ids of the sections this one must wait for. */
+  after: string[]
   /** 0-based line of the section's first content line (marker line + 1). */
   startLine?: number
   /** Exclusive 0-based boundary: the stop heading, next marker, or end of plan. */
@@ -19,12 +22,13 @@ export interface PlanStructureSummary {
   sectionMarkers: number
   /** Sections the decomposer would actually produce, after cap and empty-body skipping. */
   sections: PlanSectionOutline[]
+  /** True when at least one marker declares an `id` or `after` attribute. */
+  hasSectionAttributes: boolean
   loopName: string | null
   warnings: string[]
 }
 
 const ABSOLUTE_PATH_REGEX = /(?:^|[[\s`"'(])((?:~[\\/]|[a-z]:[\\/]|\\\\|\/(?!\/))[^\s`"')\]]+)/i
-const SECTION_MARKER_REGEX = /^<!--\s*forge-section\s*-->$/
 const REQUIRED_SECTION_HEADINGS = ['Files', 'Edits', 'Acceptance Criteria', 'Verification'] as const
 const REQUIRED_TRAILING_HEADINGS = ['Decisions', 'Conventions', 'Key Context'] as const
 
@@ -78,7 +82,7 @@ function collectHeadingBodies(
       if (anyHeading[1].length <= level) currentHeading = null
       continue
     }
-    if (!line.inFence && SECTION_MARKER_REGEX.test(line.text)) {
+    if (!line.inFence && isSectionMarkerLine(line.text)) {
       currentHeading = null
       continue
     }
@@ -135,16 +139,22 @@ export function extractSectionFiles(sectionContent: string): string[] {
  * authoring warnings in a stable order.
  */
 export function summarizePlanStructure(planText: string): PlanStructureSummary {
-  // One uncapped decomposition answers everything. The capped run is exactly
-  // this list's prefix: the decomposer skips empty bodies without consuming cap
-  // budget and numbers sections by output position, so slicing yields identical
-  // indices and titles.
-  const { sections: allSections, markerCount: sectionMarkers } = decomposePlanSections(planText, {
-    maxSections: Number.MAX_SAFE_INTEGER,
-  })
-  const effectiveSections = allSections.slice(0, MAX_TOTAL_SECTIONS)
-  const sections: PlanSectionOutline[] = effectiveSections
-    .map((s) => ({ index: s.index, title: s.title, startLine: s.startLine, endLine: s.endLine }))
+  // The capped decomposition supplies the reported outline and graph errors; the
+  // uncapped one supplies the emitted count before cap truncation, so empty-body
+  // loss and the cap warning never suppress each other.
+  const capped = decomposePlanSections(planText)
+  const uncapped = decomposePlanSections(planText, { maxSections: Number.MAX_SAFE_INTEGER })
+  const sectionMarkers = capped.markerCount
+  const allSections = uncapped.sections
+  const sections: PlanSectionOutline[] = capped.sections
+    .map((s) => ({
+      index: s.index,
+      id: s.id,
+      title: s.title,
+      after: s.after,
+      startLine: s.startLine,
+      endLine: s.endLine,
+    }))
   const loopName = findExplicitLoopName(planText)
 
   const warnings: string[] = []
@@ -153,18 +163,16 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
     warnings.push('No <!-- forge-section --> markers found: the whole plan will run as a single section.')
   }
 
-  if (sectionMarkers > MAX_TOTAL_SECTIONS) {
-    warnings.push(
-      `${sectionMarkers} section markers exceed the cap of ${MAX_TOTAL_SECTIONS}: sections beyond ${MAX_TOTAL_SECTIONS} are dropped at loop start. Consolidate phases.`,
-    )
+  for (const error of capped.graphErrors) {
+    warnings.push(`Section graph: ${error}`)
   }
 
   // Compute empty-body loss independently from cap truncation. `allSections`
   // holds every marker with a non-empty body, so the difference from
   // `sectionMarkers` is exactly the markers the decomposer skips for being
-  // empty. Measuring it against the uncapped list (rather than the capped
-  // `sections.length`) keeps the two warnings from suppressing each other when
-  // a plan both overflows the cap and has empty phases.
+  // empty. Measuring it against the uncapped list keeps the two warnings from
+  // suppressing each other when a plan both overflows the cap and has empty
+  // phases.
   const emptyBodyLoss = Math.max(0, sectionMarkers - allSections.length)
   if (emptyBodyLoss > 0) {
     warnings.push(`${emptyBodyLoss} section marker(s) have empty bodies and will be skipped.`)
@@ -183,7 +191,11 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
   }
 
   const unfencedLines = scanUnfencedLines(planText)
-  const markerLines = unfencedLines.filter(({ text }) => SECTION_MARKER_REGEX.test(text))
+  const hasSectionAttributes = unfencedLines.some(({ text }) => {
+    const marker = parseSectionMarker(text)
+    return marker !== null && (marker.id !== undefined || marker.after !== undefined)
+  })
+  const markerLines = unfencedLines.filter(({ text }) => isSectionMarkerLine(text))
   const firstMarkerIndex = markerLines[0]?.index ?? Number.POSITIVE_INFINITY
   const lastMarkerIndex = markerLines.at(-1)?.index ?? -1
 
@@ -195,7 +207,7 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
   } else {
     const objectiveBoundaryIndex = unfencedLines.find(({ index, text }) =>
       index > objectiveHeading.index
-      && (SECTION_MARKER_REGEX.test(text) || /^Loop Name:/.test(text) || /^#{1,6}\s+/.test(text)),
+      && (isSectionMarkerLine(text) || /^Loop Name:/.test(text) || /^#{1,6}\s+/.test(text)),
     )?.index ?? firstMarkerIndex
     const objectiveContent = scanLines(planText).filter(({ index, text, isFenceBoundary }) =>
       index > objectiveHeading.index
@@ -208,7 +220,7 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
     }
   }
 
-  for (const section of effectiveSections) {
+  for (const section of capped.sections) {
     const sectionLines = scanUnfencedLines(section.content).map(({ text }) => text).filter(Boolean)
     if (!/^##\s+Phase\b/i.test(sectionLines[0] ?? '')) {
       warnings.push(`Section ${section.index + 1} must start with a "## Phase ..." heading immediately after its marker.`)
@@ -249,6 +261,7 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
     characters: planText.length,
     sectionMarkers,
     sections,
+    hasSectionAttributes,
     loopName,
     warnings,
   }
@@ -278,7 +291,14 @@ export function findSectionsForLineRange(
         && startLine < s.endLine
         && endLine > s.startLine,
     )
-    .map((s) => ({ index: s.index, title: s.title, startLine: s.startLine, endLine: s.endLine }))
+    .map((s) => ({
+      index: s.index,
+      id: s.id,
+      title: s.title,
+      after: s.after,
+      startLine: s.startLine,
+      endLine: s.endLine,
+    }))
 }
 
 /**
@@ -303,7 +323,10 @@ export function formatPlanStructureSummary(
     out.push(`Sections (${summary.sections.length}):`)
     for (const s of summary.sections) {
       if (focus === null || focus.has(s.index)) {
-        out.push(`  ${s.index + 1}. ${s.title}`)
+        const graph = summary.hasSectionAttributes
+          ? ` [id: ${s.id}; after: ${s.after.length > 0 ? s.after.join(', ') : 'none'}]`
+          : ''
+        out.push(`  ${s.index + 1}. ${s.title}${graph}`)
       }
     }
   }
