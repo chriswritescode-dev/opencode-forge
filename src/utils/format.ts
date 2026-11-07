@@ -12,9 +12,9 @@ export function truncate(str: string, maxLen: number): string {
 export function truncateAtWordBoundary(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text
   const head = text.slice(0, maxLen)
-  const lastWhitespace = head.search(/\s\S*$/)
+  const lastWhitespace = /\s/.test(text.charAt(maxLen)) ? -1 : head.search(/\s\S*$/)
   const cut = lastWhitespace === -1 ? head : head.slice(0, lastWhitespace)
-  return cut.replace(/[\s,;:\-–—]+$/, '')
+  return cut.replace(/[\s,;:\-–—]+$/, '') || head
 }
 
 const LEADING_STRUCTURAL_ORDINAL = /^(phase|section|step)\s+\d+[a-z]?\s*[:.)\-–—]\s*/i

@@ -163,6 +163,12 @@ describe('decomposeDeterministically', () => {
     expect(plan.split('\n')[1]).toContain(r[0].title)
   })
 
+  test('a word ending exactly at the 60-char cap is kept whole', () => {
+    const title = `${'x'.repeat(55)} abcd`
+    const r = decomposeDeterministically(`<!-- forge-section -->\n## ${title} more words\nbody`)
+    expect(r[0].title).toBe(title)
+  })
+
   test('marker tolerates surrounding whitespace', () => {
     const plan = '<!--  forge-section  -->\n## Setup\nbody'
     expect(decomposeDeterministically(plan)).toHaveLength(1)

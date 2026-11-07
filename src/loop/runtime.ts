@@ -255,9 +255,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   /**
    * Commit the just-completed section's work under its short human title, then
    * store the resulting `HEAD` sha on the section row so the next section's
-   * audit can scope its review from that exact commit. Best-effort: failures
-   * are logged and never block section advancement — the next audit then
-   * simply sees the accumulated diff.
+   * audit can scope its review from that exact commit. `HEAD` is recorded even
+   * when the commit fails: it is then the previous checkpoint, so the next
+   * audit sees the accumulated diff rather than a sha left by an earlier run.
+   * Best-effort: failures are logged and never block section advancement.
    */
   function commitSectionCheckpoint(state: LoopState, idx: number): void {
     if (!gitService) return
@@ -267,9 +268,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const outcome = commitWorktreeChanges(gitService, logger, state.worktreeDir, message)
     if (outcome === 'failed') {
       logger.log(`Loop: section checkpoint commit failed for ${state.loopName ?? 'unknown'}; next section audit will see the accumulated diff`)
-      return
-    }
-    if (outcome === 'committed') {
+    } else if (outcome === 'committed') {
       logger.log(`Loop: committed section checkpoint "${message}" for ${state.loopName ?? 'unknown'}`)
     }
     try {
