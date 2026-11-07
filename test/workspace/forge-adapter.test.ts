@@ -730,7 +730,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
-        getTeardownContext: () => ({ iteration: 3, reasonLabel: 'completed', doCommit: true, doRemoveWorktree: false }),
+        getTeardownContext: () => ({ doCommit: true, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('commit-loop', tmpRepo))
       await adapter.create(configured)
@@ -788,7 +788,7 @@ describe('createForgeWorkspaceAdapter', () => {
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
-        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'cancelled', doCommit: false, doRemoveWorktree: false }),
+        getTeardownContext: () => ({ doCommit: false, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('no-commit-loop', tmpRepo))
       await adapter.create(configured)
@@ -990,7 +990,7 @@ describe('createForgeWorkspaceAdapter', () => {
         dataDir: tmpDataDir,
         logger,
         worktreeOpencodeConfig: { mcp: { demo: { type: 'local', command: ['x'], enabled: true } } },
-        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'completed', doCommit: true, doRemoveWorktree: false }),
+        getTeardownContext: () => ({ doCommit: true, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('opencode-teardown-loop', tmpRepo))
       await adapter.create(configured)
@@ -1032,7 +1032,7 @@ describe('createForgeWorkspaceAdapter', () => {
         dataDir: tmpDataDir,
         logger,
         worktreeOpencodeConfig: { mcp: { other: {} } },
-        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'completed', doCommit: true, doRemoveWorktree: false }),
+        getTeardownContext: () => ({ doCommit: true, doRemoveWorktree: false }),
       })
       const configured = adapter.configure(makeInfo('opencode-tracked-loop', tmpRepo))
       await adapter.create(configured)

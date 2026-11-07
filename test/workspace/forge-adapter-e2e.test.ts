@@ -157,7 +157,7 @@ describe('forge workspace adapter e2e', () => {
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger: { log: () => {}, error: () => {}, debug: () => {} },
-        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'completed', doCommit: true, doRemoveWorktree: true }),
+        getTeardownContext: () => ({ doCommit: true, doRemoveWorktree: true }),
       })
 
       const info = {

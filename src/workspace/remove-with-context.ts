@@ -2,7 +2,7 @@
  * Workspace removal with pending-teardown context.
  *
  * Sets the teardown context before calling workspace.remove so the adapter
- * can produce informative commit messages and honor doRemoveWorktree.
+ * honors doRemoveWorktree.
  */
 
 import type { ForgeClient } from '../client/port'
@@ -19,7 +19,6 @@ export interface RemoveWithInput {
   workspaceId: string
   loopName: string
   action: 'remove-registration-only' | 'remove-fully'
-  reasonLabel: string
 }
 
 export interface RemoveWithResult {
@@ -40,14 +39,12 @@ export async function removeForgeWorkspaceWithContext(
   input: RemoveWithInput,
 ): Promise<RemoveWithResult> {
   const { client, pendingTeardowns, logger } = deps
-  const { workspaceId, loopName, action, reasonLabel } = input
+  const { workspaceId, loopName, action } = input
 
   const doRemoveWorktree = action === 'remove-fully'
   const doCommit = false
 
   pendingTeardowns.set(loopName, {
-    iteration: 0,
-    reasonLabel,
     doCommit,
     doRemoveWorktree,
   })

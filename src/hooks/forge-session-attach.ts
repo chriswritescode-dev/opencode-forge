@@ -168,7 +168,7 @@ async function attachForgeSession(
         if (action.action === 'remove-fully') {
           await removeForgeWorkspaceWithContext(
             { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-            { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-missing-row-no-config' },
+            { workspaceId, loopName, action: 'remove-fully' },
           )
           publishAttachFailureToast(
             deps,
@@ -185,7 +185,7 @@ async function attachForgeSession(
       if (action.action === 'remove-fully' && cfg.initialPromptOwner === 'tui' && !isPendingAttachWorkspace(classifyEntry)) {
         await removeForgeWorkspaceWithContext(
           { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-expired-pending' },
+          { workspaceId, loopName, action: 'remove-fully' },
         )
         publishAttachFailureToast(
           deps,
@@ -205,7 +205,7 @@ async function attachForgeSession(
       // Completed loop: remove workspace + toast
       await removeForgeWorkspaceWithContext(
         { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-        { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-safety-net-completed' },
+        { workspaceId, loopName, action: 'remove-fully' },
       )
       publishAttachFailureToast(
         deps,
@@ -218,7 +218,7 @@ async function attachForgeSession(
       // Restartable (cancelled/errored/stalled): remove registration, preserve worktree for manual restart
       await removeForgeWorkspaceWithContext(
         { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-        { workspaceId, loopName, action: 'remove-registration-only', reasonLabel: 'attach-safety-net-restartable' },
+        { workspaceId, loopName, action: 'remove-registration-only' },
       )
       publishAttachFailureToast(
         deps,
@@ -254,7 +254,7 @@ async function attachForgeSession(
         publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
         await removeForgeWorkspaceWithContext(
           { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
+          { workspaceId, loopName, action: 'remove-fully' },
         )
         return
       }
@@ -302,7 +302,7 @@ async function attachForgeSession(
           )
           await removeForgeWorkspaceWithContext(
             { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-            { workspaceId, loopName, action: removalAction, reasonLabel: 'attach-conflict-terminal' },
+            { workspaceId, loopName, action: removalAction },
           )
         } else if (!result.ok && result.code !== 'already_attached') {
           const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
@@ -314,7 +314,7 @@ async function attachForgeSession(
             : `Failed to start loop: ${result.message}`)
           await removeForgeWorkspaceWithContext(
             { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-            { workspaceId, loopName, action: removalAction, reasonLabel: 'attach-failed' },
+            { workspaceId, loopName, action: removalAction },
           )
         }
       } catch (err) {
@@ -322,7 +322,7 @@ async function attachForgeSession(
         publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'Failed to start loop (unexpected error). Check forge logs.')
         await removeForgeWorkspaceWithContext(
           { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-error' },
+          { workspaceId, loopName, action: 'remove-fully' },
         )
       }
 }

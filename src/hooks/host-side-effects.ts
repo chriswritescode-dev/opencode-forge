@@ -33,8 +33,7 @@ export interface TerminationSideEffectsContext {
  * branch delete) lives in the forge workspace adapter so the same logic runs
  * whether the loop terminates normally, the orphan sweep removes a stale
  * workspace, or the user deletes the workspace from the TUI. We only set the
- * pending-teardown context here so the adapter can build an informative
- * commit message.
+ * pending-teardown context here so the adapter honors the teardown flags.
  */
 export async function performTerminationSideEffects(
   state: LoopState,
@@ -175,14 +174,11 @@ async function teardownWorktree(
 ): Promise<void> {
   if (!state.worktree || !state.workspaceId) return
 
-  const reasonLabel = resolveReasonLabel(reason)
   const doCommit = true
   const doRemoveWorktree = reason.kind === 'completed'
   const removeWorktreeAfterWorkspaceRemoval = doRemoveWorktree
 
   ctx.pendingTeardowns?.set(state.loopName, {
-    iteration: state.iteration,
-    reasonLabel,
     doCommit,
     doRemoveWorktree: false,
   })
@@ -223,7 +219,7 @@ async function teardownWorktree(
     try {
       const report = await sweepStaleForgeWorkspaces(
         { client: ctx.client, loopsRepo: ctx.loopsRepo, pendingTeardowns: ctx.pendingTeardowns, logger: ctx.logger },
-        { projectId: ctx.projectId, projectDirectory: state.projectDir, excludeLoopName: state.loopName, reasonLabel: 'orphan-sweep' },
+        { projectId: ctx.projectId, projectDirectory: state.projectDir, excludeLoopName: state.loopName },
       )
       if (report.swept.length > 0) {
         ctx.logger.log(`Loop: stale-workspace sweep removed ${report.swept.length} entries during teardown of ${state.loopName}`)
@@ -234,33 +230,5 @@ async function teardownWorktree(
     } catch (err) {
       ctx.logger.error(`Loop: stale-workspace sweep threw during teardown of ${state.loopName}`, err)
     }
-  }
-}
-
-/** Map any termination reason to a short label for commit messages. */
-function resolveReasonLabel(reason: TerminationReason): string {
-  switch (reason.kind) {
-    case 'completed':
-      return 'completed'
-    case 'cancelled':
-      return 'cancelled'
-    case 'stall_timeout':
-      return 'stalled'
-    case 'error_max_retries':
-    case 'worktree_failed':
-    case 'provider_limit':
-      return 'errored'
-    case 'session_creation_failed':
-    case 'handoff_missing':
-    case 'restart_prompt_failed':
-      return 'errored'
-    case 'missing_worktree_dir':
-      return 'removed'
-    case 'shutdown':
-      return 'shutdown'
-    case 'user_aborted':
-      return 'aborted'
-    case 'max_iterations':
-      return 'max_iterations'
   }
 }
