@@ -13,6 +13,7 @@ import {
   buildAttemptHistoryBlock,
   ATTEMPT_HISTORY_LIMIT,
   AUDITOR_HANDOFF_INSTRUCTION,
+  formatSectionStatusTable,
 } from '../../src/loop/prompts'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
 import type { ReviewFindingRow } from '../../src/storage/repos/review-findings-repo'
@@ -905,6 +906,56 @@ describe('section code-graph pointer', () => {
       { ...sectionState },
     )
     expect(withEmpty).toBe(buildSectionInitialPrompt(makeCtx(), { ...sectionState }))
+  })
+})
+
+describe('section status table', () => {
+  test('section audit prompt renders the table with active lane and completed labels', () => {
+    const rows = [
+      { ...makeSectionPlanRow(0, 'Base', 'base'), status: 'completed' as const },
+      makeSectionPlanRow(1, 'Parse', 'parse'),
+    ]
+    const ctx = makeCtx({
+      getSectionPlans: () => rows,
+      getActiveRunStates: () => [{ sectionId: 'section-2', phase: 'auditing' as const, laneDir: '/tmp/lane' }],
+    })
+
+    const result = buildSectionAuditPrompt(ctx, { ...sectionState, currentSectionIndex: 1, totalSections: 2 })
+    expect(result).toContain('## Section status')
+    expect(result).toContain('auditing in lane')
+    expect(result).toContain('| completed |')
+    expect(result).toContain('/tmp/lane')
+    expect(result.indexOf('## Section status')).toBeLessThan(result.indexOf('Audit instructions:'))
+  })
+
+  test('section audit follow-up prompt renders the table', () => {
+    const rows = [
+      { ...makeSectionPlanRow(0, 'Base', 'base'), status: 'completed' as const },
+      makeSectionPlanRow(1, 'Parse', 'parse'),
+    ]
+    const ctx = makeCtx({
+      getSectionPlans: () => rows,
+      getActiveRunStates: () => [{ sectionId: 'section-2', phase: 'coding' as const, laneDir: '/tmp/lane' }],
+    })
+
+    const result = buildAuditFollowUpPrompt(ctx, { ...sectionState, currentSectionIndex: 1, totalSections: 2 })
+    expect(result).toContain('## Section status')
+    expect(result).toContain('coding in lane')
+    expect(result).toContain('| completed |')
+  })
+
+  test('formatSectionStatusTable escapes pipe characters in titles', () => {
+    const table = formatSectionStatusTable([{ ...makeSectionPlanRow(0, 'A | B', 'content'), dependsOn: ['base'] }], [])
+    expect(table.startsWith('## Section status')).toBe(true)
+    expect(table).toContain('A \\| B')
+
+    const tableLines = table.split('\n').filter(line => line.startsWith('|'))
+    const cellCounts = tableLines.map(line => line.replace(/\\\|/g, '').split('|').length)
+    expect(new Set(cellCounts).size).toBe(1)
+  })
+
+  test('formatSectionStatusTable returns an empty string for zero rows', () => {
+    expect(formatSectionStatusTable([], [])).toBe('')
   })
 })
 

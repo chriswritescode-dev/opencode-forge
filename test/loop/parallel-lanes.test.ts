@@ -3,12 +3,14 @@ import { execSync } from 'child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { __resetLoopRuntimeSharedState, type Loop } from '../../src/loop/runtime'
+import { __resetLoopRuntimeSharedState, createLoop, type Loop } from '../../src/loop/runtime'
+import { createPlanAmendmentsRepo } from '../../src/storage/repos/plan-amendments-repo'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import { createGitService } from '../../src/utils/git-service'
 import { forgeLanesDir } from '../../src/workspace/forge-naming'
 import { createLane } from '../../src/loop/lanes'
+import { createPlanAdjustTool } from '../../src/tools/plan-adjust'
 import { performTerminationSideEffects } from '../../src/hooks/host-side-effects'
 import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -117,6 +119,39 @@ describe('parallel section lanes', () => {
     loopsRepo = runtime.loopsRepo
     sectionPlansRepo = runtime.sectionPlansRepo
     loop = runtime.loop
+    return calls
+  }
+
+  function buildWithPlanAmendments(): ReturnType<typeof createFakeForgeClient>['calls'] {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section work complete.' }] },
+        ],
+      },
+    })
+    const repos = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+    })
+    const runtime = createLoop({
+      loopsRepo: repos.loopsRepo,
+      plansRepo: repos.plansRepo,
+      reviewFindingsRepo: repos.reviewFindingsRepo,
+      sectionPlansRepo: repos.sectionPlansRepo,
+      loopTransitionsRepo: repos.loopTransitionsRepo,
+      planAmendmentsRepo: createPlanAmendmentsRepo(testDb.db),
+      projectId: PROJECT_ID,
+      client,
+      logger: createMockLogger(),
+      getConfig: () => mockConfig,
+      gitService: createGitService(),
+    })
+    loopService = runtime.service
+    loopsRepo = repos.loopsRepo
+    sectionPlansRepo = repos.sectionPlansRepo
+    loop = runtime
     return calls
   }
 
@@ -577,6 +612,241 @@ describe('parallel section lanes', () => {
       .map((call) => (call.params as { sessionID?: string }).sessionID)
     expect(prompted).toContain(rb!.sessionId)
     expect(prompted).toContain(rc!.sessionId)
+  })
+
+  test('restarting a running lane aborts its session and restarts coding in the same lane', async () => {
+    const calls = build()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(b).not.toBeNull()
+    expect(c).not.toBeNull()
+
+    writeFileSync(join(c.runDir, 'c.txt'), 'c.txt\n')
+    await recordCoderHandoff(loop!, c.sessionId)
+    await completeSessionTurn(c.sessionId)
+
+    const cAudit = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(cAudit.phase).toBe('auditing')
+    expect(cAudit.sessionId).not.toBe(c.sessionId)
+
+    calls.length = 0
+    await loop!.restartRunCoding(LOOP_NAME, 'section:c', 'test reason')
+
+    expect(loopService.getAnyState(LOOP_NAME)!.active).toBe(true)
+    const restarted = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(restarted).not.toBeNull()
+    expect(restarted.phase).toBe('coding')
+    expect(restarted.laneDir).toBe(c.laneDir)
+    expect(restarted.runDir).toBe(c.runDir)
+    expect(restarted.sessionId).not.toBe(cAudit.sessionId)
+
+    const aborted = calls
+      .filter((call) => call.method === 'session.abort')
+      .map((call) => (call.params as { sessionID?: string }).sessionID)
+    expect(aborted).toContain(cAudit.sessionId)
+
+    const restartPrompt = calls.find((call) =>
+      call.method === 'session.promptAsync'
+      && (call.params as { sessionID?: string }).sessionID === restarted.sessionId)
+    expect(restartPrompt).toBeDefined()
+    expect(JSON.stringify(restartPrompt!.params)).toContain('instructions changed')
+
+    const bUntouched = loopService.getRunState(LOOP_NAME, 'section:b')!
+    expect(bUntouched.sessionId).toBe(b.sessionId)
+    expect(bUntouched.phase).toBe('coding')
+    expect(bUntouched.runDir).toBe(b.runDir)
+
+    await runSection('c', 'c.txt')
+    await runSection('b', 'b.txt')
+    await runSection('d', 'd.txt')
+
+    expect(loopService.getAnyState(LOOP_NAME)!.terminationReason).toBe('completed')
+  })
+
+  test('editing a completed section reopens it and it runs again in a new lane', async () => {
+    buildWithPlanAmendments()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const aDone = sectionPlansRepo.get(PROJECT_ID, LOOP_NAME, 0)!
+    expect(aDone.status).toBe('completed')
+    expect(aDone.completedAt).not.toBeNull()
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    writeFileSync(join(b.runDir, 'b.txt'), 'b.txt\n')
+    await recordCoderHandoff(loop!, b.sessionId)
+    await completeSessionTurn(b.sessionId)
+
+    const bAudit = loopService.getRunState(LOOP_NAME, 'section:b')!
+    expect(bAudit.phase).toBe('auditing')
+
+    const tool = createPlanAdjustTool({ loop } as any)
+    const result = JSON.parse(await tool.execute({
+      edits: [{ id: 'a', title: 'Section A again', content: 'A body again.\n\n### Files\n- a2.txt' }],
+      rationale: 'A must be redone',
+    } as any, { sessionID: bAudit.sessionId } as any))
+    expect(result.ok).toBe(true)
+
+    const reopened = sectionPlansRepo.get(PROJECT_ID, LOOP_NAME, 0)!
+    expect(reopened.status).toBe('pending')
+    expect(reopened.completedAt).toBeNull()
+    expect(reopened.checkpointCommit).toBe(aDone.checkpointCommit)
+    expect(reopened.title).toBe('Section A again')
+
+    expect(loopService.getRunState(LOOP_NAME, 'section:b')!.sessionId).toBe(bAudit.sessionId)
+    expect(loopService.getRunState(LOOP_NAME, 'section:c')!.sessionId).toBe(c.sessionId)
+
+    await recordAuditorHandoff(loop!, bAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(bAudit.sessionId)
+    await runSection('c', 'c.txt')
+
+    const aRerun = loopService.getRunState(LOOP_NAME, 'section:a')!
+    expect(aRerun).not.toBeNull()
+    expect(aRerun.laneDir).toBe(join(forgeLanesDir(loopDir), 'a'))
+    await runSection('a', 'a2.txt')
+
+    const aAgain = sectionPlansRepo.get(PROJECT_ID, LOOP_NAME, 0)!
+    expect(aAgain.status).toBe('completed')
+    expect(existsSync(join(forgeLanesDir(loopDir), 'a'))).toBe(false)
+    expect(git(loopDir, 'show HEAD:a2.txt')).toBe('a2.txt\n')
+
+    await runSection('d', 'd.txt')
+
+    expect(loopService.getAnyState(LOOP_NAME)!.terminationReason).toBe('completed')
+  })
+
+  test('an auditor in one lane edits a running section and restarts it in its lane', async () => {
+    buildWithPlanAmendments()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(b).not.toBeNull()
+    expect(c).not.toBeNull()
+
+    writeFileSync(join(b.runDir, 'b.txt'), 'b.txt\n')
+    await recordCoderHandoff(loop!, b.sessionId)
+    await completeSessionTurn(b.sessionId)
+    const bAudit = loopService.getRunState(LOOP_NAME, 'section:b')!
+    expect(bAudit.phase).toBe('auditing')
+
+    const tool = createPlanAdjustTool({ loop } as any)
+    const result = JSON.parse(await tool.execute({
+      edits: [{ id: 'c', title: 'Section C v2', content: 'C body v2.\n\n### Files\n- c.txt' }],
+      rationale: 'C needs a different approach',
+    } as any, { sessionID: bAudit.sessionId } as any))
+    expect(result.ok).toBe(true)
+
+    const edited = sectionPlansRepo.get(PROJECT_ID, LOOP_NAME, 2)!
+    expect(edited.title).toBe('Section C v2')
+    expect(edited.content).toContain('C body v2')
+
+    const restarted = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(restarted).not.toBeNull()
+    expect(restarted.phase).toBe('coding')
+    expect(restarted.laneDir).toBe(c.laneDir)
+    expect(restarted.runDir).toBe(c.runDir)
+    expect(restarted.sessionId).not.toBe(c.sessionId)
+
+    const bStillAuditing = loopService.getRunState(LOOP_NAME, 'section:b')!
+    expect(bStillAuditing.sessionId).toBe(bAudit.sessionId)
+    expect(bStillAuditing.phase).toBe('auditing')
+    expect(loopService.getAnyState(LOOP_NAME)!.active).toBe(true)
+
+    await recordAuditorHandoff(loop!, bAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(bAudit.sessionId)
+    await runSection('c', 'c.txt')
+    await runSection('d', 'd.txt')
+
+    expect(loopService.getAnyState(LOOP_NAME)!.terminationReason).toBe('completed')
+  })
+
+  test('a pending dependent waits for a reopened section to complete', async () => {
+    buildWithPlanAmendments()
+    loopService.setState(LOOP_NAME, makeLoopState({
+      loopName: LOOP_NAME,
+      sessionId: 'seed-session',
+      worktree: true,
+      worktreeDir: loopDir,
+      workspaceId: 'ws_lane',
+      maxParallelSections: 2,
+      maxIterations: 10,
+      iteration: 1,
+      totalSections: 0,
+      currentSectionIndex: 0,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }))
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      sections: [
+        { index: 0, id: 'a', after: [], title: 'Section A', content: 'A body.\n\n### Files\n- a.txt' },
+        { index: 1, id: 'b', after: ['a'], title: 'Section B', content: 'B body.\n\n### Files\n- b.txt' },
+        { index: 2, id: 'c', after: ['a'], title: 'Section C', content: 'C body.\n\n### Files\n- c.txt' },
+        { index: 3, id: 'e', after: ['a'], title: 'Section E', content: 'E body.\n\n### Files\n- e.txt' },
+        { index: 4, id: 'd', after: ['b', 'c'], title: 'Section D', content: 'D body.\n\n### Files\n- d.txt' },
+      ],
+    })
+    loopService.setTotalSections(LOOP_NAME, 5)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(b).not.toBeNull()
+    expect(c).not.toBeNull()
+    expect(loopService.getRunState(LOOP_NAME, 'section:e')).toBeNull()
+
+    writeFileSync(join(b.runDir, 'b.txt'), 'b.txt\n')
+    await recordCoderHandoff(loop!, b.sessionId)
+    await completeSessionTurn(b.sessionId)
+    const bAudit = loopService.getRunState(LOOP_NAME, 'section:b')!
+    expect(bAudit.phase).toBe('auditing')
+
+    const tool = createPlanAdjustTool({ loop } as any)
+    const result = JSON.parse(await tool.execute({
+      edits: [{ id: 'a', title: 'Section A again', content: 'A body again.\n\n### Files\n- a2.txt' }],
+      rationale: 'A must be redone before its dependents run',
+    } as any, { sessionID: bAudit.sessionId } as any))
+    expect(result.ok).toBe(true)
+
+    const reopened = sectionPlansRepo.get(PROJECT_ID, LOOP_NAME, 0)!
+    expect(reopened.status).toBe('pending')
+    expect(reopened.completedAt).toBeNull()
+    expect(loopService.getRunState(LOOP_NAME, 'section:e')).toBeNull()
+    expect(loopService.getRunState(LOOP_NAME, 'section:b')!.sessionId).toBe(bAudit.sessionId)
+    expect(loopService.getRunState(LOOP_NAME, 'section:c')!.sessionId).toBe(c.sessionId)
+
+    await recordAuditorHandoff(loop!, bAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(bAudit.sessionId)
+
+    const aRerun = loopService.getRunState(LOOP_NAME, 'section:a')!
+    expect(aRerun).not.toBeNull()
+    expect(aRerun.laneDir).toBe(join(forgeLanesDir(loopDir), 'a'))
+    expect(loopService.getRunState(LOOP_NAME, 'section:e')).toBeNull()
+
+    await runSection('a', 'a2.txt')
+    expect(loopService.getRunState(LOOP_NAME, 'section:e')).not.toBeNull()
+
+    await runSection('c', 'c.txt')
+    await runSection('e', 'e.txt')
+    await runSection('d', 'd.txt')
+
+    expect(loopService.getAnyState(LOOP_NAME)!.terminationReason).toBe('completed')
   })
 
   test('completed teardown removes every lane worktree and lane branch', async () => {

@@ -297,6 +297,100 @@ describe('SectionPlansRepo', () => {
     })
   })
 
+  describe('updateSection', () => {
+    test('updates title and content, clearing the code graph only when content changes', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      repo.setCodeGraph(projectId, loopName, 0, '# Code graph')
+
+      repo.updateSection(projectId, loopName, 0, { title: 'S renamed', content: 'C' })
+      expect(repo.get(projectId, loopName, 0)).toMatchObject({
+        title: 'S renamed',
+        content: 'C',
+        codeGraph: '# Code graph',
+      })
+
+      repo.updateSection(projectId, loopName, 0, { title: 'S renamed', content: 'C changed' })
+      expect(repo.get(projectId, loopName, 0)).toMatchObject({
+        content: 'C changed',
+        codeGraph: null,
+      })
+    })
+
+    test('replaces dependencies only when after is given', () => {
+      const graphSections: PlanSection[] = [
+        { index: 0, title: 'Root', content: 'root', id: 'root', after: [] },
+        { index: 1, title: 'Left', content: 'left', id: 'left', after: ['root'] },
+        { index: 2, title: 'Right', content: 'right', id: 'right', after: ['root'] },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections: graphSections })
+
+      repo.updateSection(projectId, loopName, 2, { title: 'Right', content: 'right', after: ['left'] })
+      expect(repo.get(projectId, loopName, 2)?.dependsOn).toEqual(['left'])
+
+      repo.updateSection(projectId, loopName, 1, { title: 'Left renamed', content: 'left' })
+      expect(repo.get(projectId, loopName, 1)?.dependsOn).toEqual(['root'])
+    })
+
+    test('is a no-op for a missing index', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      const before = repo.list(projectId, loopName)
+
+      repo.updateSection(projectId, loopName, 5, { title: 'X', content: 'x', after: [] })
+
+      expect(repo.list(projectId, loopName)).toEqual(before)
+    })
+
+    test('removes every dependency when after is empty', () => {
+      repo.bulkInsert({
+        projectId,
+        loopName,
+        sections: [
+          { index: 0, title: 'Root', content: 'root', id: 'root', after: [] },
+          { index: 1, title: 'Child', content: 'child', id: 'child', after: ['root'] },
+        ],
+      })
+
+      repo.updateSection(projectId, loopName, 1, { title: 'Child', content: 'child', after: [] })
+
+      expect(repo.get(projectId, loopName, 1)?.dependsOn).toEqual([])
+    })
+  })
+
+  describe('reopen', () => {
+    test('returns a completed section to pending and keeps the checkpoint, attempts and summaries', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      repo.incrementAttempts(projectId, loopName, 0)
+      repo.setStatus(projectId, loopName, 0, 'completed')
+      repo.setStartedAt(projectId, loopName, 0, 1000)
+      repo.setCompletedAt(projectId, loopName, 0, 2000)
+      repo.setCheckpointCommit(projectId, loopName, 0, 'a'.repeat(40))
+      repo.setSummary(projectId, loopName, 0, { done: 'Done', deviations: 'Dev', followUps: 'FU' })
+
+      repo.reopen(projectId, loopName, 0)
+
+      const row = repo.get(projectId, loopName, 0)
+      expect(row?.status).toBe('pending')
+      expect(row?.completedAt).toBeNull()
+      expect(row).toMatchObject({
+        checkpointCommit: 'a'.repeat(40),
+        attempts: 1,
+        startedAt: 1000,
+        summaryDone: 'Done',
+        summaryDeviations: 'Dev',
+        summaryFollowUps: 'FU',
+      })
+    })
+
+    test('is a no-op for a missing index', () => {
+      repo.bulkInsert({ projectId, loopName, sections: [{ index: 0, title: 'S', content: 'C' }] })
+      const before = repo.list(projectId, loopName)
+
+      repo.reopen(projectId, loopName, 5)
+
+      expect(repo.list(projectId, loopName)).toEqual(before)
+    })
+  })
+
   describe('resetForRewind', () => {
     test('resets section to in_progress with cleared fields', () => {
       const sections: ParsedSection[] = [{ index: 0, title: 'S', content: 'C' }]

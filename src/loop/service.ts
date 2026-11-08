@@ -32,7 +32,7 @@ import { extractSectionFiles } from '../utils/plan-structure'
 import { canonicalizePath } from '../sandbox/path'
 import { parseForgeLaneDir } from '../workspace/forge-naming'
 import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
-import { generatedSectionId, isLastOpenSectionIndex, selectNextSection, validateSectionGraph, type SectionGraphNode } from './section-graph'
+import { generatedSectionId, isLastOpenSectionIndex, pendingSuffixStart, selectNextSection, validateSectionGraph, type SectionGraphNode } from './section-graph'
 import type { PlanSection } from '../services/deterministic-decomposer'
 import { attemptCodeGraphReportPath, buildCodeGraphPromptBlock, sectionCodeGraphReportPath } from './code-graph'
 import type { LoopHandoffRecord, LoopHandoffRecordFor, LoopHandoffRole, LoopHandoffWriteInput } from './handoff'
@@ -219,9 +219,14 @@ export interface LoopService {
   adjustRemainingSections(name: string, args: {
     sections?: { title: string; content: string; id?: string; after?: string[] }[]
     currentSection?: { title: string; content: string }
+    /**
+     * Id-addressed edits to any section: updates its text, reopens a completed
+     * section, and reports running lanes that must restart coding.
+     */
+    edits?: { id: string; title: string; content: string; after?: string[] }[]
     rationale: string
     auditorSessionId: string
-  }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }>
+  }): Promise<{ ok: true; totalSections: number; restartRuns: string[] } | { ok: false; error: string }>
 }
 
 export function createLoopService(
@@ -464,7 +469,7 @@ export function createLoopService(
     return findingRecurrenceByLoop.get(loopName) ?? new Map()
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionScope, getSectionCodeGraphBlock, getAttemptCodeGraphBlock }
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, getSectionPlan, getSectionPlans, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence, getAttemptHistory: getPromptAttemptHistory, getBlockingBugFindings, getSectionScope, getSectionCodeGraphBlock, getAttemptCodeGraphBlock, getActiveRunStates: (state) => listActiveRunStates(state.loopName) }
 
   function buildContinuationPrompt(state: LoopState, notice?: string, outstandingBugs?: ReviewFindingRow[]): string {
     return _buildContinuationPrompt(_promptCtx, state, notice, outstandingBugs)
@@ -1068,9 +1073,10 @@ export function createLoopService(
     async function adjustRemainingSections(name: string, args: {
     sections?: { title: string; content: string; id?: string; after?: string[] }[]
     currentSection?: { title: string; content: string }
+    edits?: { id: string; title: string; content: string; after?: string[] }[]
     rationale: string
     auditorSessionId: string
-  }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }> {
+  }): Promise<{ ok: true; totalSections: number; restartRuns: string[] } | { ok: false; error: string }> {
     if (!sectionPlansRepo) {
       return { ok: false, error: 'section plans repository is not configured' }
     }
@@ -1101,14 +1107,24 @@ export function createLoopService(
         }
       }
     }
-    if (args.sections === undefined && args.currentSection === undefined) {
-      return { ok: false, error: 'no changes specified: provide sections and/or currentSection' }
+    const edits = args.edits ?? []
+    for (const [i, edit] of edits.entries()) {
+      if (isBlank(edit.title)) {
+        return { ok: false, error: `edits[${i}] title must not be empty` }
+      }
+      if (isBlank(edit.content)) {
+        return { ok: false, error: `edits[${i}] content must not be empty` }
+      }
     }
-    // `sections` scopes the pending suffix (from current index + 1): omit it to
-    // leave future sections untouched, or pass an empty array to remove the
-    // entire suffix. `currentSection` edits the in-progress section being
-    // audited in place, preserving its status/attempts. Completed sections
-    // (index < current) are never touched — the repo only replaces pending rows.
+    if (args.sections === undefined && args.currentSection === undefined && edits.length === 0) {
+      return { ok: false, error: 'no changes specified: provide sections, currentSection and/or edits' }
+    }
+    // `sections` rewrites the not-started suffix from `pendingSuffixStart`:
+    // omit it to leave future sections untouched, or pass an empty array to
+    // remove the entire suffix. `currentSection` edits the in-progress section
+    // being audited in place, preserving its status/attempts; `edits` then
+    // updates any section by id, reopening completed rows and reporting running
+    // lanes that must restart.
 
     // Serialization with the runtime's `tick()` promise chain prevents a
     // stale in-memory decision from the auditing runner from racing against
@@ -1117,10 +1133,10 @@ export function createLoopService(
     // the phase / index we operate on is the authoritative one at lock
     // acquisition time.
     type AdjustResult =
-      | { ok: true; totalSections: number; hint: { projectDir: string; worktreeDir: string } }
+      | { ok: true; totalSections: number; restartRuns: string[]; hint: { projectDir: string; worktreeDir: string } }
       | { ok: false; error: string }
 
-    function isAdjustedOk(r: AdjustResult): r is { ok: true; totalSections: number; hint: { projectDir: string; worktreeDir: string } } {
+    function isAdjustedOk(r: AdjustResult): r is { ok: true; totalSections: number; restartRuns: string[]; hint: { projectDir: string; worktreeDir: string } } {
       return r.ok
     }
 
@@ -1128,31 +1144,28 @@ export function createLoopService(
       let txnResult: AdjustResult
       try {
         txnResult = sectionPlansRepo!.immediateTransaction(() => {
-          const row = loopsRepo.get(projectId, name)
-          if (!row) {
-            return { ok: false as const, error: `loop ${name} does not exist` }
+          const callerRow = loopsRepo.getBySessionId(projectId, args.auditorSessionId)
+          if (!callerRow || callerRow.loopName !== name) {
+            return { ok: false as const, error: `session mismatch: session ${args.auditorSessionId} is not the current session of an active section run for loop ${name}` }
           }
-          if (row.status !== 'running') {
+          if (callerRow.status !== 'running') {
             return { ok: false as const, error: `loop ${name} is not active` }
           }
-          if (row.totalSections === 0) {
+          if (callerRow.totalSections === 0) {
             return { ok: false as const, error: 'loop has no sectioned plan' }
           }
-          if (row.phase !== 'auditing') {
-            return { ok: false as const, error: `adjustments are only allowed during auditing (current phase: ${row.phase})` }
-          }
-          // Defensive session authorization: ensures the caller holds the
-          // loop's current session, preventing a stale auditor session from
-          // modifying the plan after session rotation.
-          if (row.currentSessionId !== args.auditorSessionId) {
-            return { ok: false as const, error: `session mismatch: only the current auditor session may adjust the plan for loop ${name}` }
+          if (callerRow.phase !== 'auditing') {
+            return { ok: false as const, error: `adjustments are only allowed during auditing (current phase: ${callerRow.phase})` }
           }
 
-          const currentIndex = row.currentSectionIndex
-          const fromIndex = currentIndex + 1
+          const currentIndex = callerRow.currentSectionIndex
+          const ownSectionId = callerRow.sectionId
+          const callerRunKey = callerRow.sectionRunKey
+          const rowsBefore = sectionPlansRepo!.list(projectId, name)
+          const fromIndex = pendingSuffixStart(rowsBefore, currentIndex)
 
           if (args.currentSection) {
-            const currentRow = sectionPlansRepo!.get(projectId, name, currentIndex)
+            const currentRow = rowsBefore.find((r) => r.sectionIndex === currentIndex) ?? null
             if (!currentRow) {
               return { ok: false as const, error: `current section ${currentIndex} does not exist` }
             }
@@ -1165,7 +1178,7 @@ export function createLoopService(
             ...section,
             title: stripLeadingStructuralOrdinal(section.title) || section.title,
           }))
-          const newTotal = replacementSections !== undefined ? fromIndex + replacementSections.length : row.totalSections
+          const newTotal = replacementSections !== undefined ? fromIndex + replacementSections.length : callerRow.totalSections
           if (replacementSections !== undefined) {
             if (newTotal > MAX_TOTAL_SECTIONS) {
               return { ok: false as const, error: `resulting total sections (${newTotal}) would exceed cap ${MAX_TOTAL_SECTIONS}` }
@@ -1175,27 +1188,23 @@ export function createLoopService(
             }
           }
 
-          // Snapshot from the earliest changed index: the current section when
-          // it is being edited, otherwise the pending suffix start.
-          const snapshotFrom = args.currentSection ? currentIndex : fromIndex
-          const beforeRows = sectionPlansRepo!.list(projectId, name)
-            .filter((r) => r.sectionIndex >= snapshotFrom)
-            .map((r) => ({ index: r.sectionIndex, title: r.title, content: r.content }))
-          const sectionsBefore = JSON.stringify(beforeRows)
+          const survivingRows = replacementSections === undefined
+            ? rowsBefore
+            : rowsBefore.filter((r) => r.sectionIndex < fromIndex)
 
+          let replacementNodes: SectionGraphNode[] = []
+          let chainedSections: { title: string; content: string; id: string; after: string[] }[] = []
           if (replacementSections !== undefined) {
-            const existingNodes: SectionGraphNode[] = sectionPlansRepo!.list(projectId, name)
-              .filter((r) => r.sectionIndex < fromIndex)
+            const existingNodes: SectionGraphNode[] = survivingRows
               .map((r) => ({ index: r.sectionIndex, id: r.sectionId, after: r.dependsOn }))
-            const currentRow = sectionPlansRepo!.get(projectId, name, currentIndex)
             const lastExisting = existingNodes.at(-1)
-            let previousId = currentRow?.sectionId ?? lastExisting?.id ?? generatedSectionId(currentIndex)
-            let previousExists = currentRow != null || lastExisting !== undefined
+            let previousId = lastExisting?.id ?? generatedSectionId(currentIndex)
+            let previousExists = lastExisting !== undefined
             const usedIds = new Set(existingNodes.map((node) => node.id))
             for (const section of replacementSections) {
               if (section.id !== undefined) usedIds.add(section.id)
             }
-            const replacementNodes = replacementSections.map((section, i) => {
+            replacementNodes = replacementSections.map((section, i) => {
               let id: string
               if (section.id !== undefined) {
                 id = section.id
@@ -1210,15 +1219,65 @@ export function createLoopService(
               previousExists = true
               return { index: fromIndex + i, id, after }
             })
-            const graphErrors = validateSectionGraph([...existingNodes, ...replacementNodes])
-            if (graphErrors.length > 0) {
-              return { ok: false as const, error: 'invalid section graph: ' + graphErrors.join('; ') }
-            }
-            const chainedSections = replacementSections.map((section, i) => ({
+            chainedSections = replacementSections.map((section, i) => ({
               ...section,
               id: replacementNodes[i].id,
               after: replacementNodes[i].after,
             }))
+          }
+
+          const finalNodes: { index: number; id: string; after: string[]; status: SectionPlanRow['status'] }[] = [
+            ...survivingRows.map((r) => ({ index: r.sectionIndex, id: r.sectionId, after: r.dependsOn, status: r.status })),
+            ...replacementNodes.map((node) => ({ ...node, status: 'pending' as const })),
+          ]
+          const finalById = new Map(finalNodes.map((node) => [node.id, node]))
+          const seenEditIds = new Set<string>()
+          for (const edit of edits) {
+            if (seenEditIds.has(edit.id)) {
+              return { ok: false as const, error: `edits contains duplicate id "${edit.id}"` }
+            }
+            seenEditIds.add(edit.id)
+            if (!finalById.has(edit.id)) {
+              return { ok: false as const, error: `edits references unknown section id "${edit.id}"` }
+            }
+          }
+          const normalizedEdits = edits.map((edit) => ({
+            ...edit,
+            title: stripLeadingStructuralOrdinal(edit.title) || edit.title,
+          }))
+          for (const edit of normalizedEdits) {
+            const target = finalById.get(edit.id)!
+            const isOwnSection = target.index === currentIndex || target.id === ownSectionId
+            if (isOwnSection && target.status !== 'in_progress') {
+              return { ok: false as const, error: `cannot edit section ${target.index}: current section may only be edited while in_progress (status: ${target.status})` }
+            }
+          }
+
+          if (replacementSections !== undefined || normalizedEdits.some((edit) => edit.after !== undefined)) {
+            const editedEdges = new Map(normalizedEdits.filter((edit) => edit.after !== undefined).map((edit) => [edit.id, edit.after!]))
+            const graphNodes: SectionGraphNode[] = finalNodes.map((node) => ({
+              index: node.index,
+              id: node.id,
+              after: editedEdges.get(node.id) ?? node.after,
+            }))
+            const graphErrors = validateSectionGraph(graphNodes)
+            if (graphErrors.length > 0) {
+              return { ok: false as const, error: 'invalid section graph: ' + graphErrors.join('; ') }
+            }
+          }
+
+          const changedIndices = [
+            ...(args.currentSection ? [currentIndex] : []),
+            ...(replacementSections !== undefined ? [fromIndex] : []),
+            ...normalizedEdits.map((edit) => finalById.get(edit.id)!.index),
+          ]
+          const snapshotFrom = Math.min(...changedIndices)
+          const beforeRows = rowsBefore
+            .filter((r) => r.sectionIndex >= snapshotFrom)
+            .map((r) => ({ index: r.sectionIndex, title: r.title, content: r.content }))
+          const sectionsBefore = JSON.stringify(beforeRows)
+
+          if (replacementSections !== undefined) {
             const replaceResult = sectionPlansRepo!.replacePendingSections({
               projectId,
               loopName: name,
@@ -1228,15 +1287,40 @@ export function createLoopService(
             if (!replaceResult.ok) {
               return replaceResult
             }
-            loopsRepo.setTotalSections(projectId, name, newTotal)
           }
 
           if (args.currentSection) {
-            sectionPlansRepo!.updateContent(projectId, name, [{
-              index: currentIndex,
+            sectionPlansRepo!.updateSection(projectId, name, currentIndex, {
               title: stripLeadingStructuralOrdinal(args.currentSection.title) || args.currentSection.title,
               content: args.currentSection.content,
-            }])
+            })
+          }
+
+          const restartRuns = new Set<string>()
+          for (const edit of normalizedEdits) {
+            const target = finalById.get(edit.id)!
+            const isOwnSection = target.index === currentIndex || target.id === ownSectionId
+            sectionPlansRepo!.updateSection(projectId, name, target.index, {
+              title: edit.title,
+              content: edit.content,
+              after: edit.after,
+            })
+            if (target.status === 'completed') {
+              sectionPlansRepo!.reopen(projectId, name, target.index)
+            } else if (target.status === 'in_progress' && !isOwnSection) {
+              for (const runKey of loopsRepo.listActiveRunKeys(projectId, name)) {
+                if (runKey === callerRunKey) continue
+                const runRow = loopsRepo.getForRun(projectId, name, runKey)
+                if (runRow?.sectionId === edit.id) {
+                  restartRuns.add(runKey)
+                  break
+                }
+              }
+            }
+          }
+
+          if (replacementSections !== undefined) {
+            loopsRepo.setTotalSections(projectId, name, newTotal)
           }
 
           const afterRows = sectionPlansRepo!.list(projectId, name)
@@ -1257,7 +1341,8 @@ export function createLoopService(
           return {
             ok: true as const,
             totalSections: newTotal,
-            hint: { projectDir: row.projectDir, worktreeDir: row.worktreeDir },
+            restartRuns: [...restartRuns],
+            hint: { projectDir: callerRow.projectDir, worktreeDir: callerRow.worktreeDir },
           }
         })
       } catch (err) {
@@ -1277,12 +1362,12 @@ export function createLoopService(
       } catch (notifyErr) {
         logger.error(`Loop: sections-adjusted notification failed for ${name}`, notifyErr as Error)
       }
-      return { ok: true, totalSections: txnResult.totalSections, hint: txnResult.hint }
+      return { ok: true, totalSections: txnResult.totalSections, restartRuns: txnResult.restartRuns, hint: txnResult.hint }
     }
 
     // Strip the `hint` before returning to callers — it's only used for the notification inside inner().
-    function stripHint(r: AdjustResult): { ok: true; totalSections: number } | { ok: false; error: string } {
-      if (isAdjustedOk(r)) return { ok: r.ok, totalSections: r.totalSections }
+    function stripHint(r: AdjustResult): { ok: true; totalSections: number; restartRuns: string[] } | { ok: false; error: string } {
+      if (isAdjustedOk(r)) return { ok: r.ok, totalSections: r.totalSections, restartRuns: r.restartRuns }
       return r
     }
 

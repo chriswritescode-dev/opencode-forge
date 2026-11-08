@@ -659,7 +659,7 @@ describe('Loop', () => {
         auditorSessionId: 'sess-adj',
       })
 
-      expect(result).toEqual({ ok: true, totalSections: 4 })
+      expect(result).toEqual({ ok: true, totalSections: 4, restartRuns: [] })
 
       // total_sections unchanged on the loop row (1 + 2 = 3? No: fromIndex = current+1 = 2; newTotal = 2 + 2 = 4).
       const row = loopsRepo.get('test-project', 'adj-loop')
@@ -869,7 +869,7 @@ describe('Loop', () => {
       expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
     })
 
-    test('mixed currentSection+sections rejection is atomic: current edit, total, and amendment are all skipped', async () => {
+    test('mixed currentSection+sections succeeds: current edited, completed suffix preserved, only pending replaced', async () => {
       insertLoop()
       insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
       insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
@@ -884,19 +884,146 @@ describe('Loop', () => {
       const result = await service.adjustRemainingSections('adj-loop', {
         currentSection: { title: 'Phase 1 v2', content: 'c1 v2' },
         sections: [{ title: 'New Phase 3', content: 'new c3' }],
-        rationale: 'mixed rejection should leave no partial writes',
+        rationale: 'mixed edit should apply atomically',
+        auditorSessionId: 'sess-adj',
+      })
+
+      expect(result).toEqual({ ok: true, totalSections: 4, restartRuns: [] })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 1)).toMatchObject({ title: 'Phase 1 v2', content: 'c1 v2', status: 'in_progress' })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 2)).toMatchObject({ title: 'Phase 2', content: 'c2', status: 'completed' })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 3)).toMatchObject({ title: 'New Phase 3', content: 'new c3', status: 'pending' })
+      expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(4)
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(1)
+    })
+
+    test('unknown edit id writes nothing', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+      insertSectionPlan(3, 'Phase 3', 'c3', 'pending')
+
+      const { service, sectionPlansRepo, planAmendmentsRepo, loopsRepo } = buildService()
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        edits: [{ id: 'ghost', title: 'Ghost', content: 'ghost content' }],
+        rationale: 'unknown id should be rejected',
         auditorSessionId: 'sess-adj',
       })
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
-        expect(result.error).toMatch(/not pending/)
+        expect(result.error).toMatch(/edits references unknown section id "ghost"/)
       }
-      expect(sectionPlansRepo.get('test-project', 'adj-loop', 1)).toMatchObject({ title: 'Phase 1', content: 'c1', status: 'in_progress' })
-      expect(sectionPlansRepo.get('test-project', 'adj-loop', 2)).toMatchObject({ title: 'Phase 2', content: 'c2', status: 'completed' })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 2)).toMatchObject({ title: 'Phase 2', content: 'c2', status: 'pending' })
       expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(4)
       expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(0)
     })
+
+    test('edits a pending section title/content and replaces its dependency edges', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+      insertSectionPlan(3, 'Phase 3', 'c3', 'pending')
+
+      const { service, sectionPlansRepo, planAmendmentsRepo } = buildService()
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        edits: [{ id: 'section-3', title: 'Phase 2 v2', content: 'c2 v2', after: ['section-2'] }],
+        rationale: 'pending section rescoped',
+        auditorSessionId: 'sess-adj',
+      })
+
+      expect(result).toEqual({ ok: true, totalSections: 4, restartRuns: [] })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 2)).toMatchObject({
+        title: 'Phase 2 v2',
+        content: 'c2 v2',
+        status: 'pending',
+        dependsOn: ['section-2'],
+      })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 3)).toMatchObject({ title: 'Phase 3', content: 'c3', status: 'pending' })
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(1)
+    })
+
+    test("edits the caller's own section in place and keeps it in_progress", async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
+
+      const { service, sectionPlansRepo, planAmendmentsRepo } = buildService()
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        edits: [{ id: 'section-2', title: 'Phase 1 v2', content: 'c1 v2' }],
+        rationale: 'current section rescoped through edits',
+        auditorSessionId: 'sess-adj',
+      })
+
+      expect(result).toEqual({ ok: true, totalSections: 4, restartRuns: [] })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 1)).toMatchObject({
+        title: 'Phase 1 v2',
+        content: 'c1 v2',
+        status: 'in_progress',
+      })
+      expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(1)
+    })
+
+    test('edits a completed section: reopens it to pending, clears completedAt, keeps its checkpoint', async () => {
+      insertLoop()
+      insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'completed')
+      insertSectionPlan(3, 'Phase 3', 'c3', 'pending')
+
+      const { service, sectionPlansRepo } = buildService()
+      sectionPlansRepo.setCheckpointCommit('test-project', 'adj-loop', 2, 'abc123')
+      sectionPlansRepo.setCompletedAt('test-project', 'adj-loop', 2, Date.now())
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        edits: [{ id: 'section-3', title: 'Phase 2 v2', content: 'c2 v2' }],
+        rationale: 'completed section reopened after a decision changed',
+        auditorSessionId: 'sess-adj',
+      })
+
+      expect(result).toEqual({ ok: true, totalSections: 4, restartRuns: [] })
+      const reopened = sectionPlansRepo.get('test-project', 'adj-loop', 2)!
+      expect(reopened).toMatchObject({ title: 'Phase 2 v2', content: 'c2 v2', status: 'pending', completedAt: null })
+      expect(reopened.checkpointCommit).toBe('abc123')
+    })
+
+    test('editing an in_progress section in another lane reports that run for a coding restart', async () => {
+      insertLoop({ currentSectionIndex: 0, totalSections: 4 })
+      insertSectionPlan(0, 'Phase 0', 'c0', 'in_progress')
+      insertSectionPlan(1, 'Phase 1', 'c1', 'pending')
+      insertSectionPlan(2, 'Phase 2', 'c2', 'in_progress')
+      insertSectionPlan(3, 'Phase 3', 'c3', 'pending')
+
+      const { service, sectionPlansRepo, loopsRepo } = buildService()
+      loopsRepo.activateSectionRun(
+        'test-project',
+        'adj-loop',
+        { kind: 'section', sectionId: 'section-3', sectionIndex: 2 },
+        { sessionId: 'lane-session', phase: 'coding', standbySessionId: null },
+        {},
+      )
+
+      const result = await service.adjustRemainingSections('adj-loop', {
+        edits: [{ id: 'section-3', title: 'Lane Phase 2 v2', content: 'lane c2 v2' }],
+        rationale: 'lane section instructions changed',
+        auditorSessionId: 'sess-adj',
+      })
+
+      expect(result).toEqual({ ok: true, totalSections: 4, restartRuns: ['section:section-3'] })
+      expect(sectionPlansRepo.get('test-project', 'adj-loop', 2)).toMatchObject({
+        title: 'Lane Phase 2 v2',
+        content: 'lane c2 v2',
+        status: 'in_progress',
+      })
+      const laneRun = loopsRepo.getForRun('test-project', 'adj-loop', 'section:section-3')
+      expect(laneRun).toMatchObject({ currentSessionId: 'lane-session', phase: 'coding', runStatus: 'active' })
+    })
+
 
     test("does not touch the plan text in the plans table", async () => {
       insertLoop()
@@ -1043,7 +1170,7 @@ describe('Loop', () => {
         rationale: 'first amendment',
         auditorSessionId: 'sess-adj',
       })
-      expect(r1).toEqual({ ok: true, totalSections: 4 })
+      expect(r1).toEqual({ ok: true, totalSections: 4, restartRuns: [] })
       expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(1)
 
       // Second successful adjustment: replace the same pending range with one section.
@@ -1053,7 +1180,7 @@ describe('Loop', () => {
         rationale: 'second amendment',
         auditorSessionId: 'sess-adj',
       })
-      expect(r2).toEqual({ ok: true, totalSections: 3 })
+      expect(r2).toEqual({ ok: true, totalSections: 3, restartRuns: [] })
       expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(3)
       expect(planAmendmentsRepo.listForLoop('test-project', 'adj-loop')).toHaveLength(2)
 
@@ -1087,7 +1214,7 @@ describe('Loop', () => {
         auditorSessionId: 'sess-adj',
       })
 
-      expect(result).toEqual({ ok: true, totalSections: 2 })
+      expect(result).toEqual({ ok: true, totalSections: 2, restartRuns: [] })
 
       // total_sections lowered from 4 to fromIndex (2).
       expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(2)
@@ -1129,7 +1256,7 @@ describe('Loop', () => {
         auditorSessionId: 'sess-adj',
       })
 
-      expect(result).toEqual({ ok: true, totalSections: 6 })
+      expect(result).toEqual({ ok: true, totalSections: 6, restartRuns: [] })
       expect(loopsRepo.get('test-project', 'adj-loop')?.totalSections).toBe(6)
 
       const rows = sectionPlansRepo.list('test-project', 'adj-loop')

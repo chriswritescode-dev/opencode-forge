@@ -31,6 +31,8 @@ export interface PromptContext {
   getSectionCodeGraphBlock?(state: LoopState): string
   /** Rendered `## Code graph` pointer for the latest audit attempt, or `''` when no report was stored. */
   getAttemptCodeGraphBlock?(state: LoopState): string
+  /** Every active section run of the state's loop, used only to render the status table. */
+  getActiveRunStates?(state: LoopState): LoopState[]
 }
 
 /**
@@ -72,6 +74,44 @@ function formatSectionsSummary(digest: SectionDigestEntry[]): string {
     if (s.summaryFollowUps) parts += `\n### Follow-ups\n${s.summaryFollowUps}`
     return parts
   }).join('\n\n')
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|')
+}
+
+/**
+ * The single renderer of the loop's section status table: one row per section
+ * with its index, id, title, dependencies, run/row status, lane and checkpoint.
+ */
+export function formatSectionStatusTable(
+  rows: SectionPlanRow[],
+  activeRuns: Pick<LoopState, 'sectionId' | 'phase' | 'laneDir'>[],
+): string {
+  if (rows.length === 0) return ''
+  const lines = [
+    '## Section status',
+    'Each section run in its own lane records that lane; `—` means no lane run or no checkpoint.',
+    '',
+    '| # | id | title | after | status | lane | checkpoint |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+  ]
+  for (const row of rows) {
+    const run = activeRuns.find(active => active.sectionId === row.sectionId)
+    const status = run?.phase === 'auditing'
+      ? 'auditing in lane'
+      : run?.phase === 'coding'
+        ? 'coding in lane'
+        : row.status === 'completed'
+          ? 'completed'
+          : row.status === 'pending'
+            ? 'not started'
+            : 'in progress'
+    lines.push(
+      `| ${String(row.sectionIndex + 1)} | ${row.sectionId} | ${escapeTableCell(row.title)} | ${escapeTableCell(row.dependsOn.join(', ') || '—')} | ${status} | ${escapeTableCell(run?.laneDir ?? '—')} | ${escapeTableCell(row.checkpointCommit ?? '—')} |`,
+    )
+  }
+  return lines.join('\n')
 }
 
 function getEscalatedFindings(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): { file: string; line: number; count: number }[] {
@@ -430,12 +470,14 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
   header += buildAttemptHistoryBlock(ctx, state, 'auditor')
   header += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
 
+  header += '\n\n' + formatSectionStatusTable(ctx.getSectionPlans(state), ctx.getActiveRunStates?.(state) ?? [])
+
   const hasNextSection = idx + 1 < total
   const proactiveCheck = hasNextSection
     ? `call \`section-read\` with \`section_index: ${idx + 1}\` and verify its plan against the current worktree`
     : 'this is the last section, so skip the proactive next-section check'
 
-  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is ${sectionAuditScope(ctx, state)}. Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every section it depends on (directly or through other sections), and the cross-section findings are free of outstanding bugs; when this is the last open section, every outstanding bug finding blocks. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to other sections this section does not depend on do not block this audit unless it is the last open section.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck}.\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\` and/or replace the pending suffix with \`sections\`. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain, copying its \`id\` and \`after\` so its identity and dependencies survive renumbering unless the dependency itself changes. \`after\` may name only completed sections, the current section, or earlier entries in the replacement list, and the current section's dependencies cannot change. A rationale is required. Prefer the existing plan when it remains viable.`
+  header += `\n\n---\nAudit instructions:\n- Review scope: this section's work is ${sectionAuditScope(ctx, state)}. Earlier sections are already committed and audited — read them as context only.\n- This full scope is the acceptance scope on every section audit. On repeat audits, use the delta-first ordering from the attempt history to prioritize what to verify first within that scope; the delta orders the review, it does not replace the full scope.\n- Use review-read to see findings for this section. Use review-read {attempts: true, beforeId: <id>, limit: <n>} to page older attempt history.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- This section is clean only when this section, every section it depends on (directly or through other sections), and the cross-section findings are free of outstanding bugs; when this is the last open section, every outstanding bug finding blocks. \`review-read\` returns exactly that scope: verify each finding, delete the resolved ones, and keep the unresolved ones open. Findings attributed to other sections this section does not depend on do not block this audit unless it is the last open section.\n- When the section is clear: run the proactive next-section check from your Adaptive plan adjustment rules — ${proactiveCheck}.\n- \`plan-adjust\` (section audits only) amends the executable section instructions: revise the section under audit with \`currentSection\`, replace the pending suffix with \`sections\`, and/or change any section by id with \`edits\` — a running section restarts coding in its lane and a completed section is reopened. The stored master plan row is unchanged, so its objective and top-level Verification stay authoritative — confirm both with \`plan-read\` before adjusting. Section instructions and acceptance criteria may be revised, but auditor policy forbids weakening them merely to obtain a clean audit; the tool does not enforce this semantically. If a \`currentSection\` revision requires code, write severity: bug findings in this same audit. Before passing \`sections\`, call \`section-read\` with \`pending_suffix: true\` — \`sections\` replaces the entire pending suffix and omissions delete milestones, so include every later milestone you intend to retain, copying its \`id\` and \`after\` so its identity and dependencies survive renumbering unless the dependency itself changes. \`after\` may name only completed sections, the current section, or earlier entries in the replacement list, and the current section's dependencies cannot change. A rationale is required. Prefer the existing plan when it remains viable.`
 
   const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
   if (recurringBlock) {
@@ -519,6 +561,10 @@ export function buildAuditFollowUpPrompt(ctx: PromptContext, state: LoopState): 
     : `[Loop audit iteration ${String(state.iteration)}${state.maxIterations > 0 ? ` / ${String(state.maxIterations)}` : ''} (follow-up)]`
 
   let prompt = `${header}${buildLaneEnvironmentBlock(state)}\n\nThe coder has finished the next attempt for this scope. Your earlier file reads and command results may be stale.`
+
+  if (state.totalSections > 0) {
+    prompt += '\n\n' + formatSectionStatusTable(ctx.getSectionPlans(state), ctx.getActiveRunStates?.(state) ?? [])
+  }
 
   prompt += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
   prompt += buildAttemptHistoryBlock(ctx, state, 'auditor')

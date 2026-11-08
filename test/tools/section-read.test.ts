@@ -94,7 +94,7 @@ describe('section-read tool', () => {
     return { sessionID } as any
   }
 
-  async function executeSectionRead(args?: { section_index?: number; pending_suffix?: boolean }, sessionID?: string): Promise<string> {
+  async function executeSectionRead(args?: { section_index?: number; pending_suffix?: boolean; overview?: boolean }, sessionID?: string): Promise<string> {
     const tool = createSectionReadTool({ loop: { service: loopService } } as any)
     const result = await tool.execute(args ?? {}, makeToolContext(sessionID ?? ''))
     return typeof result === 'string' ? result : (result as unknown as { output: string }).output
@@ -319,6 +319,56 @@ describe('section-read tool', () => {
       const byIndex = parseJson(await executeSectionRead({ section_index: 2 }, 'test-loop-session'))
       expect(byIndex.index).toBe(2)
       expect(byIndex.title).toBe('Section 3')
+    })
+
+    test('skips a later completed row when computing the replacement suffix start', async () => {
+      insertLoop('test-loop', { totalSections: 4, currentSectionIndex: 1 })
+      insertSections('test-loop', 4)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'in_progress')
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 2, 'completed')
+      const result = parseJson(await executeSectionRead({ pending_suffix: true }, 'test-loop-session'))
+      expect(result.from_index).toBe(3)
+      expect(result.sections.map((s: { index: number }) => s.index)).toEqual([3])
+    })
+  })
+
+  describe('overview', () => {
+    test('returns the status table for every section', async () => {
+      insertLoop('test-loop', { totalSections: 4, currentSectionIndex: 1 })
+      insertSections('test-loop', 4)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+      sectionRunsRepo.activate(
+        projectId,
+        'test-loop',
+        { kind: 'section', sectionId: 'section-3', sectionIndex: 2 },
+        { sessionId: 'lane-session', phase: 'auditing', standbySessionId: null, laneDir: '/tmp/lane' },
+        { exclusive: false },
+      )
+
+      const result = parseJson(await executeSectionRead({ overview: true }, 'test-loop-session'))
+      const table = result.status_table as string
+      expect(table).toContain('## Section status')
+      for (const id of ['section-1', 'section-2', 'section-3', 'section-4']) {
+        expect(table).toContain(`| ${id} |`)
+      }
+      expect(table).toContain('| completed |')
+      expect(table).toContain('| not started |')
+      expect(table).toContain('auditing in lane')
+      expect(table).toContain('/tmp/lane')
+    })
+
+    test('rejects combining overview with section_index', async () => {
+      insertLoop('test-loop', { totalSections: 3 })
+      insertSections('test-loop', 3)
+      const result = parseJson(await executeSectionRead({ overview: true, section_index: 1 }, 'test-loop-session'))
+      expect(result.error).toContain('overview cannot be combined with section_index')
+    })
+
+    test('rejects combining overview with pending_suffix', async () => {
+      insertLoop('test-loop', { totalSections: 3 })
+      insertSections('test-loop', 3)
+      const result = parseJson(await executeSectionRead({ overview: true, pending_suffix: true }, 'test-loop-session'))
+      expect(result.error).toContain('overview cannot be combined with section_index or pending_suffix')
     })
   })
 

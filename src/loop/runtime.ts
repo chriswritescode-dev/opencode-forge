@@ -167,6 +167,8 @@ export interface Loop {
   superviseOwnedLoops(): string[]
   /** Start ready sections of a lane loop in their own lanes, filling the free slots. No-op for serial loops. */
   startReadySections(loopName: string): Promise<void>
+  /** Aborts one active section run's session and restarts that section's coding turn in its existing run directory with a fresh coder session. */
+  restartRunCoding(loopName: string, runKey: string, reason: string): Promise<void>
   /**
    * Resumes every in-progress section run of a cancelled lane loop with a fresh
    * coder session, reusing the lane when its directory still exists and otherwise
@@ -2280,6 +2282,79 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await withStateLock(loopName, () => fillReadySections(loopName))
   }
 
+  async function restartRunCoding(loopName: string, runKey: string, reason: string): Promise<void> {
+    await withStateLock(loopName, async () => {
+      const state = loopService.getRunState(loopName, runKey)
+      if (!state?.active) return
+      logger.log(`Loop: restarting section ${state.sectionId} coding after ${reason} (loop=${loopName})`)
+      const nextIteration = await nextIterationOrTerminate(loopName, state)
+      if (nextIteration === null) return
+      const lane = laneOf(state)
+      if (state.sessionId) {
+        loopService.discardPendingHandoff(loopName, runKey)
+        let aborted = false
+        try {
+          await client.session.abort({ sessionID: state.sessionId })
+          aborted = true
+        } catch {}
+        if (aborted) internalFallbackAborts.set(state.sessionId, (internalFallbackAborts.get(state.sessionId) ?? 0) + 1)
+        await new Promise((r) => setTimeout(r, AUDITOR_FALLBACK_SETTLE_MS))
+        clearPromptPending(projectId, lane, logger)
+        clearPromptInFlight(projectId, lane)
+      }
+      await discardStandbySession(loopName, state, 'before plan adjustment restart')
+      const permission = buildPermissionRulesetForPhase('coding', await resolveLoopPermissionOptionsForLoop(state))
+      const created = await createLoopSessionWithWorkspace({
+        client,
+        title: formatLoopSessionTitle(loopName, {
+          iteration: nextIteration,
+          currentSectionIndex: state.currentSectionIndex,
+          totalSections: state.totalSections,
+        }),
+        directory: state.runDir,
+        permission,
+        loopName,
+        logPrefix: `Loop lane ${state.sectionId} plan adjustment`,
+        logger,
+      })
+      if (!created) {
+        await handlePromptError(
+          loopName,
+          state,
+          'plan adjustment restart: failed to create coder session',
+          new Error(`failed to create a coder session for section ${state.sectionId}`),
+        )
+        return
+      }
+      loopService.replaceSession(lane, { newSessionId: created.sessionId, phase: 'coding', iteration: nextIteration, resetError: true })
+      sessionToLoop.set(created.sessionId, loopName)
+      sessionToLoop.set(state.sessionId, loopName)
+      activateLoopSession(loopName, lane, state.sessionId, created.sessionId)
+      if (state.sessionId) {
+        await scheduleSessionDelete({
+          loopName,
+          sessionId: state.sessionId,
+          directory: state.runDir,
+          context: 'plan adjustment restart',
+          phase: state.phase,
+          state,
+        })
+      }
+      const fresh = loopService.getRunState(loopName, runKey)
+      if (!fresh) return
+      const promptText = `This section's instructions changed; restart the section from the beginning with the updated plan.\n\n${loopService.buildSectionInitialPrompt(fresh)}`
+      const { error } = await sendPromptWithFallback({
+        lane: laneOf(fresh),
+        sessionId: created.sessionId,
+        promptText,
+        agent: 'code',
+        model: resolveLoopModel(getConfig(), loopService, loopName),
+        variant: fresh.executionVariant,
+      })
+      if (error) await handlePromptError(loopName, fresh, 'plan adjustment restart: failed to send section prompt', error)
+    })
+  }
+
   async function resumeLanes(loopName: string): Promise<LoopState | null> {
     const primary = loopService.getActiveState(loopName)
     if (!primary?.active || !isLaneLoop(primary)) return primary
@@ -4133,6 +4208,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     holdUntilFirstPrompt,
     startWatchdog,
     startReadySections,
+    restartRunCoding,
     resumeLanes,
     superviseOwnedLoops,
     getStallInfo,

@@ -93,6 +93,7 @@ describe('plan-adjust tool', () => {
     args: {
       sections?: Array<{ title: string; content: string; id?: string; after?: string[] }>
       currentSection?: { title: string; content: string }
+      edits?: Array<{ id: string; title: string; content: string; after?: string[] }>
       rationale: string
     },
     sessionID?: string,
@@ -341,6 +342,15 @@ describe('plan-adjust tool', () => {
       expect(schema.safeParse([{ title: 'A', content: ' ' }]).success).toBe(false)
       expect(schema.safeParse([]).success).toBe(true)
     })
+
+    test('schema accepts a valid edit and rejects blank fields or an empty array', () => {
+      const toolDef = createPlanAdjustTool({ loop: { service: loopService } } as any)
+      const schema = (toolDef.args as any).edits
+      expect(schema.safeParse([{ id: 'section-2', title: 'B', content: 'b', after: ['section-1'] }]).success).toBe(true)
+      expect(schema.safeParse([{ id: 'section-2', title: '   ', content: 'b' }]).success).toBe(false)
+      expect(schema.safeParse([{ id: 'section-2', title: 'B', content: ' ' }]).success).toBe(false)
+      expect(schema.safeParse([]).success).toBe(false)
+    })
   })
 
   describe('success cases', () => {
@@ -466,6 +476,78 @@ describe('plan-adjust tool', () => {
       expect(result.total_sections).toBe(2)
       expect(sectionPlansRepo.get(projectId, 'test-loop', 1)!.content).toBe('c1-new')
       expect(sectionPlansRepo.get(projectId, 'test-loop', 2)).toBeNull()
+    })
+
+    test('forwards edits, restarts reported runs, then starts ready sections', async () => {
+      const forwarded: Array<{ name: string; args: any }> = []
+      const calls: string[] = []
+      const restartReasons: string[] = []
+      const stubService = {
+        ...loopService,
+        resolveLoopName: (sessionId: string) => (sessionId === 'audit-sess-edit' ? 'test-loop' : null),
+        adjustRemainingSections: (name: string, args: any) => {
+          forwarded.push({ name, args })
+          return Promise.resolve({ ok: true, totalSections: 3, restartRuns: ['section:c'] })
+        },
+      }
+      const stubLoop = {
+        service: stubService,
+        restartRunCoding: async (loopName: string, runKey: string, reason: string) => {
+          calls.push(`restart:${loopName}:${runKey}`)
+          restartReasons.push(reason)
+        },
+        startReadySections: async (loopName: string) => {
+          calls.push(`ready:${loopName}`)
+        },
+      }
+
+      const tool = createPlanAdjustTool({ loop: stubLoop } as any)
+      const result = await tool.execute(
+        {
+          edits: [{ id: 'section-c', title: 'C v2', content: 'c v2', after: ['section-b'] }],
+          rationale: 'lane section instructions changed',
+        },
+        makeToolContext('audit-sess-edit'),
+      )
+      const parsed = typeof result === 'string' ? JSON.parse(result) : JSON.parse((result as unknown as { output: string }).output)
+
+      expect(parsed).toEqual({ ok: true, total_sections: 3, restart_runs: ['section:c'] })
+      expect(forwarded).toHaveLength(1)
+      expect(forwarded[0].name).toBe('test-loop')
+      expect(forwarded[0].args.edits).toEqual([{ id: 'section-c', title: 'C v2', content: 'c v2', after: ['section-b'] }])
+      expect(calls).toEqual(['restart:test-loop:section:c', 'ready:test-loop'])
+      expect(restartReasons).toEqual(['section instructions changed by an auditor plan adjustment'])
+    })
+
+    test('edits a section by id and leaves the rest of the suffix untouched', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 4, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1' },
+        { title: 'S2', content: 'c2' },
+        { title: 'S3', content: 'c3' },
+      ])
+      loopService.startSection('test-loop', 1)
+
+      const result = parseJson(await executePlanAdjust(
+        {
+          edits: [{ id: 'section-3', title: 'S2-new', content: 'c2-new', after: ['section-2'] }],
+          rationale: 'pending section rescoped by id',
+        },
+        'test-loop-session',
+      ))
+
+      expect(result.ok).toBe(true)
+      expect(result.total_sections).toBe(4)
+      const edited = sectionPlansRepo.get(projectId, 'test-loop', 2)!
+      expect(edited.title).toBe('S2-new')
+      expect(edited.content).toBe('c2-new')
+      expect(edited.status).toBe('pending')
+      expect(edited.dependsOn).toEqual(['section-2'])
+      const untouched = sectionPlansRepo.get(projectId, 'test-loop', 3)!
+      expect(untouched.title).toBe('S3')
+      expect(untouched.content).toBe('c3')
+      expect(untouched.status).toBe('pending')
     })
   })
 

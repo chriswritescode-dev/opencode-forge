@@ -164,3 +164,19 @@ export function isLastOpenSectionIndex(rows: SectionGraphRow[], currentIndex: nu
     (row) => row.sectionIndex === currentIndex || row.status === 'completed',
   )
 }
+
+/**
+ * The first index a replacement suffix may write, so started and completed
+ * sections are never renumbered: one past the current index and the highest
+ * index of every row whose status is not `pending`.
+ */
+export function pendingSuffixStart(
+  rows: Pick<SectionGraphRow, 'sectionIndex' | 'status'>[],
+  currentIndex: number,
+): number {
+  let highest = currentIndex
+  for (const row of rows) {
+    if (row.status !== 'pending' && row.sectionIndex > highest) highest = row.sectionIndex
+  }
+  return highest + 1
+}

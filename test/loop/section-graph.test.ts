@@ -7,6 +7,7 @@ import {
   readySections,
   selectNextSection,
   selectSectionsToStart,
+  pendingSuffixStart,
   validateSectionGraph,
   type SectionGraphNode,
   type SectionGraphRow,
@@ -253,5 +254,39 @@ describe('isLastOpenSectionIndex', () => {
     expect(isLastOpenSectionIndex(rows, 0)).toBe(false)
     expect(isLastOpenSectionIndex(rows, 2)).toBe(false)
     expect(isLastOpenSectionIndex([], 0)).toBe(true)
+  })
+})
+
+describe('pendingSuffixStart', () => {
+  test('returns the index after the current one when every row is pending', () => {
+    expect(pendingSuffixStart([row(0, 'a'), row(1, 'b'), row(2, 'c')], 0)).toBe(1)
+    expect(pendingSuffixStart([row(0, 'a'), row(1, 'b'), row(2, 'c')], 1)).toBe(2)
+    expect(pendingSuffixStart([], 2)).toBe(3)
+  })
+
+  test('a later started or completed row raises the start index', () => {
+    const rows = [
+      row(0, 'a', [], 'completed'),
+      row(1, 'b', [], 'in_progress'),
+      row(2, 'c'),
+      row(3, 'd'),
+    ]
+    expect(pendingSuffixStart(rows, 1)).toBe(2)
+
+    const withLaterCompleted = [
+      row(0, 'a', [], 'completed'),
+      row(1, 'b'),
+      row(2, 'c', [], 'completed'),
+    ]
+    expect(pendingSuffixStart(withLaterCompleted, 0)).toBe(3)
+  })
+
+  test('later pending rows do not raise the start index', () => {
+    const rows = [
+      row(0, 'a', [], 'completed'),
+      row(1, 'b'),
+      row(2, 'c'),
+    ]
+    expect(pendingSuffixStart(rows, 1)).toBe(2)
   })
 })

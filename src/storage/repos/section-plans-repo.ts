@@ -40,6 +40,23 @@ export interface SectionPlansRepo {
   setStartedAt(projectId: string, loopName: string, index: number, ms: number): void
   setCompletedAt(projectId: string, loopName: string, index: number, ms: number): void
   updateContent(projectId: string, loopName: string, sections: ParsedSection[]): { updated: number }
+  /**
+   * Replaces a section's title and content. The stored code graph report is
+   * cleared only when `content` changes. When `after` is given, the section's
+   * dependency rows are replaced with those edges; omitting `after` leaves the
+   * existing dependencies untouched. A missing section is a no-op.
+   */
+  updateSection(
+    projectId: string,
+    loopName: string,
+    index: number,
+    fields: { title: string; content: string; after?: string[] },
+  ): void
+  /**
+   * Returns a section to `pending` and clears its completed timestamp. The
+   * checkpoint commit, attempts, summaries and started timestamp are kept.
+   */
+  reopen(projectId: string, loopName: string, index: number): void
   count(projectId: string, loopName: string): number
   /** Section-plan row count per loop for this project, in one scan. */
   countsByLoop(projectId: string): Map<string, number>
@@ -168,6 +185,15 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
   const stmtDeleteDependencies = db.prepare('DELETE FROM section_dependencies WHERE project_id = ? AND loop_name = ?')
 
+  const stmtDeleteSectionDependencies = db.prepare(
+    'DELETE FROM section_dependencies WHERE project_id = ? AND loop_name = ? AND section_id = ?',
+  )
+
+  const stmtReopen = db.prepare(`
+    UPDATE section_plans SET status = 'pending', completed_at = NULL
+    WHERE project_id = ? AND loop_name = ? AND section_index = ?
+  `)
+
   const stmtListForReplace = db.prepare(`
     SELECT section_index, status FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND section_index >= ?
@@ -261,6 +287,28 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
         if (result.changes > 0) updated++
       }
       return { updated }
+    },
+
+    updateSection(projectId, loopName, index, fields) {
+      const row = stmtGet.get(projectId, loopName, index) as Record<string, unknown> | null
+      if (!row) return
+      const run = db.transaction(() => {
+        stmtUpdateContent.run(
+          fields.content, fields.title, fields.content,
+          projectId, loopName, index,
+        )
+        if (fields.after === undefined) return
+        const sectionId = row.section_id as string
+        stmtDeleteSectionDependencies.run(projectId, loopName, sectionId)
+        for (const dependency of fields.after) {
+          stmtInsertDependency.run(projectId, loopName, sectionId, dependency)
+        }
+      })
+      run()
+    },
+
+    reopen(projectId, loopName, index) {
+      stmtReopen.run(projectId, loopName, index)
     },
 
     list(projectId, loopName) {
