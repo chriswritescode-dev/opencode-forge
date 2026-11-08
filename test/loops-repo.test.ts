@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createLoopsRepo, type LoopRow, type LoopLargeFields } from '../src/storage/repos/loops-repo'
 import type { LoopHandoffWriteInputFor } from '../src/loop/handoff'
+import { resolveSectionRunTarget, sectionRunKey } from '../src/loop/section-run'
 import { createTestDb, type TestDb } from './helpers/test-db'
 
 describe('LoopsRepo', () => {
@@ -586,6 +587,78 @@ describe('LoopsRepo', () => {
       expect(retrieved.auditorVariant).toBe('high')
       expect(retrieved.auditorFallbackIndex).toBe(0)
       expect(retrieved.status).toBe('running')
+    })
+  })
+
+  describe('restart keepActiveRuns', () => {
+    const restartOpts = (overrides: Partial<Parameters<typeof repo.restart>[2]> = {}) => ({
+      sessionId: 'restart-session',
+      phase: 'coding' as const,
+      iteration: 0,
+      auditCount: 0,
+      sandbox: false,
+      sandboxContainer: null,
+      workspaceId: null,
+      auditorModel: null,
+      currentSectionIndex: 0,
+      totalSections: 2,
+      startedAt: Date.now(),
+      ...overrides,
+    })
+
+    const activateLaneRuns = () => {
+      const lane = { phase: 'coding' as const, standbySessionId: null }
+      repo.activateSectionRun(
+        testRow.projectId,
+        testRow.loopName,
+        { kind: 'section', sectionId: 'a', sectionIndex: 0 },
+        { ...lane, sessionId: 'lane-a', laneDir: '/tmp/lane-a', laneBranch: 'forge-lane/demo/a', laneBaseCommit: 'abc' },
+        { exclusive: true },
+      )
+      repo.activateSectionRun(
+        testRow.projectId,
+        testRow.loopName,
+        { kind: 'section', sectionId: 'b', sectionIndex: 1 },
+        { ...lane, sessionId: 'lane-b', laneDir: '/tmp/lane-b', laneBranch: 'forge-lane/demo/b', laneBaseCommit: 'abc' },
+        { exclusive: false },
+      )
+    }
+
+    test('keepActiveRuns restarts the loop row without retiring its lane runs', () => {
+      repo.insert({ ...testRow, totalSections: 2 }, testLarge)
+      activateLaneRuns()
+      repo.terminate(testRow.projectId, testRow.loopName, {
+        status: 'cancelled',
+        reason: 'cancelled',
+        completedAt: Date.now(),
+      })
+      expect(repo.listActiveRunKeys(testRow.projectId, testRow.loopName)).toEqual(
+        expect.arrayContaining(['section:a', 'section:b']),
+      )
+
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts({ keepActiveRuns: true, totalSections: 2 }))
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.status).toBe('running')
+      expect(repo.listActiveRunKeys(testRow.projectId, testRow.loopName)).toEqual(
+        expect.arrayContaining(['section:a', 'section:b']),
+      )
+      const laneRunA = repo.getForRun(testRow.projectId, testRow.loopName, 'section:a')!
+      expect(laneRunA.currentSessionId).toBe('lane-a')
+      expect(laneRunA.laneDir).toBe('/tmp/lane-a')
+      const laneRunB = repo.getForRun(testRow.projectId, testRow.loopName, 'section:b')!
+      expect(laneRunB.currentSessionId).toBe('lane-b')
+      expect(laneRunB.laneDir).toBe('/tmp/lane-b')
+
+      activateLaneRuns()
+      repo.restart(testRow.projectId, testRow.loopName, restartOpts({ totalSections: 2 }))
+
+      const primaryTarget = resolveSectionRunTarget(
+        { phase: 'coding', totalSections: 2, currentSectionIndex: 0 },
+        () => null,
+      )
+      expect(repo.listActiveRunKeys(testRow.projectId, testRow.loopName)).toEqual([
+        sectionRunKey(primaryTarget.kind, primaryTarget.sectionId),
+      ])
     })
   })
 

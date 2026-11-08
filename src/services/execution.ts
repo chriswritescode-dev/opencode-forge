@@ -1490,6 +1490,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let worktreeRemoved = false
     const cleanupRequested = command.cleanupWorktree ?? deps.config.loop?.cleanupWorktree
     if (cleanupRequested && state.worktree && state.worktreeDir) {
+      const { removeLoopLanes } = await import('../loop/lanes')
+      try {
+        await removeLoopLanes({ git, logger: deps.logger, worktreeDir: state.worktreeDir, loopName: state.loopName })
+      } catch (err) {
+        deps.logger.error(`loop-cancel: failed to remove section lanes for ${state.loopName}`, err)
+      }
       const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
       const result = await cleanupLoopWorktree({
         worktreeDir: state.worktreeDir,
@@ -1749,6 +1755,53 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           deps.logger.error('loop-restart: failed to start sandbox container', err)
           return { ok: false, error: 'Restart failed: could not start sandbox container.' }
         }
+      }
+
+      if (isLaneLoop(stoppedState) && stoppedState.phase !== 'post_action') {
+        for (const run of deps.loop.service.listActiveRunStates(stoppedState.loopName)) {
+          try { await deps.client.session.abort({ sessionID: run.sessionId }) } catch { /* idle */ }
+        }
+        deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
+          sessionId: previousSessionId,
+          phase: 'coding',
+          iteration: stoppedState.iteration,
+          auditCount: 0,
+          sandbox: restartSandbox,
+          sandboxContainer: restartSandbox ? deps.sandboxManager?.runtime.sandboxContainerName(stoppedState.loopName) ?? null : null,
+          workspaceId: stoppedState.workspaceId ?? null,
+          auditorModel: normalizeModelString(stoppedState.auditorModel) ?? normalizeModelString(deps.config.auditorModel) ?? null,
+          auditorVariant: command.auditorVariant === undefined ? undefined : overrideAuditorVariant ?? null,
+          executionModel: overrideExecutionModel,
+          executionVariant: command.executionVariant === undefined ? undefined : overrideExecutionVariant ?? null,
+          currentSectionIndex: stoppedState.currentSectionIndex,
+          totalSections: stoppedState.totalSections,
+          startedAt: Date.now(),
+          keepActiveRuns: true,
+        })
+        let resumed: import('../loop/state').LoopState | null = null
+        try {
+          resumed = await deps.loop.resumeLanes(stoppedState.loopName)
+        } catch (err) {
+          deps.logger.error('loop-restart: failed to resume section lanes', err)
+        }
+        const laneSessionId = resumed?.sessionId
+        if (!laneSessionId) {
+          if (deps.loop.service.getAnyState(stoppedState.loopName)?.active) {
+            deps.loop.service.terminate(stoppedState.loopName, { status: 'errored', reason: 'restart_prompt_failed', completedAt: Date.now() })
+          }
+          return { ok: false, error: 'Restart failed: could not resume any section lane.' }
+        }
+        if (stoppedState.phase !== 'coding') {
+          deps.loop.service.recordTransition(stoppedState.loopName, {
+            eventType: 'restart',
+            transitionKind: 'phase',
+            fromPhase: stoppedState.phase,
+            toPhase: 'coding',
+            iteration: 1,
+            sectionIndex: transitionSectionIndex(stoppedState),
+          })
+        }
+        return { ok: true, newSessionId: laneSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
       }
 
       // Unified session creation for restart (always a single code session)

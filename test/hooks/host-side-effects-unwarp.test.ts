@@ -1,7 +1,11 @@
 import { describe, test, expect, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { performTerminationSideEffects } from '../../src/hooks/host-side-effects'
 import type { TerminationReason } from '../../src/loop'
 import type { PluginConfig } from '../../src/types'
+import type { GitService } from '../../src/utils/git-service'
 import { makeLoopState } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
 
@@ -200,5 +204,51 @@ describe('performTerminationSideEffects', () => {
 
     // The sweep was NOT invoked (workspace.list was not called for sweep purposes)
     expect(workspaceList).not.toHaveBeenCalled()
+  })
+
+  test('completed termination removes section lanes before the main worktree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-lanes-teardown-'))
+    const worktreeDir = join(root, 'feat-x')
+    const lanesDir = `${worktreeDir}.lanes`
+    mkdirSync(join(lanesDir, 'lane-a'), { recursive: true })
+    mkdirSync(worktreeDir, { recursive: true })
+
+    const ok = { ok: true, status: 0, stdout: '', stderr: '' }
+    const gitService = {
+      branchDelete: () => ok,
+      listBranches: () => ok,
+      worktreePrune: () => ok,
+    } as unknown as GitService
+
+    const ctx = {
+      client: {
+        session: { delete: vi.fn().mockResolvedValue(undefined) } as any,
+        workspace: {
+          create: async () => ({ id: '' }) as any,
+          list: async () => [],
+          remove: vi.fn().mockResolvedValue(undefined),
+          warp: async () => {},
+        },
+        toast: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      logger: createMockLogger(),
+      getConfig: () => ({}) as PluginConfig,
+      gitService,
+    }
+
+    vi.stubEnv('FORGE_UNWARP_SETTLE_MS', '0')
+    try {
+      await performTerminationSideEffects(
+        makeLoopState({ ...HOST_SIDE_EFFECTS_STATE_DEFAULTS, worktreeDir }),
+        completed,
+        'sess_worktree',
+        ctx,
+      )
+
+      expect(existsSync(lanesDir)).toBe(false)
+    } finally {
+      vi.unstubAllEnvs()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

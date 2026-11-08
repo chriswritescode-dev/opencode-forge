@@ -89,6 +89,7 @@ export function createLoopEventHandler(
         loopsRepo,
         projectId,
         loopSessionUsageRepo,
+        gitService,
       })
     },
   })

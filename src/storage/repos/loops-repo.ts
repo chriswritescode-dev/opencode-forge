@@ -163,6 +163,8 @@ export interface LoopsRepo {
       auditorVariant?: string | null
       executionModel?: string | null
       executionVariant?: string | null
+      /** Restart the loop row but leave its active section runs untouched (lane loops resume each run individually). */
+      keepActiveRuns?: boolean
     }
   ): void
   terminate(
@@ -1073,23 +1075,27 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           projectId,
           loopName,
         )
-        const target = resolveTarget(projectId, loopName, opts.phase, opts.totalSections, opts.currentSectionIndex)
-        sectionRuns.activate(
-          projectId,
-          loopName,
-          target,
-          {
-            sessionId: opts.sessionId,
-            phase: opts.phase,
-            standbySessionId: null,
-          },
-          { exclusive: true, now: opts.startedAt },
-        )
-        sectionRuns.update(projectId, loopName, targetRunKey(target), {
-          errorCount: 0,
-          modelFailed: false,
-          auditorFallbackIndex: 0,
-        })
+        const target = opts.keepActiveRuns
+          ? null
+          : resolveTarget(projectId, loopName, opts.phase, opts.totalSections, opts.currentSectionIndex)
+        if (target) {
+          sectionRuns.activate(
+            projectId,
+            loopName,
+            target,
+            {
+              sessionId: opts.sessionId,
+              phase: opts.phase,
+              standbySessionId: null,
+            },
+            { exclusive: true, now: opts.startedAt },
+          )
+          sectionRuns.update(projectId, loopName, targetRunKey(target), {
+            errorCount: 0,
+            modelFailed: false,
+            auditorFallbackIndex: 0,
+          })
+        }
       })
       runTxn()
     },

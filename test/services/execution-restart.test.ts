@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -2883,5 +2883,304 @@ describe('handleLoopRestart restartability rules', () => {
     expect(termRow.status).toBe('errored')
     expect(termRow.reason).toContain('provider_limit')
     expect(rows.filter((r) => r.transitionKind === 'rollback')).toHaveLength(0)
+  })
+})
+
+describe('lane-loop restart resumes section lanes', () => {
+  let testDb: ReturnType<typeof createTestDb>
+  let db: Database
+  let loopsRepo: LoopsRepo
+  let plansRepo: PlansRepo
+  let reviewFindingsRepo: ReviewFindingsRepo
+  let sectionPlansRepo: SectionPlansRepo
+  let loopTransitionsRepo: LoopTransitionsRepo
+  let loopAttemptsRepo: LoopAttemptsRepo
+  let loopService: LoopService
+  let tempDir: string
+
+  beforeEach(() => {
+    testDb = createTestDb()
+    db = testDb.db
+
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
+    loopTransitionsRepo = createLoopTransitionsRepo(db)
+    loopAttemptsRepo = createLoopAttemptsRepo(db)
+    loopService = createLoopService(
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
+      mockLogger,
+      undefined,
+      undefined,
+      sectionPlansRepo,
+      loopTransitionsRepo,
+      undefined,
+      undefined,
+      loopAttemptsRepo,
+    )
+    tempDir = mkdtempSync(join(tmpdir(), 'forge-lane-restart-'))
+  })
+
+  afterEach(() => {
+    testDb.cleanup()
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  test('restart resumes the active lane sessions instead of creating one session', async () => {
+    const loopName = 'lane-restart-loop'
+    loopsRepo.insert({
+      projectId: PROJECT_ID,
+      loopName,
+      status: 'cancelled',
+      currentSessionId: 'session-lane-a',
+      worktree: true,
+      worktreeDir: tempDir,
+      worktreeBranch: 'forge/lane-restart',
+      projectDir: '/tmp/test',
+      maxIterations: 10,
+      maxParallelSections: 2,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: null,
+      auditorModel: null,
+      executionVariant: null,
+      auditorVariant: null,
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      startedAt: Date.now(),
+      completedAt: Date.now(),
+      terminationReason: 'user_aborted',
+      completionSummary: null,
+      workspaceId: 'ws_old',
+      hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 2,
+      baseCommit: null,
+      standbySessionId: null,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }, { lastAuditResult: null })
+
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName,
+      sections: [
+        { index: 0, id: 'a', after: [], title: 'A', content: 'content A' },
+        { index: 1, id: 'b', after: ['a'], title: 'B', content: 'content B' },
+      ],
+    })
+    sectionPlansRepo.setStatus(PROJECT_ID, loopName, 0, 'in_progress')
+
+    loopsRepo.activateSectionRun(
+      PROJECT_ID,
+      loopName,
+      { kind: 'section', sectionId: 'a', sectionIndex: 0 },
+      {
+        sessionId: 'session-lane-a',
+        phase: 'coding',
+        standbySessionId: null,
+        laneDir: '/tmp/lane-a',
+        laneBranch: 'forge-lane/lane-restart/a',
+        laneBaseCommit: 'abc',
+      },
+      { exclusive: false },
+    )
+
+    const mockService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      listActiveRunStates: (name) => loopService.listActiveRunStates(name),
+      setState: (name, state) => loopService.setState(name, state),
+      terminate: (name, opts) => loopService.terminate(name, opts),
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+    }
+
+    const resumeLanes = vi.fn().mockResolvedValue({
+      sessionId: 'session-lane-resumed',
+      loopName,
+      sectionId: 'a',
+      sectionRunKey: 'section:a',
+    })
+
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        create: vi.fn(async () => ({ id: 'unexpected-single-session' })),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: {
+        create: async () => ({ id: 'ws_restart', directory: tempDir, branch: 'forge/lane-restart' }),
+        list: async () => [],
+        remove: async () => {},
+        warp: async () => {},
+      },
+      toast: async () => {},
+    })
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockService as LoopService, resumeLanes },
+        loopHandler: { clearLoopTimers: async () => {}, startWatchdog: vi.fn() },
+      }).deps,
+    )
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(result.data.sessionId).toBe('session-lane-resumed')
+    expect(resumeLanes).toHaveBeenCalledTimes(1)
+    expect(resumeLanes).toHaveBeenCalledWith(loopName)
+
+    // The single-session restart path was skipped entirely.
+    expect(calls.filter(c => c.method === 'session.create')).toHaveLength(0)
+
+    expect(loopsRepo.get(PROJECT_ID, loopName)!.status).toBe('running')
+    expect(loopsRepo.listActiveRunKeys(PROJECT_ID, loopName)).toContain('section:a')
+  })
+})
+
+describe('loop.cancel removes section lanes with cleanupWorktree', () => {
+  let testDb: ReturnType<typeof createTestDb>
+  let db: Database
+  let loopsRepo: LoopsRepo
+  let loopService: LoopService
+  let baseDir: string
+  let worktreeDir: string
+  let lanesDir: string
+
+  beforeEach(() => {
+    testDb = createTestDb()
+    db = testDb.db
+
+    loopsRepo = createLoopsRepo(db)
+    loopService = createLoopService(
+      loopsRepo,
+      createPlansRepo(db),
+      createReviewFindingsRepo(db),
+      PROJECT_ID,
+      mockLogger,
+      undefined,
+      undefined,
+      createSectionPlansRepo(db),
+      createLoopTransitionsRepo(db),
+    )
+
+    baseDir = mkdtempSync(join(tmpdir(), 'forge-cancel-lanes-'))
+    // The loop's main worktree is already gone; only its lane directories survive.
+    worktreeDir = join(baseDir, 'worktree')
+    lanesDir = `${worktreeDir}.lanes`
+    mkdirSync(join(lanesDir, 'a'), { recursive: true })
+  })
+
+  afterEach(() => {
+    testDb.cleanup()
+    rmSync(baseDir, { recursive: true, force: true })
+  })
+
+  test('cancel removes the loop lanes root even when the main worktree is gone', async () => {
+    const loopName = 'cancel-lanes-loop'
+    loopsRepo.insert({
+      projectId: PROJECT_ID,
+      loopName,
+      status: 'running',
+      currentSessionId: 'session-cancel-lanes',
+      worktree: true,
+      worktreeDir,
+      worktreeBranch: 'forge/cancel-lanes',
+      projectDir: '/tmp/test',
+      maxIterations: 10,
+      maxParallelSections: 2,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: null,
+      auditorModel: null,
+      executionVariant: null,
+      auditorVariant: null,
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      startedAt: Date.now(),
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: 'ws_old',
+      hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 2,
+      baseCommit: null,
+      standbySessionId: null,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }, { lastAuditResult: null })
+
+    const mockService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getAnyState: (name) => loopService.getAnyState(name),
+      findMatchByName: (name) => loopService.findMatchByName(name),
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'session-cancel-lanes-new' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      toast: async () => {},
+    })
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockService as LoopService },
+        loopHandler: { cancelBySessionId: async () => true },
+      }).deps,
+    )
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.cancel' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+        cleanupWorktree: true,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.worktreeRemoved).toBe(true)
+    expect(existsSync(lanesDir)).toBe(false)
   })
 })

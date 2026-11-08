@@ -12,6 +12,8 @@ import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
 import { publishToast, type ToastVariant } from '../utils/toast'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { deleteSessionBestEffort } from '../utils/loop-session'
+import { removeLoopLanes } from '../loop/lanes'
+import { defaultGitService, type GitService } from '../utils/git-service'
 
 export interface TerminationSideEffectsContext {
   client: ForgeClient
@@ -24,6 +26,8 @@ export interface TerminationSideEffectsContext {
   loopsRepo?: LoopsRepo
   projectId?: string
   loopSessionUsageRepo?: LoopSessionUsageRepo
+  /** Git implementation used for lane branch/worktree cleanup; defaults to the host git service. */
+  gitService?: GitService
 }
 
 /**
@@ -198,6 +202,16 @@ async function teardownWorktree(
     const settleMs = resolveUnwarpSettleMs()
     if (settleMs > 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
+    }
+    try {
+      await removeLoopLanes({
+        git: ctx.gitService ?? defaultGitService,
+        logger: ctx.logger,
+        worktreeDir: state.worktreeDir,
+        loopName: state.loopName,
+      })
+    } catch (err) {
+      ctx.logger.error(`Loop: failed to remove section lanes for ${state.loopName}`, err)
     }
     await cleanupLoopWorktree({
       worktreeDir: state.worktreeDir,

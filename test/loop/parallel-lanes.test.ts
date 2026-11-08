@@ -8,8 +8,11 @@ import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import { createGitService } from '../../src/utils/git-service'
 import { forgeLanesDir } from '../../src/workspace/forge-naming'
+import { createLane } from '../../src/loop/lanes'
+import { performTerminationSideEffects } from '../../src/hooks/host-side-effects'
 import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
+import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
 import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
@@ -41,6 +44,7 @@ function initRepoWithLoopWorktree(rootDir: string): string {
 describe('parallel section lanes', () => {
   let testDb: ReturnType<typeof createTestDb>
   let loopService: ReturnType<typeof buildLoopRuntime>['loopService']
+  let loopsRepo: ReturnType<typeof buildLoopRuntime>['loopsRepo']
   let sectionPlansRepo: ReturnType<typeof buildLoopRuntime>['sectionPlansRepo']
   let rootDir: string
   let loopDir: string
@@ -110,6 +114,7 @@ describe('parallel section lanes', () => {
       gitService: createGitService(),
     })
     loopService = runtime.loopService
+    loopsRepo = runtime.loopsRepo
     sectionPlansRepo = runtime.sectionPlansRepo
     loop = runtime.loop
     return calls
@@ -484,5 +489,127 @@ describe('parallel section lanes', () => {
     const active = loopService.getActiveState(LOOP_NAME)!
     expect(active.laneDir).toBeUndefined()
     expect(active.runDir).toBe(loopDir)
+  })
+
+  test('cancel aborts every active lane session and keeps its lane worktree and uncommitted files', async () => {
+    const calls = build()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(b).not.toBeNull()
+    expect(c).not.toBeNull()
+    writeFileSync(join(b.runDir, 'b-wip.txt'), 'b-wip\n')
+    writeFileSync(join(c.runDir, 'c-wip.txt'), 'c-wip\n')
+
+    expect(loop!.getStallInfo(LOOP_NAME)).not.toBeNull()
+
+    calls.length = 0
+    await loop!.cancel(LOOP_NAME)
+
+    const aborted = calls
+      .filter((call) => call.method === 'session.abort')
+      .map((call) => (call.params as { sessionID?: string }).sessionID)
+    expect(aborted).toContain(b.sessionId)
+    expect(aborted).toContain(c.sessionId)
+
+    expect(loopService.getAnyState(LOOP_NAME)!.active).toBe(false)
+    expect(existsSync(b.laneDir!)).toBe(true)
+    expect(existsSync(c.laneDir!)).toBe(true)
+    expect(readFileSync(join(b.runDir, 'b-wip.txt'), 'utf-8')).toBe('b-wip\n')
+    expect(readFileSync(join(c.runDir, 'c-wip.txt'), 'utf-8')).toBe('c-wip\n')
+    expect(loop!.getStallInfo(LOOP_NAME)).toBeNull()
+  })
+
+  test('restart resumes both lanes, recreating a deleted lane from the loop tip and reusing the surviving one', async () => {
+    const calls = build()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(b).not.toBeNull()
+    expect(c).not.toBeNull()
+    writeFileSync(join(b.runDir, 'b-wip.txt'), 'b-wip\n')
+    writeFileSync(join(c.runDir, 'c-wip.txt'), 'c-wip\n')
+
+    await loop!.cancel(LOOP_NAME)
+    rmSync(b.laneDir!, { recursive: true, force: true })
+
+    loopsRepo.restart(PROJECT_ID, LOOP_NAME, {
+      sessionId: b.sessionId,
+      phase: 'coding',
+      iteration: 1,
+      auditCount: 0,
+      sandbox: false,
+      sandboxContainer: null,
+      workspaceId: null,
+      auditorModel: null,
+      currentSectionIndex: 0,
+      totalSections: 4,
+      startedAt: Date.now(),
+      keepActiveRuns: true,
+    })
+
+    const resumed = await loop!.resumeLanes(LOOP_NAME)
+    expect(resumed).not.toBeNull()
+    expect(resumed!.sectionId).toBe('b')
+
+    const rb = loopService.getRunState(LOOP_NAME, 'section:b')
+    const rc = loopService.getRunState(LOOP_NAME, 'section:c')
+    expect(rb).not.toBeNull()
+    expect(rc).not.toBeNull()
+    expect(resumed!.sessionId).toBe(rb!.sessionId)
+    expect(rb!.sessionId).not.toBe(b.sessionId)
+    expect(rc!.sessionId).not.toBe(c.sessionId)
+    expect(existsSync(rb!.laneDir!)).toBe(true)
+    expect(existsSync(rc!.laneDir!)).toBe(true)
+    expect(rb!.laneBaseCommit).toBe(git(loopDir, 'rev-parse HEAD').trim())
+    expect(readFileSync(join(rc!.runDir, 'c-wip.txt'), 'utf-8')).toBe('c-wip\n')
+
+    const prompted = calls
+      .filter((call) => call.method === 'session.promptAsync')
+      .map((call) => (call.params as { sessionID?: string }).sessionID)
+    expect(prompted).toContain(rb!.sessionId)
+    expect(prompted).toContain(rc!.sessionId)
+  })
+
+  test('completed teardown removes every lane worktree and lane branch', async () => {
+    build()
+    seedDiamond(2)
+
+    const gitService = createGitService()
+    const laneLogger = createMockLogger()
+    const laneA = createLane({ git: gitService, logger: laneLogger, loopName: LOOP_NAME, worktreeDir: loopDir, sectionId: 'a' })
+    const laneB = createLane({ git: gitService, logger: laneLogger, loopName: LOOP_NAME, worktreeDir: loopDir, sectionId: 'b' })
+    expect(existsSync(laneA.laneDir)).toBe(true)
+    expect(existsSync(laneB.laneDir)).toBe(true)
+    expect(git(join(rootDir, 'repo'), 'branch --list "forge-lane/*"')).not.toBe('')
+
+    const state = loopService.getAnyState(LOOP_NAME)!
+    const logger = createMockLogger()
+    const { client } = createFakeForgeClient({
+      workspace: { list: async () => [], remove: async () => {} },
+    })
+
+    vi.stubEnv('FORGE_UNWARP_SETTLE_MS', '0')
+    try {
+      await performTerminationSideEffects(state, { kind: 'completed' }, state.sessionId, {
+        client,
+        logger,
+        getConfig: () => mockConfig,
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+
+    expect(existsSync(forgeLanesDir(loopDir))).toBe(false)
+    expect(existsSync(loopDir)).toBe(false)
+    expect(git(join(rootDir, 'repo'), 'branch --list "forge-lane/*"').trim()).toBe('')
   })
 })

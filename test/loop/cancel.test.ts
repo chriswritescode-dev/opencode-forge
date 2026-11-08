@@ -1,9 +1,10 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import type { PluginConfig } from '../../src/types'
 import { createTestDb } from '../helpers/test-db'
+import { createFakeForgeClient } from '../helpers/fake-client'
 import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
 
 const PROJECT_ID = 'test-project'
@@ -244,6 +245,117 @@ describe('Loop Runtime cancel()', () => {
       const { loop } = buildRuntime()
       const result = await loop.cancelBySessionId('unknown-session-id')
       expect(result).toBe(false)
+    })
+  })
+
+  describe('cancel covers every active run', () => {
+    test('aborts and deletes the sessions of all active section lanes', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = buildRuntime({ client })
+      const loopName = 'cancel-multi-lane'
+      const state = makeLoopState({
+        ...CANCEL_STATE_DEFAULTS,
+        loopName,
+        totalSections: 2,
+        maxParallelSections: 2,
+      })
+      loopService.setState(loopName, state)
+      loopService.activateSectionRun(
+        loopName,
+        { kind: 'section', sectionId: 'a', sectionIndex: 0 },
+        {
+          sessionId: 'session-lane-a',
+          phase: 'coding',
+          standbySessionId: null,
+          laneDir: '/tmp/lane-a',
+          laneBranch: 'forge-lane/x/a',
+          laneBaseCommit: 'abc',
+        },
+        { exclusive: true },
+      )
+      loopService.activateSectionRun(
+        loopName,
+        { kind: 'section', sectionId: 'b', sectionIndex: 1 },
+        {
+          sessionId: 'session-lane-b',
+          phase: 'coding',
+          standbySessionId: null,
+          laneDir: '/tmp/lane-b',
+          laneBranch: 'forge-lane/x/b',
+          laneBaseCommit: 'abc',
+        },
+        { exclusive: false },
+      )
+
+      await loop.cancel(loopName)
+
+      const abortedSessions = calls
+        .filter(c => c.method === 'session.abort')
+        .map(c => (c.params as { sessionID: string }).sessionID)
+      expect(abortedSessions).toEqual(expect.arrayContaining(['session-lane-a', 'session-lane-b']))
+
+      expect(loopService.getAnyState(loopName)!.active).toBe(false)
+
+      await vi.waitFor(() => {
+        const deletedSessions = calls
+          .filter(c => c.method === 'session.delete')
+          .map(c => (c.params as { sessionID: string }).sessionID)
+        expect(deletedSessions).toEqual(expect.arrayContaining(['session-lane-a', 'session-lane-b']))
+      })
+    })
+  })
+
+  describe('cancel keeps the session of a non-lane run', () => {
+    test('does not delete an attached loop host session on cancel', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = buildRuntime({ client })
+      const loopName = 'cancel-attached-host'
+      const state = makeLoopState({
+        ...CANCEL_STATE_DEFAULTS,
+        loopName,
+        sessionId: 'session-attached-host',
+        hostSessionId: 'session-attached-host',
+      })
+      loopService.setState(loopName, state)
+
+      await loop.cancel(loopName)
+
+      const abortedSessions = calls
+        .filter(c => c.method === 'session.abort')
+        .map(c => (c.params as { sessionID: string }).sessionID)
+      expect(abortedSessions).toContain('session-attached-host')
+
+      const deletedSessions = calls
+        .filter(c => c.method === 'session.delete')
+        .map(c => (c.params as { sessionID: string }).sessionID)
+      expect(deletedSessions).not.toContain('session-attached-host')
+      expect(loopService.getAnyState(loopName)!.active).toBe(false)
+    })
+
+    test('does not delete a serial loop session on cancel', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = buildRuntime({ client })
+      const loopName = 'cancel-serial-session'
+      const state = makeLoopState({
+        ...CANCEL_STATE_DEFAULTS,
+        loopName,
+        sessionId: 'session-serial',
+        hostSessionId: 'session-host',
+      })
+      loopService.setState(loopName, state)
+
+      await loop.cancel(loopName)
+
+      const abortedSessions = calls
+        .filter(c => c.method === 'session.abort')
+        .map(c => (c.params as { sessionID: string }).sessionID)
+      expect(abortedSessions).toContain('session-serial')
+
+      const deletedSessions = calls
+        .filter(c => c.method === 'session.delete')
+        .map(c => (c.params as { sessionID: string }).sessionID)
+      expect(deletedSessions).not.toContain('session-serial')
+      expect(loopService.getAnyState(loopName)!.active).toBe(false)
     })
   })
 })
