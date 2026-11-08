@@ -14,6 +14,7 @@ import {
   SESSION_AUTO_APPROVE_TTL_MS,
 } from '../../src/storage'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
+import { createSectionRunsRepo } from '../../src/storage/repos/section-runs-repo'
 import type { AutoApproveDenyRule, PluginConfig } from '../../src/types'
 import { resolveSessionAutoApproveFlag } from '../../src/utils/session-auto-approve-flag'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
@@ -132,6 +133,31 @@ describe('createForgeCore', () => {
 
     await expect(built.core.resolveShellSandbox('ses_host_1')).resolves.toBeNull()
     expect(built.calls.some((call) => call.method === 'session.get')).toBe(false)
+  })
+
+  test('fails closed for a lane directory no active run owns', async () => {
+    const built = await buildCore()
+    const laneDir = join(testDir, 'worktree.lanes', 'section-1')
+    await expect(built.core.resolveSandboxForDirectory(laneDir)).rejects.toThrow(
+      `No active loop lane owns ${laneDir}; refusing to run on the host`,
+    )
+  })
+
+  test('resolves a lane directory to its run and returns host for an unsandboxed loop', async () => {
+    const built = await buildCore()
+    const db = initializeDatabase(join(testDir, 'memory'))
+    try {
+      createLoopsRepo(db).insert(
+        { ...runningLoopRow(built.projectId, 'ses_lane'), worktree: true, worktreeDir: join(testDir, 'worktree'), totalSections: 2, currentSectionIndex: 0 },
+        { lastAuditResult: null },
+      )
+      createSectionRunsRepo(db).update(built.projectId, 'core-loop', 'section:section-1', {
+        laneDir: join(testDir, 'worktree.lanes', 'section-1'),
+      })
+    } finally {
+      closeDatabase(db)
+    }
+    await expect(built.core.resolveSandboxForDirectory(join(testDir, 'worktree.lanes', 'section-1'))).resolves.toBeNull()
   })
 
   test('autoApprovesPermissions honors the per-session auto-approve flag', async () => {

@@ -3,7 +3,7 @@ import { isAbsolute, join } from 'path'
 import { tmpdir } from 'os'
 import type { Logger } from '../types'
 import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
-import { isForgeCodeGraphLink } from '../loop/code-graph'
+import { codeGraphIndexDir, isForgeCodeGraphLink } from '../loop/code-graph'
 import type { CodeGraphLineRange } from '../loop/code-graph-runner'
 import { runCommand } from '../sandbox/process'
 import { WORKTREE_OPENCODE_CONFIG_FILENAME } from '../workspace/worktree-opencode-config'
@@ -225,7 +225,7 @@ async function buildSnapshotTree(
   const indexEnv = gitEnv({ GIT_INDEX_FILE: altIndex })
   await assertNoUntrackedSecrets(toplevel, logger)
   const excludedPaths = ['.forge']
-  const excludeCodeGraph = isForgeCodeGraphLink(toplevel)
+  const excludeCodeGraph = isForgeCodeGraphLink(toplevel, codeGraphIndexDir(toplevel))
   if (excludeCodeGraph) excludedPaths.push(CODE_GRAPH_LINK_NAME)
   if (!originalTracked.has(WORKTREE_OPENCODE_CONFIG_FILENAME)) excludedPaths.push(WORKTREE_OPENCODE_CONFIG_FILENAME)
   const pathspecs = ['.']

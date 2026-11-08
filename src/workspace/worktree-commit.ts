@@ -4,7 +4,7 @@ import type { Logger } from '../types'
 import type { GitService } from '../utils/git-service'
 import { WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
 import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
-import { isForgeCodeGraphLink } from '../loop/code-graph'
+import { codeGraphIndexDir, isForgeCodeGraphLink } from '../loop/code-graph'
 
 export type WorktreeCommitOutcome = 'committed' | 'no-changes' | 'failed'
 
@@ -43,7 +43,7 @@ export function commitWorktreeChanges(git: GitService, logger: Logger, directory
     return 'failed'
   }
 
-  if (isForgeCodeGraphLink(directory)) {
+  if (isForgeCodeGraphLink(directory, codeGraphIndexDir(directory))) {
     const unstaged = git.removeFromIndex(directory, CODE_GRAPH_LINK_NAME)
     if (!unstaged.ok) {
       logger.log(`worktree-commit: could not keep ${CODE_GRAPH_LINK_NAME} out of the commit in ${directory}: ${unstaged.stderr.trim() || 'unknown error'}`)

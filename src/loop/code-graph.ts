@@ -7,6 +7,7 @@ import type { SandboxContextManager } from '../sandbox/context'
 import type { CommandResult } from '../sandbox/process'
 import type { Logger, PluginConfig } from '../types'
 import { LRUCache } from '../utils/lru-cache'
+import { parseForgeLaneDir } from '../workspace/forge-naming'
 import {
   buildCodeGraphRunnerScript,
   parseCodeGraphRunnerResult,
@@ -46,9 +47,20 @@ const CALLER_LIMIT = 20
 const SYMBOL_LIMIT = 100
 const PROBED_CONTAINER_LIMIT = 100
 
+/**
+ * Cache/index directory a directory's `.codegraph` link points at: a section lane
+ * gets its own index, while a main worktree uses the shared one.
+ */
+export function codeGraphIndexDir(worktreeDir: string): string {
+  const lane = parseForgeLaneDir(worktreeDir)
+  return lane ? `${CODE_GRAPH_CACHE_DIR}/lanes/${lane.sectionId}` : CODE_GRAPH_CACHE_DIR
+}
+
 export interface CodeGraphTarget {
   key: string
   worktreeDir: string
+  /** Cache/index directory mounted as `.codegraph`. */
+  indexDir: string
   /** The config asks for codegraph explicitly, so a missing binary is an error rather than a skip. */
   required: boolean
   exec(command: string, timeoutMs: number): Promise<CommandResult>
@@ -76,6 +88,7 @@ export interface LoopCodeGraphState {
   loopName: string
   sandbox?: boolean
   worktreeDir?: string
+  runDir?: string
 }
 
 export function resolveLoopCodeGraphTarget(
@@ -87,10 +100,11 @@ export function resolveLoopCodeGraphTarget(
   if (!state?.sandbox || !state.worktreeDir || !sandboxManager) return null
   const active = sandboxManager.getActive(state.loopName)
   if (!active) return null
-  const worktreeDir = state.worktreeDir
+  const worktreeDir = state.runDir ?? state.worktreeDir
   return {
     key: active.containerName,
     worktreeDir,
+    indexDir: codeGraphIndexDir(worktreeDir),
     required: config?.codeGraph?.enabled === true || config?.codeGraph?.install === true,
     exec: (command, timeoutMs) =>
       sandboxManager.runtime.exec(active.containerName, command, { cwd: worktreeDir, timeout: timeoutMs }),
@@ -142,16 +156,16 @@ export function buildCodeGraphPromptBlock(relPath: string, point: 'section start
  * Whether `worktreeDir/.codegraph` is the link Forge creates to the sandbox cache disk, as
  * opposed to a `.codegraph` the repository itself provides.
  */
-export function isForgeCodeGraphLink(worktreeDir: string): boolean {
+export function isForgeCodeGraphLink(worktreeDir: string, indexDir: string): boolean {
   const linkPath = join(worktreeDir, CODE_GRAPH_LINK_NAME)
   try {
-    return lstatSync(linkPath).isSymbolicLink() && readlinkSync(linkPath) === CODE_GRAPH_CACHE_DIR
+    return lstatSync(linkPath).isSymbolicLink() && readlinkSync(linkPath) === indexDir
   } catch {
     return false
   }
 }
 
-function ensureCacheLink(worktreeDir: string, logger: Logger): boolean {
+function ensureCacheLink(worktreeDir: string, indexDir: string, logger: Logger): boolean {
   const linkPath = join(worktreeDir, CODE_GRAPH_LINK_NAME)
   try {
     const stat = lstatSync(linkPath)
@@ -160,7 +174,7 @@ function ensureCacheLink(worktreeDir: string, logger: Logger): boolean {
       return false
     }
     const target = readlinkSync(linkPath)
-    if (target !== CODE_GRAPH_CACHE_DIR) {
+    if (target !== indexDir) {
       logger.error(`[code-graph] ${linkPath} points elsewhere (${target}); leaving it untouched`)
       return false
     }
@@ -172,7 +186,7 @@ function ensureCacheLink(worktreeDir: string, logger: Logger): boolean {
     }
   }
   try {
-    symlinkSync(CODE_GRAPH_CACHE_DIR, linkPath)
+    symlinkSync(indexDir, linkPath)
     return true
   } catch (err) {
     logger.error(`[code-graph] cannot create ${linkPath}`, err)
@@ -363,7 +377,7 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
     const input: CodeGraphRunnerInput = {
       libDir: CODE_GRAPH_LIB_DIR,
       projectRoot: target.worktreeDir,
-      indexDir: CODE_GRAPH_CACHE_DIR,
+      indexDir: target.indexDir,
       files,
       maxDepth: AFFECTED_MAX_DEPTH,
       deadlineMs: RUNNER_DEADLINE_MS,
@@ -388,7 +402,7 @@ export function createCodeGraphSnapshotter({ logger }: { logger: Logger }): Code
     async snapshotFiles(target, input) {
       try {
         if (!(await probeBinary(target))) return null
-        if (!ensureCacheLink(target.worktreeDir, logger)) return null
+        if (!ensureCacheLink(target.worktreeDir, target.indexDir, logger)) return null
         const files = filterCodeGraphFiles(target.worktreeDir, input.files)
         if (files.length === 0) return null
         const changedRanges = input.changedRanges ? restrictCodeGraphRanges(input.changedRanges, files) : undefined

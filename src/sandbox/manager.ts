@@ -8,6 +8,7 @@ import { mkdirSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
+import { forgeLanesDir } from '../workspace/forge-naming'
 
 export interface SandboxManagerConfig {
   image: string
@@ -286,6 +287,11 @@ export function createSandboxManager(
     // region writable (the nested worktree git dir is swallowed by its common dir).
     const orderedGitMounts = [...gitMounts].sort((a, b) => a.hostDir.length - b.hostDir.length)
 
+    const lanesDir = forgeLanesDir(absolute)
+    const lanesMount: SandboxMount | undefined = existsSync(lanesDir)
+      ? { hostDir: lanesDir, containerDir: lanesDir }
+      : undefined
+
     const sourceProjectDir = config.sourceProjectDir
     const resolvedSourceProjectDir = sourceProjectDir ? resolve(sourceProjectDir) : undefined
     const hasProjectMount = config.mountProjectReadonly !== false
@@ -300,6 +306,7 @@ export function createSandboxManager(
     const tmpMount = resolveTempMount(absolute)
 
     const reserved = new Set<string>([worktreeMount.containerDir, ...orderedGitMounts.map((m) => m.containerDir)])
+    if (lanesMount) reserved.add(lanesMount.containerDir)
     if (projectMount) reserved.add(projectMount.containerDir)
     if (toolOutputMount) reserved.add(toolOutputMount.containerDir)
     if (tmpMount) reserved.add(tmpMount.containerDir)
@@ -307,15 +314,16 @@ export function createSandboxManager(
 
     // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
     // it survives any conflict and keeps the whole git metadata region writable), then the
-    // read-only project mount, then tool-output/temp/custom. msb accepts nested workspaces, so
-    // read-write mounts (worktree + git dirs) all mount even when one nests inside another; the
-    // read-only project workspace is dropped because it is an ancestor of the writable git
-    // workspaces and a read-only ancestor silently makes them read-only inside the sandbox.
-    // Never resolve that conflict by making the project workspace read-write — that would let a
-    // sandboxed agent modify the user's main checkout.
+    // lanes root, then the read-only project mount, then tool-output/temp/custom. msb accepts
+    // nested workspaces, so read-write mounts (worktree + git dirs + lanes root) all mount even
+    // when one nests inside another; the read-only project workspace is dropped because it is
+    // an ancestor of the writable git workspaces and a read-only ancestor silently makes them
+    // read-only inside the sandbox. Never resolve that conflict by making the project workspace
+    // read-write — that would let a sandboxed agent modify the user's main checkout.
     const candidates: SandboxMount[] = [
       worktreeMount,
       ...orderedGitMounts,
+      ...(lanesMount ? [lanesMount] : []),
       ...(projectMount ? [projectMount] : []),
       ...(toolOutputMount ? [toolOutputMount] : []),
       ...(tmpMount ? [tmpMount] : []),

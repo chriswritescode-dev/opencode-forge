@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { ForgeCore } from './forge-core'
 import type { SandboxContext } from '../sandbox/context'
 import { canonicalizePath } from '../sandbox/path'
-import { SHIM_ENV_CONTAINER } from '../sandbox/shell-shim'
+import { formatSandboxEnv, SHIM_ENV_CONTAINER, SHIM_ENV_SANDBOX_ENV } from '../sandbox/shell-shim'
 import { contentToText, invertRenameTable, V1_TO_V2_TOOL_NAMES } from '../client/v2-adapter'
 import { DEFAULT_MODEL_SUBAGENTS } from '../config'
 import { findLastIndex } from '../utils/array'
@@ -200,6 +200,7 @@ export async function registerForgeHooksV2(
       event.command = event.command.slice(marked[0].length)
       event.shell = core.shellShimPath
       event.env[SHIM_ENV_CONTAINER] = sandbox.containerName
+      if (sandbox.env) event.env[SHIM_ENV_SANDBOX_ENV] = formatSandboxEnv(sandbox.env)
       return
     }
     const directory = isProjectLocation ? event.cwd : locationDirectory
@@ -207,6 +208,7 @@ export async function registerForgeHooksV2(
     if (!sandbox || !core.shellShimPath) return
     event.shell = core.shellShimPath
     event.env[SHIM_ENV_CONTAINER] = sandbox.containerName
+    if (sandbox.env) event.env[SHIM_ENV_SANDBOX_ENV] = formatSandboxEnv(sandbox.env)
   })
 
   await ctx.session.hook('prompt', async (event) => {

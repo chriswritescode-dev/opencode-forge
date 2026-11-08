@@ -11,6 +11,30 @@ export const SHELL_SHIM_FILENAME = 'forge-shell'
 export const SHIM_ENV_CONTAINER = 'FORGE_SANDBOX_CONTAINER'
 
 /**
+ * Environment variable carrying space-separated `KEY=value` pairs the shim passes to the guest
+ * via `env`. Set by Forge's shell hook alongside the container variable.
+ */
+export const SHIM_ENV_SANDBOX_ENV = 'FORGE_SANDBOX_ENV'
+
+const SANDBOX_ENV_KEY = /^[A-Z_][A-Z0-9_]*$/
+const SANDBOX_ENV_VALUE = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Formats sandbox environment variables as the unquoted `KEY=value` words the shim expands on the
+ * `env` prefix. The value pattern excludes whitespace and shell metacharacters, which keeps word
+ * splitting safe without quoting.
+ */
+export function formatSandboxEnv(env: Record<string, string> | undefined): string {
+  if (!env) return ''
+  const pairs = Object.entries(env).map(([key, value]) => {
+    if (!SANDBOX_ENV_KEY.test(key)) throw new Error(`Invalid sandbox environment variable name: ${key}`)
+    if (!SANDBOX_ENV_VALUE.test(value)) throw new Error(`Invalid value for sandbox environment variable ${key}: ${value}`)
+    return `${key}=${value}`
+  })
+  return pairs.join(' ')
+}
+
+/**
  * Resolves the host shell baked into the shim's passthrough branch: `$SHELL` when it points at a
  * real shell (and not at a previously installed shim), otherwise a platform default.
  */
@@ -43,7 +67,7 @@ export function buildShimScript(hostShell: string): string {
 # exec propagates the guest command's exit code verbatim, so the bash tool keeps
 # seeing real exit statuses.
 if [ -n "\${${SHIM_ENV_CONTAINER}:-}" ]; then
-  exec msb exec --quiet "$${SHIM_ENV_CONTAINER}" --no-tty -w "$PWD" -- bash "$@"
+  exec msb exec --quiet "$${SHIM_ENV_CONTAINER}" --no-tty -w "$PWD" -- env $FORGE_SANDBOX_ENV bash "$@"
 fi
 exec "${hostShell}" "$@"
 `

@@ -10,8 +10,10 @@ import { registerForgeHooksV2, toV1ToolName, type ForgeHooksV2Core } from '../..
 import { createSessionHooks } from '../../src/hooks/session'
 import { resolvePromptsDir } from '../../src/install/paths'
 import {
+  formatSandboxEnv,
   ensureShellShim,
   SHIM_ENV_CONTAINER,
+  SHIM_ENV_SANDBOX_ENV,
 } from '../../src/sandbox/shell-shim'
 import type { SandboxContext } from '../../src/sandbox/context'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
@@ -21,16 +23,18 @@ import { createFakeV2Context, type V2HookRegistration } from '../helpers/fake-v2
 
 const PROJECT = '/tmp/forge-hooks-project'
 const WORKTREE = '/tmp/forge-hooks-worktree'
+const LANE = '/tmp/forge-hooks-worktree-section-1'
 const CONTAINER = 'forge-hooks-loop'
 
 const logger = { log() {}, error() {}, debug() {} } as unknown as Logger
 
-function sandboxContext(containerName = CONTAINER): SandboxContext {
+function sandboxContext(containerName = CONTAINER, env?: Record<string, string>): SandboxContext {
   return {
     runtime: {} as SandboxContext['runtime'],
     containerName,
     hostDir: WORKTREE,
     mounts: [],
+    ...(env ? { env } : {}),
   }
 }
 
@@ -525,6 +529,27 @@ describe('registerForgeHooksV2 shell hook', () => {
     expect(event.cwd).toBe(WORKTREE)
   })
 
+  test('create.before passes the lane environment to a section-lane shell', async () => {
+    const { ctx, hooks } = createFakeV2Context({
+      location: { directory: PROJECT, project: { directory: PROJECT } },
+    })
+    const { core } = createStubCore({
+      shellShimPath: '/data/forge-shell',
+      resolveSandboxForDirectory: async (directory) =>
+        directory === LANE
+          ? sandboxContext(CONTAINER, { FORGE_LANE: 'section-1', FORGE_PORT_OFFSET: '100' })
+          : null,
+    })
+    await registerForgeHooksV2(ctx, core)
+
+    const event = shellEvent({ cwd: LANE })
+    await invokeHook(hooks, 'shell', 'create.before', event)
+
+    expect(event.shell).toBe('/data/forge-shell')
+    expect(event.env[SHIM_ENV_CONTAINER]).toBe(CONTAINER)
+    expect(event.env[SHIM_ENV_SANDBOX_ENV]).toBe('FORGE_LANE=section-1 FORGE_PORT_OFFSET=100')
+  })
+
   test('create.before leaves a non-loop location untouched', async () => {
     const { ctx, hooks } = createFakeV2Context({
       location: { directory: PROJECT, project: { directory: PROJECT } },
@@ -623,6 +648,16 @@ describe('registerForgeHooksV2 shell tool sandbox routing', () => {
     expect(shellEvents[0]!.command).toBe('echo hi')
     expect(shellEvents[0]!.shell).toBe('/data/forge-shell')
     expect(shellEvents[0]!.env[SHIM_ENV_CONTAINER]).toBe('forge-host')
+  })
+
+  test('passes the lane environment through the shim for a section-lane sandbox', async () => {
+    const env = { FORGE_LANE: 'section-1', FORGE_PORT_OFFSET: '100' }
+    const { shell, shellEvents } = await setup(async () => sandboxContext('forge-host', env))
+
+    await shell.execute({ command: 'echo hi' }, toolContext)
+
+    expect(shellEvents[0]!.env[SHIM_ENV_CONTAINER]).toBe('forge-host')
+    expect(shellEvents[0]!.env[SHIM_ENV_SANDBOX_ENV]).toBe(formatSandboxEnv(env))
   })
 
   test('leaves a non-sandboxed session shell call untouched', async () => {

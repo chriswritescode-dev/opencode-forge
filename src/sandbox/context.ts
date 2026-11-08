@@ -14,6 +14,8 @@ export interface SandboxContext {
   instanceId?: string
   /** Known CPUs, memory, and LAN access of the sandbox. */
   settings?: SandboxRuntimeSettings
+  /** Variables every shell exec routed into this sandbox receives. */
+  env?: Record<string, string>
 }
 
 /** The single mapping from a manager's active sandbox to the context tool routing and notes use. */
@@ -136,6 +138,9 @@ export interface SandboxLoopContextState {
   active: boolean
   sandbox?: boolean
   worktreeDir?: string
+  laneDir?: string
+  sectionId?: string
+  currentSectionIndex?: number
 }
 
 export interface SandboxContextManager {
@@ -165,7 +170,17 @@ export async function resolveSandboxContextForLoop(
 
   const active = sandboxManager.getActive(state.loopName)
   if (!active) return null
-  return sandboxContextFromActive(sandboxManager.runtime, active)
+  const context = sandboxContextFromActive(sandboxManager.runtime, active)
+  if (state.laneDir && state.sectionId) {
+    return {
+      ...context,
+      env: {
+        FORGE_LANE: state.sectionId,
+        FORGE_PORT_OFFSET: String(((state.currentSectionIndex ?? 0) + 1) * 100),
+      },
+    }
+  }
+  return context
 }
 
 /**

@@ -191,6 +191,20 @@ describe('Loop', () => {
 
       expect(loop.service.findActiveByWorktreeDir('/tmp/no-such-dir')).toBeNull()
     })
+
+    test('matches a lane directory to the active run that owns it', () => {
+      insertLoop('lane-loop', { totalSections: 2 })
+      const laneDir = '/tmp/wt.lanes/section-1'
+      createSectionRunsRepo(db).update(projectId, 'lane-loop', 'section:section-1', { laneDir })
+
+      expect(loop.service.findActiveByWorktreeDir(laneDir)).toMatchObject({
+        loopName: 'lane-loop',
+        sectionRunKey: 'section:section-1',
+        laneDir,
+      })
+      expect(loop.service.findActiveByWorktreeDir('/tmp/wt.lanes/section-2')).toBeNull()
+      expect(loop.service.findActiveByWorktreeDir('/tmp/other.lanes/section-1')).toBeNull()
+    })
   })
 
   describe('getRunState', () => {

@@ -28,6 +28,7 @@ import { terminationStatusFor, terminationReasonToString, type TerminationReason
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
+import { parseForgeLaneDir } from '../workspace/forge-naming'
 import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
 import { generatedSectionId, isLastOpenSectionIndex, selectNextSection, validateSectionGraph, type SectionGraphNode } from './section-graph'
 import type { PlanSection } from '../services/deterministic-decomposer'
@@ -360,8 +361,24 @@ export function createLoopService(
     return state && state.sessionId === sessionId && state.active ? state : null
   }
 
+  /**
+   * Resolves a lane directory to the active section run whose `laneDir` matches;
+   * any other directory matches a loop worktree exactly.
+   */
   function findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null {
     const canonical = canonicalizePath(directory)
+    const lane = parseForgeLaneDir(directory)
+    if (lane) {
+      const loopWorktree = canonicalizePath(lane.loopWorktreeDir)
+      for (const row of loopsRepo.listByStatus(projectId, ['running'])) {
+        if (!row.worktreeDir || canonicalizePath(row.worktreeDir) !== loopWorktree) continue
+        if (options?.worktreeOnly && !row.worktree) continue
+        for (const state of listActiveRunStates(row.loopName)) {
+          if (state.laneDir && canonicalizePath(state.laneDir) === canonical) return state
+        }
+      }
+      return null
+    }
     for (const state of listActive()) {
       if (!state.worktreeDir) continue
       if (options?.worktreeOnly && !state.worktree) continue

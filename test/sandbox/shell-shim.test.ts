@@ -6,9 +6,11 @@ import { join } from 'path'
 import {
   ensureShellShim,
   buildShimScript,
+  formatSandboxEnv,
   resolveHostShell,
   SHELL_SHIM_FILENAME,
   SHIM_ENV_CONTAINER,
+  SHIM_ENV_SANDBOX_ENV,
 } from '../../src/sandbox/shell-shim'
 import type { Logger } from '../../src/types'
 
@@ -29,6 +31,7 @@ afterEach(() => {
 function cleanEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env }
   delete env[SHIM_ENV_CONTAINER]
+  delete env[SHIM_ENV_SANDBOX_ENV]
   return env
 }
 
@@ -91,7 +94,47 @@ describe('shim behavior (executed via sh)', () => {
     expect(existsSync(marker)).toBe(false)
   })
 
-  test('routes into msb exec with container, flags, and command when container env is set', () => {
+  test('routes into msb exec with container, flags, env, and command when container env is set', () => {
+    const dir = makeTempDir('forge-shim-')
+    const shim = join(dir, SHELL_SHIM_FILENAME)
+    writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
+    const binDir = join(dir, 'bin')
+    mkdirSync(binDir)
+    const argsFile = join(dir, 'msb-args')
+    writeFileSync(join(binDir, 'msb'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\n`, { mode: 0o755 })
+
+    const cwd = makeTempDir('forge-cwd-')
+    const result = spawnSync(shim, ['-c', 'echo in-container'], {
+      cwd,
+      env: {
+        ...cleanEnv(),
+        PATH: [binDir, process.env.PATH ?? ''].join(':'),
+        [SHIM_ENV_CONTAINER]: 'forge-loop-x',
+        [SHIM_ENV_SANDBOX_ENV]: 'FORGE_LANE=section-1 FORGE_PORT_OFFSET=100',
+      },
+      encoding: 'utf-8',
+    })
+
+    expect(result.status).toBe(0)
+    const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
+    expect(argv).toEqual([
+      'exec',
+      '--quiet',
+      'forge-loop-x',
+      '--no-tty',
+      '-w',
+      realpathSync(cwd),
+      '--',
+      'env',
+      'FORGE_LANE=section-1',
+      'FORGE_PORT_OFFSET=100',
+      'bash',
+      '-c',
+      'echo in-container',
+    ])
+  })
+
+  test('runs msb exec through env with no extra assignments when no sandbox env is set', () => {
     const dir = makeTempDir('forge-shim-')
     const shim = join(dir, SHELL_SHIM_FILENAME)
     writeFileSync(shim, buildShimScript('/bin/sh'), { mode: 0o755 })
@@ -109,7 +152,19 @@ describe('shim behavior (executed via sh)', () => {
 
     expect(result.status).toBe(0)
     const argv = readFileSync(argsFile, 'utf-8').trim().split('\n')
-    expect(argv).toEqual(['exec', '--quiet', 'forge-loop-x', '--no-tty', '-w', realpathSync(cwd), '--', 'bash', '-c', 'echo in-container'])
+    expect(argv).toEqual([
+      'exec',
+      '--quiet',
+      'forge-loop-x',
+      '--no-tty',
+      '-w',
+      realpathSync(cwd),
+      '--',
+      'env',
+      'bash',
+      '-c',
+      'echo in-container',
+    ])
   })
 
   test('propagates a non-zero msb exit verbatim', () => {
@@ -133,11 +188,33 @@ describe('shim behavior (executed via sh)', () => {
 describe('shim content', () => {
   test('routes through msb exec with no docker and no --user', () => {
     const script = buildShimScript('/bin/sh')
-    expect(script).toContain('msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- bash "$@"')
+    expect(script).toContain('msb exec --quiet "$FORGE_SANDBOX_CONTAINER" --no-tty -w "$PWD" -- env $FORGE_SANDBOX_ENV bash "$@"')
     expect(script).not.toContain('sbx')
     expect(script).not.toContain('docker')
     expect(script).not.toContain('--user')
     expect(script).toContain('exec "/bin/sh" "$@"')
+  })
+})
+
+describe('formatSandboxEnv', () => {
+  test('formats valid pairs space-separated', () => {
+    expect(formatSandboxEnv({ FORGE_LANE: 'section-1', FORGE_PORT_OFFSET: '100' })).toBe(
+      'FORGE_LANE=section-1 FORGE_PORT_OFFSET=100',
+    )
+  })
+
+  test('returns an empty string for undefined or empty env', () => {
+    expect(formatSandboxEnv(undefined)).toBe('')
+    expect(formatSandboxEnv({})).toBe('')
+  })
+
+  test('throws for an invalid variable name', () => {
+    expect(() => formatSandboxEnv({ 'forge-lane': 'section-1' })).toThrow(/forge-lane/)
+  })
+
+  test('throws for an invalid value', () => {
+    expect(() => formatSandboxEnv({ FORGE_LANE: 'a b' })).toThrow(/FORGE_LANE/)
+    expect(() => formatSandboxEnv({ FORGE_LANE: 'a;b' })).toThrow(/FORGE_LANE/)
   })
 })
 

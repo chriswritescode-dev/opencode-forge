@@ -15,7 +15,7 @@ import { resolveSandboxContextForLoop, isSandboxConfigEnabled, isSandboxEnabled,
 import { readLoopSandboxSettings, readSandboxOverrides, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
 import { createEnvironmentProbe } from '../sandbox/env-probe'
 import { resolveOpencodeTmpDir, resolveForgeDataDir } from '../utils/opencode-paths'
-import { isForgeWorktreeDir, forgeWorktreesRoot } from '../workspace/forge-naming'
+import { isForgeWorktreeDir, forgeWorktreesRoot, parseForgeLaneDir } from '../workspace/forge-naming'
 import { MAX_TOTAL_SECTIONS, isCodeGraphEnabled } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { emitLoopPermissionConfigWarnings, emitLoopSessionReuseConfigWarnings } from '../utils/loop-permission-warnings'
@@ -1054,7 +1054,12 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     opts?: { throwOnRestoreError?: boolean },
   ): Promise<SandboxContext | null> => {
     const state = loopHandler.loop.service.findActiveByWorktreeDir(targetDirectory)
-    if (!state) return null
+    if (!state) {
+      if (parseForgeLaneDir(targetDirectory)) {
+        throw new Error(`No active loop lane owns ${targetDirectory}; refusing to run on the host`)
+      }
+      return null
+    }
     return resolveSandboxContextForLoop(sandboxManager, state, logger, opts)
   }
 

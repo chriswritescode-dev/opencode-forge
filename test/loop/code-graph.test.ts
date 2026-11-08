@@ -5,6 +5,7 @@ import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CODE_GRAPH_PROBE_COMMAND,
+  codeGraphIndexDir,
   codeGraphReportPath,
   createCodeGraphSnapshotter,
   resolveLoopCodeGraphTarget,
@@ -101,13 +102,14 @@ function fakeLibraryLoader(options: FakeIndexOptions = {}): (path: string) => un
 function createTarget(
   worktreeDir: string,
   respond: (command: string) => CommandResult | Error | undefined = () => undefined,
-  options: { required?: boolean } & FakeIndexOptions = {},
+  options: { required?: boolean; indexDir?: string } & FakeIndexOptions = {},
 ): RecordingTarget {
   const commands: RecordedCommand[] = []
   const runnerInputs: CodeGraphRunnerInput[] = []
   return {
     key: 'forge-test-container',
     worktreeDir,
+    indexDir: options.indexDir ?? '/opt/forge/cache/codegraph',
     required: options.required ?? false,
     commands,
     runnerInputs,
@@ -173,6 +175,21 @@ describe('createCodeGraphSnapshotter', () => {
     ])
     expect(readlinkSync(join(worktreeDir, '.codegraph'))).toBe('/opt/forge/cache/codegraph')
     expect(String(infos.at(-1)?.[0])).toContain('index created')
+  })
+
+  it('links a section lane to its own index and snapshots in the lane directory', async () => {
+    const laneDir = join(createWorktree(), 'my-loop.lanes', 'section-1')
+    mkdirSync(laneDir, { recursive: true })
+    writeFileSync(join(laneDir, 'a.ts'), 'export const a = 1\n')
+    const indexDir = '/opt/forge/cache/codegraph/lanes/section-1'
+    const target = createTarget(laneDir, () => undefined, { indexDir })
+
+    const report = await createCodeGraphSnapshotter({ logger: createLogger() }).snapshotFiles(target, { title: 'section 1', files: ['a.ts'] })
+
+    expect(report).toContain('# Code graph: section 1')
+    expect(readlinkSync(join(laneDir, '.codegraph'))).toBe(indexDir)
+    expect(target.runnerInputs[0].indexDir).toBe(indexDir)
+    expect(target.runnerInputs[0].projectRoot).toBe(laneDir)
   })
 
   it('never runs the codegraph CLI or rewrites git config', async () => {
@@ -722,6 +739,48 @@ describe('resolveLoopCodeGraphTarget', () => {
       },
     ])
   })
+
+  it('routes exec and the index into a section lane directory when one is set', async () => {
+    const calls: Array<{ name: string; command: string; opts: unknown }> = []
+    const manager = createManager({ containerName: 'forge-one' })
+    manager.runtime = {
+      exec: async (name: string, command: string, opts: unknown) => {
+        calls.push({ name, command, opts })
+        return ok()
+      },
+    } as unknown as SandboxContextManager['runtime']
+
+    const target = resolveLoopCodeGraphTarget(
+      manager,
+      { loopName: 'one', sandbox: true, worktreeDir: '/tmp/worktree', runDir: '/tmp/worktree.lanes/section-1' },
+      undefined,
+    )
+
+    expect(target?.worktreeDir).toBe('/tmp/worktree.lanes/section-1')
+    expect(target?.indexDir).toBe('/opt/forge/cache/codegraph/lanes/section-1')
+    await target!.exec('codegraph node a.ts', 1000)
+    expect(calls).toEqual([
+      {
+        name: 'forge-one',
+        command: 'codegraph node a.ts',
+        opts: { cwd: '/tmp/worktree.lanes/section-1', timeout: 1000 },
+      },
+    ])
+  })
+})
+
+describe('codeGraphIndexDir', () => {
+  it('shares one index across a main worktree', () => {
+    expect(codeGraphIndexDir('/root/worktrees/my-loop')).toBe('/opt/forge/cache/codegraph')
+  })
+
+  it('gives a section lane its own index', () => {
+    expect(codeGraphIndexDir('/root/worktrees/my-loop.lanes/section-1')).toBe('/opt/forge/cache/codegraph/lanes/section-1')
+  })
+
+  it('keeps the shared index for a path that only resembles a lane', () => {
+    expect(codeGraphIndexDir('/root/worktrees/my-loop.lanes-like')).toBe('/opt/forge/cache/codegraph')
+  })
 })
 
 describe('codeGraphReportPath', () => {
@@ -736,6 +795,7 @@ describe('writeReport', () => {
     return {
       key: 'forge-test-container',
       worktreeDir,
+      indexDir: '/opt/forge/cache/codegraph',
       required: false,
       async exec(command) {
         commands.push(command)
@@ -770,6 +830,7 @@ describe('writeReport', () => {
       const target: CodeGraphTarget = {
         key: 'forge-test-container',
         worktreeDir,
+        indexDir: '/opt/forge/cache/codegraph',
         required: false,
         async exec(_command, timeoutMs) {
           timeouts.push(timeoutMs)
