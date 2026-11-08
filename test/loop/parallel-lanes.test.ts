@@ -358,6 +358,121 @@ describe('parallel section lanes', () => {
     expect(b.laneDir).toBe(join(forgeLanesDir(loopDir), 'b'))
   })
 
+  test('a lane merge conflict returns the section to coding and merges after the markers are resolved', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section work complete.' }] },
+        ],
+      },
+    })
+    const runtime = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+    })
+    loopService = runtime.loopService
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loop = runtime.loop
+    const reviewFindingsRepo = runtime.reviewFindingsRepo
+
+    loopService.setState(LOOP_NAME, makeLoopState({
+      loopName: LOOP_NAME,
+      sessionId: 'seed-session',
+      worktree: true,
+      worktreeDir: loopDir,
+      workspaceId: 'ws_lane',
+      maxParallelSections: 2,
+      maxIterations: 10,
+      iteration: 1,
+      totalSections: 0,
+      currentSectionIndex: 0,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }))
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      sections: [
+        { index: 0, id: 'a', after: [], title: 'Section A', content: 'A body.\n\n### Files\n- a.txt' },
+        { index: 1, id: 'b', after: ['a'], title: 'Section B', content: 'B body.\n\n### Files\n- b.txt' },
+        { index: 2, id: 'c', after: ['a'], title: 'Section C', content: 'C body.\n\n### Files\n- c.txt' },
+      ],
+    })
+    loopService.setTotalSections(LOOP_NAME, 3)
+
+    await loop!.startReadySections(LOOP_NAME)
+
+    const a = loopService.getRunState(LOOP_NAME, 'section:a')!
+    writeFileSync(join(a.runDir, 'a.txt'), 'a.txt\n')
+    await recordCoderHandoff(loop!, a.sessionId)
+    await completeSessionTurn(a.sessionId)
+    const aAudit = loopService.getRunState(LOOP_NAME, 'section:a')!
+    expect(aAudit.phase).toBe('auditing')
+    await recordAuditorHandoff(loop!, aAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(aAudit.sessionId)
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    expect(b).not.toBeNull()
+    writeFileSync(join(b.runDir, 'b.txt'), 'b.txt\n')
+    writeFileSync(join(b.runDir, 'shared.txt'), 'from b\n')
+    await recordCoderHandoff(loop!, b.sessionId)
+    await completeSessionTurn(b.sessionId)
+    const bAudit = loopService.getRunState(LOOP_NAME, 'section:b')!
+    expect(bAudit.phase).toBe('auditing')
+    await recordAuditorHandoff(loop!, bAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(bAudit.sessionId)
+
+    expect(loopService.getRunState(LOOP_NAME, 'section:b')).toBeNull()
+    expect(git(loopDir, 'show HEAD:shared.txt')).toBe('from b\n')
+
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(c).not.toBeNull()
+    writeFileSync(join(c.runDir, 'c.txt'), 'c.txt\n')
+    writeFileSync(join(c.runDir, 'shared.txt'), 'from c\n')
+    await recordCoderHandoff(loop!, c.sessionId)
+    await completeSessionTurn(c.sessionId)
+    const cAudit = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(cAudit.phase).toBe('auditing')
+    await recordAuditorHandoff(loop!, cAudit.sessionId, CLEAN_AUDIT)
+
+    const headBefore = git(loopDir, 'rev-parse HEAD').trim()
+    expect(git(loopDir, 'status --porcelain').trim()).toBe('')
+    await completeSessionTurn(cAudit.sessionId)
+
+    expect(git(loopDir, 'rev-parse HEAD').trim()).toBe(headBefore)
+    expect(git(loopDir, 'status --porcelain').trim()).toBe('')
+    const retried = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(retried).not.toBeNull()
+    expect(retried.phase).toBe('coding')
+    expect(retried.laneDir).toBe(c.laneDir)
+    expect(retried.runDir).toBe(c.laneDir)
+    expect(loopService.getAnyState(LOOP_NAME)!.terminationReason).toBeFalsy()
+    const bugs = reviewFindingsRepo.listByLoopName(PROJECT_ID, LOOP_NAME, 2)
+      .filter((finding) => finding.severity === 'bug')
+    expect(bugs).toHaveLength(1)
+    expect(bugs[0].file).toBe('shared.txt')
+    expect(bugs[0].line).toBe(1)
+    expect(bugs[0].description).toContain('shared.txt')
+    expect(existsSync(c.laneDir!)).toBe(true)
+
+    writeFileSync(join(retried.runDir, 'shared.txt'), 'resolved\n')
+    await recordCoderHandoff(loop!, retried.sessionId)
+    await completeSessionTurn(retried.sessionId)
+    const retryAudit = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(retryAudit.phase).toBe('auditing')
+    reviewFindingsRepo.delete(PROJECT_ID, 'shared.txt', 1, { loopName: LOOP_NAME, sectionIndex: 2 })
+    await recordAuditorHandoff(loop!, retryAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(retryAudit.sessionId)
+
+    expect(loopService.getAnyState(LOOP_NAME)!.terminationReason).toBe('completed')
+    expect(readFileSync(join(loopDir, 'shared.txt'), 'utf-8')).toBe('resolved\n')
+    expect(existsSync(c.laneDir!)).toBe(false)
+    expect(git(loopDir, 'status --porcelain').trim()).toBe('')
+    expect(git(loopDir, 'rev-parse HEAD').trim()).not.toBe(headBefore)
+  })
+
   test('maxParallelSections 1 keeps the same plan serial in the loop worktree with no lane', async () => {
     build()
     seedDiamond(1)

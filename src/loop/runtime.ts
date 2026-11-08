@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import type { ForgeClient } from '../client/port'
 import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
@@ -35,7 +37,7 @@ import {
 } from './in-flight-guard'
 import { isLaneLoop, laneOf, sectionRunKey, type LoopLane } from './section-run'
 import { selectSectionsToStart } from './section-graph'
-import { createLane, mergeLane, removeLane } from './lanes'
+import { createLane, mergeLane, removeLane, type LaneMergeResult } from './lanes'
 import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
 import { nextTransition, type TransitionEvent, type Transition } from './transitions'
@@ -1207,6 +1209,71 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   function bumpDirtyAuditRecurrence(loopName: string, bugFindings: ReviewFindingRow[]): void {
     loopService.bumpFindingRecurrence(loopName, bugFindings)
+  }
+
+  async function retrySectionWithBlockingFindings(
+    lane: LoopLane,
+    state: LoopState,
+    blockingBugs: ReviewFindingRow[],
+    auditResult: string,
+  ): Promise<void> {
+    const loopName = lane.loopName
+    const idx = state.currentSectionIndex
+    const dirtyTrans = nextTransition(state, { type: 'section-dirty' })
+    if (dirtyTrans.kind !== 'rotate') return
+
+    loopService.finishAttempt(state, 'dirty')
+    logger.log(`Loop: section ${idx} audit dirty (${blockingBugs.length} blocking bug findings), retrying same section`)
+
+    const nextIter = await nextIterationOrTerminate(loopName, state)
+    if (nextIter === null) return
+
+    loopService.incrementSectionAttempts(loopName, idx)
+
+    bumpDirtyAuditRecurrence(loopName, blockingBugs)
+
+    loopService.setLastAuditResult(loopName, auditResult)
+
+    const continuationPrompt = loopService.buildSectionContinuationPrompt({ ...state, iteration: nextIter }, undefined, blockingBugs)
+    const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...state, iteration: nextIter }, blockingBugs)
+    await switchToCodingPhase({
+      loopName,
+      currentState: state,
+      stateUpdates: {
+        iteration: nextIter,
+        phase: 'coding',
+        lastAuditResult: auditResult,
+        auditCount: (state.auditCount ?? 0) + 1,
+      },
+      followUpPrompt,
+      fullPrompt: continuationPrompt,
+      assistantErrorDetected: false,
+      errorContext: 'section retry continuation',
+      transition: {
+        eventType: 'auditor-handoff',
+        transitionKind: dirtyTrans.kind,
+        fromPhase: state.phase,
+        toPhase: 'coding',
+      },
+    })
+  }
+
+  function laneUnresolvedConflictFiles(git: GitService, laneDir: string): string[] {
+    const result = git.listUnmergedFiles(laneDir)
+    if (!result.ok) return []
+    return result.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .filter((file) => {
+        try {
+          return readFileSync(join(laneDir, file), 'utf-8')
+            .split('\n')
+            .some((line) => line.startsWith('<<<<<<< ') || line.startsWith('>>>>>>> '))
+        } catch {
+          return false
+        }
+      })
   }
 
   /**
@@ -2948,12 +3015,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const sectionEvent: TransitionEvent = { type: 'section-clean', isLastOpenSection: lastOpen, inLane: laneLoop }
         const sectionTrans = nextTransition(currentState, sectionEvent)
 
-        if (laneLoop) {
-          const laneNextIter = await nextIterationOrTerminate(loopName, currentState)
-          if (laneNextIter === null) return
-          loopService.setIteration(loopName, laneNextIter)
-        }
-
         let mergedCommit: string | null = null
         if (laneRun) {
           if (!gitService || !currentState.laneDir || !currentState.laneBranch) {
@@ -2963,23 +3024,54 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             return
           }
           const title = loopService.getSectionPlan(currentState, idx)?.title.trim() || `Section ${idx + 1}`
-          const merge = mergeLane({
-            git: gitService,
-            logger,
-            worktreeDir: currentState.worktreeDir,
-            laneDir: currentState.laneDir,
-            laneBranch: currentState.laneBranch,
-            title,
-          })
-          if (merge.kind !== 'merged') {
+          const unresolvedFiles = laneUnresolvedConflictFiles(gitService, currentState.laneDir)
+          const merge: LaneMergeResult = unresolvedFiles.length > 0
+            ? { kind: 'conflict', files: unresolvedFiles }
+            : mergeLane({
+              git: gitService,
+              logger,
+              worktreeDir: currentState.worktreeDir,
+              laneDir: currentState.laneDir,
+              laneBranch: currentState.laneBranch,
+              title,
+            })
+          if (merge.kind === 'failed' || (merge.kind === 'conflict' && merge.files.length === 0)) {
             const detail = merge.kind === 'conflict'
-              ? `lane merge for section ${idx} conflicted in ${merge.files.join(', ') || 'unknown files'}`
+              ? `lane merge for section ${idx} conflicted in unknown files`
               : merge.error
             logger.error(`Loop: ${detail} (loop=${loopName})`)
             await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message: detail })
             return
           }
+          if (merge.kind === 'conflict') {
+            const files = merge.files
+            reviewFindingsRepo.write({
+              projectId,
+              file: files[0],
+              line: 1,
+              severity: 'bug',
+              description: `Merging this section into the loop branch conflicted in: ${files.join(', ')}. The lane now contains the loop branch tip with conflict markers; resolve every marker, keep both sections' intent, and run the section's verification.`,
+              scenario: null,
+              loopName,
+              sectionIndex: idx,
+            })
+            const blockers = reviewFindingsRepo.listByLoopName(projectId, loopName, idx)
+              .filter((finding) => finding.severity === 'bug')
+            const retryAuditResult = formatAuditHandoffResult(record.payload, {
+              clean: false,
+              blockingBugs: blockers.length,
+              sectionIndex: idx,
+            })
+            await retrySectionWithBlockingFindings(lane, currentState, blockers, retryAuditResult)
+            return
+          }
           mergedCommit = merge.commit
+        }
+
+        if (laneLoop) {
+          const laneNextIter = await nextIterationOrTerminate(loopName, currentState)
+          if (laneNextIter === null) return
+          loopService.setIteration(loopName, laneNextIter)
         }
 
         loopService.completeSection(loopName, idx, record.payload.summary
@@ -3062,43 +3154,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      const dirtyTrans = nextTransition(currentState, { type: 'section-dirty' })
-      if (dirtyTrans.kind !== 'rotate') return
-
-      loopService.finishAttempt(currentState, 'dirty')
-      logger.log(`Loop: section ${idx} audit dirty (${blockingBugs.length} blocking bug findings), retrying same section`)
-
-      const nextIter = await nextIterationOrTerminate(loopName, currentState)
-      if (nextIter === null) return
-
-      loopService.incrementSectionAttempts(loopName, idx)
-
-      bumpDirtyAuditRecurrence(loopName, blockingBugs)
-
-      loopService.setLastAuditResult(loopName, auditResult)
-
-      const continuationPrompt = loopService.buildSectionContinuationPrompt({ ...currentState, iteration: nextIter }, undefined, blockingBugs)
-      const followUpPrompt = loopService.buildCoderFollowUpPrompt({ ...currentState, iteration: nextIter }, blockingBugs)
-      await switchToCodingPhase({
-        loopName,
-        currentState,
-        stateUpdates: {
-          iteration: nextIter,
-          phase: 'coding',
-          lastAuditResult: auditResult,
-          auditCount: newAuditCount,
-        },
-        followUpPrompt,
-        fullPrompt: continuationPrompt,
-        assistantErrorDetected,
-        errorContext: 'section retry continuation',
-        transition: {
-          eventType: 'auditor-handoff',
-          transitionKind: dirtyTrans.kind,
-          fromPhase: currentState.phase,
-          toPhase: 'coding',
-        },
-      })
+      await retrySectionWithBlockingFindings(lane, currentState, blockingBugs, auditResult)
       return
     }
 
