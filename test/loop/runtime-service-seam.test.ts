@@ -116,6 +116,6 @@ describe('LoopService seam', () => {
     expect(fakeService.setState).toHaveBeenCalledWith('test-loop', state)
 
     expect(fakeService.registerLoopSession).toHaveBeenCalledTimes(1)
-    expect(fakeService.registerLoopSession).toHaveBeenCalledWith('sess-1', 'test-loop')
+    expect(fakeService.registerLoopSession).toHaveBeenCalledWith('sess-1', { loopName: 'test-loop', sectionRunKey: 'plan' })
   })
 })

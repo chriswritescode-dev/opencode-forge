@@ -628,4 +628,24 @@ export const migrations: Migration[] = [
       db.run(loadSql('163_scope_pending_handoffs_to_section_runs.sql'))
     },
   },
+  {
+    id: '164',
+    description: 'Allow several active section runs and move failure counters onto each run',
+    apply: (db: Database) => {
+      const columns = db.prepare('PRAGMA table_info(section_runs)').all() as Array<{ name: string }>
+      if (columns.length === 0) return
+      if (columns.some((column) => column.name === 'error_count')) return
+      db.run(loadSql('164_parallel_section_runs.sql'))
+    },
+  },
+  {
+    id: '165',
+    description: 'Drop the loop-level failure counters now owned by section runs',
+    apply: (db: Database) => {
+      const columns = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (columns.length === 0) return
+      if (!columns.some((column) => column.name === 'error_count')) return
+      db.run(loadSql('165_drop_loop_failure_counters.sql'))
+    },
+  },
 ]

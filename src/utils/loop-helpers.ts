@@ -112,10 +112,11 @@ export function resolveLoopAuditorChoice(
   loopService: LoopService,
   loopName: string,
   logger?: Logger,
+  state?: LoopState | null,
 ): AuditorModelChoice {
-  const state = loopService.getActiveState(loopName)
-  const chain = buildAuditorModelChain(config, state)
-  const index = state?.auditorFallbackIndex ?? 0
+  const run = state ?? loopService.getActiveState(loopName)
+  const chain = buildAuditorModelChain(config, run)
+  const index = run?.auditorFallbackIndex ?? 0
   const choice = auditorModelChoiceAt(chain, index)
 
   if (logger) {

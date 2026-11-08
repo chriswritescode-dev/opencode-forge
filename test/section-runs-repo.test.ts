@@ -71,6 +71,8 @@ describe('SectionRunsRepo', () => {
     db.run('PRAGMA foreign_keys=ON')
   }
 
+  const primaryRun = () => sectionRuns.listActive('proj', 'loop')[0]
+
   const activeRunCount = (): number =>
     (
       db
@@ -107,7 +109,7 @@ describe('SectionRunsRepo', () => {
       { lastAuditResult: null },
     )
 
-    expect(sectionRuns.getActive('proj', 'loop')?.sectionRunKey).toBe('section:alpha')
+    expect(primaryRun()?.sectionRunKey).toBe('section:alpha')
 
     loopsRepo.setCurrentSectionIndex('proj', 'loop', 1)
 
@@ -176,7 +178,7 @@ describe('SectionRunsRepo', () => {
       auditorModel: null,
     })
 
-    const active = sectionRuns.getActive('proj', 'loop')!
+    const active = primaryRun()!
     expect(active).toMatchObject({
       sectionId: 'beta',
       sectionIndex: 1,
@@ -216,7 +218,7 @@ describe('SectionRunsRepo', () => {
     expect(displaced.startedAt).toBe(2000)
     expect(displaced.finishedAt).not.toBeNull()
     expect(displaced.finishedAt!).toBeGreaterThanOrEqual(displaced.startedAt)
-    expect(sectionRuns.getActive('proj', 'loop')?.sectionId).toBe('alpha')
+    expect(primaryRun()?.sectionId).toBe('alpha')
   })
 
   test('terminate clears the active run standby and keeps the run active', () => {
@@ -238,37 +240,55 @@ describe('SectionRunsRepo', () => {
     expect(retrieved.standbySessionId).toBeNull()
   })
 
-  test('every move keeps exactly one active run and the unique index rejects a second active row', () => {
+  test('serial moves keep exactly one active run', () => {
     seedSectionPlans()
     loopsRepo.insert(loopRow({ totalSections: 2, currentSectionIndex: 0 }), { lastAuditResult: null })
     expect(activeRunCount()).toBe(1)
 
     loopsRepo.setCurrentSectionIndex('proj', 'loop', 1)
     expect(activeRunCount()).toBe(1)
-    expect(sectionRuns.getActive('proj', 'loop')?.sectionRunKey).toBe('section:beta')
+    expect(primaryRun()?.sectionRunKey).toBe('section:beta')
 
     loopsRepo.setCurrentSectionIndex('proj', 'loop', 0)
     expect(activeRunCount()).toBe(1)
-    expect(sectionRuns.getActive('proj', 'loop')?.sectionRunKey).toBe('section:alpha')
+    expect(primaryRun()?.sectionRunKey).toBe('section:alpha')
 
     loopsRepo.updatePhase('proj', 'loop', 'post_action')
     expect(activeRunCount()).toBe(1)
-    expect(sectionRuns.getActive('proj', 'loop')?.kind).toBe('post_action')
+    expect(primaryRun()?.kind).toBe('post_action')
 
     loopsRepo.updatePhase('proj', 'loop', 'coding')
     expect(activeRunCount()).toBe(1)
-    expect(sectionRuns.getActive('proj', 'loop')?.sectionRunKey).toBe('section:alpha')
+    expect(primaryRun()?.sectionRunKey).toBe('section:alpha')
+  })
 
-    expect(() =>
-      db
-        .prepare(`
-          INSERT INTO section_runs (
-            project_id, loop_name, kind, section_id, section_index, phase, session_id,
-            standby_session_id, status, started_at, updated_at, finished_at
-          )
-          VALUES ('proj', 'loop', 'plan', '', 0, 'coding', 'sess-extra', NULL, 'active', 1, 1, NULL)
-        `)
-        .run(),
-    ).toThrow(/UNIQUE constraint failed/)
+  test('a non-exclusive activation leaves other active runs alone and resolves each by key or session', () => {
+    seedSectionPlans()
+    loopsRepo.insert(loopRow({ totalSections: 2, currentSectionIndex: 0 }), { lastAuditResult: null })
+
+    sectionRuns.activate(
+      'proj',
+      'loop',
+      { kind: 'section', sectionId: 'beta', sectionIndex: 1 },
+      { sessionId: 'sess-parallel', phase: 'coding', standbySessionId: null },
+      { exclusive: false },
+    )
+
+    expect(activeRunCount()).toBe(2)
+    expect(sectionRuns.listActive('proj', 'loop').map((run) => run.sectionId)).toEqual(['alpha', 'beta'])
+    expect(sectionRuns.get('proj', 'loop', 'section:beta')?.sessionId).toBe('sess-parallel')
+    expect(sectionRuns.getBySession('proj', 'sess-parallel')?.sectionId).toBe('beta')
+    expect(loopsRepo.getBySessionId('proj', 'sess-parallel')?.loopName).toBe('loop')
+    expect(loopsRepo.getBySessionId('proj', 'sess-1')?.loopName).toBe('loop')
+    expect(loopsRepo.get('proj', 'loop')!.sectionId).toBe('alpha')
+
+    loopsRepo.incrementError('proj', 'loop', 'section:beta')
+    expect(sectionRuns.get('proj', 'loop', 'section:alpha')!.errorCount).toBe(0)
+    expect(sectionRuns.get('proj', 'loop', 'section:beta')!.errorCount).toBe(1)
+
+    expect(sectionRuns.advanceAuditorFallbackIndex('proj', 'loop', 'section:beta', 0)).toBe(true)
+    expect(sectionRuns.get('proj', 'loop', 'section:beta')!.auditorFallbackIndex).toBe(1)
+    expect(sectionRuns.get('proj', 'loop', 'section:alpha')!.auditorFallbackIndex).toBe(0)
+    expect(sectionRuns.advanceAuditorFallbackIndex('proj', 'loop', 'section:beta', 0)).toBe(false)
   })
 })

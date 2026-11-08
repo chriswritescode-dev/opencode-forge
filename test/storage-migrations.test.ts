@@ -1328,7 +1328,7 @@ test('migration 144 is idempotent on re-opened databases', () => {
 
   const db2 = openForgeDatabase(dbPath)
 
-  const cols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  const cols = db2.prepare('PRAGMA table_info(section_runs)').all() as Array<{ name: string }>
   expect(cols.filter((c) => c.name === 'auditor_fallback_index').length).toBe(1)
 
   const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('144') as { count: number }
@@ -2268,11 +2268,11 @@ interface SectionRunSelectRow {
   finished_at: number | null
 }
 
-test('migration 161 creates section_runs with both indexes on a fresh database and backfills on a database migrated through 160', () => {
+test('migration 161 creates section_runs with its session index and backfills on a database migrated through 160', () => {
   const freshDb = openForgeDatabase(createTempDb())
   const freshTables = freshDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_runs'").all() as Array<{ name: string }>
   expect(freshTables).toHaveLength(1)
-  expect(indexExists(freshDb, 'idx_section_runs_one_active')).toBe(true)
+  expect(indexExists(freshDb, 'idx_section_runs_one_active')).toBe(false)
   expect(indexExists(freshDb, 'idx_section_runs_session')).toBe(true)
   const migrationRow = freshDb.prepare('SELECT COUNT(*) AS count FROM migrations WHERE id = ?').get('161') as { count: number }
   expect(migrationRow.count).toBe(1)
@@ -2531,6 +2531,8 @@ test('migration 162 drops the per-section columns and keeps child rows', () => {
   expect(countLoopRows(db, 'section_runs', 'proj-1', 'loop-section')).toBe(1)
 
   applySingleMigration(db, '163')
+  applySingleMigration(db, '164')
+  applySingleMigration(db, '165')
 
   const loopsRepo = createLoopsRepo(db)
   const service = createLoopService(
@@ -2677,6 +2679,75 @@ test('migration 163 scopes pending handoffs to the section run', () => {
       ORDER BY section_run_key
     `).all(),
   ).toEqual([{ section_run_key: 'section:beta' }, { section_run_key: 'section:gamma' }])
+
+  db.close()
+})
+
+test('migration 164 moves failure counters onto the active run and 165 drops them from loops', () => {
+  const freshDb = openForgeDatabase(createTempDb())
+  expect(loopTableColumns(freshDb, 'section_runs')).toEqual(expect.arrayContaining([
+    'lane_dir',
+    'lane_branch',
+    'lane_base_commit',
+    'error_count',
+    'model_failed',
+    'auditor_fallback_index',
+  ]))
+  expect(loopTableColumns(freshDb, 'loops')).toContain('max_parallel_sections')
+  expect(loopTableColumns(freshDb, 'loops')).not.toContain('error_count')
+  expect(loopTableColumns(freshDb, 'loops')).not.toContain('model_failed')
+  expect(loopTableColumns(freshDb, 'loops')).not.toContain('auditor_fallback_index')
+  expect(indexExists(freshDb, 'idx_section_runs_one_active')).toBe(false)
+  freshDb.close()
+
+  const db = new Database(createTempDb())
+  applyMigrationsThrough(db, '163')
+
+  db.prepare(`
+    INSERT INTO loops (
+      project_id, loop_name, status, worktree, worktree_dir, worktree_branch, project_dir,
+      max_iterations, iteration, audit_count, error_count, execution_model, auditor_model,
+      model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason,
+      completion_summary, workspace_id, host_session_id, total_sections, execution_variant,
+      auditor_variant, auditor_fallback_index, sandbox_settings, base_commit
+    )
+    VALUES (
+      'proj-1', 'loop-counters', 'running', 0, '/tmp/wt', NULL, '/tmp/proj',
+      5, 0, 0, 7, NULL, NULL,
+      1, 0, NULL, 10, NULL, NULL,
+      NULL, NULL, NULL, 0, NULL,
+      NULL, 2, NULL, NULL
+    )
+  `).run()
+  db.prepare(`
+    INSERT INTO section_runs (
+      project_id, loop_name, kind, section_id, section_index, phase, session_id,
+      standby_session_id, status, started_at, updated_at, finished_at
+    )
+    VALUES ('proj-1', 'loop-counters', 'plan', '', 0, 'coding', 'sess-counters', NULL, 'active', 10, 10, NULL)
+  `).run()
+
+  applySingleMigration(db, '164')
+
+  const run = db.prepare(`
+    SELECT error_count, model_failed, auditor_fallback_index
+    FROM section_runs
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-counters' AND status = 'active'
+  `).get() as { error_count: number; model_failed: number; auditor_fallback_index: number }
+  expect(run).toEqual({ error_count: 7, model_failed: 1, auditor_fallback_index: 2 })
+  const loopRow = db.prepare(`
+    SELECT max_parallel_sections FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-counters'
+  `).get() as { max_parallel_sections: number }
+  expect(loopRow.max_parallel_sections).toBe(1)
+  expect(() => applySingleMigration(db, '164')).not.toThrow()
+
+  applySingleMigration(db, '165')
+
+  const columns = loopTableColumns(db, 'loops')
+  expect(columns).not.toContain('error_count')
+  expect(columns).not.toContain('model_failed')
+  expect(columns).not.toContain('auditor_fallback_index')
+  expect(() => applySingleMigration(db, '165')).not.toThrow()
 
   db.close()
 })

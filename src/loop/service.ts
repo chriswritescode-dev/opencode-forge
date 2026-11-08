@@ -44,6 +44,15 @@ function isBlank(value: string): boolean {
   return value.trim().length === 0
 }
 
+/** A per-run mutator target: an explicit lane, or a loop name for the loop's primary run. */
+type LoopLaneRef = LoopLane | string
+
+function laneRef(ref: LoopLaneRef): { loopName: string; runKey: string | undefined } {
+  return typeof ref === 'string'
+    ? { loopName: ref, runKey: undefined }
+    : { loopName: ref.loopName, runKey: ref.sectionRunKey }
+}
+
 /**
  * Reasons a loop row changed. `terminate` fires when the terminal status is
  * persisted; `settled` fires once afterwards, once termination side effects
@@ -71,7 +80,7 @@ export interface LoopService {
   /** In-place row restore via UPDATE (preserves child rows such as loop_transitions/section_plans that would be cascade-deleted by deleteState + setState). Falls back to INSERT if the row was concurrently deleted. */
   restoreState(name: string, state: LoopState): void
   deleteState(name: string): void
-  registerLoopSession(sessionId: string, loopName: string): void
+  registerLoopSession(sessionId: string, lane: LoopLaneRef): void
   resolveLoopName(sessionId: string): string | null
   /**
    * The loop this session is currently driving, or null. `resolveLoopName`
@@ -118,15 +127,15 @@ export interface LoopService {
   bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void
   resetSectionRecurrence(name: string, sectionIndex: number): void
   getPlanText(loopName: string, sessionId: string): string | null
-  incrementError(name: string): number
-  resetError(name: string): void
+  incrementError(lane: LoopLaneRef): number
+  resetError(lane: LoopLaneRef): void
   /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the loop is absent/non-running/index mismatch. */
-  advanceAuditorFallbackIndex(name: string, fromIndex: number, toIndex: number): number | null
+  advanceAuditorFallbackIndex(lane: LoopLaneRef, fromIndex: number, toIndex: number): number | null
   /** Reset the auditor fallback index to 0 after a successful audit; returns true when a running row was actually changed. */
-  resetAuditorFallbackIndex(name: string): boolean
-  setPhase(name: string, phase: LoopState['phase']): void
-  setPhaseAndResetError(name: string, phase: LoopState['phase']): void
-  setModelFailed(name: string, failed: boolean): void
+  resetAuditorFallbackIndex(lane: LoopLaneRef): boolean
+  setPhase(lane: LoopLaneRef, phase: LoopState['phase']): void
+  setPhaseAndResetError(lane: LoopLaneRef, phase: LoopState['phase']): void
+  setModelFailed(lane: LoopLaneRef, failed: boolean): void
   setLastAuditResult(name: string, text: string): void
   clearLastAuditResult(name: string): void
   setPostActionReport(name: string, text: string): void
@@ -135,12 +144,12 @@ export interface LoopService {
    * Record (or clear, with null) the other role's session kept for reuse on the
    * next same-section phase switch.
    */
-  setStandbySessionId(name: string, sessionId: string | null): void
+  setStandbySessionId(lane: LoopLaneRef, sessionId: string | null): void
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
-  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
+  replaceSession(lane: LoopLaneRef, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getSectionPlans(state: LoopState): SectionPlanRow[]
   /** Persist a section's code-graph report and write it into the loop worktree. */
@@ -162,7 +171,7 @@ export interface LoopService {
   completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
   incrementSectionAttempts(loopName: string, index: number): void
   resetSectionForRewind(loopName: string, index: number): void
-  setCurrentSectionIndex(loopName: string, index: number): void
+  setCurrentSectionIndex(lane: LoopLaneRef, index: number): void
   /**
    * Whether `state` is the loop's last open section: every other section plan
    * row is already completed. Covers both the final index and the rewind case
@@ -317,9 +326,10 @@ export function createLoopService(
     notifyLoopChange('status', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function registerLoopSession(sessionId: string, loopName: string): void {
+  function registerLoopSession(sessionId: string, ref: LoopLaneRef): void {
+    const { loopName, runKey } = laneRef(ref)
     const state = getAnyState(loopName)
-    loopsRepo.setCurrentSessionId(projectId, loopName, sessionId)
+    loopsRepo.setCurrentSessionId(projectId, loopName, sessionId, runKey)
     notifyLoopChange('session', loopName, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -328,9 +338,10 @@ export function createLoopService(
   }
 
   function resolveActiveLoopForSession(sessionId: string): LoopState | null {
-    const loopName = resolveLoopName(sessionId)
-    const state = loopName ? getActiveState(loopName) : null
-    return state?.sessionId === sessionId ? state : null
+    const row = loopsRepo.getBySessionId(projectId, sessionId)
+    if (!row) return null
+    const large = loopsRepo.getLarge(projectId, row.loopName)
+    return hydratePlanFromPlans(loopRowToState(row, large))
   }
 
   function findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null {
@@ -343,7 +354,8 @@ export function createLoopService(
     return null
   }
 
-  function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
+  function replaceSession(ref: LoopLaneRef, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
+    const { loopName: name, runKey } = laneRef(ref)
     const state = getAnyState(name)
     const replace = () => loopsRepo.replaceSession(projectId, name, {
       sessionId: opts.newSessionId,
@@ -352,7 +364,7 @@ export function createLoopService(
       resetError: opts.resetError,
       auditCount: opts.auditCount,
       lastAuditResult: opts.lastAuditResult,
-    })
+    }, runKey)
     if (state && loopAttemptsRepo && opts.phase === 'auditing') {
       loopAttemptsRepo.bindAudit(projectId, name, auditScope({ ...state, phase: opts.phase }), state.sessionId, opts.newSessionId, replace)
     } else replace()
@@ -632,21 +644,24 @@ export function createLoopService(
     findingRecurrenceByLoop.set(name, next)
   }
 
-  function incrementError(name: string): number {
+  function incrementError(ref: LoopLaneRef): number {
+    const { loopName: name, runKey } = laneRef(ref)
     const state = getAnyState(name)
-    const result = loopsRepo.incrementError(projectId, name)
+    const result = loopsRepo.incrementError(projectId, name, runKey)
     notifyLoopChange('error', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
     return result
   }
 
-  function resetError(name: string): void {
+  function resetError(ref: LoopLaneRef): void {
+    const { loopName: name, runKey } = laneRef(ref)
     const state = getAnyState(name)
-    loopsRepo.resetError(projectId, name)
+    loopsRepo.resetError(projectId, name, runKey)
     notifyLoopChange('error', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function advanceAuditorFallbackIndex(name: string, fromIndex: number, toIndex: number): number | null {
-    const result = loopsRepo.advanceAuditorFallbackIndex(projectId, name, fromIndex, toIndex)
+  function advanceAuditorFallbackIndex(ref: LoopLaneRef, fromIndex: number, toIndex: number): number | null {
+    const { loopName: name, runKey } = laneRef(ref)
+    const result = loopsRepo.advanceAuditorFallbackIndex(projectId, name, fromIndex, toIndex, runKey)
     if (result !== null) {
       const state = getAnyState(name)
       notifyLoopChange('auditor-fallback', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
@@ -654,8 +669,9 @@ export function createLoopService(
     return result
   }
 
-  function resetAuditorFallbackIndex(name: string): boolean {
-    const changed = loopsRepo.resetAuditorFallbackIndex(projectId, name)
+  function resetAuditorFallbackIndex(ref: LoopLaneRef): boolean {
+    const { loopName: name, runKey } = laneRef(ref)
+    const changed = loopsRepo.resetAuditorFallbackIndex(projectId, name, runKey)
     if (changed) {
       const state = getAnyState(name)
       notifyLoopChange('auditor-fallback', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
@@ -663,21 +679,24 @@ export function createLoopService(
     return changed
   }
 
-  function setPhase(name: string, phase: LoopState['phase']): void {
+  function setPhase(ref: LoopLaneRef, phase: LoopState['phase']): void {
+    const { loopName: name, runKey } = laneRef(ref)
     const state = getAnyState(name)
-    loopsRepo.updatePhase(projectId, name, phase)
+    loopsRepo.updatePhase(projectId, name, phase, runKey)
     notifyLoopChange('phase', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function setPhaseAndResetError(name: string, phase: LoopState['phase']): void {
+  function setPhaseAndResetError(ref: LoopLaneRef, phase: LoopState['phase']): void {
+    const { loopName: name, runKey } = laneRef(ref)
     const state = getAnyState(name)
-    loopsRepo.setPhaseAndResetError(projectId, name, phase)
+    loopsRepo.setPhaseAndResetError(projectId, name, phase, runKey)
     notifyLoopChange('phase', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function setModelFailed(name: string, failed: boolean): void {
+  function setModelFailed(ref: LoopLaneRef, failed: boolean): void {
+    const { loopName: name, runKey } = laneRef(ref)
     const state = getAnyState(name)
-    loopsRepo.setModelFailed(projectId, name, failed)
+    loopsRepo.setModelFailed(projectId, name, failed, runKey)
     notifyLoopChange('model-failed', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -715,9 +734,10 @@ export function createLoopService(
     notifyLoopChange('sandbox', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function setStandbySessionId(name: string, sessionId: string | null): void {
+  function setStandbySessionId(ref: LoopLaneRef, sessionId: string | null): void {
+    const { loopName: name, runKey } = laneRef(ref)
     const state = getAnyState(name)
-    loopsRepo.setStandbySessionId(projectId, name, sessionId)
+    loopsRepo.setStandbySessionId(projectId, name, sessionId, runKey)
     notifyLoopChange('session', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -849,13 +869,14 @@ export function createLoopService(
     sectionPlansRepo.resetForRewind(projectId, loopName, index)
   }
 
-  function setCurrentSectionIndex(loopName: string, index: number): void {
+  function setCurrentSectionIndex(ref: LoopLaneRef, index: number): void {
     // Defensive clamp against suffix-deletion races: if the active section run's
     // index was persisted from a snapshot where `total_sections = N` but the
     // loop row has since been amended to `total_sections < index`, clamp the
     // index so the invariant `current section index < total_sections` always
     // holds.  The index lives on the loop's active section run, not on a
     // separate column of the loops row.
+    const loopName = laneRef(ref).loopName
     const row = loopsRepo.get(projectId, loopName)
     if (row && row.totalSections > 0 && index >= row.totalSections) {
       index = row.totalSections - 1

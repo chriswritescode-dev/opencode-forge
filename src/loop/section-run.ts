@@ -24,6 +24,11 @@ export function laneOf(state: Pick<LoopState, 'loopName' | 'sectionRunKey'>): Lo
   return { loopName: state.loopName, sectionRunKey: state.sectionRunKey }
 }
 
+/** The directory a run works in: its own lane worktree, else the loop's shared worktree. */
+export function runDirectoryOf(state: { laneDir?: string | null; worktreeDir: string }): string {
+  return state.laneDir ?? state.worktreeDir
+}
+
 /** The section run target implied by the loop's phase and current section. */
 export function resolveSectionRunTarget(
   input: {

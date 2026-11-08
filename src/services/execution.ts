@@ -594,6 +594,8 @@ export async function attachLoopToSession(
       worktreeBranch,
       iteration: 1,
       maxIterations,
+      maxParallelSections: 1,
+      runDir: worktreeDir ?? ctx.directory,
       startedAt: new Date().toISOString(),
       prompt: planText,
       phase: 'coding',
@@ -619,7 +621,7 @@ export async function attachLoopToSession(
     }
 
     deps.loop.service.setState(loopName, state)
-    deps.loop.service.registerLoopSession(sessionId, loopName)
+    deps.loop.service.registerLoopSession(sessionId, laneOf(state))
     deps.loop.registerSessionReverseIndex(sessionId, loopName)
     if (sendInitialPrompt) releaseFirstPromptHold = deps.loop.holdUntilFirstPrompt(state)
 
@@ -1757,6 +1759,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         worktreeBranch: stoppedState.worktreeBranch,
         iteration: stoppedState.iteration,
         maxIterations: stoppedState.maxIterations,
+        maxParallelSections: stoppedState.maxParallelSections,
+        runDir: stoppedState.runDir ?? stoppedState.worktreeDir,
+        laneDir: stoppedState.laneDir,
+        laneBranch: stoppedState.laneBranch,
+        laneBaseCommit: stoppedState.laneBaseCommit,
         startedAt: new Date().toISOString(),
         prompt: stoppedState.prompt,
         phase: restartPhase,
@@ -1845,7 +1852,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         newState.sectionRunKey = persistedRestartState.sectionRunKey
       }
 
-      deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
+      deps.loop.service.registerLoopSession(effectiveSessionId, laneOf(newState))
       deps.loop.registerSessionReverseIndex(effectiveSessionId, stoppedState.loopName)
 
       // Record restart phase transition immediately after persisting the new

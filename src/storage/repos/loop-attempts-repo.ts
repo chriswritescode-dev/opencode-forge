@@ -146,8 +146,9 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
   const stmtLoopGuard = db.prepare(`
     SELECT l.status, r.session_id AS current_session_id
     FROM loops l
-    LEFT JOIN section_runs r
-      ON r.project_id = l.project_id AND r.loop_name = l.loop_name AND r.status = 'active'
+    JOIN section_runs r
+      ON r.project_id = l.project_id AND r.loop_name = l.loop_name
+      AND r.status = 'active' AND r.session_id = ?
     WHERE l.project_id = ? AND l.loop_name = ?
   `)
 
@@ -224,7 +225,7 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
 
   function record(input: LoopAttemptRecordInput): LoopAttemptRow | null {
     return db.transaction(() => {
-      const loop = stmtLoopGuard.get(input.projectId, input.loopName) as { status: string; current_session_id: string } | undefined
+      const loop = stmtLoopGuard.get(input.sourceSessionId, input.projectId, input.loopName) as { status: string; current_session_id: string } | undefined
       if (!loopOwnedBy(loop, input.sourceSessionId)) return null
 
       const existing = stmtGetByKey.get(input.projectId, input.loopName, input.scope, input.completionKey) as LoopAttemptRowRaw | undefined
@@ -267,7 +268,7 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
   function bindAudit(projectId: string, loopName: string, scope: string, sourceSessionId: string, auditorSessionId: string, replaceSession?: () => void): void {
     db.transaction(() => {
       if (replaceSession) {
-        const loop = stmtLoopGuard.get(projectId, loopName) as { status: string; current_session_id: string } | undefined
+        const loop = stmtLoopGuard.get(sourceSessionId, projectId, loopName) as { status: string; current_session_id: string } | undefined
         if (!loopOwnedBy(loop, sourceSessionId)) throw new Error('Audit handoff source session is no longer active')
         replaceSession()
       }
@@ -286,7 +287,7 @@ export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAtte
     findings: ReviewFindingRow[],
   ): boolean {
     return db.transaction(() => {
-      const loop = stmtLoopGuard.get(projectId, loopName) as { status: string; current_session_id: string } | undefined
+      const loop = stmtLoopGuard.get(auditorSessionId, projectId, loopName) as { status: string; current_session_id: string } | undefined
       if (!loopOwnedBy(loop, auditorSessionId)) return false
       const result = stmtFinish.run(
         Date.now(),

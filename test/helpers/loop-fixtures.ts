@@ -25,21 +25,23 @@ import { createCapturingLogger, createMockLogger } from './logger'
 
 /** Creates a LoopState with the standard test defaults; overrides replace any default. */
 export function makeLoopState(overrides: Partial<LoopState> = {}): LoopState {
-  return {
+  const state = {
     active: true,
     sessionId: 'loop-session-id',
     loopName: 'test-loop',
     worktreeDir: '/tmp/nonexistent-worktree-for-test',
+    runDir: '/tmp/nonexistent-worktree-for-test',
     projectDir: '/tmp/host-project-dir',
     worktreeBranch: 'test/branch',
     iteration: 1,
     maxIterations: 5,
+    maxParallelSections: 1,
     startedAt: new Date().toISOString(),
     prompt: 'Test prompt',
-    phase: 'coding',
+    phase: 'coding' as const,
     errorCount: 0,
     auditCount: 0,
-    status: 'running',
+    status: 'running' as const,
     worktree: true,
     modelFailed: false,
     sandbox: false,
@@ -49,11 +51,12 @@ export function makeLoopState(overrides: Partial<LoopState> = {}): LoopState {
     auditorVariant: undefined,
     currentSectionIndex: 0,
     totalSections: 0,
-    sectionRunKind: 'plan',
+    sectionRunKind: 'plan' as const,
     sectionId: '',
     sectionRunKey: 'plan',
     ...overrides,
   }
+  return { ...state, runDir: state.laneDir ?? state.worktreeDir }
 }
 
 /** Inserts a loop row through createLoopsRepo so the active section run is created too. */
@@ -72,6 +75,7 @@ export function insertTestLoopRow(
     worktreeBranch: null,
     projectDir: '/tmp/proj',
     maxIterations: 5,
+    maxParallelSections: 1,
     iteration: 0,
     auditCount: 0,
     errorCount: 0,
@@ -113,6 +117,7 @@ export function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     insert: vi.fn(),
     restore: vi.fn(),
     get: vi.fn().mockReturnValue(null),
+    getForRun: vi.fn().mockReturnValue(null),
     getLarge: vi.fn(),
     getBySessionId: vi.fn(),
     listByStatus: vi.fn(),

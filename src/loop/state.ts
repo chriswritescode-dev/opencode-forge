@@ -1,16 +1,23 @@
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import type { LoopSandboxSettings } from '../types'
-import type { SectionRunKind } from './section-run'
+import { runDirectoryOf, type SectionRunKind } from './section-run'
 
 interface LoopStateBase {
   active: boolean
   sessionId: string
   loopName: string
   worktreeDir: string
+  /** Worktree this run works in when it differs from the loop's shared `worktreeDir`; undefined for serial runs. */
+  laneDir?: string
+  laneBranch?: string
+  laneBaseCommit?: string
+  /** The directory this run works in: `laneDir ?? worktreeDir`. */
+  readonly runDir: string
   projectDir?: string
   worktreeBranch?: string
   iteration: number
   maxIterations: number
+  maxParallelSections: number
   startedAt: string
   prompt?: string
   lastAuditResult?: string
@@ -70,10 +77,15 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     sessionId: row.currentSessionId,
     loopName: row.loopName,
     worktreeDir: row.worktreeDir,
+    laneDir: row.laneDir ?? undefined,
+    laneBranch: row.laneBranch ?? undefined,
+    laneBaseCommit: row.laneBaseCommit ?? undefined,
+    runDir: runDirectoryOf({ laneDir: row.laneDir ?? null, worktreeDir: row.worktreeDir }),
     projectDir: row.projectDir,
     worktreeBranch: row.worktreeBranch ?? undefined,
     iteration: row.iteration,
     maxIterations: row.maxIterations,
+    maxParallelSections: row.maxParallelSections ?? 1,
     startedAt: new Date(row.startedAt).toISOString(),
     lastAuditResult: large?.lastAuditResult ?? undefined,
     postActionReport: large?.postActionReport ?? undefined,
@@ -132,8 +144,12 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     worktree: state.worktree ?? false,
     worktreeDir: state.worktreeDir,
     worktreeBranch: state.worktreeBranch ?? null,
+    laneDir: state.laneDir ?? null,
+    laneBranch: state.laneBranch ?? null,
+    laneBaseCommit: state.laneBaseCommit ?? null,
     projectDir: state.projectDir ?? state.worktreeDir,
     maxIterations: state.maxIterations,
+    maxParallelSections: state.maxParallelSections,
     iteration: state.iteration,
     auditCount: state.auditCount,
     errorCount: state.errorCount,
