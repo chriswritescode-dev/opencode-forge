@@ -1,6 +1,8 @@
 import type { LoopService, LoopState, TerminationReason } from '../loop'
 import { classifyProviderLimit } from '../loop/provider-limit'
+import type { LoopLane } from '../loop/section-run'
 import { isAuditorPhase } from '../utils/loop-helpers'
+import { deleteLoopLaneEntries, projectLoopLaneKey } from '../utils/process-shared'
 import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
 import { LRUCache } from '../utils/lru-cache'
@@ -29,17 +31,19 @@ export interface LoopWatchdogRecoveryContext {
 }
 
 export interface LoopWatchdog {
-  start(loopName: string): void
-  stop(loopName: string): void
+  start(lane: LoopLane): void
+  stop(lane: LoopLane): void
+  /** Stops the watchdog for every section run of one loop. */
+  stopLoop(loopName: string): void
   clearAll(): void
-  recordActivity(loopName: string, source?: string): void
+  recordActivity(lane: LoopLane, source?: string): void
   /**
    * Records that streamed content (reasoning, text, tool state) arrived for a session.
    * Called per streaming delta, so it must stay O(1) and side-effect free: no loop
    * resolution and no logging. The busy check resolves sessions to loops itself.
    */
   recordSessionContent(sessionId: string): void
-  getStallInfo(loopName: string): LoopWatchdogStallInfo | null
+  getStallInfo(lane: LoopLane): LoopWatchdogStallInfo | null
 }
 
 type SessionStatusSnapshot = {
@@ -74,6 +78,7 @@ function formatError(err: unknown): string {
 }
 
 export function createLoopWatchdog(input: {
+  projectId: string
   loopService: Pick<LoopService, 'getActiveState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'getBusyStallTimeoutMs' | 'resolveLoopName'>
   client: ForgeClient
   logger: Logger
@@ -94,7 +99,7 @@ export function createLoopWatchdog(input: {
   statusRetryAttempts?: number
   statusRetryBackoffMs?: number
 }): LoopWatchdog {
-  const { client } = input
+  const { client, projectId } = input
   const lastActivityTime = new Map<string, number>()
   const stallWatchdogs = new Map<string, NodeJS.Timeout>()
   const consecutiveStalls = new Map<string, number>()
@@ -112,12 +117,17 @@ export function createLoopWatchdog(input: {
   const statusRetryAttempts = input.statusRetryAttempts ?? 3
   const statusRetryBackoffMs = input.statusRetryBackoffMs ?? 250
 
-  function resetActivity(loopName: string, source: string): void {
-    lastActivityTime.set(loopName, Date.now())
-    consecutiveStalls.set(loopName, 0)
-    busySince.delete(loopName)
-    stallDetails.delete(loopName)
-    input.logger.debug(`Loop watchdog: activity for ${loopName} from ${source}, resetting timer`)
+  function laneKey(lane: LoopLane): string {
+    return projectLoopLaneKey(projectId, lane)
+  }
+
+  function resetActivity(lane: LoopLane, source: string): void {
+    const key = laneKey(lane)
+    lastActivityTime.set(key, Date.now())
+    consecutiveStalls.set(key, 0)
+    busySince.delete(key)
+    stallDetails.delete(key)
+    input.logger.debug(`Loop watchdog: activity for ${lane.loopName} from ${source}, resetting timer`)
   }
 
   async function getStatusWithRetry(
@@ -141,13 +151,15 @@ export function createLoopWatchdog(input: {
   }
 
   async function handleStall(
-    loopName: string,
+    lane: LoopLane,
     state: LoopState,
     contextWithoutCount: { reason: LoopWatchdogStallReason; status?: string; error?: unknown; elapsedMs: number },
   ): Promise<void> {
-    const stallCount = (consecutiveStalls.get(loopName) ?? 0) + 1
-    consecutiveStalls.set(loopName, stallCount)
-    lastActivityTime.set(loopName, Date.now())
+    const key = laneKey(lane)
+    const loopName = lane.loopName
+    const stallCount = (consecutiveStalls.get(key) ?? 0) + 1
+    consecutiveStalls.set(key, stallCount)
+    lastActivityTime.set(key, Date.now())
 
     const formattedError = contextWithoutCount.reason === 'status_error'
       ? formatError(contextWithoutCount.error)
@@ -155,7 +167,7 @@ export function createLoopWatchdog(input: {
         ? undefined
         : formatError(contextWithoutCount.error)
 
-    stallDetails.set(loopName, {
+    stallDetails.set(key, {
       reason: contextWithoutCount.reason,
       status: contextWithoutCount.status,
       error: formattedError,
@@ -190,10 +202,12 @@ export function createLoopWatchdog(input: {
     })
   }
 
-  function start(loopName: string): void {
-    stop(loopName)
-    lastActivityTime.set(loopName, Date.now())
-    consecutiveStalls.set(loopName, 0)
+  function start(lane: LoopLane): void {
+    const key = laneKey(lane)
+    const loopName = lane.loopName
+    stop(lane)
+    lastActivityTime.set(key, Date.now())
+    consecutiveStalls.set(key, 0)
 
     const stallTimeout = input.loopService.getStallTimeoutMs()
     // A busy ceiling below the stall timeout would otherwise only ever be evaluated once per
@@ -211,28 +225,28 @@ export function createLoopWatchdog(input: {
     const pollBeforeStallReady = configuredBusyTimeout > 0 && configuredBusyTimeout < stallTimeout
 
     const interval = setInterval(async () => {
-      if (watchdogRunning.get(loopName)) return
-      watchdogRunning.set(loopName, true)
+      if (watchdogRunning.get(key)) return
+      watchdogRunning.set(key, true)
       try {
-        const lastActivity = lastActivityTime.get(loopName)
+        const lastActivity = lastActivityTime.get(key)
         if (!lastActivity) return
+
+        const state = input.loopService.getActiveState(loopName)
+        if (!state?.active || state.sectionRunKey !== lane.sectionRunKey) {
+          stop(lane)
+          return
+        }
 
         const elapsed = Date.now() - lastActivity
         const stallReady = elapsed >= stallTimeout
         if (!stallReady && !pollBeforeStallReady) return
-
-        const state = input.loopService.getActiveState(loopName)
-        if (!state?.active) {
-          stop(loopName)
-          return
-        }
 
         const statusResult = await getStatusWithRetry(state.worktreeDir, statusRetryAttempts, statusRetryBackoffMs)
 
         if (!statusResult.ok) {
           if (!stallReady) return
           input.logger.error(`Loop watchdog: failed to check session status after retries for ${loopName}, treating as stall`, statusResult.error)
-          await handleStall(loopName, state, {
+          await handleStall(lane, state, {
             reason: 'status_error',
             error: statusResult.error,
             elapsedMs: elapsed,
@@ -264,11 +278,11 @@ export function createLoopWatchdog(input: {
               // The loop may have been cancelled, restarted, or rotated during the
               // async status poll and ancestor-resolution window.
               const freshState = input.loopService.getActiveState(loopName)
-              if (!freshState?.active) return
+              if (!freshState?.active || freshState.sectionRunKey !== lane.sectionRunKey) return
               if (input.handleAuditorProviderLimit && isAuditorPhase(freshState.phase)) {
                 const absorbed = await input.handleAuditorProviderLimit(loopName, limitReason)
                 if (absorbed) {
-                  resetActivity(loopName, 'status:retry')
+                  resetActivity(lane, 'status:retry')
                   input.logger.debug(`Loop watchdog: auditor provider limit absorbed via fallback for ${loopName}, resetting timer`)
                   return
                 }
@@ -289,16 +303,16 @@ export function createLoopWatchdog(input: {
           // only thinks emits no tool calls, so without the content signal a long
           // reasoning stretch would be indistinguishable from a wedged stream.
           const busyTimeout = input.loopService.getBusyStallTimeoutMs()
-          const since = busySince.get(loopName)
+          const since = busySince.get(key)
           if (since === undefined) {
-            busySince.set(loopName, Date.now())
+            busySince.set(key, Date.now())
           } else {
             const lastProgressAt = Math.max(since, latestContentAt)
             const busyElapsed = Date.now() - lastProgressAt
             if (busyTimeout > 0 && busyElapsed >= busyTimeout) {
-              busySince.set(loopName, Date.now())
+              busySince.set(key, Date.now())
               input.logger.error(`Loop watchdog: loop ${loopName} busy with no activity for ${busyElapsed}ms (ceiling ${busyTimeout}ms), nudging session`)
-              await handleStall(loopName, state, {
+              await handleStall(lane, state, {
                 reason: 'busy_no_progress',
                 status: 'busy',
                 elapsedMs: busyElapsed,
@@ -306,13 +320,13 @@ export function createLoopWatchdog(input: {
               return
             }
           }
-          lastActivityTime.set(loopName, Date.now())
+          lastActivityTime.set(key, Date.now())
           input.logger.debug(`Loop watchdog: loop ${loopName} remains busy (main or child session), awaiting activity`)
           return
         }
 
         if (anyRetrying) {
-          resetActivity(loopName, 'status:retry')
+          resetActivity(lane, 'status:retry')
           input.logger.debug(`Loop watchdog: provider retry in progress for ${loopName}, resetting timer`)
           return
         }
@@ -326,31 +340,43 @@ export function createLoopWatchdog(input: {
 
         const status = statusResult.data[state.sessionId]?.type
 
-        await handleStall(loopName, state, {
+        await handleStall(lane, state, {
           reason: status === undefined ? 'missing_status' : 'non_busy_status',
           status,
           elapsedMs: elapsed,
         })
       } finally {
-        watchdogRunning.set(loopName, false)
+        watchdogRunning.set(key, false)
       }
     }, pollIntervalMs)
 
-    stallWatchdogs.set(loopName, interval)
+    stallWatchdogs.set(key, interval)
     input.logger.log(`Loop watchdog: started for loop ${loopName} (timeout: ${stallTimeout}ms, poll: ${pollIntervalMs}ms)`)
   }
 
-  function stop(loopName: string): void {
-    const interval = stallWatchdogs.get(loopName)
+  function stop(lane: LoopLane): void {
+    const key = laneKey(lane)
+    const interval = stallWatchdogs.get(key)
     if (interval) {
       clearInterval(interval)
-      stallWatchdogs.delete(loopName)
+      stallWatchdogs.delete(key)
     }
-    lastActivityTime.delete(loopName)
-    consecutiveStalls.delete(loopName)
-    busySince.delete(loopName)
-    watchdogRunning.delete(loopName)
-    stallDetails.delete(loopName)
+    lastActivityTime.delete(key)
+    consecutiveStalls.delete(key)
+    busySince.delete(key)
+    watchdogRunning.delete(key)
+    stallDetails.delete(key)
+  }
+
+  function stopLoop(loopName: string): void {
+    for (const interval of deleteLoopLaneEntries(stallWatchdogs, projectId, loopName)) {
+      clearInterval(interval)
+    }
+    deleteLoopLaneEntries(lastActivityTime, projectId, loopName)
+    deleteLoopLaneEntries(consecutiveStalls, projectId, loopName)
+    deleteLoopLaneEntries(busySince, projectId, loopName)
+    deleteLoopLaneEntries(watchdogRunning, projectId, loopName)
+    deleteLoopLaneEntries(stallDetails, projectId, loopName)
   }
 
   function clearAll(): void {
@@ -366,23 +392,24 @@ export function createLoopWatchdog(input: {
     stallDetails.clear()
   }
 
-  function recordActivity(loopName: string, source = 'external'): void {
-    if (!stallWatchdogs.has(loopName)) return
-    const state = input.loopService.getActiveState(loopName)
+  function recordActivity(lane: LoopLane, source = 'external'): void {
+    if (!stallWatchdogs.has(laneKey(lane))) return
+    const state = input.loopService.getActiveState(lane.loopName)
     if (!state?.active) return
-    resetActivity(loopName, source)
+    resetActivity(lane, source)
   }
 
   function recordSessionContent(sessionId: string): void {
     lastContentBySession.set(sessionId, Date.now())
   }
 
-  function getStallInfo(loopName: string): LoopWatchdogStallInfo | null {
-    const lastActivity = lastActivityTime.get(loopName)
+  function getStallInfo(lane: LoopLane): LoopWatchdogStallInfo | null {
+    const key = laneKey(lane)
+    const lastActivity = lastActivityTime.get(key)
     if (lastActivity === undefined) return null
-    const details = stallDetails.get(loopName)
+    const details = stallDetails.get(key)
     return {
-      consecutiveStalls: consecutiveStalls.get(loopName) ?? 0,
+      consecutiveStalls: consecutiveStalls.get(key) ?? 0,
       lastActivityTime: lastActivity,
       lastReason: details?.reason,
       lastStatus: details?.status,
@@ -394,6 +421,7 @@ export function createLoopWatchdog(input: {
   return {
     start,
     stop,
+    stopLoop,
     clearAll,
     recordActivity,
     recordSessionContent,

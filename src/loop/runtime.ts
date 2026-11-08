@@ -649,7 +649,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       const record = loopService.recordPendingHandoff(parsed.input)
-      watchdog.recordActivity(state.loopName, 'handoff-recorded')
+      watchdog.recordActivity(laneOf(state), 'handoff-recorded')
       return { ok: true, replaced: record.replaced }
     })
   }
@@ -864,8 +864,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopService.registerLoopSession(newSessionId, loopName)
     sessionToLoop.set(newSessionId, loopName)
     if (previousSessionId) sessionToLoop.set(previousSessionId, loopName)
-    watchdog.stop(loopName)
-    watchdog.start(loopName)
+    watchdog.stop(lane)
+    watchdog.start(lane)
   }
 
   /**
@@ -1134,6 +1134,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(currentState.sessionId, loopName)
     replaceLoopSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
+    const postActionLane = laneOf(loopService.getActiveState(loopName) ?? currentState)
+    watchdog.start(postActionLane)
 
     // Record the *entry* into post_action here — after the persisted phase commit
     // AND before sending the post-action prompt. If the prompt send fails below,
@@ -1151,14 +1153,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
-    const { error } = await sendPostActionPrompt(laneOf(loopService.getActiveState(loopName) ?? currentState), created.sessionId, prompt)
+    const { error } = await sendPostActionPrompt(postActionLane, created.sessionId, prompt)
     if (error) {
       const targetState = loopService.getActiveState(loopName) ?? currentState
       logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
       await terminateLoop(loopName, targetState, { kind: 'completed' })
       return true
     }
-    watchdog.recordActivity(loopName, 'post-action-prompt-sent')
+    watchdog.recordActivity(postActionLane, 'post-action-prompt-sent')
     return true
   }
 
@@ -1540,7 +1542,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     state = current
 
     const sessionId = state.sessionId
-    watchdog.stop(loopName)
+    watchdog.stopLoop(loopName)
     loopRegistry.remove(projectId, loopName)
 
     loopService.discardPendingHandoff(loopName)
@@ -1686,7 +1688,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       variant: choice.variant,
     })
     if (!error) {
-      watchdog.recordActivity(loopName, 'auditor-model-fallback')
+      watchdog.recordActivity(laneOf(state), 'auditor-model-fallback')
     }
     return { error }
   }
@@ -1920,7 +1922,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await handlePromptError(opts.loopName, opts.errorState, context, error, buildPromptRetryFn(opts))
       return { sent: false }
     }
-    if (opts.activityTag) watchdog.recordActivity(opts.loopName, opts.activityTag)
+    if (opts.activityTag) watchdog.recordActivity(laneOf(loopService.getActiveState(opts.loopName) ?? opts.errorState), opts.activityTag)
     return { sent: true, usedModel }
   }
 
@@ -1999,6 +2001,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   const watchdog = createLoopWatchdog({
+    projectId,
     loopService,
     client,
     logger,
@@ -2022,6 +2025,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   /** Clears every marker and timer of one section-run lane. */
   function releaseSectionRunLane(lane: LoopLane): void {
+    watchdog.stop(lane)
     const key = laneKey(lane)
     clearPromptPending(projectId, lane, logger)
     clearPromptInFlight(projectId, lane)
@@ -2037,6 +2041,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   /** Clears every section-run lane of one loop. */
   function releaseLoopLanes(loopName: string): void {
+    watchdog.stopLoop(loopName)
     clearLoopPromptPending(projectId, loopName, logger)
     clearLoopPromptInFlight(projectId, loopName)
     deleteLoopLaneEntries(pendingCodeGraphSnapshots, projectId, loopName)
@@ -2135,19 +2140,19 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * can run for minutes while no session is busy, so the heartbeat keeps the watchdog from
    * treating the wait as a stall. Any failure is logged and yields no report.
    */
-  async function computeCodeGraphSnapshot(loopName: string, plan: CodeGraphSnapshotPlan): Promise<string | null> {
+  async function computeCodeGraphSnapshot(lane: LoopLane, plan: CodeGraphSnapshotPlan): Promise<string | null> {
     const heartbeat = setInterval(
-      () => watchdog.recordActivity(loopName, 'code-graph-snapshot'),
+      () => watchdog.recordActivity(lane, 'code-graph-snapshot'),
       CODE_GRAPH_HEARTBEAT_MS,
     )
     try {
       return await plan.compute()
     } catch (err) {
-      logger.error(`[code-graph] snapshot failed for ${loopName}`, err)
+      logger.error(`[code-graph] snapshot failed for ${lane.loopName}`, err)
       return null
     } finally {
       clearInterval(heartbeat)
-      watchdog.recordActivity(loopName, 'code-graph-snapshot')
+      watchdog.recordActivity(lane, 'code-graph-snapshot')
     }
   }
 
@@ -2171,7 +2176,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (active && active.sessionId !== state.sessionId) return
     const plan = planCodeGraphSnapshot(state.loopName, () => planSectionCodeGraph(state))
     if (!plan) return
-    recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(state.loopName, plan))
+    recordCodeGraphSnapshot(state.loopName, plan, await computeCodeGraphSnapshot(laneOf(state), plan))
   }
 
   /**
@@ -2217,7 +2222,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (pendingCodeGraphSnapshots.get(key) === token) pendingCodeGraphSnapshots.delete(key)
     }
     void (async () => {
-      const text = await computeCodeGraphSnapshot(loopName, plan)
+      const text = await computeCodeGraphSnapshot(laneOf(expected), plan)
       await withStateLock(loopName, async () => {
         clearPending()
         const fresh = loopService.getActiveState(loopName)
@@ -2278,7 +2283,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           })
           if (retryResult.ok) {
             logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
-            watchdog.recordActivity(loopName, 'audit-recover')
+            watchdog.recordActivity(laneOf(currentState), 'audit-recover')
             return
           }
           // Resend failed — use the actual resend error for classification and retry
@@ -2311,7 +2316,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     } else {
       logger.log(`auditor using default model (fallback) (session ${sessionId})`)
     }
-    watchdog.recordActivity(loopName, activityTag)
+    watchdog.recordActivity(laneOf(currentState), activityTag)
   }
 
   /**
@@ -3235,7 +3240,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       try {
-        watchdog.start(loopName)
+        watchdog.start(lane)
 
         await phaseRunners[state.phase](loopName, state)
       } catch (err) {
@@ -3430,7 +3435,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function clearLoopTimers(loopName: string): Promise<void> {
-    watchdog.stop(loopName)
+    watchdog.stopLoop(loopName)
 
     releaseLoopLanes(loopName)
     coalescedLimitSessions.delete(loopName)
@@ -3497,16 +3502,19 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function recordActivity(name: string, source?: string): void {
-    watchdog.recordActivity(name, source)
+    const lane = activeLane(name)
+    if (!lane) return
+    watchdog.recordActivity(lane, source)
   }
 
   function startWatchdog(name: string): void {
     const state = loopService.getActiveState(name)
-    if (state && !ownsLoopWorktree(state.worktreeDir)) {
+    if (!state) return
+    if (!ownsLoopWorktree(state.worktreeDir)) {
       logger.log(`Loop: skipping watchdog for ${name}; instance directory ${instanceDirectory} does not own worktree ${state.worktreeDir}`)
       return
     }
-    watchdog.start(name)
+    watchdog.start(laneOf(state))
   }
 
   /**
@@ -3526,13 +3534,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     )
     for (const state of owned) {
       logger.log(`Loop: supervising ${state.loopName} owned by instance directory ${instanceDirectory}`)
-      watchdog.start(state.loopName)
+      watchdog.start(laneOf(state))
     }
     return owned.map((state) => state.loopName)
   }
 
   function getStallInfo(name: string): LoopWatchdogStallInfo | null {
-    return watchdog.getStallInfo(name)
+    const lane = activeLane(name)
+    if (!lane) return null
+    return watchdog.getStallInfo(lane)
   }
 
   function generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string {

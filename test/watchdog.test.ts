@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createLoopWatchdog } from '../src/hooks/watchdog'
 import type { LoopState } from '../src/loop/state'
+import type { LoopLane } from '../src/loop/section-run'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { makeLoopState } from './helpers/loop-fixtures'
 import { createCapturingLogger } from './helpers/logger'
@@ -10,6 +11,8 @@ const WATCHDOG_STATE_DEFAULTS = {
   worktreeDir: '/tmp/test-worktree',
   maxIterations: 0,
 }
+
+const PLAN_LANE: LoopLane = { loopName: 'test-loop', sectionRunKey: 'plan' }
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -43,6 +46,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -56,19 +60,18 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(recoverCalls.length).toBe(0)
     expect(terminateCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('treats busy child/subagent sessions as loop being busy', async () => {
@@ -78,6 +81,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -94,20 +98,19 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     // Both sessions belong to 'test-loop' -> audit being busy counts as loop busy
     expect(recoverCalls.length).toBe(0)
     expect(terminateCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('does NOT treat busy session from another loop as this loop being busy', async () => {
@@ -117,6 +120,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -135,19 +139,18 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(70)
 
     // unrelated-session belongs to no loop -> this loop should stall
     expect(recoverCalls.length).toBeGreaterThanOrEqual(1)
     expect((recoverCalls[recoverCalls.length - 1] as { reason: string }).reason).toBe('non_busy_status')
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('resets activity for generic retry without usage-limit message', async () => {
@@ -157,6 +160,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -175,15 +179,14 @@ describe('createLoopWatchdog', () => {
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(70)
 
     expect(recoverCalls.length).toBe(0)
     expect(terminateCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('terminates with provider_limit when retry snapshot has usage-limit message', async () => {
@@ -193,6 +196,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -208,12 +212,11 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(terminateCalls.length).toBe(1)
@@ -223,7 +226,7 @@ describe('createLoopWatchdog', () => {
     })
     expect(recoverCalls.length).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('terminates with fresh state (not stale snapshot) when usage limit detected', async () => {
@@ -234,6 +237,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => newState, // Always returns the new state
@@ -248,12 +252,11 @@ describe('createLoopWatchdog', () => {
       terminate: async (_ln, state, reason) => {
         terminateCalls.push(reason)
         terminateStates.push(state)
-        watchdog.stop(loopName)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(terminateCalls.length).toBe(1)
@@ -264,7 +267,7 @@ describe('createLoopWatchdog', () => {
     // The terminate callback should receive the fresh state, not the stale one
     expect(terminateStates[0]).toBe(newState)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('does not terminate when active state becomes null during async status poll', async () => {
@@ -277,6 +280,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: getState,
@@ -296,19 +300,18 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (_ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(loopName)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     // The watchdog should NOT terminate because the fresh-state check returned null
     expect(terminateCalls.length).toBe(0)
     expect(recoverCalls.length).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('treats generic retry snapshot as activity (no stall, no recover)', async () => {
@@ -318,6 +321,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -336,15 +340,14 @@ describe('createLoopWatchdog', () => {
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(recoverCalls.length).toBe(0)
     expect(terminateCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('records status API failures and recovers before stall timeout', async () => {
@@ -354,6 +357,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger, logs } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -371,12 +375,11 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(70)
 
     expect(recoverCalls.length).toBeGreaterThanOrEqual(2)
@@ -390,7 +393,7 @@ describe('createLoopWatchdog', () => {
     const errorLogs = logs.filter((l) => l.level === 'error' && l.message.includes('failed to check session status after retries'))
     expect(errorLogs.length).toBeGreaterThan(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('records falsy status API failures', async () => {
@@ -400,6 +403,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -417,18 +421,17 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(25)
 
-    expect(watchdog.getStallInfo(loopName)?.lastReason).toBe('status_error')
-    expect(typeof watchdog.getStallInfo(loopName)?.lastError).toBe('string')
+    expect(watchdog.getStallInfo(PLAN_LANE)?.lastReason).toBe('status_error')
+    expect(typeof watchdog.getStallInfo(PLAN_LANE)?.lastError).toBe('string')
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('recordActivity resets stall count and clears reason', async () => {
@@ -437,6 +440,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -451,17 +455,16 @@ describe('createLoopWatchdog', () => {
       terminate: async () => {},
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(25)
 
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBeGreaterThan(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBeGreaterThan(0)
 
-    watchdog.recordActivity(loopName, 'tool-before:edit')
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.lastReason).toBeUndefined()
+    watchdog.recordActivity(PLAN_LANE, 'tool-before:edit')
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.lastReason).toBeUndefined()
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('absorbs provider-limit retry in auditing when fallback returns true and resets activity', async () => {
@@ -471,6 +474,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -484,7 +488,7 @@ describe('createLoopWatchdog', () => {
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
       handleAuditorProviderLimit: async (ln, reason) => {
         fallbackCalls.push({ ln, reason })
@@ -493,16 +497,16 @@ describe('createLoopWatchdog', () => {
     })
 
     const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(fallbackCalls.length).toBeGreaterThanOrEqual(1)
     expect((fallbackCalls[0] as { ln: string }).ln).toBe(loopName)
     expect(String((fallbackCalls[0] as { reason: unknown }).reason)).toContain('usage limit')
     expect(terminateCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('terminates with provider_limit in auditing when fallback returns false', async () => {
@@ -512,6 +516,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -525,7 +530,7 @@ describe('createLoopWatchdog', () => {
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
       handleAuditorProviderLimit: async (ln, reason) => {
         fallbackCalls.push({ ln, reason })
@@ -533,8 +538,7 @@ describe('createLoopWatchdog', () => {
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(fallbackCalls.length).toBe(1)
@@ -544,7 +548,7 @@ describe('createLoopWatchdog', () => {
       message: expect.stringContaining('usage limit'),
     })
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('terminates with provider_limit when fallback absent (backwards compatible)', async () => {
@@ -553,6 +557,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -566,12 +571,11 @@ describe('createLoopWatchdog', () => {
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(terminateCalls.length).toBe(1)
@@ -580,7 +584,7 @@ describe('createLoopWatchdog', () => {
       message: expect.stringContaining('usage limit'),
     })
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('does not absorb provider-limit retry in a non-auditor phase', async () => {
@@ -590,6 +594,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -603,7 +608,7 @@ describe('createLoopWatchdog', () => {
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
       handleAuditorProviderLimit: async () => {
         fallbackCalls += 1
@@ -611,8 +616,7 @@ describe('createLoopWatchdog', () => {
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(fallbackCalls).toBe(0)
@@ -622,7 +626,7 @@ describe('createLoopWatchdog', () => {
       message: expect.stringContaining('usage limit'),
     })
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('terminates when child session has provider-limit retry via resolveSessionLoopName', async () => {
@@ -631,6 +635,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -648,7 +653,7 @@ describe('createLoopWatchdog', () => {
       recover: async () => {},
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
       // Ancestor-aware resolver: child session's parent is the coding session
       resolveSessionLoopName: async (sid: string) => {
@@ -658,8 +663,7 @@ describe('createLoopWatchdog', () => {
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(60)
 
     expect(terminateCalls.length).toBe(1)
@@ -668,7 +672,7 @@ describe('createLoopWatchdog', () => {
       message: expect.stringContaining('usage limit'),
     })
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('nudges a session stuck busy with no activity past busyStallTimeoutMs', async () => {
@@ -679,6 +683,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -689,19 +694,18 @@ describe('createLoopWatchdog', () => {
       logger,
       nudge: async (ln, _s, ctx) => {
         nudgeCalls.push(ctx)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
       recover: async (_ln, _s, ctx) => {
         recoverCalls.push(ctx)
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(120)
 
     expect(nudgeCalls.length).toBe(1)
@@ -710,7 +714,7 @@ describe('createLoopWatchdog', () => {
     expect(recoverCalls.length).toBe(0)
     expect(terminateCalls.length).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('does not nudge while busy stays under busyStallTimeoutMs', async () => {
@@ -720,6 +724,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -737,15 +742,14 @@ describe('createLoopWatchdog', () => {
       terminate: async () => {},
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(120)
 
     expect(nudgeCalls.length).toBe(0)
     expect(recoverCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('recordActivity during a busy stretch resets the busy ceiling', async () => {
@@ -755,6 +759,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -762,7 +767,7 @@ describe('createLoopWatchdog', () => {
         }),
       },
       client: createMockClient(async () => {
-        if (recording) watchdog.recordActivity('test-loop', 'tool-after:edit')
+        if (recording) watchdog.recordActivity(PLAN_LANE, 'tool-after:edit')
         return { 'coding-session': { type: 'busy', message: 'working' } }
       }),
       logger,
@@ -773,8 +778,7 @@ describe('createLoopWatchdog', () => {
       terminate: async () => {},
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(150)
 
     // Real tool activity kept resetting the ceiling, so the busy stretch never matured
@@ -785,7 +789,7 @@ describe('createLoopWatchdog', () => {
     await wait(150)
     expect(nudgeCalls.length).toBeGreaterThanOrEqual(1)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('streamed content (thinking) during a busy stretch resets the busy ceiling', async () => {
@@ -795,6 +799,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -813,8 +818,7 @@ describe('createLoopWatchdog', () => {
       terminate: async () => {},
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(150)
 
     // Reasoning deltas emit no tool calls, but they prove the stream is alive
@@ -825,7 +829,7 @@ describe('createLoopWatchdog', () => {
     await wait(150)
     expect(nudgeCalls.length).toBeGreaterThanOrEqual(1)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('counts streamed content from a child session of the same loop', async () => {
@@ -835,6 +839,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -856,8 +861,7 @@ describe('createLoopWatchdog', () => {
       terminate: async () => {},
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(150)
 
     // A thinking subagent keeps the whole loop alive
@@ -867,7 +871,7 @@ describe('createLoopWatchdog', () => {
     await wait(150)
     expect(nudgeCalls.length).toBeGreaterThanOrEqual(1)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('honors a busyStallTimeoutMs lower than stallTimeoutMs instead of coarsening it', async () => {
@@ -876,6 +880,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -888,21 +893,20 @@ describe('createLoopWatchdog', () => {
       logger,
       nudge: async (ln, _s, ctx) => {
         nudgeCalls.push(ctx)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
       recover: async () => {},
       terminate: async () => {},
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
 
     // Well under two stall timeouts: with stall-timeout-only polling this would still be 0
     await wait(320)
 
     expect(nudgeCalls.length).toBe(1)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('ignores streamed content from a session outside the loop', async () => {
@@ -911,6 +915,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -924,19 +929,18 @@ describe('createLoopWatchdog', () => {
       logger,
       nudge: async (ln, _s, ctx) => {
         nudgeCalls.push(ctx)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
       recover: async () => {},
       terminate: async () => {},
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(120)
 
     expect(nudgeCalls.length).toBe(1)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('disables nudging when busyStallTimeoutMs is 0', async () => {
@@ -947,6 +951,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -963,20 +968,19 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(150)
 
     expect(nudgeCalls.length).toBe(0)
     expect(recoverCalls.length).toBe(0)
     expect(terminateCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('escalates repeated busy_no_progress stalls to termination', async () => {
@@ -987,6 +991,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -1003,12 +1008,11 @@ describe('createLoopWatchdog', () => {
       },
       terminate: async (ln, _s, reason) => {
         terminateCalls.push(reason)
-        watchdog.stop(ln)
+        watchdog.stop(PLAN_LANE)
       },
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(200)
 
     // maxConsecutiveStalls is 3: two nudges, then the third stall terminates
@@ -1018,7 +1022,7 @@ describe('createLoopWatchdog', () => {
     expect(recoverCalls.length).toBe(0)
     expect(terminateCalls).toEqual([{ kind: 'stall_timeout' }])
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('does not count a stall while the current session has a queued prompt', async () => {
@@ -1027,6 +1031,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -1042,14 +1047,13 @@ describe('createLoopWatchdog', () => {
       isPromptQueued: (sessionId) => sessionId === 'coding-session',
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(80)
 
     expect(recoverCalls.length).toBe(0)
-    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+    expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
   })
 
   it('does not reset activity or the stall count while a prompt is queued', async () => {
@@ -1059,6 +1063,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -1075,25 +1080,24 @@ describe('createLoopWatchdog', () => {
       isPromptQueued: () => queued,
     })
 
-    const loopName = 'test-loop'
     vi.useFakeTimers()
     try {
-      watchdog.start(loopName)
+      watchdog.start(PLAN_LANE)
       await vi.advanceTimersByTimeAsync(12)
       expect(recoverCalls.length).toBe(1)
-      expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(1)
+      expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(1)
 
       queued = true
       await vi.advanceTimersByTimeAsync(50)
       expect(recoverCalls.length).toBe(1)
-      expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(1)
+      expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(1)
 
       queued = false
       await vi.advanceTimersByTimeAsync(12)
       expect(recoverCalls.length).toBe(2)
-      expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(2)
+      expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(2)
     } finally {
-      watchdog.stop(loopName)
+      watchdog.stop(PLAN_LANE)
       vi.useRealTimers()
     }
   })
@@ -1105,6 +1109,7 @@ describe('createLoopWatchdog', () => {
 
     const { logger } = createCapturingLogger()
     const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
       loopService: {
         ...createMockLoopService({
           getActiveState: () => stateRef.current,
@@ -1120,8 +1125,7 @@ describe('createLoopWatchdog', () => {
       isPromptQueued: () => queued,
     })
 
-    const loopName = 'test-loop'
-    watchdog.start(loopName)
+    watchdog.start(PLAN_LANE)
     await wait(80)
     expect(recoverCalls.length).toBe(0)
 
@@ -1129,6 +1133,51 @@ describe('createLoopWatchdog', () => {
     await wait(80)
     expect(recoverCalls.length).toBeGreaterThanOrEqual(1)
 
-    watchdog.stop(loopName)
+    watchdog.stop(PLAN_LANE)
+  })
+
+  it('stops the previous lane timer when the active section run advances', async () => {
+    const oldLane: LoopLane = { loopName: 'test-loop', sectionRunKey: 'section:one' }
+    const newLane: LoopLane = { loopName: 'test-loop', sectionRunKey: 'section:two' }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sectionRunKey: 'section:one' }) }
+    const recoverCalls: unknown[] = []
+    const terminateCalls: unknown[] = []
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
+      loopService: {
+        ...createMockLoopService({ getActiveState: () => stateRef.current }),
+      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
+      logger,
+      nudge: vi.fn(),
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async (_ln, _s, reason) => {
+        terminateCalls.push(reason)
+      },
+    })
+
+    vi.useFakeTimers()
+    try {
+      watchdog.start(oldLane)
+      stateRef.current = makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sectionRunKey: 'section:two' })
+      // The old lane must notice the advance and stop itself before recovering.
+      await vi.advanceTimersByTimeAsync(60)
+      expect(recoverCalls.length).toBe(0)
+      expect(terminateCalls.length).toBe(0)
+      expect(watchdog.getStallInfo(oldLane)).toBeNull()
+
+      // The new lane's timer runs and treats the idle session as a stall.
+      watchdog.start(newLane)
+      await vi.advanceTimersByTimeAsync(60)
+      expect(recoverCalls.length).toBeGreaterThanOrEqual(1)
+      expect(watchdog.getStallInfo(newLane)?.consecutiveStalls).toBeGreaterThan(0)
+    } finally {
+      watchdog.stop(newLane)
+      vi.useRealTimers()
+    }
   })
 })
