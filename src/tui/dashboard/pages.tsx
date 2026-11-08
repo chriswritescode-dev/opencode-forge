@@ -6,6 +6,7 @@ import type { JSX } from '@opentui/solid'
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type Accessor } from 'solid-js'
 import type {
   ForgeAmendmentDiff,
+  ForgeDashboardLane,
   ForgeDashboardLoopSummary,
   ForgeDashboardProjectSummary,
   ForgeDashboardUnexecutedPlan,
@@ -25,6 +26,7 @@ import {
   amendedSectionIndexes,
   buildRepoLabels,
   capList,
+  completedSectionCount,
   computePhaseSpans,
   findingsLevel,
   formatFinding,
@@ -37,14 +39,16 @@ import {
   formatUsageCost,
   fmtTime,
   groupFindingsBySection,
+  loopPhaseText,
   mergeTimelineEntries,
   modelUsageBars,
+  parallelLanes,
   phaseLegendRows,
   recentTransitionRows,
   repoLabel,
   repoRawPath,
   roleUsageBars,
-  sectionProgress,
+  sectionCompletion,
   splitFindings,
   summarizeAmendments,
   tabsForLoop,
@@ -171,6 +175,17 @@ function meter(current: number, total: number, colors: DashboardColors): JSX.Ele
     <text flexShrink={0} fg={colors.muted}>
       {`${textBar(total > 0 ? current / total : 0, METER_WIDTH)} ${current}/${total}`}
     </text>
+  )
+}
+
+function LaneLine(props: { lane: ForgeDashboardLane; colors: DashboardColors }): JSX.Element {
+  return (
+    <box flexDirection="row" gap={1} paddingLeft={4}>
+      <text flexShrink={0} fg={props.colors.muted}>{`#${formatSectionNumber(props.lane.sectionIndex)}`}</text>
+      <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>{props.lane.title}</text>
+      <text flexShrink={0} fg={phaseColor(props.colors, props.lane.phase)}>{phaseLabel(props.lane.phase)}</text>
+      <text flexShrink={0} fg={props.colors.muted}>{formatCount(props.lane.attempts, 'attempt')}</text>
+    </box>
   )
 }
 
@@ -723,26 +738,30 @@ function renderLoopRow(props: {
   selected: Accessor<boolean>
   colors: DashboardColors
 }): JSX.Element {
-  const phase = () => (props.loop.completedAt === undefined ? phaseLabel(props.loop.phase) : '—')
-  const sections = () => sectionProgress(props.loop.currentSectionIndex, props.loop.totalSections)
+  const sections = () => sectionCompletion(props.loop.completedSections, props.loop.totalSections)
   return (
-    <box flexDirection="row" gap={1}>
-      {marker(props.selected, props.colors)}
-      <text flexShrink={0} fg={statusColor(props.colors, props.loop.status)}>{props.loop.status}</text>
-      <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>{props.loop.loopName}</text>
-      <text flexShrink={0} fg={props.colors.muted}>{phase()}</text>
-      {meter(props.loop.iteration, props.loop.maxIterations, props.colors)}
-      <Show when={props.loop.totalSections > 0} fallback={<text flexShrink={0} fg={props.colors.muted}>—</text>}>
-        {meter(sections().current, sections().total, props.colors)}
-      </Show>
-      <text flexShrink={0} fg={props.loop.bugCount > 0 ? props.colors.error : props.colors.muted}>
-        {formatCount(props.loop.bugCount, 'bug')}
-      </text>
-      <text flexShrink={0} fg={props.colors.muted}>
-        {props.loop.totalCost === undefined ? '—' : formatUsageCost(props.loop.totalCost)}
-      </text>
-      <text flexShrink={0} fg={props.colors.muted}>{props.loop.durationText ?? '—'}</text>
-      <text flexShrink={0} fg={props.colors.muted}>{formatRelativeTime(props.loop.activityAt)}</text>
+    <box flexDirection="column">
+      <box flexDirection="row" gap={1}>
+        {marker(props.selected, props.colors)}
+        <text flexShrink={0} fg={statusColor(props.colors, props.loop.status)}>{props.loop.status}</text>
+        <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>{props.loop.loopName}</text>
+        <text flexShrink={0} fg={props.colors.muted}>{loopPhaseText(props.loop)}</text>
+        {meter(props.loop.iteration, props.loop.maxIterations, props.colors)}
+        <Show when={props.loop.totalSections > 0} fallback={<text flexShrink={0} fg={props.colors.muted}>—</text>}>
+          {meter(sections().completed, sections().total, props.colors)}
+        </Show>
+        <text flexShrink={0} fg={props.loop.bugCount > 0 ? props.colors.error : props.colors.muted}>
+          {formatCount(props.loop.bugCount, 'bug')}
+        </text>
+        <text flexShrink={0} fg={props.colors.muted}>
+          {props.loop.totalCost === undefined ? '—' : formatUsageCost(props.loop.totalCost)}
+        </text>
+        <text flexShrink={0} fg={props.colors.muted}>{props.loop.durationText ?? '—'}</text>
+        <text flexShrink={0} fg={props.colors.muted}>{formatRelativeTime(props.loop.activityAt)}</text>
+      </box>
+      <For each={parallelLanes(props.loop.lanes)}>
+        {(lane) => <LaneLine lane={lane} colors={props.colors} />}
+      </For>
     </box>
   )
 }
@@ -1125,7 +1144,7 @@ export function DashboardLoopPage(props: {
 
 function LoopHeader(props: { detail: ForgeLoopDetail; colors: DashboardColors }): JSX.Element {
   const loop = (): ForgeLoopDetailRow => props.detail.loop
-  const sections = () => sectionProgress(loop().currentSectionIndex, loop().totalSections)
+  const sections = () => sectionCompletion(completedSectionCount(props.detail.sections), loop().totalSections)
   const split = () => splitFindings(props.detail.findings)
   const findingsSummary = (): string => {
     const value = split()
@@ -1156,10 +1175,13 @@ function LoopHeader(props: { detail: ForgeLoopDetail; colors: DashboardColors })
         <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>
           <b>{loop().loopName}</b>
         </text>
-        <Show when={loop().completedAt === undefined}>
-          <text flexShrink={0} fg={props.colors.info}>{phaseLabel(loop().phase)}</text>
-        </Show>
+        <text flexShrink={0} fg={props.colors.info}>
+          {loopPhaseText({ phase: loop().phase, completedAt: loop().completedAt, lanes: props.detail.lanes })}
+        </text>
       </box>
+      <For each={parallelLanes(props.detail.lanes)}>
+        {(lane) => <LaneLine lane={lane} colors={props.colors} />}
+      </For>
       <box flexDirection="row" gap={2}>
         <text flexShrink={0} fg={props.colors.muted}>{`duration ${props.detail.durationText ?? '—'}`}</text>
         <text flexShrink={0} fg={props.colors.muted}>{`cost ${cost()}`}</text>
@@ -1168,7 +1190,7 @@ function LoopHeader(props: { detail: ForgeLoopDetail; colors: DashboardColors })
         </text>
         <Show when={loop().totalSections > 0}>
           <text flexShrink={0} fg={props.colors.muted}>
-            {`sections ${textBar(sections().current / sections().total, METER_WIDTH)} ${sections().current}/${sections().total}`}
+            {`sections ${textBar(sections().completed / sections().total, METER_WIDTH)} ${sections().completed}/${sections().total}`}
           </text>
         </Show>
       </box>

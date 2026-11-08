@@ -1,4 +1,5 @@
 import type {
+  ForgeDashboardLane,
   ForgeDashboardLoopSummary,
   ForgeDashboardProjectSummary,
   ForgeDashboardSummary,
@@ -6,6 +7,7 @@ import type {
   ForgeLoopUsage,
   ForgePlanAmendment,
   ForgeReviewFinding,
+  ForgeSectionPlan,
 } from '../../host/forge-rpc'
 import { computeElapsedSeconds, formatDuration } from '../../utils/duration'
 import { phaseLabel } from '../../utils/phase-label'
@@ -309,12 +311,39 @@ export function formatSectionNumber(index: number): string {
 }
 
 /**
- * 1-based section position for a 0-based stored index, capped at the section
- * total so the meter label and its fill always show the same position.
+ * Completed sections of the total, clamped to `[0, total]`; `{ 0, 0 }` when
+ * `total <= 0`.
  */
-export function sectionProgress(index: number, total: number): { current: number; total: number } {
-  if (total <= 0) return { current: 0, total: 0 }
-  return { current: Math.max(0, Math.min(index + 1, total)), total }
+export function sectionCompletion(completed: number, total: number): { completed: number; total: number } {
+  if (total <= 0) return { completed: 0, total: 0 }
+  return { completed: Math.max(0, Math.min(completed, total)), total }
+}
+
+/** Count of sections whose status is `completed`. */
+export function completedSectionCount(sections: Pick<ForgeSectionPlan, 'status'>[]): number {
+  return sections.filter((section) => section.status === 'completed').length
+}
+
+/**
+ * Lanes as they should be drawn: sorted by section index, or `[]` when a loop
+ * has fewer than two running lanes so it renders exactly as before.
+ */
+export function parallelLanes(lanes: ForgeDashboardLane[]): ForgeDashboardLane[] {
+  if (lanes.length < 2) return []
+  return [...lanes].sort((a, b) => a.sectionIndex - b.sectionIndex)
+}
+
+/** Phase column text: `—` once completed, lane count when parallel, else the phase label. */
+export function loopPhaseText(loop: { phase: string; completedAt?: number; lanes: ForgeDashboardLane[] }): string {
+  if (loop.completedAt !== undefined) return '—'
+  const lanes = parallelLanes(loop.lanes)
+  if (lanes.length > 0) return `${lanes.length} lanes`
+  return phaseLabel(loop.phase)
+}
+
+/** Single-line lane summary: `#N title · Phase · X attempts`. */
+export function formatLaneLine(lane: ForgeDashboardLane): string {
+  return `#${formatSectionNumber(lane.sectionIndex)} ${lane.title} · ${phaseLabel(lane.phase)} · ${formatCount(lane.attempts, 'attempt')}`
 }
 
 export function formatFinding(f: ForgeReviewFinding): string {

@@ -5,6 +5,7 @@ import {
   amendedSectionIndexes,
   buildRepoLabels,
   capList,
+  completedSectionCount,
   computePhaseSpans,
   computeTimelineEvents,
   filterDashboardProjects,
@@ -12,6 +13,7 @@ import {
   findingsLevel,
   fmtTime,
   formatFinding,
+  formatLaneLine,
   formatCount,
   formatRelativeTime,
   formatSectionDuration,
@@ -20,14 +22,16 @@ import {
   formatTokenCount,
   formatUsageCost,
   groupFindingsBySection,
+  loopPhaseText,
   mergeTimelineEntries,
   modelUsageBars,
   nextSortMode,
   nextStatusFilter,
+  parallelLanes,
   phaseLegendRows,
   repoLabel,
   roleUsageBars,
-  sectionProgress,
+  sectionCompletion,
   shareUnchanged,
   sortLoops,
   splitFindings,
@@ -46,8 +50,9 @@ import type {
   ForgeLoopUsage,
   ForgePlanAmendment,
   ForgeReviewFinding,
+  ForgeSectionPlan,
 } from '../../src/host/forge-rpc'
-import { makeLoopSummary, makeTransition } from '../helpers/dashboard-fixtures'
+import { makeLane, makeLoopSummary, makeTransition } from '../helpers/dashboard-fixtures'
 
 function makeFinding(overrides: Partial<ForgeReviewFinding> = {}): ForgeReviewFinding {
   return {
@@ -541,7 +546,7 @@ describe('findingsLevel', () => {
   })
 })
 
-describe('formatCount / formatSectionNumber / sectionProgress', () => {
+describe('formatCount / formatSectionNumber / sectionCompletion', () => {
   test('singular for count of 1 and plural otherwise', () => {
     expect(formatCount(1, 'bug')).toBe('1 bug')
     expect(formatCount(1, 'warning')).toBe('1 warning')
@@ -557,12 +562,47 @@ describe('formatCount / formatSectionNumber / sectionProgress', () => {
     expect(formatSectionNumber(4)).toBe('5')
   })
 
-  test('sectionProgress is 1-based and capped at the section total', () => {
-    expect(sectionProgress(0, 3)).toEqual({ current: 1, total: 3 })
-    expect(sectionProgress(1, 3)).toEqual({ current: 2, total: 3 })
-    expect(sectionProgress(2, 3)).toEqual({ current: 3, total: 3 })
-    expect(sectionProgress(9, 3)).toEqual({ current: 3, total: 3 })
-    expect(sectionProgress(0, 0)).toEqual({ current: 0, total: 0 })
+  test('sectionCompletion clamps the completed count to the total', () => {
+    expect(sectionCompletion(1, 3)).toEqual({ completed: 1, total: 3 })
+    expect(sectionCompletion(3, 3)).toEqual({ completed: 3, total: 3 })
+    expect(sectionCompletion(9, 3)).toEqual({ completed: 3, total: 3 })
+    expect(sectionCompletion(-2, 3)).toEqual({ completed: 0, total: 3 })
+    expect(sectionCompletion(0, 0)).toEqual({ completed: 0, total: 0 })
+  })
+})
+
+describe('completedSectionCount / parallelLanes / loopPhaseText / formatLaneLine', () => {
+  test('completedSectionCount counts only completed statuses', () => {
+    const sections = [
+      { status: 'completed' },
+      { status: 'pending' },
+      { status: 'failed' },
+      { status: 'completed' },
+    ] as Pick<ForgeSectionPlan, 'status'>[]
+    expect(completedSectionCount(sections)).toBe(2)
+  })
+
+  test('parallelLanes returns [] for fewer than two lanes', () => {
+    expect(parallelLanes([])).toEqual([])
+    expect(parallelLanes([makeLane()])).toEqual([])
+  })
+
+  test('parallelLanes sorts by section index without mutating the input', () => {
+    const lanes = [makeLane({ sectionIndex: 3 }), makeLane({ sectionIndex: 1 })]
+    const sorted = parallelLanes(lanes)
+    expect(sorted.map((lane) => lane.sectionIndex)).toEqual([1, 3])
+    expect(lanes.map((lane) => lane.sectionIndex)).toEqual([3, 1])
+  })
+
+  test('loopPhaseText shows a dash when completed, lane count when parallel, else the phase label', () => {
+    expect(loopPhaseText({ phase: 'coding', completedAt: 5, lanes: [makeLane()] })).toBe('—')
+    expect(loopPhaseText({ phase: 'coding', lanes: [] })).toBe('Coding')
+    expect(loopPhaseText({ phase: 'coding', lanes: [makeLane(), makeLane({ sectionIndex: 3 })] })).toBe('2 lanes')
+  })
+
+  test('formatLaneLine joins number, title, phase and attempts', () => {
+    expect(formatLaneLine(makeLane({ sectionIndex: 2, title: 'TUI view model', phase: 'auditing', attempts: 2 })))
+      .toBe('#3 TUI view model · Auditing · 2 attempts')
   })
 })
 
