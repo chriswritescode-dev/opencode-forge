@@ -24,6 +24,13 @@ export function laneOf(state: Pick<LoopState, 'loopName' | 'sectionRunKey'>): Lo
   return { loopName: state.loopName, sectionRunKey: state.sectionRunKey }
 }
 
+/** True when a loop runs section runs in parallel lanes: a sectioned worktree loop with more than one slot. */
+export function isLaneLoop(
+  state: Pick<LoopState, 'worktree' | 'totalSections' | 'maxParallelSections'>,
+): boolean {
+  return Boolean(state.worktree) && state.totalSections > 0 && state.maxParallelSections > 1
+}
+
 /** The directory a run works in: its own lane worktree, else the loop's shared worktree. A post-action run always uses the shared worktree, even when the completed section ran in a lane. */
 export function runDirectoryOf(state: { kind?: SectionRunKind; laneDir?: string | null; worktreeDir: string }): string {
   if (state.kind === 'post_action') return state.worktreeDir

@@ -8,7 +8,11 @@ import {
   type SectionRunKind,
   type SectionRunTarget,
 } from '../../loop/section-run'
-import { createSectionRunsRepo } from './section-runs-repo'
+import {
+  createSectionRunsRepo,
+  type SectionRunActivateFields,
+  type SectionRunActivateOptions,
+} from './section-runs-repo'
 import {
   handoffSchemaForRole,
   LOOP_HANDOFF_PHASES,
@@ -98,6 +102,10 @@ export interface LoopsRepo {
   getForRun(projectId: string, loopName: string, runKey: string): LoopRow | null
   /** Keys of the loop's active section runs, primary first. */
   listActiveRunKeys(projectId: string, loopName: string): string[]
+  /** Activate (insert or reactivate) one section run row with the given fields. */
+  activateSectionRun(projectId: string, loopName: string, target: SectionRunTarget, fields: SectionRunActivateFields, opts: SectionRunActivateOptions): void
+  /** Mark one section run finished. */
+  finishRun(projectId: string, loopName: string, runKey: string): void
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
@@ -192,7 +200,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     projectId: row.project_id,
     loopName: row.loop_name,
     status: row.status as LoopRow['status'],
-    currentSessionId: row.run_session_id,
+    currentSessionId: row.run_session_id ?? '',
     worktree: row.worktree === 1,
     worktreeDir: row.worktree_dir,
     worktreeBranch: row.worktree_branch,
@@ -205,7 +213,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     iteration: row.iteration,
     auditCount: row.audit_count,
     errorCount: row.run_error_count ?? 0,
-    phase: row.run_phase as LoopRow['phase'],
+    phase: row.run_phase ? (row.run_phase as LoopRow['phase']) : 'coding',
     executionModel: row.execution_model,
     auditorModel: row.auditor_model,
     modelFailed: row.run_model_failed === 1,
@@ -217,7 +225,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
     hostSessionId: row.host_session_id,
-    currentSectionIndex: row.run_section_index,
+    currentSectionIndex: row.run_section_index ?? 0,
     totalSections: row.total_sections,
     executionVariant: row.execution_variant,
     auditorVariant: row.auditor_variant,
@@ -707,6 +715,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     if (active && (active.kind === 'post_action') !== (phase === 'post_action')) {
       const totalSections = totalSectionsOf(projectId, loopName)
       const target = resolveTarget(projectId, loopName, phase, totalSections, active.sectionIndex)
+      const postAction = target.kind === 'post_action'
       sectionRuns.activate(
         projectId,
         loopName,
@@ -715,9 +724,9 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           sessionId: active.sessionId,
           phase,
           standbySessionId: active.standbySessionId,
-          laneDir: active.laneDir,
-          laneBranch: active.laneBranch,
-          laneBaseCommit: active.laneBaseCommit,
+          laneDir: postAction ? null : active.laneDir,
+          laneBranch: postAction ? null : active.laneBranch,
+          laneBaseCommit: postAction ? null : active.laneBaseCommit,
         },
         { exclusive: true },
       )
@@ -848,6 +857,14 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     listActiveRunKeys(projectId: string, loopName: string): string[] {
       return sectionRuns.listActive(projectId, loopName).map((run) => run.sectionRunKey)
+    },
+
+    activateSectionRun(projectId, loopName, target, fields, opts) {
+      sectionRuns.activate(projectId, loopName, target, fields, opts)
+    },
+
+    finishRun(projectId, loopName, runKey) {
+      sectionRuns.finish(projectId, loopName, runKey)
     },
 
     getLarge(projectId: string, loopName: string): LoopLargeFields | null {

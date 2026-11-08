@@ -6,7 +6,8 @@ import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopState } from './state'
-import type { LoopLane } from './section-run'
+import type { LoopLane, SectionRunTarget } from './section-run'
+import type { SectionRunActivateFields } from '../storage/repos/section-runs-repo'
 import { auditScope, loopRowToState, loopStateToRow } from './state'
 import { createHash, randomUUID } from 'node:crypto'
 import type { LoopAttemptsRepo, LoopAttemptRow } from '../storage/repos/loop-attempts-repo'
@@ -77,6 +78,12 @@ export interface LoopService {
   listActiveRunStates(name: string): LoopState[]
   /** The active section run that owns `sessionId`, or null when the session is not any running loop's current run session. */
   getRunStateForSession(sessionId: string): LoopState | null
+  /** Activate (insert or reactivate) one section run row; `exclusive` finishes the loop's other active runs first. */
+  activateSectionRun(loopName: string, target: SectionRunTarget, fields: SectionRunActivateFields, opts?: { exclusive?: boolean }): void
+  /** Mark one section run finished. */
+  finishRun(lane: LoopLaneRef): void
+  /** Persist the loop-wide iteration counter. */
+  setIteration(name: string, iteration: number): void
   getAnyState(name: string): LoopState | null
   setState(name: string, state: LoopState): void
   /** In-place row restore via UPDATE (preserves child rows such as loop_transitions/section_plans that would be cascade-deleted by deleteState + setState). Falls back to INSERT if the row was concurrently deleted. */
@@ -405,6 +412,31 @@ export function createLoopService(
       loopAttemptsRepo.bindAudit(projectId, name, auditScope({ ...state, phase: opts.phase }), state.sessionId, opts.newSessionId, replace)
     } else replace()
     notifyLoopChange('rotate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
+  function activateSectionRun(
+    loopName: string,
+    target: SectionRunTarget,
+    fields: SectionRunActivateFields,
+    opts?: { exclusive?: boolean },
+  ): void {
+    const state = getAnyState(loopName)
+    loopsRepo.activateSectionRun(projectId, loopName, target, fields, { exclusive: opts?.exclusive ?? false })
+    notifyLoopChange('rotate', loopName, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
+  function finishRun(ref: LoopLaneRef): void {
+    const { loopName: name, runKey } = laneRef(ref)
+    if (!runKey) return
+    const state = getAnyState(name)
+    loopsRepo.finishRun(projectId, name, runKey)
+    notifyLoopChange('rotate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
+  function setIteration(name: string, iteration: number): void {
+    const state = getAnyState(name)
+    loopsRepo.updateIteration(projectId, name, iteration)
+    notifyLoopChange('iteration', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function getFindingRecurrence(loopName?: string): Map<string, number> {
@@ -1313,6 +1345,9 @@ export function createLoopService(
     clearWorkspaceId,
     setWorkspaceId,
     replaceSession,
+    activateSectionRun,
+    finishRun,
+    setIteration,
     getSectionPlan,
     getSectionPlans,
     recordSectionCodeGraph,

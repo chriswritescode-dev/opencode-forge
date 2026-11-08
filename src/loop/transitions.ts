@@ -5,13 +5,14 @@ export type Transition =
   | { kind: 'continue' }
   | { kind: 'rotate' }
   | { kind: 'advance-section' }
+  | { kind: 'finish-run' }
   | { kind: 'rewind-section' }
   | { kind: 'terminate'; reason: TerminationReason }
   | { kind: 'noop' }
 
 export type TransitionEvent =
   | { type: 'coder-handoff' }
-  | { type: 'section-clean'; isLastOpenSection: boolean }
+  | { type: 'section-clean'; isLastOpenSection: boolean; inLane: boolean }
   | { type: 'section-dirty' }
   | { type: 'audit-clear' }
   | { type: 'audit-dirty' }
@@ -75,6 +76,7 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
       if (event.isLastOpenSection) {
         return { kind: 'terminate', reason: { kind: 'completed' } }
       }
+      if (event.inLane) return { kind: 'finish-run' }
       return { kind: 'advance-section' }
     case 'section-dirty':
       return { kind: 'rotate' }

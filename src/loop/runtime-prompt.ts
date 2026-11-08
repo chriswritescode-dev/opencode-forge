@@ -54,7 +54,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
           const r = await promptAuditSession(client, {
             sessionId,
             worktreeDir: freshState.runDir,
-            workspaceId: freshState.workspaceId,
+            workspaceId: freshState.laneDir ? undefined : freshState.workspaceId,
             prompt: promptText,
             ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
           })
@@ -79,7 +79,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
           await client.session.promptAsync({
             sessionID: sessionId,
             directory: freshState.runDir,
-            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            ...(freshState.workspaceId && !freshState.laneDir ? { workspace: freshState.workspaceId } : {}),
             agent: 'code',
             parts: [{ type: 'text' as const, text: promptText }],
             ...(model ? { model, ...(variant ? { variant } : {}) } : {}),

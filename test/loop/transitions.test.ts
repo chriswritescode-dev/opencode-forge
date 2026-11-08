@@ -73,8 +73,19 @@ describe('nextTransition', () => {
         totalSections: 3,
         currentSectionIndex: 1,
       })
-      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: false })
+      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: false, inLane: false })
       expect(transition).toEqual({ kind: 'advance-section' })
+    })
+
+    it('finishes the run on a middle clean section in a lane', () => {
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        phase: 'auditing',
+        totalSections: 3,
+        currentSectionIndex: 1,
+      })
+      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: false, inLane: true })
+      expect(transition).toEqual({ kind: 'finish-run' })
     })
 
     it('terminates with completed on last open section clean', () => {
@@ -84,7 +95,18 @@ describe('nextTransition', () => {
         totalSections: 3,
         currentSectionIndex: 2,
       })
-      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: true })
+      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: true, inLane: false })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
+    })
+
+    it('terminates with completed on last open section clean in a lane', () => {
+      const state = makeLoopState({
+        ...STATE_DEFAULTS,
+        phase: 'auditing',
+        totalSections: 3,
+        currentSectionIndex: 2,
+      })
+      const transition = nextTransition(state, { type: 'section-clean', isLastOpenSection: true, inLane: true })
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
     })
 

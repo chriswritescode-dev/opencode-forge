@@ -33,7 +33,8 @@ import { applyPlanDecomposition } from './section-bootstrap'
 import { decomposePlanSections } from './deterministic-decomposer'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
-import { laneOf } from '../loop/section-run'
+import { isLaneLoop, laneOf } from '../loop/section-run'
+import { createLane } from '../loop/lanes'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
@@ -123,6 +124,8 @@ export interface AttachLoopInput {
   maxIterations: number
   /** Sections this worktree loop may run at once; omitted means a serial in-place loop. */
   maxParallelSections?: number
+  /** Lane worktree created for the loop's first ready section before its first session; omitted for serial loops and in-place attaches. */
+  firstLane?: { laneDir: string; laneBranch: string; laneBaseCommit: string }
   sandboxEnabled: boolean
   sandboxContainer?: string
   /** Exact commit sha the loop's worktree branched from; omitted for legacy rows. */
@@ -586,18 +589,22 @@ export async function attachLoopToSession(
   const attachOwnsLoop = (): boolean => deps.loop.service.getRunStateForSession(sessionId)?.loopName === loopName
 
   try {
+    const firstLane = input.firstLane
     // Persist loop state
     const state: import('../loop/state').LoopState = {
       active: true,
       sessionId,
       loopName,
       worktreeDir: worktreeDir ?? ctx.directory,
+      laneDir: firstLane?.laneDir,
+      laneBranch: firstLane?.laneBranch,
+      laneBaseCommit: firstLane?.laneBaseCommit,
       projectDir: resolvedProjectDir,
       worktreeBranch,
       iteration: 1,
       maxIterations,
       maxParallelSections: input.maxParallelSections ?? 1,
-      runDir: worktreeDir ?? ctx.directory,
+      runDir: firstLane?.laneDir ?? worktreeDir ?? ctx.directory,
       startedAt: new Date().toISOString(),
       prompt: planText,
       phase: 'coding',
@@ -707,9 +714,9 @@ export async function attachLoopToSession(
       : deps.loop.service.buildPlanInitialPrompt(planText)
 
     // Send initial prompt with fallback
-    const sessionDir = worktreeDir
+    const sessionDir = updatedState.runDir
     const promptParts = [{ type: 'text' as const, text: promptText }]
-    const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
+    const workspaceParam = workspaceId && !updatedState.laneDir ? { workspace: workspaceId } : {}
 
     const promptResult = await sendLoopPrompt({
       projectId: ctx.projectId,
@@ -758,6 +765,14 @@ export async function attachLoopToSession(
     // Success: start watchdog if requested
     if (startWatchdog && deps.loopHandler) {
       deps.loopHandler.startWatchdog(loopName)
+    }
+
+    if (isLaneLoop(updatedState)) {
+      try {
+        await deps.loop.startReadySections(loopName)
+      } catch (err) {
+        deps.logger.error(`attachLoopToSession: failed to fill ready lane sections for ${loopName}`, err)
+      }
     }
 
     // Abort source session if requested
@@ -987,7 +1002,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     const planText = planResult.planText
 
-    const graphErrors = decomposePlanSections(planText).graphErrors
+    const sectionDecomposition = decomposePlanSections(planText)
+    const graphErrors = sectionDecomposition.graphErrors
     if (graphErrors.length > 0) {
       return fail('bad_request', 400, `Plan section graph is invalid:\n- ${graphErrors.join('\n- ')}`)
     }
@@ -995,7 +1011,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // Extract loop names first so the session title can prefer the explicit Loop Name
     const { displayName, executionName } = extractPlanExecutionMetadata(planText)
     const title = command.title ?? displayName
-    const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
+    const maxParallelSections = resolveMaxParallelSections(deps.config)
+    const firstSection = maxParallelSections > 1 ? sectionDecomposition.sections[0] : undefined
+    const sessionTitle = firstSection
+      ? formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: sectionDecomposition.sections.length })
+      : formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
     
     const uniqueLoopName = deps.loop.generateUniqueLoopName(
       command.loopName ?? executionName,
@@ -1082,6 +1102,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await deps.client.workspace.remove({ id: createdWorkspaceId }).catch(() => {})
       }
       if (hostWorktreeDir) {
+        const { removeLoopLanes } = await import('../loop/lanes')
+        try {
+          await removeLoopLanes({ git, logger: deps.logger, worktreeDir: hostWorktreeDir, loopName: uniqueLoopName })
+        } catch (err) {
+          deps.logger.error(`handleStartLoop: failed to remove section lanes for ${uniqueLoopName}`, err)
+        }
         const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
         await cleanupLoopWorktree({
           worktreeDir: hostWorktreeDir,
@@ -1142,6 +1168,24 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail('internal_error', 500, 'Failed to resolve loop base commit')
       }
 
+      let firstLane: { laneDir: string; laneBranch: string; laneBaseCommit: string } | undefined
+      if (firstSection && hostWorktreeDir) {
+        try {
+          const lane = createLane({
+            git,
+            logger: deps.logger,
+            loopName: uniqueLoopName,
+            worktreeDir: hostWorktreeDir,
+            sectionId: firstSection.id,
+          })
+          firstLane = { laneDir: lane.laneDir, laneBranch: lane.laneBranch, laneBaseCommit: lane.baseCommit }
+        } catch (err) {
+          deps.logger.error(`handleStartLoop: failed to create the first section lane for ${uniqueLoopName}`, err)
+          await rollbackLoopStart()
+          return fail('internal_error', 500, 'Failed to create the first section lane')
+        }
+      }
+
       // Build permissions
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager) && command.sandbox?.enabled !== false
       sandboxEnabledForLoop = sandboxEnabled
@@ -1152,9 +1196,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const createResult = await createLoopSessionWithWorkspace({
         client: deps.client,
         title: sessionTitle,
-        directory: hostWorktreeDir!,
+        directory: firstLane?.laneDir ?? hostWorktreeDir!,
         permission: permissionRuleset,
-        workspaceId,
+        workspaceId: firstLane ? undefined : workspaceId,
         loopName: uniqueLoopName,
         logPrefix: 'handleStartLoop',
         logger: deps.logger,
@@ -1210,7 +1254,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         executionVariant: resolvedExecutionVariant,
         auditorVariant: resolvedAuditorVariant,
         maxIterations,
-        maxParallelSections: resolveMaxParallelSections(deps.config),
+        maxParallelSections,
+        firstLane,
         sandboxEnabled: sandboxEnabledForLoop,
         sandboxContainer: sandboxContainer ?? undefined,
         sandboxSettings: command.sandbox,

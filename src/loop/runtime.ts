@@ -8,7 +8,7 @@ import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
-import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
+import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
@@ -33,7 +33,9 @@ import {
   withInFlightGuard,
   ConcurrentPromptError,
 } from './in-flight-guard'
-import { laneOf, type LoopLane } from './section-run'
+import { isLaneLoop, laneOf, sectionRunKey, type LoopLane } from './section-run'
+import { selectSectionsToStart } from './section-graph'
+import { createLane, mergeLane, removeLane } from './lanes'
 import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
 import { nextTransition, type TransitionEvent, type Transition } from './transitions'
@@ -161,6 +163,8 @@ export interface Loop {
    * No-op when the instance has no directory.
    */
   superviseOwnedLoops(): string[]
+  /** Start ready sections of a lane loop in their own lanes, filling the free slots. No-op for serial loops. */
+  startReadySections(loopName: string): Promise<void>
   getStallInfo(name: string): LoopWatchdogStallInfo | null
   restart(name: string, params: { newState: LoopState; newSessionId: string }): void
   generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string
@@ -972,7 +976,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }),
       directory: sessionDir,
       permission: permissionRuleset,
-      workspaceId: ensured.workspaceId ?? state.workspaceId,
+      workspaceId: state.laneDir ? undefined : ensured.workspaceId ?? state.workspaceId,
       loopName: loopName,
       logPrefix: 'Loop',
       logger,
@@ -1554,7 +1558,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     try {
     // Idempotency guard: if the loop was already terminated by a concurrent
     // path (e.g. watchdog vs. runtime event), skip duplicate side effects.
-    const current = loopService.getRunState(loopName, laneOf(state).sectionRunKey) ?? loopService.getActiveState(loopName)
+    const joined = loopService.getRunState(loopName, laneOf(state).sectionRunKey)
+    const activeState = joined ?? loopService.getActiveState(loopName)
+    const current = joined ?? (activeState && !activeState.sectionRunKey ? state : activeState)
     if (!current?.active) {
       logger.debug(`Loop: terminateLoop called for already-terminated loop ${loopName}, skipping`)
       return
@@ -2075,6 +2081,208 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     deleteLoopLaneEntries(handoffNudges, projectId, loopName)
   }
 
+  /**
+   * Starts one ready section in its own lane: creates the lane worktree and a
+   * coder session in it, activates the section run with the lane fields, takes
+   * the section code-graph snapshot, and sends the first coding prompt.
+   */
+  async function createLaneForSection(
+    loopName: string,
+    loopState: LoopState,
+    section: SectionPlanRow,
+    activateExclusive: boolean,
+  ): Promise<void> {
+    if (!gitService) throw new Error('lane scheduling requires a git service')
+    const lane = createLane({
+      git: gitService,
+      logger,
+      loopName,
+      worktreeDir: loopState.worktreeDir,
+      sectionId: section.sectionId,
+    })
+    const permission = buildPermissionRulesetForPhase('coding', await resolveLoopPermissionOptionsForLoop(loopState))
+    const created = await createLoopSessionWithWorkspace({
+      client,
+      title: formatLoopSessionTitle(loopName, {
+        iteration: loopState.iteration ?? 0,
+        currentSectionIndex: section.sectionIndex,
+        totalSections: loopState.totalSections,
+      }),
+      directory: lane.laneDir,
+      permission,
+      loopName,
+      logPrefix: `Loop lane ${section.sectionId}`,
+      logger,
+    })
+    if (!created) throw new Error(`failed to create a coder session for section ${section.sectionId}`)
+
+    loopService.activateSectionRun(
+      loopName,
+      { kind: 'section', sectionId: section.sectionId, sectionIndex: section.sectionIndex },
+      {
+        sessionId: created.sessionId,
+        phase: 'coding',
+        standbySessionId: null,
+        laneDir: lane.laneDir,
+        laneBranch: lane.laneBranch,
+        laneBaseCommit: lane.baseCommit,
+      },
+      { exclusive: activateExclusive },
+    )
+    loopService.startSection(loopName, section.sectionIndex)
+    sessionToLoop.set(created.sessionId, loopName)
+
+    const runKey = sectionRunKey('section', section.sectionId)
+    const runState = loopService.getRunState(loopName, runKey)
+    if (!runState) throw new Error(`section run ${runKey} was not activated`)
+    await snapshotSectionCodeGraph(runState)
+
+    const laneRef = laneOf(runState)
+    const { error } = await sendPromptWithFallback({
+      lane: laneRef,
+      sessionId: created.sessionId,
+      promptText: loopService.buildSectionInitialPrompt(runState),
+      agent: 'code',
+      model: resolveLoopModel(getConfig(), loopService, loopName),
+      variant: runState.executionVariant,
+    })
+    if (error) {
+      await handlePromptError(loopName, loopService.getRunState(loopName, runKey) ?? runState, 'failed to send section lane prompt', error)
+      return
+    }
+    watchdog.start(laneRef)
+  }
+
+  /**
+   * Fills a lane loop's free section slots with ready sections whose planned
+   * files do not overlap a running section. Callers hold the loop state lock.
+   */
+  async function fillReadySections(loopName: string): Promise<void> {
+    const primary = loopService.getActiveState(loopName)
+    if (!primary?.active || !isLaneLoop(primary)) return
+
+    const activeSectionRuns = loopService
+      .listActiveRunStates(loopName)
+      .filter((run) => run.sectionRunKind === 'section')
+    // An in-place run works in the loop worktree itself; starting lanes beside it would
+    // merge into the same worktree while that run's edits are uncommitted.
+    if (activeSectionRuns.some((run) => !run.laneDir)) return
+    const slots = (primary.maxParallelSections ?? 1) - activeSectionRuns.length
+    const runningIds = new Set(activeSectionRuns.map((run) => run.sectionId))
+    const picks = selectSectionsToStart({
+      rows: loopService.getSectionPlans(primary),
+      runningIds,
+      slots,
+      filesOf: (row) => loopService.sectionFilesOf(row),
+    })
+
+    for (const [index, section] of picks.entries()) {
+      try {
+        await createLaneForSection(loopName, primary, section, index === 0 && activeSectionRuns.length === 0)
+      } catch (err) {
+        await failLaneStart(loopName, primary, section, err)
+        return
+      }
+      if (!loopService.getActiveState(loopName)?.active) return
+    }
+  }
+
+  async function startReadySections(loopName: string): Promise<void> {
+    await withStateLock(loopName, () => fillReadySections(loopName))
+  }
+
+  /** Terminates a lane loop when a ready section cannot be started, including before any run exists (loop just started all sections). */
+  async function failLaneStart(loopName: string, primary: LoopState, section: SectionPlanRow, err: unknown): Promise<void> {
+    logger.error(`Loop: failed to start section ${section.sectionId} in a lane for ${loopName}`, err)
+    const active = loopService.getActiveState(loopName)
+    if (active?.sectionRunKey) {
+      await terminateLoop(loopName, active, { kind: 'session_creation_failed' })
+      return
+    }
+    const reason: TerminationReason = { kind: 'session_creation_failed' }
+    loopService.recordTerminalTransition(loopName, {
+      reason,
+      fromPhase: 'coding',
+      iteration: primary.iteration ?? 0,
+      sectionIndex: section.sectionIndex,
+    })
+    releaseLoopLanes(loopName)
+    loopService.terminate(loopName, {
+      status: terminationStatusFor(reason),
+      reason: terminationReasonToString(reason),
+      completedAt: Date.now(),
+    })
+    notify?.('settled', loopName, { projectDir: primary.projectDir, worktreeDir: primary.worktreeDir })
+  }
+
+  /** Ends a merged lane run: captures and deletes its sessions, finishes the run row, releases its timers, and removes the lane worktree and branch. */
+  async function finishLaneRun(loopName: string, state: LoopState): Promise<void> {
+    const lane = laneOf(state)
+    const sessions = state.standbySessionId && state.standbySessionId !== state.sessionId
+      ? [
+          { sessionId: state.standbySessionId, phase: standbyPhaseFor(state.phase) },
+          { sessionId: state.sessionId, phase: state.phase },
+        ]
+      : [{ sessionId: state.sessionId, phase: state.phase }]
+
+    loopService.setStandbySessionId(lane, null)
+    for (const entry of sessions) {
+      await captureLoopSessionUsage({
+        loopName,
+        sessionId: entry.sessionId,
+        directory: state.runDir,
+        role: usageRoleForPhase(entry.phase),
+        fallbackModel: getFallbackModelForSession(state, entry.phase),
+      }).catch((err: unknown) => {
+        logger.error(`Loop: failed to capture usage for lane session ${entry.sessionId} (loop=${loopName})`, err)
+      })
+      sessionToLoop.delete(entry.sessionId)
+      void deleteSessionBestEffort(
+        client,
+        { sessionID: entry.sessionId, directory: state.runDir },
+        logger,
+        `Loop: failed to delete lane session ${entry.sessionId} (loop=${loopName})`,
+      )
+    }
+
+    loopService.finishRun(lane)
+    releaseSectionRunLane(lane)
+    if (gitService && state.laneDir && state.laneBranch) {
+      await removeLane({
+        git: gitService,
+        logger,
+        worktreeDir: state.worktreeDir,
+        laneDir: state.laneDir,
+        laneBranch: state.laneBranch,
+      })
+    }
+  }
+
+  /** Retires a section run whose session works in the loop worktree itself (an in-place attached first section), deleting only the run's current audit session and keeping the attached coder session alive. */
+  async function finishAttachedRun(loopName: string, state: LoopState): Promise<void> {
+    const lane = laneOf(state)
+    if (state.sessionId) {
+      await captureLoopSessionUsage({
+        loopName,
+        sessionId: state.sessionId,
+        directory: state.runDir,
+        role: usageRoleForPhase(state.phase),
+        fallbackModel: getFallbackModelForSession(state, state.phase),
+      }).catch((err: unknown) => {
+        logger.error(`Loop: failed to capture usage for attached session ${state.sessionId} (loop=${loopName})`, err)
+      })
+      sessionToLoop.delete(state.sessionId)
+      void deleteSessionBestEffort(
+        client,
+        { sessionID: state.sessionId, directory: state.runDir },
+        logger,
+        `Loop: failed to delete attached audit session ${state.sessionId} (loop=${loopName})`,
+      )
+    }
+    loopService.finishRun(lane)
+    releaseSectionRunLane(lane)
+  }
+
   /** The persisted point in a loop a deferred transition resumes from. */
   function codeGraphTransitionToken(state: LoopState): string {
     return `${state.sessionId}|${state.phase}|${state.iteration ?? 0}|${state.currentSectionIndex ?? 0}`
@@ -2510,7 +2718,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       currentSectionIndex: currentState.currentSectionIndex ?? 0,
       totalSections: currentState.totalSections ?? 0,
       worktreeDir: currentState.runDir,
-      workspaceId: ensured.workspaceId ?? currentState.workspaceId,
+      workspaceId: currentState.laneDir ? undefined : ensured.workspaceId ?? currentState.workspaceId,
       auditorModel: auditorChoice.model,
       prompt: loopService.buildAuditPrompt(currentState),
       permissionOptions: await resolveLoopPermissionOptionsForLoop(currentState),
@@ -2727,10 +2935,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         loopService.resetSectionRecurrence(loopName, idx)
 
         loopService.setLastAuditResult(loopName, auditResult)
-        loopService.completeSection(loopName, idx, record.payload.summary
-          ? formatSectionSummary(record.payload.summary)
-          : { done: null, deviations: null, followUps: null })
-        commitSectionCheckpoint(currentState, idx)
 
         let lastOpen = isLastOpen
         const freshRow = loopsRepo.get(projectId, currentState.loopName ?? '')
@@ -2739,8 +2943,66 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           lastOpen = false
         }
 
-        const sectionEvent: TransitionEvent = { type: 'section-clean', isLastOpenSection: lastOpen }
+        const laneLoop = isLaneLoop(currentState)
+        const laneRun = laneLoop && Boolean(currentState.laneDir && currentState.laneBranch)
+        const sectionEvent: TransitionEvent = { type: 'section-clean', isLastOpenSection: lastOpen, inLane: laneLoop }
         const sectionTrans = nextTransition(currentState, sectionEvent)
+
+        if (laneLoop) {
+          const laneNextIter = await nextIterationOrTerminate(loopName, currentState)
+          if (laneNextIter === null) return
+          loopService.setIteration(loopName, laneNextIter)
+        }
+
+        let mergedCommit: string | null = null
+        if (laneRun) {
+          if (!gitService || !currentState.laneDir || !currentState.laneBranch) {
+            const message = `section lane state is incomplete for section ${idx}`
+            logger.error(`Loop: ${message} (loop=${loopName})`)
+            await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message })
+            return
+          }
+          const title = loopService.getSectionPlan(currentState, idx)?.title.trim() || `Section ${idx + 1}`
+          const merge = mergeLane({
+            git: gitService,
+            logger,
+            worktreeDir: currentState.worktreeDir,
+            laneDir: currentState.laneDir,
+            laneBranch: currentState.laneBranch,
+            title,
+          })
+          if (merge.kind !== 'merged') {
+            const detail = merge.kind === 'conflict'
+              ? `lane merge for section ${idx} conflicted in ${merge.files.join(', ') || 'unknown files'}`
+              : merge.error
+            logger.error(`Loop: ${detail} (loop=${loopName})`)
+            await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message: detail })
+            return
+          }
+          mergedCommit = merge.commit
+        }
+
+        loopService.completeSection(loopName, idx, record.payload.summary
+          ? formatSectionSummary(record.payload.summary)
+          : { done: null, deviations: null, followUps: null })
+        if (laneRun) {
+          if (mergedCommit) loopService.setSectionCheckpointCommit(loopName, idx, mergedCommit)
+        } else {
+          commitSectionCheckpoint(currentState, idx)
+        }
+
+        if (laneLoop) {
+          if (laneRun) await finishLaneRun(loopName, currentState)
+          else await finishAttachedRun(loopName, currentState)
+          if (sectionTrans.kind === 'terminate') {
+            logger.log(`Loop: last open section ${idx} audit clean for ${loopName}, completing`)
+            await finishLoop(loopName, currentState, sectionTrans.reason)
+            return
+          }
+          await fillReadySections(loopName)
+          return
+        }
+
         if (sectionTrans.kind === 'terminate') {
           logger.log(`Loop: last open section ${idx} audit clean for ${loopName}, completing`)
           await finishLoop(loopName, currentState, sectionTrans.reason)
@@ -3690,6 +3952,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     snapshotSectionCodeGraph,
     holdUntilFirstPrompt,
     startWatchdog,
+    startReadySections,
     superviseOwnedLoops,
     getStallInfo,
     restart,

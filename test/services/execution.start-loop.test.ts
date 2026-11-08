@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
+import { join } from 'path'
 import { generateUniqueName } from '../../src/loop/name-uniqueness'
 import { createForgeExecutionService } from '../../src/services/execution'
 import type { Logger } from '../../src/types'
@@ -19,6 +20,9 @@ const mockGitService = {
   branchExists: () => false,
   checkRefFormatBranch: (_cwd: string, name: string) => ({ ok: true, status: 0, stdout: `${name}\n`, stderr: '' }),
   worktreeList: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+  worktreeAdd: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+  worktreeRemove: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+  worktreePrune: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
   isAncestor: () => true,
 } as any
 
@@ -1293,6 +1297,39 @@ describe('loop maxParallelSections persistence', () => {
     if (!result.ok) return
     expect(h.deps.loopsRepo.get(PROJECT_ID, result.data.loopName)!.maxParallelSections).toBe(3)
     expect(h.loopService.getActiveState(result.data.loopName)!.maxParallelSections).toBe(3)
+  })
+
+  test('a lane loop starts its first session in the first ready section lane', async () => {
+    const h = buildHarness({ maxParallelSections: 2 })
+    const service = createForgeExecutionService(h.deps)
+
+    const planText = [
+      '<!-- forge-section id="a" -->',
+      '## Phase A',
+      '',
+      'Body A.',
+      '<!-- forge-section id="b" after="a" -->',
+      '## Phase B',
+      '',
+      'Body B.',
+    ].join('\n')
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const laneDir = join('/tmp/wt/parallel.lanes', 'a')
+    const createArgs = (h.client.session.create as any).mock.calls[0][0]
+    expect(createArgs.directory).toBe(laneDir)
+    expect(createArgs.workspaceID).toBeUndefined()
+
+    const state = h.loopService.getActiveState(result.data.loopName)!
+    expect(state.sectionRunKey).toBe('section:a')
+    expect(state.laneDir).toBe(laneDir)
   })
 
   test('an attach without a worktree parallelism override persists 1', async () => {

@@ -120,6 +120,8 @@ export function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     get: vi.fn().mockReturnValue(null),
     getForRun: vi.fn().mockReturnValue(null),
     listActiveRunKeys: vi.fn().mockReturnValue([]),
+    activateSectionRun: vi.fn(),
+    finishRun: vi.fn(),
     getLarge: vi.fn(),
     getBySessionId: vi.fn(),
     listByStatus: vi.fn(),
@@ -181,6 +183,7 @@ export function buildLoopRuntime(
     withUsageRepo?: boolean
     getParentSessionId?: (sessionId: string) => Promise<string | null>
     sandboxManager?: LoopRuntimeDeps['sandboxManager']
+    gitService?: LoopRuntimeDeps['gitService']
     loopAttemptsRepo?: LoopAttemptsRepo
   } = {},
 ) {
@@ -206,6 +209,7 @@ export function buildLoopRuntime(
     logger,
     getConfig: () => config,
     sandboxManager: options.sandboxManager,
+    gitService: options.gitService,
     loopAttemptsRepo: options.loopAttemptsRepo,
     loopConfig: options.loopConfig,
     dataDir: options.dataDir,
@@ -281,6 +285,7 @@ export function buildExecutionDeps(
     unregisterSessionReverseIndex: () => {},
     handleAuditorProviderLimit: async () => false,
     snapshotSectionCodeGraph: async () => {},
+    startReadySections: async () => {},
     holdUntilFirstPrompt: () => () => {},
     ...loopOverrides,
   } as unknown as Loop
