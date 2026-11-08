@@ -434,12 +434,17 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `PlanAmendmentsRepo` | `plan_amendments` | `PlanAmendmentRow` — append-only plan-amendment audit trail |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `LoopAttemptsRepo` | `loop_attempts` | `LoopAttemptsRepo` — durable audit-attempt history |
+| `SectionRunsRepo` | `section_runs` | `SectionRunRow` — the loop's current unit of work, with one `active` run per loop |
 | `SessionSandboxPreferencesRepo` | `tui_preferences` (JSON keys `session-sandbox.desired` / `.applied` / `.controller`) | `SessionSandboxPreferencesRepo` — host-session sandbox desired/applied state |
 | `SessionAutoApproveRepo` | `tui_preferences` (TTL-scoped JSON keys `session-auto-approve.<sessionId>`) | `SessionAutoApproveRepo` — per-session auto-approve state |
 
+### Section Runs
+
+The `section_runs` table is the persisted identity of a loop's current unit of work: `kind` is `plan`, `section`, or `post_action`, and the row carries `session_id`, `phase`, `section_index`, `standby_session_id` and `section_id`. A running loop has exactly one `active` run, enforced by a partial unique index, and a finished run stays as history. Migration 161 creates and backfills the table; migration 162 drops the mirrored `current_session_id`, `phase`, `current_section_index` and `standby_session_id` columns from `loops`, so the active run is their only stored home. `createSectionRunsRepo` in `src/storage/repos/section-runs-repo.ts` reads and updates the active run, and `sectionRunKey` in `src/loop/section-run.ts` derives its stable identity.
+
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–159; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `157` drops the removed goals feature's `goals` and `goal_chunks` tables; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`; `159` adds the nullable `checkpoint_commit` sha section audits scope from.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–162; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `157` drops the removed goals feature's `goals` and `goal_chunks` tables; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`; `159` adds the nullable `checkpoint_commit` sha section audits scope from; `161` creates `section_runs`, and `162` drops the session, phase, section-index and standby columns it replaced on `loops`.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -621,7 +626,7 @@ The loop follows a strict phase-based state machine:
 
 ### Session Reuse
 
-`loops.standby_session_id` (migration 155) holds the one session a loop may resume: always the role opposite the current phase. It is set when a fresh audit session replaces the coder and when a resumed coder replaces the audit session, and is released (usage captured, session deleted) on a section advance, loop completion, termination, shutdown, restart, or any switch to a fresh session.
+`section_runs.standby_session_id` (migrations 161/162) holds the one session a loop may resume, on its active section run: always the role opposite the current phase. Migration 162 dropped the mirrored `loops` columns, so the active run is now the only stored home for the live session, phase, section index and standby. It is set when a fresh audit session replaces the coder and when a resumed coder replaces the audit session, and is released (usage captured, session deleted) on a section advance, loop completion, termination, shutdown, restart, or any switch to a fresh session.
 
 `inspectReusableStandby` is the single reuse predicate: the standby exists with messages, is not the current session, has no bug finding at the recurrence escalation threshold, and its role's reuse percentage is not `0` (`loop.sessionReuse.coderContextPercent` / `auditorContextPercent`, resolved by `resolveSessionReuseContextPercent`). The percentage applies to the role the standby holds: coder while auditing, auditor while coding. `inspectStandbyCandidate` reads the model from the last assistant message and resolves `limit.context` through the `ForgeClient.model.contextLimit` port method; when the last turn reached the role's percentage it returns the candidate with `needsCompaction`, and `compactStandbySession` queues `ForgeClient.session.compact` before the follow-up prompt so the session continues from the compaction summary. An unknown context window allows reuse without compaction, and a failed compaction falls back to a fresh session with the full prompt. Reused sessions get `buildCoderFollowUpPrompt` / `buildAuditFollowUpPrompt` instead of the full plan prompt. A reused session's previous reply is never mistaken for the new turn: turn completion comes only from a persisted handoff row scoped to that session and applied once.
 

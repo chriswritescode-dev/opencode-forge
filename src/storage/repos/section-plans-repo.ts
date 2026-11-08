@@ -51,7 +51,7 @@ export interface SectionPlansRepo {
    * up front via `BEGIN IMMEDIATE`. Used to make cross-repo writes (section
    * replacement, loop-row update, amendment insert) atomic when `fn` reads
    * authoritative loop row state and writes against it, so a concurrent writer
-   * (e.g. a section advance bumping `current_section_index`) cannot commit
+   * (e.g. a section advance moving the active section run) cannot commit
    * between the read and the write inside `fn`. Nested `db.transaction` calls
    * inside `fn` become savepoints that roll back with the outer transaction
    * when `fn` throws.

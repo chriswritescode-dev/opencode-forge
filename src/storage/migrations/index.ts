@@ -626,4 +626,14 @@ export const migrations: Migration[] = [
       `)
     },
   },
+  {
+    id: '162',
+    description: 'Drop per-section columns from loops; section_runs is the source of truth',
+    apply: (db: Database) => {
+      const columns = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (columns.length === 0) return
+      if (!columns.some((column) => column.name === 'current_session_id')) return
+      db.run(loadSql('162_drop_section_run_columns_from_loops.sql'))
+    },
+  },
 ]

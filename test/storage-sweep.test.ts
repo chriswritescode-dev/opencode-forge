@@ -5,6 +5,7 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { openForgeDatabase } from '../src/storage/database'
 import { sweepExpiredLoops } from '../src/storage/sweep'
+import { insertTestLoopRow } from './helpers/loop-fixtures'
 
 const tempDir = mkdtempSync(join(tmpdir(), 'forge-sweep-'))
 
@@ -25,16 +26,108 @@ test('sweepExpiredLoops deletes only non-running rows older than ttl', () => {
   const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
   const oneDayAgo = now - (24 * 60 * 60 * 1000)
 
-  db.run(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, completed_at)
-    VALUES
-      ('proj1', 'loop-running', 'running', 'sess1', 0, '/path1', NULL, '/proj1', 10, 5, 2, 0, 'coding', ?, NULL),
-      ('proj1', 'loop-completed-old', 'completed', 'sess2', 0, '/path2', NULL, '/proj1', 10, 10, 5, 0, 'coding', ?, ?),
-      ('proj1', 'loop-completed-recent', 'completed', 'sess3', 0, '/path3', NULL, '/proj1', 10, 3, 1, 0, 'coding', ?, ?),
-      ('proj1', 'loop-cancelled-old', 'cancelled', 'sess4', 0, '/path4', NULL, '/proj1', 10, 8, 3, 0, 'coding', ?, ?),
-      ('proj1', 'loop-errored-old', 'errored', 'sess5', 0, '/path5', NULL, '/proj1', 10, 7, 10, 0, 'coding', ?, ?),
-      ('proj1', 'loop-stalled-old', 'stalled', 'sess6', 0, '/path6', NULL, '/proj1', 10, 6, 2, 0, 'coding', ?, ?)
-  `, [now, sevenDaysAgo, eightDaysAgo, now, oneDayAgo, sevenDaysAgo, eightDaysAgo, sevenDaysAgo, eightDaysAgo, sevenDaysAgo, eightDaysAgo])
+  insertTestLoopRow(db, {
+    projectId: 'proj1',
+    loopName: 'loop-running',
+    status: 'running',
+    currentSessionId: 'sess1',
+    worktree: false,
+    worktreeDir: '/path1',
+    worktreeBranch: null,
+    projectDir: '/proj1',
+    maxIterations: 10,
+    iteration: 5,
+    auditCount: 2,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: now,
+    completedAt: null,
+  })
+  insertTestLoopRow(db, {
+    projectId: 'proj1',
+    loopName: 'loop-completed-old',
+    status: 'completed',
+    currentSessionId: 'sess2',
+    worktree: false,
+    worktreeDir: '/path2',
+    worktreeBranch: null,
+    projectDir: '/proj1',
+    maxIterations: 10,
+    iteration: 10,
+    auditCount: 5,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: sevenDaysAgo,
+    completedAt: eightDaysAgo,
+  })
+  insertTestLoopRow(db, {
+    projectId: 'proj1',
+    loopName: 'loop-completed-recent',
+    status: 'completed',
+    currentSessionId: 'sess3',
+    worktree: false,
+    worktreeDir: '/path3',
+    worktreeBranch: null,
+    projectDir: '/proj1',
+    maxIterations: 10,
+    iteration: 3,
+    auditCount: 1,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: now,
+    completedAt: oneDayAgo,
+  })
+  insertTestLoopRow(db, {
+    projectId: 'proj1',
+    loopName: 'loop-cancelled-old',
+    status: 'cancelled',
+    currentSessionId: 'sess4',
+    worktree: false,
+    worktreeDir: '/path4',
+    worktreeBranch: null,
+    projectDir: '/proj1',
+    maxIterations: 10,
+    iteration: 8,
+    auditCount: 3,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: sevenDaysAgo,
+    completedAt: eightDaysAgo,
+  })
+  insertTestLoopRow(db, {
+    projectId: 'proj1',
+    loopName: 'loop-errored-old',
+    status: 'errored',
+    currentSessionId: 'sess5',
+    worktree: false,
+    worktreeDir: '/path5',
+    worktreeBranch: null,
+    projectDir: '/proj1',
+    maxIterations: 10,
+    iteration: 7,
+    auditCount: 10,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: sevenDaysAgo,
+    completedAt: eightDaysAgo,
+  })
+  insertTestLoopRow(db, {
+    projectId: 'proj1',
+    loopName: 'loop-stalled-old',
+    status: 'stalled',
+    currentSessionId: 'sess6',
+    worktree: false,
+    worktreeDir: '/path6',
+    worktreeBranch: null,
+    projectDir: '/proj1',
+    maxIterations: 10,
+    iteration: 6,
+    auditCount: 2,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: sevenDaysAgo,
+    completedAt: eightDaysAgo,
+  })
 
   const ttlMs = 7 * 24 * 60 * 60 * 1000
   const deleted = sweepExpiredLoops(db, ttlMs)
@@ -61,14 +154,28 @@ test('sweepExpiredLoops cascades to loop_large_fields and plans', () => {
   const now = Date.now()
   const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
 
-  db.run(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, completed_at)
-    VALUES ('proj1', 'loop-to-delete', 'completed', 'sess1', 0, '/path', NULL, '/proj1', 10, 5, 2, 0, 'coding', ?, ?)
-  `, [now, eightDaysAgo])
+  insertTestLoopRow(db, {
+    projectId: 'proj1',
+    loopName: 'loop-to-delete',
+    status: 'completed',
+    currentSessionId: 'sess1',
+    worktree: false,
+    worktreeDir: '/path',
+    worktreeBranch: null,
+    projectDir: '/proj1',
+    maxIterations: 10,
+    iteration: 5,
+    auditCount: 2,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: now,
+    completedAt: eightDaysAgo,
+  })
 
   db.run(`
     INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result)
     VALUES ('proj1', 'loop-to-delete', 'test audit result')
+    ON CONFLICT (project_id, loop_name) DO UPDATE SET last_audit_result = excluded.last_audit_result
   `)
 
   db.run(`
@@ -117,16 +224,42 @@ test('sweepExpiredLoops does not delete plans from other projects with same loop
   const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
 
   // Project A has an expired loop
-  db.run(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, completed_at)
-    VALUES ('projA', 'shared-loop-name', 'completed', 'sess1', 0, '/path', NULL, '/projA', 10, 5, 2, 0, 'coding', ?, ?)
-  `, [now, eightDaysAgo])
+  insertTestLoopRow(db, {
+    projectId: 'projA',
+    loopName: 'shared-loop-name',
+    status: 'completed',
+    currentSessionId: 'sess1',
+    worktree: false,
+    worktreeDir: '/path',
+    worktreeBranch: null,
+    projectDir: '/projA',
+    maxIterations: 10,
+    iteration: 5,
+    auditCount: 2,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: now,
+    completedAt: eightDaysAgo,
+  })
 
   // Project B has a live loop with the same name and a plan
-  db.run(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, completed_at)
-    VALUES ('projB', 'shared-loop-name', 'running', 'sess2', 0, '/path', NULL, '/projB', 10, 5, 2, 0, 'coding', ?, NULL)
-  `, [now])
+  insertTestLoopRow(db, {
+    projectId: 'projB',
+    loopName: 'shared-loop-name',
+    status: 'running',
+    currentSessionId: 'sess2',
+    worktree: false,
+    worktreeDir: '/path',
+    worktreeBranch: null,
+    projectDir: '/projB',
+    maxIterations: 10,
+    iteration: 5,
+    auditCount: 2,
+    errorCount: 0,
+    phase: 'coding',
+    startedAt: now,
+    completedAt: null,
+  })
 
   db.run(`
     INSERT INTO plans (project_id, loop_name, session_id, content, updated_at)

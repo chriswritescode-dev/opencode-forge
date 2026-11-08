@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { createLoopsRepo } from '../src/storage/repos/loops-repo'
+import { createLoopsRepo, type LoopRow } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
@@ -12,7 +12,7 @@ import { createLoopService } from '../src/loop/service'
 import { createLoop } from '../src/loop/runtime'
 import { createTestDb } from './helpers/test-db'
 import { createMockLogger } from './helpers/logger'
-import { makeLoopState } from './helpers/loop-fixtures'
+import { insertTestLoopRow, makeLoopState } from './helpers/loop-fixtures'
 
 describe('Loop', () => {
   let db: Database
@@ -144,33 +144,25 @@ describe('Loop', () => {
   })
 
   describe('findActiveByWorktreeDir', () => {
-    function insertLoop(loopName: string, overrides: Record<string, any> = {}) {
-      const defaults = {
-        project_id: projectId,
-        loop_name: loopName,
+    function insertLoop(loopName: string, overrides: Partial<LoopRow> = {}) {
+      insertTestLoopRow(db, {
+        projectId,
+        loopName,
         status: 'running',
-        current_session_id: `sess-${loopName}`,
-        worktree: 1,
-        worktree_dir: '/tmp/wt',
-        project_dir: '/tmp/proj',
-        max_iterations: 10,
+        currentSessionId: `sess-${loopName}`,
+        worktree: true,
+        worktreeDir: '/tmp/wt',
+        projectDir: '/tmp/proj',
+        maxIterations: 10,
         iteration: 1,
-        audit_count: 0,
-        error_count: 0,
+        auditCount: 0,
+        errorCount: 0,
         phase: 'coding',
-        started_at: Date.now(),
-        current_section_index: 0,
-        total_sections: 0,
-      }
-      const values = { ...defaults, ...overrides }
-      db.run(
-        `INSERT INTO loops (${Object.keys(values).join(',')}) VALUES (${Object.keys(values).map(() => '?').join(',')})`,
-        Object.values(values)
-      )
-      db.run(
-        `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
-        [values.project_id, values.loop_name, null]
-      )
+        startedAt: Date.now(),
+        currentSectionIndex: 0,
+        totalSections: 0,
+        ...overrides,
+      })
     }
 
     test('matches a worktree dir through a symlink', () => {
@@ -179,14 +171,14 @@ describe('Loop', () => {
       const linkDir = join(linkParent, 'linked')
       symlinkSync(realDir, linkDir)
 
-      insertLoop('loop-sym', { worktree_dir: realDir })
+      insertLoop('loop-sym', { worktreeDir: realDir })
 
       expect(loop.service.findActiveByWorktreeDir(linkDir)?.loopName).toBe('loop-sym')
     })
 
     test('worktreeOnly skips loops without a worktree', () => {
-      insertLoop('loop-no-worktree', { worktree: 0, worktree_dir: '/tmp/wt-a' })
-      insertLoop('loop-worktree', { worktree: 1, worktree_dir: '/tmp/wt-b' })
+      insertLoop('loop-no-worktree', { worktree: false, worktreeDir: '/tmp/wt-a' })
+      insertLoop('loop-worktree', { worktree: true, worktreeDir: '/tmp/wt-b' })
 
       expect(loop.service.findActiveByWorktreeDir('/tmp/wt-a')?.loopName).toBe('loop-no-worktree')
       expect(loop.service.findActiveByWorktreeDir('/tmp/wt-a', { worktreeOnly: true })).toBeNull()
@@ -194,7 +186,7 @@ describe('Loop', () => {
     })
 
     test('returns null when no active loop matches', () => {
-      insertLoop('loop-other', { worktree_dir: '/tmp/wt-other' })
+      insertLoop('loop-other', { worktreeDir: '/tmp/wt-other' })
 
       expect(loop.service.findActiveByWorktreeDir('/tmp/no-such-dir')).toBeNull()
     })
@@ -526,33 +518,25 @@ describe('Loop', () => {
   })
 
   describe('adjustRemainingSections', () => {
-    function insertLoop(overrides: Record<string, any> = {}) {
-      const defaults = {
-        project_id: 'test-project',
-        loop_name: 'adj-loop',
+    function insertLoop(overrides: Partial<LoopRow> = {}) {
+      insertTestLoopRow(db, {
+        projectId: 'test-project',
+        loopName: 'adj-loop',
         status: 'running',
-        current_session_id: 'sess-adj',
-        worktree: 1,
-        worktree_dir: '/tmp/wt',
-        project_dir: '/tmp/proj',
-        max_iterations: 10,
+        currentSessionId: 'sess-adj',
+        worktree: true,
+        worktreeDir: '/tmp/wt',
+        projectDir: '/tmp/proj',
+        maxIterations: 10,
         iteration: 1,
-        audit_count: 0,
-        error_count: 0,
+        auditCount: 0,
+        errorCount: 0,
         phase: 'auditing',
-        started_at: Date.now(),
-        current_section_index: 1,
-        total_sections: 4,
-      }
-      const values = { ...defaults, ...overrides }
-      db.run(
-        `INSERT INTO loops (${Object.keys(values).join(',')}) VALUES (${Object.keys(values).map(() => '?').join(',')})`,
-        Object.values(values)
-      )
-      db.run(
-        `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
-        [values.project_id, values.loop_name, null]
-      )
+        startedAt: Date.now(),
+        currentSectionIndex: 1,
+        totalSections: 4,
+        ...overrides,
+      })
     }
 
     function insertSectionPlan(index: number, title: string, content: string, status: string = 'pending') {
@@ -631,7 +615,7 @@ describe('Loop', () => {
     })
 
     test('rejects when totalSections === 0', async () => {
-      insertLoop({ total_sections: 0, current_section_index: 0 })
+      insertLoop({ totalSections: 0, currentSectionIndex: 0 })
 
       const { service, planAmendmentsRepo } = buildService()
 
@@ -670,7 +654,7 @@ describe('Loop', () => {
     })
 
     test('rejects when resulting total would exceed 24', async () => {
-      insertLoop({ current_section_index: 1, total_sections: 4 })
+      insertLoop({ currentSectionIndex: 1, totalSections: 4 })
       // 23 pending rows from index 2..24 inclusive → fromIndex=2, with 23 new sections → newTotal=25 > 24.
       for (let i = 2; i <= 24; i++) insertSectionPlan(i, `Old ${i}`, `c${i}`, 'pending')
 
@@ -1011,7 +995,7 @@ describe('Loop', () => {
     })
 
     test('empty sections array removes the pending suffix, updates total_sections, and inserts one amendment', async () => {
-      insertLoop({ total_sections: 4 })
+      insertLoop({ totalSections: 4 })
       insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
       insertSectionPlan(1, 'Phase 1', 'c1', 'in_progress')
       insertSectionPlan(2, 'Phase 2', 'c2', 'pending')
@@ -1050,7 +1034,7 @@ describe('Loop', () => {
 
     test('appends new sections after the current final section when no pending rows remain', async () => {
       // current_section_index=3, total_sections=4 → fromIndex=4, no rows at >=4.
-      insertLoop({ current_section_index: 3, total_sections: 4 })
+      insertLoop({ currentSectionIndex: 3, totalSections: 4 })
       insertSectionPlan(0, 'Phase 0', 'c0', 'completed')
       insertSectionPlan(1, 'Phase 1', 'c1', 'completed')
       insertSectionPlan(2, 'Phase 2', 'c2', 'completed')

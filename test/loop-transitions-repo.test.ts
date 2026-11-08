@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite'
 import { createLoopTransitionsRepo } from '../src/storage/repos/loop-transitions-repo'
 import type { LoopTransitionRow } from '../src/storage/repos/loop-transitions-repo'
 import { createTestDb, type TestDb } from './helpers/test-db'
+import { insertTestLoopRow } from './helpers/loop-fixtures'
 
 describe('LoopTransitionsRepo', () => {
   let db: Database
@@ -12,10 +13,12 @@ describe('LoopTransitionsRepo', () => {
   const loopName = 'test-loop'
 
   function insertLoop(projectId: string, loopName: string, status: 'running' | 'completed' = 'running'): void {
-    db.prepare(
-      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-       VALUES (?, ?, ?, ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
-    ).run(projectId, loopName, status, `${projectId}-${loopName}-session`, Date.now())
+    insertTestLoopRow(db, {
+      projectId,
+      loopName,
+      status,
+      currentSessionId: `${projectId}-${loopName}-session`,
+    })
   }
 
   beforeEach(() => {

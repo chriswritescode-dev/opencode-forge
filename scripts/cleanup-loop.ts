@@ -28,7 +28,7 @@ import { resolveForgeDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from 
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
 import { hasTable } from '../src/storage'
 
-const DEPENDENT_TABLES = ['loop_large_fields', 'section_plans', 'section_dependencies', 'review_findings', 'plans']
+const DEPENDENT_TABLES = ['loop_large_fields', 'section_runs', 'section_plans', 'section_dependencies', 'review_findings', 'plans']
 
 interface Args {
   loopName: string

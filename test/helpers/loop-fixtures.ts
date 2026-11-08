@@ -9,7 +9,12 @@ import type { ForgeExecutionServiceDeps } from '../../src/services/execution'
 import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
 import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
-import { createLoopsRepo, type LoopsRepo } from '../../src/storage/repos/loops-repo'
+import {
+  createLoopsRepo,
+  type LoopLargeFields,
+  type LoopRow,
+  type LoopsRepo,
+} from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
@@ -49,6 +54,57 @@ export function makeLoopState(overrides: Partial<LoopState> = {}): LoopState {
     sectionRunKey: 'plan',
     ...overrides,
   }
+}
+
+/** Inserts a loop row through createLoopsRepo so the active section run is created too. */
+export function insertTestLoopRow(
+  db: Database,
+  overrides: Partial<LoopRow> = {},
+  large: Partial<LoopLargeFields> = {},
+): LoopRow {
+  const row: LoopRow = {
+    projectId: 'test-project',
+    loopName: 'test-loop',
+    status: 'running',
+    currentSessionId: 'loop-session-id',
+    worktree: false,
+    worktreeDir: '/tmp/wt',
+    worktreeBranch: null,
+    projectDir: '/tmp/proj',
+    maxIterations: 5,
+    iteration: 0,
+    auditCount: 0,
+    errorCount: 0,
+    phase: 'coding',
+    executionModel: null,
+    auditorModel: null,
+    modelFailed: false,
+    sandbox: false,
+    sandboxContainer: null,
+    startedAt: Date.now(),
+    completedAt: null,
+    terminationReason: null,
+    completionSummary: null,
+    workspaceId: null,
+    hostSessionId: null,
+    currentSectionIndex: 0,
+    totalSections: 0,
+    executionVariant: null,
+    auditorVariant: null,
+    auditorFallbackIndex: 0,
+    sandboxSettings: null,
+    baseCommit: null,
+    standbySessionId: null,
+    sectionRunKind: 'plan',
+    sectionId: '',
+    sectionRunKey: 'plan',
+    ...overrides,
+  }
+  createLoopsRepo(db).insert(row, {
+    lastAuditResult: large.lastAuditResult ?? null,
+    postActionReport: large.postActionReport,
+  })
+  return row
 }
 
 /** Creates a LoopsRepo whose methods are spies; `get` returns null unless overridden. */

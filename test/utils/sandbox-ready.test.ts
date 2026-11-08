@@ -4,8 +4,10 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { waitForSandboxReady } from '../../src/utils/sandbox-ready'
+import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { LoopRow } from '../../src/storage'
 import { createTestDb, type TestDb } from '../helpers/test-db'
+import { insertTestLoopRow } from '../helpers/loop-fixtures'
 
 describe('waitForSandboxReady', () => {
   let testDir: string
@@ -37,74 +39,18 @@ describe('waitForSandboxReady', () => {
 
   function insertLoopRow(loopName: string, overrides?: Partial<LoopRow>): void {
     if (!db) return
-    const row: LoopRow = {
+    insertTestLoopRow(db, {
       projectId,
       loopName,
-      status: 'running',
       currentSessionId: 'test-session',
+      worktree: true,
       worktreeDir: '/test/dir',
       projectDir: '/test/dir',
       iteration: 1,
       maxIterations: 0,
-      startedAt: Date.now(),
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
       sandbox: true,
-      worktree: true,
-      worktreeBranch: null,
-
-      completionSummary: null,
-      workspaceId: null,
-      hostSessionId: null,
-      currentSectionIndex: 0,
-      totalSections: 0,
-      executionVariant: null,
-      auditorVariant: null,
-      baseCommit: null,
-      standbySessionId: null,
-      executionModel: null,
-      auditorModel: null,
-      modelFailed: false,
-      sandboxContainer: null,
-      completedAt: null,
-      terminationReason: null,
       ...overrides,
-    }
-    db.prepare(
-      `INSERT OR REPLACE INTO loops (
-        project_id, loop_name, status, current_session_id, worktree, worktree_dir,
-        worktree_branch, project_dir, max_iterations, iteration, audit_count,
-        error_count, phase, execution_model, auditor_model,
-        model_failed, sandbox, sandbox_container, started_at, completed_at,
-        termination_reason, completion_summary, workspace_id, host_session_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      row.projectId,
-      row.loopName,
-      row.status,
-      row.currentSessionId,
-      row.worktree ? 1 : 0,
-      row.worktreeDir,
-      row.worktreeBranch,
-      row.projectDir,
-      row.maxIterations,
-      row.iteration,
-      row.auditCount,
-      row.errorCount,
-      row.phase,
-      row.executionModel,
-      row.auditorModel,
-      row.modelFailed ? 1 : 0,
-      row.sandbox ? 1 : 0,
-      row.sandboxContainer,
-      row.startedAt,
-      row.completedAt,
-      row.terminationReason,
-      row.completionSummary,
-      row.workspaceId,
-      row.hostSessionId
-    )
+    })
   }
 
   it('db_missing - returns immediately when database does not exist', async () => {
@@ -180,11 +126,7 @@ describe('waitForSandboxReady', () => {
     // Simulate container being started after 100ms
     setTimeout(() => {
       if (db) {
-        insertLoopRow('test-loop', {
-          sandbox: true,
-          worktree: true,
-          sandboxContainer: 'forge-test-loop',
-        })
+        createLoopsRepo(db).setSandboxContainer(projectId, 'test-loop', 'forge-test-loop')
       }
     }, 100)
 

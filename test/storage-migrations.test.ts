@@ -6,8 +6,14 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { openForgeDatabase } from '../src/storage/database'
 import { migrations } from '../src/storage/migrations'
+import { createLoopService } from '../src/loop/service'
 import { createLoopAttemptsRepo } from '../src/storage/repos/loop-attempts-repo'
 import type { LoopAttemptRecordInput } from '../src/storage/repos/loop-attempts-repo'
+import { createLoopsRepo } from '../src/storage/repos/loops-repo'
+import { createPlansRepo } from '../src/storage/repos/plans-repo'
+import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
+import { insertTestLoopRow } from './helpers/loop-fixtures'
+import { createMockLogger } from './helpers/logger'
 
 const tempDir = mkdtempSync(join(tmpdir(), 'forge-migrations-'))
 
@@ -606,7 +612,7 @@ test('migration 129 narrows phase CHECK and drops decomposition columns', () => 
   const migrated = openForgeDatabase(dbPath)
 
   // decomposing row should be deleted
-  const decompRow = migrated.prepare("SELECT * FROM loops WHERE phase = 'decomposing'").get()
+  const decompRow = migrated.prepare("SELECT loop_name FROM loops WHERE project_id = 'project-a' AND loop_name = 'loop-decomp'").get()
   expect(decompRow).toBeFalsy()
 
   // coding row should remain
@@ -619,13 +625,13 @@ test('migration 129 narrows phase CHECK and drops decomposition columns', () => 
   expect(cols.some((c) => c.name === 'decomposition_mode')).toBe(false)
   expect(cols.some((c) => c.name === 'decomposition_session_id')).toBe(false)
 
-  // inserting a row with phase='decomposing' should throw
-  expect(() => {
-    migrated.prepare(`
-      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-      VALUES ('project-b', 'loop-new', 'running', 'session-3', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'decomposing', 1)
-    `).run()
-  }).toThrow()
+  const sectionRunsSchema = migrated.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='section_runs'").get() as { sql: string }
+  expect(sectionRunsSchema.sql).toContain("'post_action'")
+  expect(sectionRunsSchema.sql).not.toContain("'decomposing'")
+
+  const viaRepo = insertTestLoopRow(migrated, { projectId: 'project-b', loopName: 'loop-new', currentSessionId: 'session-3', startedAt: 1 })
+  const codingState = createLoopsRepo(migrated).get('project-b', viaRepo.loopName)
+  expect(codingState!.phase).toBe('coding')
 
   migrated.close()
 })
@@ -715,18 +721,19 @@ test('migration 132 extends phase CHECK to include post_action', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)
 
-  // Verify the CREATE TABLE sql contains 'post_action'
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='section_runs'").get() as { sql: string }
   expect(row.sql).toContain("'post_action'")
 
-  // Insert a row with phase='post_action' should succeed
-  db.prepare(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-    VALUES ('proj-1', 'loop-post-action', 'running', 'session-post', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'post_action', 1)
-  `).run()
+  insertTestLoopRow(db, {
+    projectId: 'proj-1',
+    loopName: 'loop-post-action',
+    currentSessionId: 'session-post',
+    phase: 'post_action',
+    startedAt: 1,
+  })
 
-  const inserted = db.prepare("SELECT * FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-post-action'").get() as { phase: string }
-  expect(inserted.phase).toBe('post_action')
+  const inserted = createLoopsRepo(db).get('proj-1', 'loop-post-action')
+  expect(inserted!.phase).toBe('post_action')
 
   db.close()
 })
@@ -739,7 +746,7 @@ test('migration 132 is idempotent on re-opened databases', () => {
 
   const db2 = openForgeDatabase(dbPath)
 
-  const row = db2.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  const row = db2.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='section_runs'").get() as { sql: string }
   expect(row.sql).toContain("'post_action'")
 
   const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('132') as { count: number }
@@ -1040,7 +1047,8 @@ test('migration 136 is idempotent on re-opened databases', () => {
 
 test('migration 137 replaces idx_loops_session with partial unique index on running rows', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '137')
 
   const idxRow = db.prepare(
     "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'"
@@ -1071,7 +1079,8 @@ test('migration 137 adds idx_loops_executor_session partial index', () => {
 
 test('migration 137 allows terminated loop session ID reuse', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '137')
 
   db.prepare(`
     INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
@@ -1102,7 +1111,8 @@ test('migration 137 allows terminated loop session ID reuse', () => {
 
 test('migration 137 preserves existing running loop unique session constraint', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '137')
 
   db.prepare(`
     INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
@@ -1287,7 +1297,8 @@ test('migration 154 is idempotent', () => {
 
 test('migration 144 adds auditor_fallback_index to loops and is idempotent', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '144')
 
   const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
   const fallbackCol = cols.find((c) => c.name === 'auditor_fallback_index')
@@ -1352,10 +1363,6 @@ function buildLegacyCollided145Db(options: { failRepair?: boolean } = {}): strin
     db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run('146', LEGACY_COLLIDING_146_DESCRIPTION, 1)
     db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run('147', LEGACY_COLLIDING_147_DESCRIPTION, 1)
 
-    db.prepare(`
-      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-      VALUES ('proj-legacy', 'legacy-loop', 'running', 'sess-legacy', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
-    `).run()
     db.prepare(`
       INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, scenario, section_index, created_at)
       VALUES ('proj-legacy', 'legacy-loop', 'src/a.ts', 10, 'bug', 'legacy finding', 'scenario text', 0, 1)
@@ -1438,8 +1445,15 @@ test('migration 148 repairs loop_attempts after historical migration ID 145 coll
   const repairCount = migrated.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('148') as { count: number }
   expect(repairCount.count).toBe(1)
 
-  const legacyLoop = migrated.prepare("SELECT status, current_session_id FROM loops WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { status: string; current_session_id: string }
-  expect(legacyLoop).toEqual({ status: 'running', current_session_id: 'sess-legacy' })
+  insertTestLoopRow(migrated, {
+    projectId: 'proj-legacy',
+    loopName: 'legacy-loop',
+    currentSessionId: 'sess-legacy',
+    status: 'running',
+    startedAt: 1,
+  })
+  const legacyLoop = createLoopsRepo(migrated).get('proj-legacy', 'legacy-loop')
+  expect(legacyLoop).toMatchObject({ status: 'running', currentSessionId: 'sess-legacy' })
 
   const legacyFinding = migrated.prepare("SELECT description FROM review_findings WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { description: string }
   expect(legacyFinding.description).toBe('legacy finding')
@@ -1456,6 +1470,13 @@ test('migration 148 repair is idempotent and preserves attempt rows on reopen', 
   const dbPath = buildLegacyCollided145Db()
 
   const db1 = openForgeDatabase(dbPath)
+  insertTestLoopRow(db1, {
+    projectId: 'proj-legacy',
+    loopName: 'legacy-loop',
+    currentSessionId: 'sess-legacy',
+    status: 'running',
+    startedAt: 1,
+  })
   const repo1 = createLoopAttemptsRepo(db1)
   expect(repo1.record(attemptRecord({ completionKey: 'key-1', iteration: 1 }))).not.toBeNull()
   expect(repo1.record(attemptRecord({ completionKey: 'key-2', iteration: 2 }))).not.toBeNull()
@@ -1485,6 +1506,10 @@ test('migration 148 repair failure rolls back and leaves migration unrecorded', 
   const raw = new Database(dbPath)
   const repairCount = raw.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('148') as { count: number }
   expect(repairCount.count).toBe(0)
+  raw.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-legacy', 'legacy-loop', 'running', 'sess-legacy', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
   const legacyLoop = raw.prepare("SELECT status FROM loops WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { status: string }
   expect(legacyLoop.status).toBe('running')
   raw.close()
@@ -1509,7 +1534,8 @@ test('migration 148 repair failure rolls back and leaves migration unrecorded', 
 
 test('migration 149 adds nullable sandbox_settings to loops and is idempotent', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '149')
 
   const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
   const col = cols.find((c) => c.name === 'sandbox_settings')
@@ -1706,7 +1732,8 @@ test('migration 151 is a no-op when applied twice', () => {
 
 test('migration 152 adds nullable base_commit to loops and is idempotent', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '152')
 
   const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
   const col = cols.find((c) => c.name === 'base_commit')
@@ -1759,7 +1786,8 @@ test('migration 152 is a no-op when applied twice', () => {
 
 test('migration 155 adds nullable standby_session_id to loops and is idempotent', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '155')
 
   const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
   const col = cols.find((c) => c.name === 'standby_session_id')
@@ -1917,10 +1945,12 @@ test('migration 156 creates loop_handoffs with its indexes on fresh databases', 
   expect(pendingIdx.sql).toContain('UNIQUE')
   expect(pendingIdx.sql).toContain("status = 'pending'")
 
-  db.prepare(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-    VALUES ('proj-1', 'loop-handoff', 'running', 'sess-handoff', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
-  `).run()
+  insertTestLoopRow(db, {
+    projectId: 'proj-1',
+    loopName: 'loop-handoff',
+    currentSessionId: 'sess-handoff',
+    startedAt: 1,
+  })
   db.prepare(`
     INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at)
     VALUES ('proj-1', 'loop-handoff', 'sess-handoff', 'coder', 'coding', 0, 1, '{}', 'applied', 1)
@@ -2027,10 +2057,12 @@ test('deleting a loop cascades its handoff rows away', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)
 
-  db.prepare(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-    VALUES ('proj-1', 'loop-cascade', 'running', 'sess-cascade', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
-  `).run()
+  insertTestLoopRow(db, {
+    projectId: 'proj-1',
+    loopName: 'loop-cascade',
+    currentSessionId: 'sess-cascade',
+    startedAt: 1,
+  })
   db.prepare(`
     INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at)
     VALUES ('proj-1', 'loop-cascade', 'sess-cascade', 'coder', 'coding', 0, 1, '{}', 'applied', 1)
@@ -2150,10 +2182,12 @@ test('deleting a loop cascades its section_dependencies rows away', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)
 
-  db.prepare(`
-    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-    VALUES ('proj-1', 'loop-deps', 'running', 'sess-deps', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
-  `).run()
+  insertTestLoopRow(db, {
+    projectId: 'proj-1',
+    loopName: 'loop-deps',
+    currentSessionId: 'sess-deps',
+    startedAt: 1,
+  })
   db.prepare(`
     INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, created_at)
     VALUES ('proj-1', 'loop-deps', 0, 'section-1', 'S1', 'c1', 1)
@@ -2403,7 +2437,8 @@ test('migration 161 backfills generated section ids when section_plans is missin
 
 test('migration 161 trigger creates an active run for a raw loop insert', () => {
   const dbPath = createTempDb()
-  const db = openForgeDatabase(dbPath)
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '161')
 
   db.prepare(`
     INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
@@ -2432,6 +2467,123 @@ test('migration 161 trigger creates an active run for a raw loop insert', () => 
   expect(sectionRuns).toEqual([
     { kind: 'section', section_id: 'section-2', section_index: 1, session_id: 'sess-raw-section', status: 'active' },
   ])
+
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '162')
+  db.run('PRAGMA foreign_keys=ON')
+
+  expect(
+    db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name='trg_loops_insert_section_run'").get(),
+  ).toBeFalsy()
+
+  const runsBefore = db.prepare('SELECT COUNT(*) AS c FROM section_runs').get() as { c: number }
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, started_at)
+    VALUES ('proj-1', 'loop-no-run', 'running', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 9)
+  `).run()
+  const runsAfter = db.prepare('SELECT COUNT(*) AS c FROM section_runs').get() as { c: number }
+  expect(runsAfter.c).toBe(runsBefore.c)
+  const newLoopRuns = db.prepare("SELECT COUNT(*) AS c FROM section_runs WHERE project_id = 'proj-1' AND loop_name = 'loop-no-run'").get() as { c: number }
+  expect(newLoopRuns.c).toBe(0)
+
+  db.close()
+})
+
+test('migration 162 drops the per-section columns and keeps child rows', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '160')
+
+  insertLegacyLoop(db, {
+    loopName: 'loop-section',
+    status: 'running',
+    sessionId: 'sess-section',
+    phase: 'auditing',
+    currentSectionIndex: 1,
+    totalSections: 3,
+    standbySessionId: 'standby-section',
+    startedAt: 10,
+  })
+  db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, created_at)
+    VALUES ('proj-1', 'loop-section', 1, 'beta', 'Beta', 'Beta content', 1)
+  `).run()
+
+  applySingleMigration(db, '161')
+
+  db.prepare(`
+    INSERT INTO loop_transitions (project_id, loop_name, event_type, transition_kind, from_phase, to_phase, iteration, created_at)
+    VALUES ('proj-1', 'loop-section', 'phase', 'phase', 'coding', 'auditing', 1, 5)
+  `).run()
+  db.prepare(`
+    INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at)
+    VALUES ('proj-1', 'loop-section', 'sess-section', 'coder', 'auditing', 1, 1, '{}', 'applied', 6)
+  `).run()
+
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '162')
+  db.run('PRAGMA foreign_keys=ON')
+
+  const columns = loopTableColumns(db, 'loops')
+  for (const column of ['current_session_id', 'phase', 'current_section_index', 'standby_session_id']) {
+    expect(columns, column).not.toContain(column)
+  }
+  expect(indexExists(db, 'idx_loops_session')).toBe(false)
+  expect(
+    db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name='trg_loops_insert_section_run'").get(),
+  ).toBeFalsy()
+
+  for (const table of ['section_plans', 'loop_transitions', 'section_runs', 'loop_handoffs']) {
+    expect(countLoopRows(db, table, 'proj-1', 'loop-section'), table).toBe(1)
+  }
+
+  expect(() => applySingleMigration(db, '162')).not.toThrow()
+  expect(countLoopRows(db, 'section_runs', 'proj-1', 'loop-section')).toBe(1)
+
+  const loopsRepo = createLoopsRepo(db)
+  const service = createLoopService(
+    loopsRepo,
+    createPlansRepo(db),
+    createReviewFindingsRepo(db),
+    'proj-1',
+    createMockLogger(),
+  )
+
+  expect(service.getActiveState('loop-section')).toMatchObject({
+    sessionId: 'sess-section',
+    phase: 'auditing',
+    currentSectionIndex: 1,
+    standbySessionId: 'standby-section',
+    sectionId: 'beta',
+    totalSections: 3,
+  })
+  expect(service.resolveActiveLoopForSession('sess-section')?.loopName).toBe('loop-section')
+
+  loopsRepo.restart('proj-1', 'loop-section', {
+    sessionId: 'sess-restarted',
+    phase: 'coding',
+    iteration: 1,
+    auditCount: 0,
+    sandbox: false,
+    sandboxContainer: null,
+    workspaceId: null,
+    currentSectionIndex: 1,
+    totalSections: 3,
+    startedAt: 11,
+    auditorModel: null,
+  })
+
+  expect(service.getActiveState('loop-section')!.sessionId).toBe('sess-restarted')
+
+  const runs = db.prepare(`
+    SELECT section_id, status, session_id
+    FROM section_runs
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-section'
+  `).all() as Array<{ section_id: string; status: string; session_id: string }>
+  expect(runs).toEqual([
+    { section_id: 'beta', status: 'active', session_id: 'sess-restarted' },
+  ])
+  expect(countLoopRows(db, 'section_plans', 'proj-1', 'loop-section')).toBe(1)
 
   db.close()
 })

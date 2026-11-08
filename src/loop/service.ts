@@ -70,6 +70,7 @@ export interface LoopService {
    * The loop this session is currently driving, or null. `resolveLoopName`
    * matches terminated loops too, so every "is this session inside a running
    * loop" check must go through here instead of testing loop-row existence.
+   * The session is matched through the loop's active section run.
    */
   resolveActiveLoopForSession(sessionId: string): LoopState | null
   findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null
@@ -835,10 +836,12 @@ export function createLoopService(
   }
 
   function setCurrentSectionIndex(loopName: string, index: number): void {
-    // Defensive clamp against suffix-deletion races: if `current_section_index`
-    // was persisted from a snapshot where `total_sections = N` but the loop row
-    // has since been amended to `total_sections < index`, clamp the index so
-    // the invariant `current_section_index < total_sections` always holds.
+    // Defensive clamp against suffix-deletion races: if the active section run's
+    // index was persisted from a snapshot where `total_sections = N` but the
+    // loop row has since been amended to `total_sections < index`, clamp the
+    // index so the invariant `current section index < total_sections` always
+    // holds.  The index lives on the loop's active section run, not on a
+    // separate column of the loops row.
     const row = loopsRepo.get(projectId, loopName)
     if (row && row.totalSections > 0 && index >= row.totalSections) {
       index = row.totalSections - 1
@@ -859,10 +862,11 @@ export function createLoopService(
 
   /** Defensive clamp for `totalSections` when reduced by a suffix deletion.
 
-   * When `setTotalSections` lowers the total, any already-persisted
-   * `current_section_index` may be in the deleted region.  Clamp it
-   * back to `total - 1` to preserve the invariant that the current index
-   * never exceeds the highest valid section index.  */
+   * When `setTotalSections` lowers the total, the active section run's index
+   * may be in the deleted region.  Clamp it back to `total - 1` to preserve the
+   * invariant that the current index never exceeds the highest valid section
+   * index.  The index lives on the loop's active section run, not on a
+   * separate column of the loops row.  */
   function setTotalSections(loopName: string, total: number): void {
     loopsRepo.setTotalSections(projectId, loopName, total)
     if (total > 0) {

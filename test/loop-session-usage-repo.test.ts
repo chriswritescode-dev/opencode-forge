@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRow } from '../src/storage'
 import { createTestDb, type TestDb } from './helpers/test-db'
+import { insertTestLoopRow } from './helpers/loop-fixtures'
 
 describe('LoopSessionUsageRepo', () => {
   let db: Database
@@ -11,10 +12,12 @@ describe('LoopSessionUsageRepo', () => {
   const loopName = 'test-loop'
 
   function insertLoop(projectId: string, loopName: string, status: 'running' | 'completed' = 'running'): void {
-    db.prepare(
-      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-       VALUES (?, ?, ?, ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
-    ).run(projectId, loopName, status, `${projectId}-${loopName}-session`, Date.now())
+    insertTestLoopRow(db, {
+      projectId,
+      loopName,
+      status,
+      currentSessionId: `${projectId}-${loopName}-session`,
+    })
   }
 
   beforeEach(() => {
@@ -421,10 +424,19 @@ describe('LoopSessionUsageRepo', () => {
 
   describe('totalCostsByLoop', () => {
     test('sums cost per loop and excludes other projects', () => {
-      db.run(`
-        INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, phase, started_at)
-        VALUES ('other-project', 'other-loop', 'running', 'session-other', 1, '/tmp/other', '/tmp/other', 10, 0, 'coding', ?)
-      `, [Date.now()])
+      insertTestLoopRow(db, {
+        projectId: 'other-project',
+        loopName: 'other-loop',
+        status: 'running',
+        currentSessionId: 'session-other',
+        worktree: true,
+        worktreeDir: '/tmp/other',
+        projectDir: '/tmp/other',
+        maxIterations: 10,
+        iteration: 0,
+        phase: 'coding',
+        startedAt: Date.now(),
+      })
 
       repo.upsertSessionUsage([
         createUsageRow({ cost: 0.002 }),

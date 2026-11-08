@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
+import { createLoopsRepo, type LoopRow } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
@@ -15,6 +15,7 @@ import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
 import { createMockLogger } from '../helpers/logger'
 import { recordAuditorHandoff } from '../helpers/loop-handoff'
+import { insertTestLoopRow } from '../helpers/loop-fixtures'
 
 const mockLogger = createMockLogger()
 
@@ -66,33 +67,23 @@ describe('Loop Section Advancement', () => {
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  function insertLoop(overrides: Record<string, any> = {}) {
-    const defaults = {
-      project_id: projectId,
-      loop_name: 'test-loop',
+  function insertLoop(overrides: Partial<LoopRow> = {}) {
+    insertTestLoopRow(db, {
+      projectId,
+      loopName: 'test-loop',
       status: 'running',
-      current_session_id: 'sess-1',
-      worktree: 1,
-      worktree_dir: '/tmp/wt',
-      project_dir: '/tmp/proj',
-      max_iterations: 5,
+      currentSessionId: 'sess-1',
+      worktree: true,
+      worktreeDir: '/tmp/wt',
+      projectDir: '/tmp/proj',
+      maxIterations: 5,
       iteration: 1,
-      audit_count: 0,
-      error_count: 0,
       phase: 'coding',
-      started_at: Date.now(),
-      current_section_index: 0,
-      total_sections: 3,
-    }
-    const values = { ...defaults, ...overrides }
-    db.run(
-      `INSERT INTO loops (${Object.keys(values).join(',')}) VALUES (${Object.keys(values).map(() => '?').join(',')})`,
-      Object.values(values)
-    )
-    db.run(
-      `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
-      [values.project_id, values.loop_name, null]
-    )
+      startedAt: Date.now(),
+      currentSectionIndex: 0,
+      totalSections: 3,
+      ...overrides,
+    })
   }
 
   function insertSectionPlan(index: number, title: string, content: string, status: string = 'pending') {
@@ -157,7 +148,7 @@ describe('Loop Section Advancement', () => {
     }
 
     test('a clean section advance commits a short-title checkpoint and stores its commit sha on the section row', async () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 0, totalSections: 2, worktreeDir: tempDir })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
 
@@ -175,7 +166,7 @@ describe('Loop Section Advancement', () => {
     })
 
     test('a plan-derived section title lands in the checkpoint subject', async () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 0, totalSections: 2, worktreeDir: tempDir })
       insertSectionPlan(0, 'Remove the goal tools', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
 
@@ -191,7 +182,7 @@ describe('Loop Section Advancement', () => {
     })
 
     test('a checkpoint subject longer than 72 characters caps at a word boundary', async () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 0, totalSections: 2, worktreeDir: tempDir })
       insertSectionPlan(0, 'Update every module and document with a very long descriptive human readable title that keeps going', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
 
@@ -208,7 +199,7 @@ describe('Loop Section Advancement', () => {
     })
 
     test('no checkpoint commit when the worktree has no pending changes, but the section sha is still stored', async () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 0, totalSections: 2, worktreeDir: tempDir })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
 
@@ -228,7 +219,7 @@ describe('Loop Section Advancement', () => {
     })
 
     test('a failed checkpoint commit replaces a sha left by an earlier run with HEAD', async () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 0, totalSections: 2, worktreeDir: tempDir })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
       sectionPlansRepo.setCheckpointCommit(projectId, 'test-loop', 0, 'f'.repeat(40))
@@ -246,7 +237,7 @@ describe('Loop Section Advancement', () => {
     })
 
     test('a clean auditor handoff with a summary completes the section with that summary and records the rendered handoff result', async () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, worktree_dir: tempDir })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 0, totalSections: 2, worktreeDir: tempDir })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
 
@@ -295,7 +286,7 @@ describe('Loop Section Advancement', () => {
      * pass.
      */
     test('a clean section advance via the runtime records an auditor-handoff/advance-section row', async () => {
-      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, iteration: 1, max_iterations: 5 })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 0, totalSections: 2, iteration: 1, maxIterations: 5 })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
 
@@ -324,7 +315,7 @@ describe('Loop Section Advancement', () => {
 
       await recordAuditorHandoff(handler.loop, 'sess-1', { summary: CLEAN_AUDIT_SUMMARY })
 
-      // The persisted loops row's current_session_id is 'sess-1' (insertLoop
+      // The persisted active section run's session is 'sess-1' (insertLoop
       // default) so the idle event resolves to this loop via getBySessionId.
       await handler.onEvent({
         event: {
@@ -354,7 +345,7 @@ describe('Loop Section Advancement', () => {
 
     test('a runtime max-iterations termination records exactly one terminate row', async () => {
       // iteration=1, maxIterations=1 → the very next iteration cap fires.
-      insertLoop({ phase: 'auditing', current_section_index: 1, total_sections: 2, iteration: 1, max_iterations: 1 })
+      insertLoop({ phase: 'auditing', currentSectionIndex: 1, totalSections: 2, iteration: 1, maxIterations: 1 })
       insertSectionPlan(0, 'Section 1', 'Content 1', 'completed')
       insertSectionPlan(1, 'Section 2', 'Content 2', 'in_progress')
       // An outstanding bug finding makes the audit genuinely dirty.

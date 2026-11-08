@@ -176,18 +176,21 @@ describe('LoopsRepo', () => {
       expect(repo.getBySessionId(testRow.projectId, testRow.currentSessionId)?.loopName).toBe('running-loop')
     })
 
-    test('should enforce unique session ID constraint', () => {
+    test('should allow two running loops to share a session ID now that the run owns it', () => {
       repo.insert(testRow, testLarge)
-      
+
       const duplicate: LoopRow = {
         ...testRow,
         loopName: 'another-loop',
         currentSessionId: testRow.currentSessionId,
       }
-      
+
       expect(() => {
         repo.insert(duplicate, testLarge)
-      }).toThrow(/UNIQUE constraint failed/)
+      }).not.toThrow()
+
+      expect(repo.get(testRow.projectId, testRow.loopName)).not.toBeNull()
+      expect(repo.get(duplicate.projectId, duplicate.loopName)).not.toBeNull()
     })
   })
 

@@ -61,7 +61,7 @@ Each completed code or audit pass rotates to a fresh session, except that a reus
 
 ## Loop States
 
-Each loop has a `LoopState` backed by the typed `loops` and `loop_large_fields` SQLite tables:
+Each loop has a `LoopState` backed by the typed `loops` and `loop_large_fields` SQLite tables, with its live session, phase, section index and standby read from the loop's active `section_runs` row:
 
 ```typescript
 interface LoopState {
@@ -98,6 +98,8 @@ interface LoopState {
 ```
 
 Per-turn output lives in `loop_handoffs`, not on the loop row: only the current record is `pending`, it resolves to `applied` or `discarded`, and the resolved rows remain as history. `lastAuditResult` and `completionSummary` on the loop row are display text, never decision input.
+
+**Section runs.** The `section_runs` table is the persisted identity of the loop's current unit of work: `kind` is `plan`, `section`, or `post_action`, and the row carries the live `session_id`, `phase`, `section_index`, `standby_session_id` and `section_id`. A running loop has exactly one `active` run, enforced by a partial unique index, and a finished run stays as history. Migration 161 creates and backfills the table; migration 162 drops the mirrored `current_session_id`, `phase`, `current_section_index` and `standby_session_id` columns from `loops`, so the active run is their only stored home. `createSectionRunsRepo` in `src/storage/repos/section-runs-repo.ts` owns those rows, and `sectionRunKey` in `src/loop/section-run.ts` is the run's stable identity.
 
 ## Handoff-Driven Turn Ends
 
@@ -167,7 +169,7 @@ Each phase switch runs in a **fresh session** to keep context small and prioriti
    - Audit findings (if any)
 4. The previous session is deleted once its usage is captured, unless the loop retained it as the standby
 
-**Standby session.** `loops.standby_session_id` (migration 155) records at most one retained session, always the role opposite the current phase. It is the only way a loop resumes a session it had switched away from.
+**Standby session.** `section_runs.standby_session_id` (migrations 161/162) records at most one retained session on the loop's active section run, always the role opposite the current phase. Migration 162 removed the `loops` columns that mirrored the live session, phase, section index and standby, so the active run is their only stored home. It is the only way a loop resumes a session it had switched away from.
 
 - When coding finishes and a fresh audit session is created, the coder becomes the standby — unless a bug finding has reached the recurrence escalation threshold, in which case it is deleted instead.
 - When a dirty audit sends work back to coding, the coder is resumed from the standby instead of a new session, and the audit session becomes the standby in turn (an audit session that errored is deleted instead). A sectioned loop only ever reuses within the same section: a clean section audit releases the standby before the next section's fresh coder session. A non-sectioned loop reuses the standby across its audit iterations.
@@ -276,7 +278,7 @@ See [sandbox documentation](architecture.md#sandbox-system) for details.
 In user-facing language, a plan is decomposed into **milestones** — ordered units of execution. In the code and database, these are called **sections**:
 
 - `section_plans` SQL table — one row per milestone, ordered by `sectionIndex`
-- `currentSectionIndex` / `totalSections` columns on the loop row
+- `currentSectionIndex` / `totalSections` on the loop state, with the persisted section index on the loop's active section run (`section_runs.section_index`)
 - `<!-- forge-section -->` markers in the architect plan output; a marker may name a stable `id` and its `after` dependencies (see below)
 - `section-read` tool reads the current or specified milestone, or with `pending_suffix: true` the ordered pending sections after the current one
 

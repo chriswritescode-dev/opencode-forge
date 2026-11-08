@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createPlansRepo } from '../src/storage'
 import { createTestDb, type TestDb } from './helpers/test-db'
+import { insertTestLoopRow } from './helpers/loop-fixtures'
 
 describe('PlansRepo', () => {
   let db: Database
@@ -379,11 +380,16 @@ describe('PlansRepo', () => {
         "UPDATE plans SET updated_at = ? WHERE project_id = ? AND session_id = ?",
         [1000, projectId, 'executed-session']
       )
-      db.run(
-        `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, host_session_id)
-         VALUES (?, ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?, ?)`,
-        [projectId, 'executed-loop', 'executed-session', 2000, 'executed-session']
-      )
+      insertTestLoopRow(db, {
+        projectId,
+        loopName: 'executed-loop',
+        status: 'running',
+        currentSessionId: 'executed-session',
+        hostSessionId: 'executed-session',
+        startedAt: 2000,
+        worktreeDir: '/tmp/wt',
+        projectDir: '/tmp/proj',
+      })
 
       const rows = repo.listUnexecuted(projectId)
       expect(rows.map(r => r.sessionId)).toEqual(['unexecuted-session'])

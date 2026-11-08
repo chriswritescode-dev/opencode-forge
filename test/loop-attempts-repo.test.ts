@@ -5,6 +5,7 @@ import { createLoopAttemptsRepo } from '../src/storage/repos/loop-attempts-repo'
 import type { LoopAttemptRecordInput } from '../src/storage/repos/loop-attempts-repo'
 import type { ReviewFindingRow } from '../src/storage/repos/review-findings-repo'
 import { createTestDb, type TestDb } from './helpers/test-db'
+import { insertTestLoopRow } from './helpers/loop-fixtures'
 
 function finding(file: string, line: number, severity: 'bug' | 'warning' = 'bug'): ReviewFindingRow {
   return {
@@ -30,15 +31,10 @@ describe('LoopAttemptsRepo', () => {
   const sessionA = 'sess-a'
 
   function insertLoop(name: string, sessionId: string): void {
-    db.prepare(
-      `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-       VALUES (?, ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
-    ).run(projectId, name, sessionId, Date.now())
+    insertTestLoopRow(db, { projectId, loopName: name, currentSessionId: sessionId, worktreeDir: '/tmp/wt', projectDir: '/tmp/proj' })
   }
 
   function setLoopSession(sessionId: string): void {
-    db.prepare(`UPDATE loops SET current_session_id = ? WHERE project_id = ? AND loop_name = ?`)
-      .run(sessionId, projectId, loopName)
     db.prepare(`UPDATE section_runs SET session_id = ? WHERE project_id = ? AND loop_name = ? AND status = 'active'`)
       .run(sessionId, projectId, loopName)
   }
@@ -292,7 +288,7 @@ describe('LoopAttemptsRepo', () => {
     describe('replaceSession callback', () => {
       function loopRow(): { current_session_id: string; phase: string } {
         return db
-          .prepare(`SELECT current_session_id, phase FROM loops WHERE project_id = ? AND loop_name = ?`)
+          .prepare(`SELECT session_id AS current_session_id, phase FROM section_runs WHERE project_id = ? AND loop_name = ? AND status = 'active'`)
           .get(projectId, loopName) as { current_session_id: string; phase: string }
       }
 
@@ -301,7 +297,7 @@ describe('LoopAttemptsRepo', () => {
         let calls = 0
         const replaceSession = () => {
           calls += 1
-          db.prepare(`UPDATE loops SET phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run(projectId, loopName)
+          db.prepare(`UPDATE section_runs SET phase = 'auditing' WHERE project_id = ? AND loop_name = ? AND status = 'active'`).run(projectId, loopName)
           setLoopSession('auditor-1')
         }
 
@@ -324,7 +320,7 @@ describe('LoopAttemptsRepo', () => {
         let calls = 0
         const replaceSession = () => {
           calls += 1
-          db.prepare(`UPDATE loops SET phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run(projectId, loopName)
+          db.prepare(`UPDATE section_runs SET phase = 'auditing' WHERE project_id = ? AND loop_name = ? AND status = 'active'`).run(projectId, loopName)
           setLoopSession('auditor-1')
         }
 
@@ -341,7 +337,7 @@ describe('LoopAttemptsRepo', () => {
         let calls = 0
         const replaceSession = () => {
           calls += 1
-          db.prepare(`UPDATE loops SET phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run(projectId, loopName)
+          db.prepare(`UPDATE section_runs SET phase = 'auditing' WHERE project_id = ? AND loop_name = ? AND status = 'active'`).run(projectId, loopName)
           setLoopSession('auditor-1')
         }
 
@@ -518,10 +514,7 @@ describe('LoopAttemptsRepo on the real migrated schema', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
     expect(tables.map(t => t.name)).toContain('loop_attempts')
 
-    db.prepare(`
-      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-      VALUES ('proj-real', 'loop-real', 'running', 'sess-real', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
-    `).run()
+    insertTestLoopRow(db, { projectId: 'proj-real', loopName: 'loop-real', currentSessionId: 'sess-real', startedAt: 1, worktreeDir: '/tmp/wt', projectDir: '/tmp/proj' })
 
     const repo = createLoopAttemptsRepo(db)
     const record: LoopAttemptRecordInput = {

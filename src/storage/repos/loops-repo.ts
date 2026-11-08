@@ -178,7 +178,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     projectId: row.project_id,
     loopName: row.loop_name,
     status: row.status as LoopRow['status'],
-    currentSessionId: row.current_session_id,
+    currentSessionId: row.run_session_id,
     worktree: row.worktree === 1,
     worktreeDir: row.worktree_dir,
     worktreeBranch: row.worktree_branch,
@@ -187,7 +187,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     iteration: row.iteration,
     auditCount: row.audit_count,
     errorCount: row.error_count,
-    phase: row.phase as LoopRow['phase'],
+    phase: row.run_phase as LoopRow['phase'],
     executionModel: row.execution_model,
     auditorModel: row.auditor_model,
     modelFailed: row.model_failed === 1,
@@ -199,14 +199,14 @@ function mapRow(row: LoopRowRaw): LoopRow {
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
     hostSessionId: row.host_session_id,
-    currentSectionIndex: row.current_section_index,
+    currentSectionIndex: row.run_section_index,
     totalSections: row.total_sections,
     executionVariant: row.execution_variant,
     auditorVariant: row.auditor_variant,
     auditorFallbackIndex: row.auditor_fallback_index ?? 0,
     sandboxSettings: parseSandboxSettings(row.sandbox_settings),
     baseCommit: row.base_commit,
-    standbySessionId: row.standby_session_id,
+    standbySessionId: row.run_standby,
     sectionRunKind: row.section_run_kind as SectionRunKind,
     sectionId: row.section_run_section_id,
     sectionRunKey: sectionRunKey(row.section_run_kind as SectionRunKind, row.section_run_section_id),
@@ -232,7 +232,7 @@ interface LoopRowRaw {
   project_id: string
   loop_name: string
   status: string
-  current_session_id: string
+  run_session_id: string
   worktree: number
   worktree_dir: string
   worktree_branch: string | null
@@ -241,7 +241,7 @@ interface LoopRowRaw {
   iteration: number
   audit_count: number
   error_count: number
-  phase: string
+  run_phase: string
   execution_model: string | null
   auditor_model: string | null
   model_failed: number
@@ -253,41 +253,40 @@ interface LoopRowRaw {
   completion_summary: string | null
   workspace_id: string | null
   host_session_id: string | null
-  current_section_index: number
+  run_section_index: number
   total_sections: number
   execution_variant: string | null
   auditor_variant: string | null
   auditor_fallback_index: number
   sandbox_settings: string | null
   base_commit: string | null
-  standby_session_id: string | null
+  run_standby: string | null
   section_run_kind: string
   section_run_section_id: string
 }
 
-const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+const LOOP_COLUMNS = `project_id, loop_name, status, worktree, worktree_dir,
   worktree_branch, project_dir, max_iterations, iteration, audit_count,
-  error_count, phase, execution_model, auditor_model,
+  error_count, execution_model, auditor_model,
   model_failed, sandbox, sandbox_container, started_at, completed_at,
   termination_reason, completion_summary, workspace_id, host_session_id,
-  current_section_index, total_sections,
-  execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit,
-  standby_session_id`
+  total_sections,
+  execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
 
 const LOOP_SELECT_COLUMNS = `l.project_id, l.loop_name, l.status,
-  r.session_id AS current_session_id,
+  r.session_id AS run_session_id,
   l.worktree, l.worktree_dir, l.worktree_branch, l.project_dir,
   l.max_iterations, l.iteration, l.audit_count, l.error_count,
-  r.phase AS phase,
+  r.phase AS run_phase,
   l.execution_model, l.auditor_model, l.model_failed, l.sandbox, l.sandbox_container,
   l.started_at, l.completed_at, l.termination_reason, l.completion_summary,
   l.workspace_id, l.host_session_id,
-  r.section_index AS current_section_index,
+  r.section_index AS run_section_index,
   l.total_sections,
   l.execution_variant, l.auditor_variant, l.auditor_fallback_index, l.sandbox_settings, l.base_commit,
-  r.standby_session_id AS standby_session_id,
+  r.standby_session_id AS run_standby,
   r.kind AS section_run_kind,
   r.section_id AS section_run_section_id`
 
@@ -421,7 +420,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   /** Prepared on first use: it reads loop_transitions, which databases opened without migrations may lack. */
   const listSidebarRowsSql = `
     SELECT l.loop_name, l.status, l.iteration, l.max_iterations, l.started_at,
-           r.phase AS phase, r.section_index AS current_section_index, l.total_sections,
+           r.phase AS run_phase, r.section_index AS run_section_index, l.total_sections,
            (
              SELECT MAX(t.created_at)
              FROM loop_transitions t
@@ -435,10 +434,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     LIMIT ?
   `
   let listSidebarRowsStmt: ReturnType<Database['prepare']> | null = null
-
-  const updatePhaseStmt = db.prepare(`
-    UPDATE loops SET phase = ? WHERE project_id = ? AND loop_name = ?
-  `)
 
   const updateIterationStmt = db.prepare(`
     UPDATE loops SET iteration = ? WHERE project_id = ? AND loop_name = ?
@@ -465,18 +460,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     UPDATE loops SET auditor_fallback_index = 0
     WHERE project_id = ? AND loop_name = ? AND status = 'running' AND auditor_fallback_index != 0
   `)
-
-  const setCurrentSessionIdStmt = db.prepare(`
-    UPDATE loops SET current_session_id = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
-  const setStandbySessionIdStmt = db.prepare(`
-    UPDATE loops SET standby_session_id = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
-
 
   const setWorkspaceIdStmt = db.prepare(`
     UPDATE loops SET workspace_id = ?
@@ -524,14 +507,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   `)
 
   const setPhaseAndResetErrorStmt = db.prepare(`
-    UPDATE loops SET phase = ?, error_count = 0, model_failed = 0
+    UPDATE loops SET error_count = 0, model_failed = 0
     WHERE project_id = ? AND loop_name = ?
   `)
 
   const replaceSessionStmt = db.prepare(`
     UPDATE loops SET
-      current_session_id = ?,
-      phase = ?,
       iteration = COALESCE(?, iteration),
       audit_count = COALESCE(?, audit_count)
     WHERE project_id = ? AND loop_name = ?
@@ -540,14 +521,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   const restartStmt = db.prepare(`
     UPDATE loops SET
       status = 'running',
-      current_session_id = ?,
-      phase = ?,
       iteration = ?,
       audit_count = ?,
       error_count = 0,
       model_failed = 0,
       auditor_fallback_index = 0,
-      standby_session_id = NULL,
       sandbox = ?,
       sandbox_container = ?,
       workspace_id = ?,
@@ -559,7 +537,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       completed_at = NULL,
       termination_reason = NULL,
       completion_summary = NULL,
-      current_section_index = ?,
       total_sections = ?
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -569,8 +546,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       status = ?,
       completed_at = ?,
       termination_reason = ?,
-      completion_summary = ?,
-      standby_session_id = NULL
+      completion_summary = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -580,14 +556,14 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   // when no row matches (defensive against concurrent external deletes).
   const restoreStmt = db.prepare(`
     UPDATE loops SET
-      status = ?, current_session_id = ?, worktree = ?, worktree_dir = ?, worktree_branch = ?,
+      status = ?, worktree = ?, worktree_dir = ?, worktree_branch = ?,
       project_dir = ?, max_iterations = ?, iteration = ?, audit_count = ?, error_count = ?,
-      phase = ?, execution_model = ?, auditor_model = ?, model_failed = ?, sandbox = ?,
+      execution_model = ?, auditor_model = ?, model_failed = ?, sandbox = ?,
       sandbox_container = ?, started_at = ?, completed_at = ?, termination_reason = ?,
       completion_summary = ?, workspace_id = ?, host_session_id = ?,
-      current_section_index = ?, total_sections = ?,
+      total_sections = ?,
       execution_variant = ?, auditor_variant = ?, auditor_fallback_index = ?,
-      sandbox_settings = ?, base_commit = ?, standby_session_id = ?
+      sandbox_settings = ?, base_commit = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -647,13 +623,13 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
   /**
    * Positional bind values shared by the INSERT and restore-UPDATE statements
-   * (every loops column except the project_id/loop_name key). Adding a loops
-   * column requires updating only this list plus the two SQL statements.
+   * (every loops column except the project_id/loop_name key; the run-scoped
+   * session, phase, section index and standby session live on section_runs).
+   * Adding a loops column requires updating only this list plus the two SQL statements.
    */
   function loopRowValues(row: LoopRow): (string | number | null)[] {
     return [
       row.status,
-      row.currentSessionId,
       row.worktree ? 1 : 0,
       row.worktreeDir,
       row.worktreeBranch,
@@ -662,7 +638,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       row.iteration,
       row.auditCount,
       row.errorCount,
-      row.phase,
       row.executionModel,
       row.auditorModel,
       row.modelFailed ? 1 : 0,
@@ -674,14 +649,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       row.completionSummary,
       row.workspaceId,
       row.hostSessionId,
-      row.currentSectionIndex ?? 0,
       row.totalSections ?? 0,
       row.executionVariant ?? null,
       row.auditorVariant ?? null,
       row.auditorFallbackIndex ?? 0,
       serializeSandboxSettings(row.sandboxSettings),
       row.baseCommit ?? null,
-      row.standbySessionId ?? null,
     ]
   }
 
@@ -813,8 +786,8 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         iteration: number
         max_iterations: number
         started_at: number
-        phase: string
-        current_section_index: number
+        run_phase: string
+        run_section_index: number
         total_sections: number
         phase_changed_at: number | null
       }>
@@ -824,16 +797,15 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         iteration: row.iteration,
         maxIterations: row.max_iterations,
         startedAt: row.started_at,
-        phase: row.phase as LoopRow['phase'],
+        phase: row.run_phase as LoopRow['phase'],
         phaseStartedAt: row.phase_changed_at ?? row.started_at,
-        currentSectionIndex: row.current_section_index,
+        currentSectionIndex: row.run_section_index,
         totalSections: row.total_sections,
       }))
     },
 
     updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void {
       const runTxn = db.transaction(() => {
-        updatePhaseStmt.run(phase, projectId, loopName)
         applyPhaseChange(projectId, loopName, phase)
       })
       runTxn()
@@ -864,7 +836,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void {
       const runTxn = db.transaction(() => {
-        setCurrentSessionIdStmt.run(sessionId, projectId, loopName)
         sectionRuns.updateActive(projectId, loopName, { sessionId })
       })
       runTxn()
@@ -872,7 +843,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     setStandbySessionId(projectId: string, loopName: string, sessionId: string | null): void {
       const runTxn = db.transaction(() => {
-        setStandbySessionIdStmt.run(sessionId, projectId, loopName)
         sectionRuns.updateActive(projectId, loopName, { standbySessionId: sessionId })
       })
       runTxn()
@@ -910,7 +880,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     setPhaseAndResetError(projectId: string, loopName: string, phase: LoopRow['phase']): void {
       const runTxn = db.transaction(() => {
-        setPhaseAndResetErrorStmt.run(phase, projectId, loopName)
+        setPhaseAndResetErrorStmt.run(projectId, loopName)
         applyPhaseChange(projectId, loopName, phase)
       })
       runTxn()
@@ -923,8 +893,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     ): void {
       const runTxn = db.transaction(() => {
         replaceSessionStmt.run(
-          opts.sessionId,
-          opts.phase,
           opts.iteration ?? null,
           opts.auditCount ?? null,
           projectId,
@@ -951,8 +919,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         const setsExecutionModel = opts.executionModel !== undefined ? 1 : 0
         const setsExecutionVariant = opts.executionVariant !== undefined ? 1 : 0
         restartStmt.run(
-          opts.sessionId,
-          opts.phase,
           opts.iteration,
           opts.auditCount,
           opts.sandbox ? 1 : 0,
@@ -966,7 +932,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           setsExecutionVariant,
           setsExecutionVariant ? (opts.executionVariant ?? null) : null,
           opts.startedAt,
-          opts.currentSectionIndex,
           opts.totalSections,
           projectId,
           loopName,
@@ -1019,7 +984,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     setCurrentSectionIndex(projectId, loopName, index) {
       const runTxn = db.transaction(() => {
-        db.prepare(`UPDATE loops SET current_section_index = ? WHERE project_id = ? AND loop_name = ?`).run(index, projectId, loopName)
         const active = sectionRuns.getActive(projectId, loopName)
         if (active) {
           sectionRuns.moveActive(
@@ -1038,8 +1002,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         if (total > 0) {
           const active = sectionRuns.getActive(projectId, loopName)
           if (active && active.sectionIndex >= total) {
-            db.prepare(`UPDATE loops SET current_section_index = ? WHERE project_id = ? AND loop_name = ?`)
-              .run(total - 1, projectId, loopName)
             sectionRuns.moveActive(
               projectId,
               loopName,

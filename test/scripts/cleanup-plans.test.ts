@@ -7,6 +7,7 @@ import { spawnSync } from 'child_process'
 import { Database } from 'bun:sqlite'
 import { parseDurationMs } from '../../scripts/cleanup-plans'
 import { createTestDb } from '../helpers/test-db'
+import { insertTestLoopRow } from '../helpers/loop-fixtures'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -38,11 +39,25 @@ function createForgeDb(plans: PlanSeed[], loops: Array<{ projectId: string; loop
   for (const plan of plans) {
     insertPlan.run(plan.projectId, plan.loopName ?? null, plan.sessionId ?? null, plan.content ?? 'plan body', plan.updatedAt)
   }
-  const insertLoop = testDb.db.prepare(
-    `INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
-     VALUES (?, ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', ?)`,
-  )
-  for (const loop of loops) insertLoop.run(loop.projectId, loop.loopName, `${loop.projectId}-${loop.loopName}-session`, Date.now())
+  for (const loop of loops) {
+    insertTestLoopRow(testDb.db, {
+      projectId: loop.projectId,
+      loopName: loop.loopName,
+      status: 'running',
+      currentSessionId: `${loop.projectId}-${loop.loopName}-session`,
+      worktree: false,
+      worktreeDir: '/tmp/wt',
+      worktreeBranch: null,
+      projectDir: '/tmp/proj',
+      maxIterations: 5,
+      iteration: 0,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      startedAt: Date.now(),
+      completedAt: null,
+    })
+  }
   testDb.db.close()
   return xdg
 }
