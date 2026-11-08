@@ -610,11 +610,11 @@ describe('attachLoopToSession', () => {
     const { deps, promptAsyncMock } = setupAttach()
     const loopName = 'held-until-first-prompt'
     const release = vi.fn()
-    const hold = vi.fn((_state: { sessionId: string }) => release)
+    const hold = vi.fn((_state: { sessionId: string; sectionRunKey: string }) => release)
     deps.loop.holdUntilFirstPrompt = hold
     let heldDuringSnapshot = false
     deps.loop.snapshotSectionCodeGraph = async () => {
-      heldDuringSnapshot = hold.mock.calls.length === 1 && release.mock.calls.length === 0
+      heldDuringSnapshot = hold.mock.calls.length === 2 && release.mock.calls.length === 1
     }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
@@ -625,8 +625,11 @@ describe('attachLoopToSession', () => {
     )
 
     expect(result.ok).toBe(true)
-    expect(hold).toHaveBeenCalledTimes(1)
+    expect(hold).toHaveBeenCalledTimes(2)
     expect(hold.mock.calls[0]![0].sessionId).toBe('sess_held')
+    expect(hold.mock.calls[0]![0].sectionRunKey).toBe('plan')
+    expect(hold.mock.calls[1]![0].sessionId).toBe('sess_held')
+    expect(hold.mock.calls[1]![0].sectionRunKey).toBe('section:section-1')
     expect(heldDuringSnapshot).toBe(true)
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
     expect(release).toHaveBeenCalled()

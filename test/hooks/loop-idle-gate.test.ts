@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest'
 import {
   markPromptSent,
   clearPromptPending,
+  clearLoopPromptPending,
   isAwaitingBusy,
   isAwaitingBusyExpired,
   AWAITING_BUSY_TIMEOUT_MS,
@@ -16,10 +17,17 @@ import {
   clearIdleGateForSession,
   __resetIdleGate,
 } from '../../src/loop/idle-gate'
+import type { LoopLane } from '../../src/loop/section-run'
 import type { Logger } from '../../src/types'
 import { createMockLogger } from '../helpers/logger'
 
 const PROJECT_ID = 'test-project'
+
+const LANE: LoopLane = { loopName: 'loop-1', sectionRunKey: 'plan' }
+const LANE_A: LoopLane = { loopName: 'loop-A', sectionRunKey: 'plan' }
+const LANE_B: LoopLane = { loopName: 'loop-B', sectionRunKey: 'plan' }
+const LANE_SHARED: LoopLane = { loopName: 'loop-shared', sectionRunKey: 'plan' }
+const LANE_NONEXISTENT: LoopLane = { loopName: 'loop-nonexistent', sectionRunKey: 'plan' }
 
 describe('loop-idle-gate primitives', () => {
   let logger: Logger
@@ -30,75 +38,103 @@ describe('loop-idle-gate primitives', () => {
   })
 
   test('markPromptSent then isAwaitingBusy returns true for matching sessionId', () => {
-    markPromptSent(PROJECT_ID, 'loop-1', 'session-abc', logger)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-1', 'session-abc')).toBe(true)
+    markPromptSent(PROJECT_ID, LANE, 'session-abc', logger)
+    expect(isAwaitingBusy(PROJECT_ID, LANE, 'session-abc')).toBe(true)
   })
 
-  test('isAwaitingBusy returns false for non-matching sessionId on same loopName', () => {
-    markPromptSent(PROJECT_ID, 'loop-1', 'session-abc', logger)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-1', 'session-xyz')).toBe(false)
+  test('isAwaitingBusy returns false for non-matching sessionId on same lane', () => {
+    markPromptSent(PROJECT_ID, LANE, 'session-abc', logger)
+    expect(isAwaitingBusy(PROJECT_ID, LANE, 'session-xyz')).toBe(false)
   })
 
   test('clearPromptPending removes the entry; subsequent isAwaitingBusy returns false', () => {
-    markPromptSent(PROJECT_ID, 'loop-1', 'session-abc', logger)
-    clearPromptPending(PROJECT_ID, 'loop-1', logger)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-1', 'session-abc')).toBe(false)
+    markPromptSent(PROJECT_ID, LANE, 'session-abc', logger)
+    clearPromptPending(PROJECT_ID, LANE, logger)
+    expect(isAwaitingBusy(PROJECT_ID, LANE, 'session-abc')).toBe(false)
   })
 
   test('clearPromptPending is a no-op if no entry exists', () => {
-    clearPromptPending(PROJECT_ID, 'loop-nonexistent', logger)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-nonexistent', 'session-abc')).toBe(false)
+    clearPromptPending(PROJECT_ID, LANE_NONEXISTENT, logger)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_NONEXISTENT, 'session-abc')).toBe(false)
   })
 
   test('isAwaitingBusyExpired returns false within timeout', () => {
-    markPromptSent(PROJECT_ID, 'loop-1', 'session-abc', logger)
-    expect(isAwaitingBusyExpired(PROJECT_ID, 'loop-1')).toBe(false)
+    markPromptSent(PROJECT_ID, LANE, 'session-abc', logger)
+    expect(isAwaitingBusyExpired(PROJECT_ID, LANE)).toBe(false)
   })
 
   test('isAwaitingBusyExpired returns true after AWAITING_BUSY_TIMEOUT_MS', () => {
     vi.useFakeTimers()
     try {
-      markPromptSent(PROJECT_ID, 'loop-1', 'session-abc', logger)
+      markPromptSent(PROJECT_ID, LANE, 'session-abc', logger)
       const now = Date.now()
       vi.setSystemTime(now + AWAITING_BUSY_TIMEOUT_MS + 1)
-      expect(isAwaitingBusyExpired(PROJECT_ID, 'loop-1')).toBe(true)
+      expect(isAwaitingBusyExpired(PROJECT_ID, LANE)).toBe(true)
     } finally {
       vi.useRealTimers()
     }
   })
 
   test('multiple loops are independent', () => {
-    markPromptSent(PROJECT_ID, 'loop-A', 'session-A1', logger)
-    markPromptSent(PROJECT_ID, 'loop-B', 'session-B1', logger)
+    markPromptSent(PROJECT_ID, LANE_A, 'session-A1', logger)
+    markPromptSent(PROJECT_ID, LANE_B, 'session-B1', logger)
 
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-A', 'session-A1')).toBe(true)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-B', 'session-B1')).toBe(true)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-A', 'session-B1')).toBe(false)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-B', 'session-A1')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_A, 'session-A1')).toBe(true)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_B, 'session-B1')).toBe(true)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_A, 'session-B1')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_B, 'session-A1')).toBe(false)
 
-    clearPromptPending(PROJECT_ID, 'loop-A', logger)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-A', 'session-A1')).toBe(false)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-B', 'session-B1')).toBe(true)
+    clearPromptPending(PROJECT_ID, LANE_A, logger)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_A, 'session-A1')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_B, 'session-B1')).toBe(true)
   })
 
-  test('markPromptSent overwrites previous entry for same loopName', () => {
-    markPromptSent(PROJECT_ID, 'loop-1', 'session-old', logger)
-    markPromptSent(PROJECT_ID, 'loop-1', 'session-new', logger)
+  test('two lanes of the same loop hold independent entries', () => {
+    const laneSection: LoopLane = { loopName: 'loop-lanes', sectionRunKey: 'section:section-1' }
+    const lanePlan: LoopLane = { loopName: 'loop-lanes', sectionRunKey: 'plan' }
 
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-1', 'session-old')).toBe(false)
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-1', 'session-new')).toBe(true)
+    markPromptSent(PROJECT_ID, laneSection, 'session-section', logger)
+    markPromptSent(PROJECT_ID, lanePlan, 'session-plan', logger)
+
+    expect(isAwaitingBusy(PROJECT_ID, laneSection, 'session-section')).toBe(true)
+    expect(isAwaitingBusy(PROJECT_ID, lanePlan, 'session-plan')).toBe(true)
+    expect(isAwaitingBusy(PROJECT_ID, laneSection, 'session-plan')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, lanePlan, 'session-section')).toBe(false)
+  })
+
+  test('clearLoopPromptPending removes every lane of that loop and leaves another loop untouched', () => {
+    const laneSection: LoopLane = { loopName: 'loop-lanes', sectionRunKey: 'section:section-1' }
+    const lanePlan: LoopLane = { loopName: 'loop-lanes', sectionRunKey: 'plan' }
+
+    markPromptSent(PROJECT_ID, laneSection, 'session-section', logger)
+    markPromptSent(PROJECT_ID, lanePlan, 'session-plan', logger)
+    markPromptSent(PROJECT_ID, LANE_B, 'session-B1', logger)
+
+    clearLoopPromptPending(PROJECT_ID, 'loop-lanes', logger)
+
+    expect(isAwaitingBusy(PROJECT_ID, laneSection, 'session-section')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, lanePlan, 'session-plan')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, LANE_B, 'session-B1')).toBe(true)
+  })
+
+  test('markPromptSent overwrites previous entry for same lane', () => {
+    markPromptSent(PROJECT_ID, LANE, 'session-old', logger)
+    markPromptSent(PROJECT_ID, LANE, 'session-new', logger)
+
+    expect(isAwaitingBusy(PROJECT_ID, LANE, 'session-old')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, LANE, 'session-new')).toBe(true)
   })
 
   test('__resetIdleGate clears awaiting-busy markers', () => {
-    markPromptSent(PROJECT_ID, 'loop-1', 'session-abc', logger)
+    markPromptSent(PROJECT_ID, LANE, 'session-abc', logger)
     __resetIdleGate()
-    expect(isAwaitingBusy(PROJECT_ID, 'loop-1', 'session-abc')).toBe(false)
+    expect(isAwaitingBusy(PROJECT_ID, LANE, 'session-abc')).toBe(false)
   })
 
   test('state is shared across separate module copies in the same process', async () => {
     vi.resetModules()
     const first = await import('../../src/loop/idle-gate')
-    first.markPromptSent(PROJECT_ID, 'loop-shared', 'session-shared', logger)
+    first.markPromptSent(PROJECT_ID, LANE_SHARED, 'session-shared', logger)
     first.recordInboxEnqueued('session-shared', 'inbox-shared')
     first.recordSuppressedIdle('session-shared')
 
@@ -106,7 +142,7 @@ describe('loop-idle-gate primitives', () => {
     const second = await import('../../src/loop/idle-gate')
 
     expect(second).not.toBe(first)
-    expect(second.isAwaitingBusy(PROJECT_ID, 'loop-shared', 'session-shared')).toBe(true)
+    expect(second.isAwaitingBusy(PROJECT_ID, LANE_SHARED, 'session-shared')).toBe(true)
     expect(second.isPromptQueued('session-shared')).toBe(true)
     expect(second.hasSuppressedIdle('session-shared')).toBe(true)
     second.__resetIdleGate()

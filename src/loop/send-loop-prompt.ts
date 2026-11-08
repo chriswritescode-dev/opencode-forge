@@ -3,10 +3,11 @@ import { retryWithModelFallback } from '../utils/model-fallback'
 import { clearPromptPending } from './idle-gate'
 import { withInFlightGuard, ConcurrentPromptError, type PromptAgent } from './in-flight-guard'
 import { extractErrorSignal, classifyProviderLimit } from './provider-limit'
+import type { LoopLane } from './section-run'
 
 export interface SendLoopPromptOptions {
   projectId: string
-  loopName: string
+  lane: LoopLane
   sessionId: string
   agent: PromptAgent
   logger: Logger
@@ -30,7 +31,7 @@ export interface SendLoopPromptResult {
 
 /** Single source of truth for "send a loop prompt with model fallback + in-flight guard". */
 export async function sendLoopPrompt(opts: SendLoopPromptOptions): Promise<SendLoopPromptResult> {
-  const { projectId, loopName, sessionId, agent, logger, performPrompt } = opts
+  const { projectId, lane, sessionId, agent, logger, performPrompt } = opts
   const useGuard = opts.useInFlightGuard !== false
   const clearOnError = opts.clearPendingOnError !== false
   const primary = opts.primaryModel ?? undefined
@@ -41,7 +42,7 @@ export async function sendLoopPrompt(opts: SendLoopPromptOptions): Promise<SendL
   ): Promise<{ error?: unknown }> => {
     if (!useGuard) return performPrompt(model)
     try {
-      return await withInFlightGuard(projectId, loopName, sessionId, agent, logger, () => performPrompt(model))
+      return await withInFlightGuard(projectId, lane, sessionId, agent, logger, () => performPrompt(model))
     } catch (err) {
       if (err instanceof ConcurrentPromptError) return { error: err }
       throw err
@@ -58,7 +59,7 @@ export async function sendLoopPrompt(opts: SendLoopPromptOptions): Promise<SendL
   )
 
   if (result.error && !(result.error instanceof ConcurrentPromptError) && clearOnError) {
-    clearPromptPending(projectId, loopName, logger)
+    clearPromptPending(projectId, lane, logger)
   }
 
   return { result, usedModel }

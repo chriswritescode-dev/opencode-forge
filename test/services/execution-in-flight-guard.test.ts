@@ -4,6 +4,7 @@ import {
   getPromptInFlight,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
+import { laneOf } from '../../src/loop/section-run'
 import { buildExecutionDeps } from '../helpers/loop-fixtures'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -67,6 +68,8 @@ describe('execution in-flight guard', () => {
         standbySessionId: null,
       }, { lastAuditResult: null })
 
+      const lane = laneOf(loopsRepo.get(PROJECT_ID, 'guard-loop')!)
+
       sectionPlansRepo.bulkInsert({
         projectId: PROJECT_ID,
         loopName: 'guard-loop',
@@ -79,7 +82,7 @@ describe('execution in-flight guard', () => {
       const { createForgeExecutionService } = await import('../../src/services/execution')
       const service = createForgeExecutionService(deps)
 
-      markPromptInFlight(PROJECT_ID, 'guard-loop', 'other-prompt-sess', 'code')
+      markPromptInFlight(PROJECT_ID, lane, 'other-prompt-sess', 'code')
 
       const result = await service.dispatch(
         { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -93,7 +96,7 @@ describe('execution in-flight guard', () => {
         expect.fail('Expected promptAsync not to be called while guard is active')
       }
 
-      const remaining = getPromptInFlight(PROJECT_ID, 'guard-loop')
+      const remaining = getPromptInFlight(PROJECT_ID, lane)
       expect(remaining).toBeDefined()
       expect(remaining!.sessionId).toBe('other-prompt-sess')
       expect(remaining!.agent).toBe('code')
@@ -181,7 +184,8 @@ describe('execution in-flight guard', () => {
 
       expect(result.ok).toBe(true)
       expect(promptCallCount).toBe(3)
-      expect(getPromptInFlight(PROJECT_ID, 'retry-loop')).toBeUndefined()
+      const lane = laneOf(loopsRepo.get(PROJECT_ID, 'retry-loop')!)
+      expect(getPromptInFlight(PROJECT_ID, lane)).toBeUndefined()
     })
 
     test('configured-model restart prompt failure clears guard after each attempt', async () => {
@@ -257,7 +261,8 @@ describe('execution in-flight guard', () => {
 
       expect(result.ok).toBe(true)
       expect(promptCallCount).toBe(2)
-      expect(getPromptInFlight(PROJECT_ID, 'cleanup-loop')).toBeUndefined()
+      const lane = laneOf(loopsRepo.get(PROJECT_ID, 'cleanup-loop')!)
+      expect(getPromptInFlight(PROJECT_ID, lane)).toBeUndefined()
     })
   })
 })

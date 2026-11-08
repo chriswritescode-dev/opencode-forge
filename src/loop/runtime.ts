@@ -25,13 +25,15 @@ import { createLoopSessionWithWorkspace, deleteSessionBestEffort } from '../util
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
-import { clearPromptPending, isAwaitingBusy, isAwaitingBusyExpired, isPromptQueued, recordSuppressedIdle } from './idle-gate'
+import { clearLoopPromptPending, clearPromptPending, isAwaitingBusy, isAwaitingBusyExpired, isPromptQueued, recordSuppressedIdle } from './idle-gate'
 import {
+  clearLoopPromptInFlight,
   clearPromptInFlight,
   clearPromptInFlightBySession,
   withInFlightGuard,
   ConcurrentPromptError,
 } from './in-flight-guard'
+import { laneOf, type LoopLane } from './section-run'
 import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
 import { nextTransition, type TransitionEvent, type Transition } from './transitions'
@@ -39,7 +41,7 @@ import { createUsageCapture } from './runtime-usage'
 import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
-import { processShared, projectLoopKey } from '../utils/process-shared'
+import { deleteLoopLaneEntries, processShared, projectLoopKey, projectLoopLaneKey } from '../utils/process-shared'
 import { findSessionAncestor, tolerateUndeterminedParent } from '../utils/session-ancestry'
 import {
   attemptCodeGraphReportPath,
@@ -202,7 +204,7 @@ export { isWorkspaceNotFoundError } from './runtime-workspace'
 
 const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'
 const INTERNAL_FALLBACK_ABORTS_SHARED_KEY = 'loop-internal-fallback-aborts.v1'
-const PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY = 'loop-pending-code-graph-snapshots.v1'
+const PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY = 'loop-pending-code-graph-snapshots.v2'
 /** Keeps the loop marked live while a code-graph snapshot outlasts the watchdog stall timeout. */
 const CODE_GRAPH_HEARTBEAT_MS = 20_000
 
@@ -249,6 +251,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   function stateLockKey(loopName: string): string {
     return projectLoopKey(projectId, loopName)
+  }
+
+  function laneKey(lane: LoopLane): string {
+    return projectLoopLaneKey(projectId, lane)
+  }
+
+  function activeLane(loopName: string): LoopLane | null {
+    const state = loopService.getActiveState(loopName)
+    return state ? laneOf(state) : null
   }
 
   /**
@@ -511,12 +522,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return busy.filter((sessionId) => sessionId !== state.sessionId)
   }
 
-  /** Cancels any scheduled handoff deferral re-check for a loop. */
-  function clearHandoffDeferTimer(loopName: string): void {
-    const pending = handoffDeferTimers.get(loopName)
+  /** Cancels any scheduled handoff deferral re-check for a section-run lane. */
+  function clearHandoffDeferTimer(lane: LoopLane): void {
+    const key = laneKey(lane)
+    const pending = handoffDeferTimers.get(key)
     if (!pending) return
     clearTimeout(pending)
-    handoffDeferTimers.delete(loopName)
+    handoffDeferTimers.delete(key)
   }
 
   /**
@@ -528,6 +540,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   async function deferWhileLoopSessionsBusy(state: LoopState): Promise<boolean> {
     const loopName = state.loopName
+    const lane = laneOf(state)
     let reason: string | null = null
     try {
       const busySessions = await findBusyLoopSessions(state)
@@ -539,14 +552,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const fresh = loopService.getActiveState(loopName)
     if (!fresh || fresh.sessionId !== state.sessionId || fresh.phase !== state.phase) return true
     if (!reason) {
-      clearHandoffDeferTimer(loopName)
+      clearHandoffDeferTimer(lane)
       return false
     }
     logger.debug(`Loop: deferring ${state.phase} handoff for ${loopName}: ${reason}`)
-    const pending = handoffDeferTimers.get(loopName)
+    const key = laneKey(lane)
+    const pending = handoffDeferTimers.get(key)
     if (pending) clearTimeout(pending)
     const timer = setTimeout(() => {
-      handoffDeferTimers.delete(loopName)
+      handoffDeferTimers.delete(key)
       void withStateLock(loopName, async () => {
         const current = loopService.getActiveState(loopName)
         if (!current || current.sessionId !== state.sessionId || current.phase !== state.phase) return
@@ -557,7 +571,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }
       })
     }, 1500)
-    handoffDeferTimers.set(loopName, timer)
+    handoffDeferTimers.set(key, timer)
     return true
   }
 
@@ -657,7 +671,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!role) return
 
     const owner = { sessionId: state.sessionId, phase: state.phase, iteration: state.iteration }
-    const stored = handoffNudges.get(loopName)
+    const nudgeKey = laneKey(laneOf(state))
+    const stored = handoffNudges.get(nudgeKey)
     const nudges = stored
       && stored.sessionId === owner.sessionId
       && stored.phase === owner.phase
@@ -672,13 +687,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    handoffNudges.set(loopName, { ...owner, count: nudges + 1 })
+    handoffNudges.set(nudgeKey, { ...owner, count: nudges + 1 })
     const unanswered = lastMessageRole === 'none' || lastMessageRole === 'user'
     const promptText = unanswered ? phasePrompt() : buildHandoffNudgePrompt(role)
     logger.log(`Loop: ${state.phase} turn ended without a handoff for ${loopName}; sending ${unanswered ? 'the full phase prompt' : 'a handoff nudge'} (${nudges + 1}/${MAX_HANDOFF_NUDGES})`)
 
     if (role === 'post_action') {
-      const { error } = await sendPostActionPrompt(loopName, state.sessionId, promptText)
+      const { error } = await sendPostActionPrompt(laneOf(state), state.sessionId, promptText)
       if (error) {
         await handlePromptError(loopName, state, 'failed to send post-action handoff nudge', error)
       }
@@ -836,15 +851,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * errors, starts a fresh handoff nudge budget for the new phase turn, and
    * restarts the watchdog.
    */
-  function activateLoopSession(loopName: string, previousSessionId: string | null, newSessionId: string): void {
-    clearPromptPending(projectId, loopName, logger)
-    const oldRetryTimeout = retryTimeouts.get(loopName)
+  function activateLoopSession(loopName: string, lane: LoopLane, previousSessionId: string | null, newSessionId: string): void {
+    clearPromptPending(projectId, lane, logger)
+    const key = laneKey(lane)
+    const oldRetryTimeout = retryTimeouts.get(key)
     if (oldRetryTimeout) {
       clearTimeout(oldRetryTimeout)
-      retryTimeouts.delete(loopName)
+      retryTimeouts.delete(key)
     }
-    clearHandoffDeferTimer(loopName)
-    handoffNudges.delete(loopName)
+    clearHandoffDeferTimer(lane)
+    handoffNudges.delete(key)
     loopService.registerLoopSession(newSessionId, loopName)
     sessionToLoop.set(newSessionId, loopName)
     if (previousSessionId) sessionToLoop.set(previousSessionId, loopName)
@@ -863,7 +879,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   ): void {
     const prior = loopService.getActiveState(loopName)
     loopService.replaceSession(loopName, update)
-    if (prior && prior.phase !== update.phase) handoffNudges.delete(loopName)
+    if (prior && prior.phase !== update.phase) handoffNudges.delete(laneKey(laneOf(prior)))
   }
 
   /**
@@ -952,7 +968,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       detachFromWorkspace(loopName, state, 'during session rotation')
     }
 
-    activateLoopSession(loopName, oldSessionId, newSessionId)
+    activateLoopSession(loopName, activeLane(loopName) ?? laneOf(state), oldSessionId, newSessionId)
 
     if (!options?.keepPreviousSession) {
       void scheduleSessionDelete({ loopName, sessionId: oldSessionId, directory: sessionDir, context: 'after session rotation', phase: state.phase, state })
@@ -1113,6 +1129,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const prompt = loopService.buildPostActionPrompt(currentState, { skill: cfg.skill, prompt: cfg.prompt })
     loopService.setPhaseAndResetError(loopName, 'post_action')
+    releaseSectionRunLane(laneOf(currentState))
     // Retain the old session in the reverse index so delayed errors from the
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(currentState.sessionId, loopName)
@@ -1134,7 +1151,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
-    const { error } = await sendPostActionPrompt(loopName, created.sessionId, prompt)
+    const { error } = await sendPostActionPrompt(laneOf(loopService.getActiveState(loopName) ?? currentState), created.sessionId, prompt)
     if (error) {
       const targetState = loopService.getActiveState(loopName) ?? currentState
       logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
@@ -1146,12 +1163,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /** Sends a prompt to the post-action session on the configured post-action model, falling back to the loop's auditor model. The auditor model is always sent with the auditor's variant; a configured post-action model has no variant. */
-  function sendPostActionPrompt(loopName: string, sessionId: string, promptText: string) {
+  function sendPostActionPrompt(lane: LoopLane, sessionId: string, promptText: string) {
     const cfg = resolvePostActionConfig(getConfig())
-    const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName)
+    const auditorChoice = resolveLoopAuditorChoice(getConfig(), loopService, lane.loopName)
     const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
     return sendPromptWithFallback({
-      loopName,
+      lane,
       sessionId,
       promptText,
       agent: 'code',
@@ -1324,7 +1341,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       lastAuditResult: stateUpdates.lastAuditResult ?? null,
     })
 
-    activateLoopSession(loopName, auditSessionId, standby.sessionId)
+    activateLoopSession(loopName, laneOf(currentState), auditSessionId, standby.sessionId)
     recordTransitionEntry(loopName, currentState, transition)
     if (input.markModelFailed) {
       loopService.setModelFailed(loopName, true)
@@ -1427,7 +1444,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
     const { error } = await sendPromptWithFallback({
-      loopName,
+      lane: laneOf(state),
       sessionId: newSessionId,
       promptText: continuationPrompt,
       agent: 'code',
@@ -1526,18 +1543,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.stop(loopName)
     loopRegistry.remove(projectId, loopName)
 
-    const retryTimeout = retryTimeouts.get(loopName)
-    if (retryTimeout) {
-      clearTimeout(retryTimeout)
-      retryTimeouts.delete(loopName)
-    }
-
-    clearHandoffDeferTimer(loopName)
-    handoffNudges.delete(loopName)
     loopService.discardPendingHandoff(loopName)
     coalescedLimitSessions.delete(loopName)
-    clearPromptPending(projectId, loopName, logger)
-    clearPromptInFlight(projectId, loopName)
+    releaseLoopLanes(loopName)
 
     await discardStandbySession(loopName, state, 'at loop termination')
 
@@ -1640,7 +1648,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * recorded during the aborted turn belongs to that turn and is discarded so it can
    * never be applied to the re-sent one.
    */
-  async function abortForInternalResend(loopName: string, sessionId: string): Promise<void> {
+  async function abortForInternalResend(state: LoopState): Promise<void> {
+    const loopName = state.loopName
+    const sessionId = state.sessionId
+    const lane = laneOf(state)
     loopService.discardPendingHandoff(loopName)
     try {
       await client.session.abort({ sessionID: sessionId })
@@ -1650,8 +1661,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     await new Promise((r) => setTimeout(r, AUDITOR_FALLBACK_SETTLE_MS))
 
-    clearPromptPending(projectId, loopName, logger)
-    clearPromptInFlight(projectId, loopName)
+    clearPromptPending(projectId, lane, logger)
+    clearPromptInFlight(projectId, lane)
   }
 
   /**
@@ -1662,12 +1673,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * next prompt without creating a new session.
    */
   async function resendAuditPromptWithAuditorModel(loopName: string, state: LoopState): Promise<{ error?: unknown }> {
-    await abortForInternalResend(loopName, state.sessionId)
+    await abortForInternalResend(state)
 
     const promptText = loopService.buildAuditPrompt(state)
     const choice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger)
     const { error } = await sendPromptWithFallback({
-      loopName,
+      lane: laneOf(state),
       sessionId: state.sessionId,
       promptText,
       agent: 'auditor-loop',
@@ -1796,6 +1807,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), will retry`, err)
       loopService.incrementError(loopName)
       if (retryFn) {
+        const retryKey = laneKey(laneOf(loopService.getActiveState(loopName) ?? currentState))
         const retryTimeout = setTimeout(() => {
           // Serialize the retry send and its failure/exhaustion handling with
           // phase-rotation ticks (which also acquire the per-loop state
@@ -1815,7 +1827,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             const freshState = loopService.getActiveState(loopName)
             if (!freshState?.active) {
               logger.log(`Loop: loop cancelled, skipping retry`)
-              retryTimeouts.delete(loopName)
+              retryTimeouts.delete(retryKey)
               return
             }
             try {
@@ -1825,7 +1837,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             }
           })
         }, 2000)
-        retryTimeouts.set(loopName, retryTimeout)
+        retryTimeouts.set(retryKey, retryTimeout)
       }
     } else {
       logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), giving up`, err)
@@ -1865,7 +1877,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const freshState = loopService.getActiveState(opts.loopName)
       if (!freshState?.active || (opts.isRetryValid && !opts.isRetryValid(freshState))) throw new Error('loop_cancelled')
       try {
-        await withInFlightGuard(projectId, opts.loopName, opts.sessionId, opts.agent, logger, () => send(freshState))
+        await withInFlightGuard(projectId, laneOf(freshState), opts.sessionId, opts.agent, logger, () => send(freshState))
       } catch (err) {
         if (err instanceof ConcurrentPromptError) {
           logger.log(`Loop: ${opts.errorContext} — retry rejected as concurrent prompt (prior guard active), skipping`)
@@ -1894,7 +1906,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     opts: SendPromptWithRetryRecoveryOptions,
   ): Promise<{ sent: boolean; usedModel?: Awaited<ReturnType<typeof sendPromptWithFallback>>['usedModel'] }> {
     const { error, usedModel } = await sendPromptWithFallback({
-      loopName: opts.loopName,
+      lane: laneOf(loopService.getActiveState(opts.loopName) ?? opts.errorState),
       sessionId: opts.sessionId,
       promptText: opts.promptText,
       agent: opts.agent,
@@ -1952,7 +1964,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           if (outcome.kind === 'advanced' || outcome.kind === 'concurrent') return
         }
 
-        await abortForInternalResend(loopName, fresh.sessionId)
+        await abortForInternalResend(fresh)
 
         const isAuditor = isAuditorPhase(fresh.phase)
         const choice = isAuditor ? resolveLoopAuditorChoice(getConfig(), loopService, loopName, logger) : undefined
@@ -2008,6 +2020,31 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   const pendingCodeGraphSnapshots = processShared<Map<string, string>>(PENDING_CODE_GRAPH_SNAPSHOTS_SHARED_KEY, () => new Map())
 
+  /** Clears every marker and timer of one section-run lane. */
+  function releaseSectionRunLane(lane: LoopLane): void {
+    const key = laneKey(lane)
+    clearPromptPending(projectId, lane, logger)
+    clearPromptInFlight(projectId, lane)
+    pendingCodeGraphSnapshots.delete(key)
+    const retry = retryTimeouts.get(key)
+    if (retry) {
+      clearTimeout(retry)
+      retryTimeouts.delete(key)
+    }
+    clearHandoffDeferTimer(lane)
+    handoffNudges.delete(key)
+  }
+
+  /** Clears every section-run lane of one loop. */
+  function releaseLoopLanes(loopName: string): void {
+    clearLoopPromptPending(projectId, loopName, logger)
+    clearLoopPromptInFlight(projectId, loopName)
+    deleteLoopLaneEntries(pendingCodeGraphSnapshots, projectId, loopName)
+    for (const timer of deleteLoopLaneEntries(retryTimeouts, projectId, loopName)) clearTimeout(timer)
+    for (const timer of deleteLoopLaneEntries(handoffDeferTimers, projectId, loopName)) clearTimeout(timer)
+    deleteLoopLaneEntries(handoffNudges, projectId, loopName)
+  }
+
   /** The persisted point in a loop a deferred transition resumes from. */
   function codeGraphTransitionToken(state: LoopState): string {
     return `${state.sessionId}|${state.phase}|${state.iteration ?? 0}|${state.currentSectionIndex ?? 0}`
@@ -2015,7 +2052,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   /** Whether `state` is the exact point a deferred code-graph transition will resume from. */
   function isAwaitingCodeGraphSnapshot(state: LoopState): boolean {
-    return pendingCodeGraphSnapshots.get(stateLockKey(state.loopName)) === codeGraphTransitionToken(state)
+    return pendingCodeGraphSnapshots.get(laneKey(laneOf(state))) === codeGraphTransitionToken(state)
   }
 
   /** The report once it is written inside the sandbox, or null so no prompt points at a missing file. */
@@ -2146,7 +2183,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * release, which attach runs once the first prompt is marked sent or abandoned.
    */
   function holdUntilFirstPrompt(state: LoopState): () => void {
-    const key = stateLockKey(state.loopName)
+    const key = laneKey(laneOf(state))
     const token = codeGraphTransitionToken(state)
     pendingCodeGraphSnapshots.set(key, token)
     return () => {
@@ -2173,7 +2210,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await resume(expected)
       return
     }
-    const key = stateLockKey(loopName)
+    const key = laneKey(laneOf(expected))
     const token = codeGraphTransitionToken(expected)
     pendingCodeGraphSnapshots.set(key, token)
     const clearPending = (): void => {
@@ -2216,7 +2253,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   ): Promise<void> {
     let currentState = state
     const { error: auditPromptErr, usedModel: actualAuditorModel } = await sendPromptWithFallback({
-      loopName,
+      lane: laneOf(state),
       sessionId,
       promptText: buildPrompt(currentState),
       agent: 'auditor-loop',
@@ -2298,7 +2335,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const auditSessionId = standby.sessionId
 
     replaceLoopSession(loopName, { newSessionId: auditSessionId, phase: 'auditing' })
-    activateLoopSession(loopName, codeSessionId, auditSessionId)
+    activateLoopSession(loopName, laneOf(currentState), codeSessionId, auditSessionId)
     loopService.setStandbySessionId(loopName, codeSessionId)
     logTransition(loopName, currentState, { type: 'coder-handoff' }, idleTrans, 'auditing')
 
@@ -2373,7 +2410,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     if (record) {
-      handoffNudges.delete(loopName)
+      handoffNudges.delete(laneKey(laneOf(currentState)))
       if (!await loopService.captureAttempt(currentState, handoffCompletionKey(record), formatCoderHandoff(record.payload))) return
     } else {
       // An assistant error still rotates to audit so the auditor sees the failure;
@@ -2465,7 +2502,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           'Audit could not be started after retries — continue iterating, the auditor will be reattempted next round.',
         )
         const { error: promptErr } = await sendPromptWithFallback({
-          loopName,
+          lane: laneOf(currentState),
           sessionId: rotatedSessionId,
           promptText: continuationPrompt,
           agent: 'code',
@@ -2634,7 +2671,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
       return
     }
-    handoffNudges.delete(loopName)
+    handoffNudges.delete(laneKey(laneOf(currentState)))
 
     loopService.resetAuditorFallbackIndex(loopName)
     currentState = { ...currentState, auditorFallbackIndex: 0 }
@@ -2688,6 +2725,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
         loopService.setCurrentSectionIndex(loopName, nextIdx)
+        releaseSectionRunLane(laneOf(currentState))
         loopService.startSection(loopName, nextIdx)
 
         await discardStandbySession(loopName, currentState, 'after section advance')
@@ -2877,7 +2915,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => loopService.buildPostActionPrompt(nudgeState, { skill: cfg.skill, prompt: cfg.prompt }))
       return
     }
-    handoffNudges.delete(loopName)
+    handoffNudges.delete(laneKey(laneOf(currentState)))
 
     logger.log(`Loop: post-action complete for ${loopName}, terminating`)
     const trans = nextTransition(currentState, { type: 'post-action-complete' })
@@ -3039,6 +3077,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (status?.type === 'busy') {
       const loopName = loopService.resolveLoopName(sessionId)
+      const lane = loopName ? activeLane(loopName) : null
       // The replacement prompt has begun its own lifecycle, so the idle-gate and
       // in-flight markers for this session belong to the freshly dispatched
       // prompt and are cleared. This `busy` also closes the failed prompt's
@@ -3070,13 +3109,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // provider-limit signals for the same failed prompt are queued with
       // `withStateLock`, so an unlocked cleanup would clear the guard before
       // the queued handler consumed it, re-advancing the fallback index.
-      if (loopName && isAwaitingBusy(projectId, loopName, sessionId)) {
+      if (lane && isAwaitingBusy(projectId, lane, sessionId)) {
         logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
-        clearPromptPending(projectId, loopName, logger)
+        clearPromptPending(projectId, lane, logger)
       }
       if (loopName) {
         const coalesced = coalescedLimitSessions.get(loopName) === sessionId
-        clearPromptInFlightBySession(projectId, loopName, sessionId)
+        if (lane) clearPromptInFlightBySession(projectId, lane, sessionId)
         if (coalesced) {
           await withStateLock(loopName, async () => {
             coalescedLimitSessions.delete(loopName)
@@ -3127,8 +3166,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    if (isAwaitingBusy(projectId, loopName, sessionId)) {
-      if (!isAwaitingBusyExpired(projectId, loopName)) {
+    const pendingLane = activeLane(loopName)
+    if (pendingLane && isAwaitingBusy(projectId, pendingLane, sessionId)) {
+      if (!isAwaitingBusyExpired(projectId, pendingLane)) {
         logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
         // This premature idle is the aborted prompt's abort terminal (the
         // internal abort emitted idle instead of an AbortError). Consume its
@@ -3137,12 +3177,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
       logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName}, dispatching idle anyway`)
-      clearPromptPending(projectId, loopName, logger)
+      clearPromptPending(projectId, pendingLane, logger)
     }
 
     await withStateLock(loopName, async () => {
       const state = loopService.getActiveState(loopName)
       if (!state || !state.active) return
+      const lane = laneOf(state)
 
       if (isPromptQueued(sessionId)) {
         recordSuppressedIdle(sessionId)
@@ -3159,8 +3200,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // marked pending for this same reused session, so this stale idle must be
       // suppressed against the latest lifecycle rather than running the phase on a
       // session that is busy again.
-      if (isAwaitingBusy(projectId, loopName, sessionId)) {
-        if (!isAwaitingBusyExpired(projectId, loopName)) {
+      if (isAwaitingBusy(projectId, lane, sessionId)) {
+        if (!isAwaitingBusyExpired(projectId, lane)) {
           logger.debug(`[idle-gate] suppressing queued premature idle loop=${loopName} session=${sessionId} (replacement prompt pending)`)
           // Same as the pre-lock suppression: this stale idle is the failed
           // prompt's abort terminal (idle, not AbortError). Consume the marker
@@ -3169,7 +3210,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           return
         }
         logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName} after lock, dispatching idle anyway`)
-        clearPromptPending(projectId, loopName, logger)
+        clearPromptPending(projectId, lane, logger)
       }
 
       // The session's prompt has completed its lifecycle. Any internal abort we
@@ -3331,21 +3372,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       iteration: fresh.iteration ?? 0,
       sectionIndex: transitionSectionIndex(fresh),
     })
+    releaseLoopLanes(loopName)
     loopService.terminate(loopName, {
       status: shutdownStatus,
       reason: shutdownReasonText,
       completedAt: Date.now(),
     })
   }
-
   function clearAllRetryTimeouts(): void {
-    for (const [worktreeName, timeout] of retryTimeouts.entries()) {
+    for (const [key, timeout] of retryTimeouts.entries()) {
       clearTimeout(timeout)
-      retryTimeouts.delete(worktreeName)
+      retryTimeouts.delete(key)
     }
-    for (const [worktreeName, timeout] of handoffDeferTimers.entries()) {
+    for (const [key, timeout] of handoffDeferTimers.entries()) {
       clearTimeout(timeout)
-      handoffDeferTimers.delete(worktreeName)
+      handoffDeferTimers.delete(key)
     }
     handoffNudges.clear()
     coalescedLimitSessions.clear()
@@ -3391,14 +3432,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function clearLoopTimers(loopName: string): Promise<void> {
     watchdog.stop(loopName)
 
-    const retryTimeout = retryTimeouts.get(loopName)
-    if (retryTimeout) {
-      clearTimeout(retryTimeout)
-      retryTimeouts.delete(loopName)
-    }
-
-    clearHandoffDeferTimer(loopName)
-    handoffNudges.delete(loopName)
+    releaseLoopLanes(loopName)
     coalescedLimitSessions.delete(loopName)
 
     const stateForStandby = loopService.getAnyState(loopName)
@@ -3535,6 +3569,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // The loop row is restored in place (or inserted if concurrently deleted)
     // so existing transition history survives restart.
     loopService.restoreState(name, params.newState)
+    if (oldState) releaseSectionRunLane(laneOf(oldState))
     loopService.registerLoopSession(params.newSessionId, name)
     sessionToLoop.set(params.newSessionId, name)
     if (oldState?.sessionId) {

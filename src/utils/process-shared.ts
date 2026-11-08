@@ -22,3 +22,29 @@ export function processShared<T>(key: string, create: () => T): T {
 export function projectLoopKey(projectId: string, loopName: string): string {
   return `${projectId}\u0000${loopName}`
 }
+
+/**
+ * Builds the key for process-shared state scoped to one section run of one loop. A lane is a
+ * loop plus a section-run key, so state for the same loop keeps one independent entry per
+ * section run instead of sharing a single entry across every run.
+ */
+export function projectLoopLaneKey(projectId: string, lane: { loopName: string; sectionRunKey: string }): string {
+  return `${projectLoopKey(projectId, lane.loopName)}\u0000${lane.sectionRunKey}`
+}
+
+/**
+ * Removes every lane-scoped entry for one loop and returns the removed values so callers can
+ * report what they cleared. Entries of other loops, and of same-named loops in other projects,
+ * stay untouched.
+ */
+export function deleteLoopLaneEntries<V>(map: Map<string, V>, projectId: string, loopName: string): V[] {
+  const prefix = `${projectLoopKey(projectId, loopName)}\u0000`
+  const removed: V[] = []
+  for (const [key, value] of map) {
+    if (key.startsWith(prefix)) {
+      map.delete(key)
+      removed.push(value)
+    }
+  }
+  return removed
+}

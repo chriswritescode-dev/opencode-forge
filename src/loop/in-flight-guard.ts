@@ -1,5 +1,6 @@
 import type { Logger } from '../types'
-import { processShared, projectLoopKey } from '../utils/process-shared'
+import { deleteLoopLaneEntries, processShared, projectLoopLaneKey } from '../utils/process-shared'
+import type { LoopLane } from './section-run'
 
 export type PromptAgent = 'code' | 'auditor-loop'
 
@@ -27,18 +28,18 @@ interface InFlightEntry {
   startedAt: number
 }
 
-const inFlight = processShared('prompt-in-flight.v2', () => new Map<string, InFlightEntry>())
+const inFlight = processShared('prompt-in-flight.v3', () => new Map<string, InFlightEntry>())
 
-export function markPromptInFlight(projectId: string, loopName: string, sessionId: string, agent: PromptAgent): void {
-  inFlight.set(projectLoopKey(projectId, loopName), { sessionId, agent, startedAt: Date.now() })
+export function markPromptInFlight(projectId: string, lane: LoopLane, sessionId: string, agent: PromptAgent): void {
+  inFlight.set(projectLoopLaneKey(projectId, lane), { sessionId, agent, startedAt: Date.now() })
 }
 
-export function clearPromptInFlight(projectId: string, loopName: string): void {
-  inFlight.delete(projectLoopKey(projectId, loopName))
+export function clearPromptInFlight(projectId: string, lane: LoopLane): void {
+  inFlight.delete(projectLoopLaneKey(projectId, lane))
 }
 
-export function clearPromptInFlightBySession(projectId: string, loopName: string, sessionId: string): boolean {
-  const key = projectLoopKey(projectId, loopName)
+export function clearPromptInFlightBySession(projectId: string, lane: LoopLane, sessionId: string): boolean {
+  const key = projectLoopLaneKey(projectId, lane)
   const entry = inFlight.get(key)
   if (!entry) return false
   if (entry.sessionId === sessionId) {
@@ -50,11 +51,11 @@ export function clearPromptInFlightBySession(projectId: string, loopName: string
 
 export function clearPromptInFlightIfMatches(
   projectId: string,
-  loopName: string,
+  lane: LoopLane,
   sessionId: string,
   agent: PromptAgent,
 ): boolean {
-  const key = projectLoopKey(projectId, loopName)
+  const key = projectLoopLaneKey(projectId, lane)
   const entry = inFlight.get(key)
   if (!entry) return false
   if (entry.sessionId === sessionId && entry.agent === agent) {
@@ -64,40 +65,45 @@ export function clearPromptInFlightIfMatches(
   return false
 }
 
-export function getPromptInFlight(projectId: string, loopName: string): InFlightEntry | undefined {
-  return inFlight.get(projectLoopKey(projectId, loopName))
+export function getPromptInFlight(projectId: string, lane: LoopLane): InFlightEntry | undefined {
+  return inFlight.get(projectLoopLaneKey(projectId, lane))
+}
+
+/** Clears the in-flight entry of every section run of one loop. */
+export function clearLoopPromptInFlight(projectId: string, loopName: string): void {
+  deleteLoopLaneEntries(inFlight, projectId, loopName)
 }
 
 export function assertNoPromptInFlight(
   projectId: string,
-  loopName: string,
+  lane: LoopLane,
   attemptedSessionId: string,
   attemptedAgent: PromptAgent,
   logger: Logger,
 ): void {
-  const prior = inFlight.get(projectLoopKey(projectId, loopName))
+  const prior = inFlight.get(projectLoopLaneKey(projectId, lane))
   if (!prior) return
   logger.error(
-    `[in-flight-guard] concurrent prompt rejected loop=${loopName} ` +
+    `[in-flight-guard] concurrent prompt rejected loop=${lane.loopName} ` +
     `prior=${prior.agent}: ${prior.sessionId} attempted=${attemptedAgent}: ${attemptedSessionId}`,
   )
-  throw new ConcurrentPromptError(loopName, prior.sessionId, prior.agent, attemptedSessionId, attemptedAgent)
+  throw new ConcurrentPromptError(lane.loopName, prior.sessionId, prior.agent, attemptedSessionId, attemptedAgent)
 }
 
 export async function withInFlightGuard<T>(
   projectId: string,
-  loopName: string,
+  lane: LoopLane,
   sessionId: string,
   agent: PromptAgent,
   logger: Logger,
   fn: () => Promise<T>,
 ): Promise<T> {
-  assertNoPromptInFlight(projectId, loopName, sessionId, agent, logger)
-  markPromptInFlight(projectId, loopName, sessionId, agent)
+  assertNoPromptInFlight(projectId, lane, sessionId, agent, logger)
+  markPromptInFlight(projectId, lane, sessionId, agent)
   try {
     return await fn()
   } finally {
-    clearPromptInFlightIfMatches(projectId, loopName, sessionId, agent)
+    clearPromptInFlightIfMatches(projectId, lane, sessionId, agent)
   }
 }
 

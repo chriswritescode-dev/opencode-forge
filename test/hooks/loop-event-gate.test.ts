@@ -9,6 +9,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { markPromptSent, isAwaitingBusy, AWAITING_BUSY_TIMEOUT_MS, __resetIdleGate } from '../../src/loop/idle-gate'
+import { laneOf } from '../../src/loop/section-run'
 import type { PluginConfig } from '../../src/types'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
@@ -98,8 +99,8 @@ describe('Loop Event Idle Gate', () => {
       const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(true)
+      markPromptSent(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1', createMockLogger())
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(true)
 
       await handler.onEvent({
         event: {
@@ -111,7 +112,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(false)
     })
 
     test('busy event for non-awaiting session does not clear pending', async () => {
@@ -119,7 +120,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
+      markPromptSent(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {
@@ -131,7 +132,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(true)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(true)
     })
   })
 
@@ -141,7 +142,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
+      markPromptSent(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {
@@ -153,7 +154,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(true)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(true)
     })
 
     test('idle event is processed after busy clears the gate', async () => {
@@ -161,7 +162,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1', phase: 'coding' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
+      markPromptSent(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {
@@ -173,7 +174,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(false)
 
       await recordCoderHandoff(handler.loop, 'S1')
       await handler.onEvent({
@@ -186,7 +187,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(false)
     })
 
     test('idle event is processed after timeout expiration', async () => {
@@ -196,7 +197,7 @@ describe('Loop Event Idle Gate', () => {
         const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S2', phase: 'coding' })
         loopService.setState(state.loopName, state)
 
-        markPromptSent(PROJECT_ID, state.loopName, 'S2', createMockLogger())
+        markPromptSent(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S2', createMockLogger())
 
         vi.setSystemTime(Date.now() + AWAITING_BUSY_TIMEOUT_MS + 1)
 
@@ -211,7 +212,7 @@ describe('Loop Event Idle Gate', () => {
           },
         })
 
-        expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S2')).toBe(false)
+        expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S2')).toBe(false)
       } finally {
         vi.useRealTimers()
       }
@@ -224,7 +225,7 @@ describe('Loop Event Idle Gate', () => {
       const state = makeLoopState({ ...EVENT_GATE_STATE_DEFAULTS, sessionId: 'S1', phase: 'coding' })
       loopService.setState(state.loopName, state)
 
-      markPromptSent(PROJECT_ID, state.loopName, 'S1', createMockLogger())
+      markPromptSent(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1', createMockLogger())
 
       await handler.onEvent({
         event: {
@@ -236,7 +237,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(true)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(true)
 
       await handler.onEvent({
         event: {
@@ -248,7 +249,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(false)
 
       await recordCoderHandoff(handler.loop, 'S1')
       await handler.onEvent({
@@ -261,7 +262,7 @@ describe('Loop Event Idle Gate', () => {
         },
       })
 
-      expect(isAwaitingBusy(PROJECT_ID, state.loopName, 'S1')).toBe(false)
+      expect(isAwaitingBusy(PROJECT_ID, laneOf(loopService.getActiveState(state.loopName)!), 'S1')).toBe(false)
     })
   })
 })

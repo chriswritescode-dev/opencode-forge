@@ -1,5 +1,6 @@
 import type { Logger } from '../types'
-import { processShared, projectLoopKey } from '../utils/process-shared'
+import { deleteLoopLaneEntries, processShared, projectLoopLaneKey } from '../utils/process-shared'
+import type { LoopLane } from './section-run'
 
 type IdleGateStore = {
   sessionsAwaitingBusy: Map<string, { sessionId: string; sentAt: number }>
@@ -10,11 +11,11 @@ type IdleGateStore = {
 /**
  * Process-wide: the host instance records an enqueued inbox item and sets the awaiting-busy
  * marker, while the worktree instance that supervises the loop reads them. Awaiting-busy
- * entries are keyed by project AND loop name (loop names are only unique within a project);
- * queued prompts and suppressed-idle markers stay keyed by session because a session id is
- * already unique.
+ * entries are keyed by lane (project, loop name, and section-run key) so one section run never
+ * sees another run's marker, and loop names stay unique across projects; queued prompts and
+ * suppressed-idle markers stay keyed by session because a session id is already unique.
  */
-const store = processShared<IdleGateStore>('idle-gate.v2', () => ({
+const store = processShared<IdleGateStore>('idle-gate.v3', () => ({
   sessionsAwaitingBusy: new Map(),
   queuedPrompts: new Map(),
   suppressedIdles: new Set(),
@@ -110,23 +111,31 @@ export function __resetIdleGate(): void {
   suppressedIdles.clear()
 }
 
-export function markPromptSent(projectId: string, loopName: string, sessionId: string, logger: Logger): void {
-  sessionsAwaitingBusy.set(projectLoopKey(projectId, loopName), { sessionId, sentAt: Date.now() })
-  logger.debug(`[idle-gate] prompt sent loop=${loopName} session=${sessionId}, awaiting busy`)
+export function markPromptSent(projectId: string, lane: LoopLane, sessionId: string, logger: Logger): void {
+  sessionsAwaitingBusy.set(projectLoopLaneKey(projectId, lane), { sessionId, sentAt: Date.now() })
+  logger.debug(`[idle-gate] prompt sent loop=${lane.loopName} session=${sessionId}, awaiting busy`)
 }
 
-export function clearPromptPending(projectId: string, loopName: string, logger: Logger): void {
-  if (sessionsAwaitingBusy.delete(projectLoopKey(projectId, loopName))) {
+export function clearPromptPending(projectId: string, lane: LoopLane, logger: Logger): void {
+  if (sessionsAwaitingBusy.delete(projectLoopLaneKey(projectId, lane))) {
+    logger.debug(`[idle-gate] cleared pending for loop=${lane.loopName}`)
+  }
+}
+
+/** Clears the pending marker of every section run of one loop. */
+export function clearLoopPromptPending(projectId: string, loopName: string, logger: Logger): void {
+  const cleared = deleteLoopLaneEntries(sessionsAwaitingBusy, projectId, loopName)
+  if (cleared.length > 0) {
     logger.debug(`[idle-gate] cleared pending for loop=${loopName}`)
   }
 }
 
-export function isAwaitingBusy(projectId: string, loopName: string, sessionId: string): boolean {
-  const pending = sessionsAwaitingBusy.get(projectLoopKey(projectId, loopName))
+export function isAwaitingBusy(projectId: string, lane: LoopLane, sessionId: string): boolean {
+  const pending = sessionsAwaitingBusy.get(projectLoopLaneKey(projectId, lane))
   return !!pending && pending.sessionId === sessionId
 }
 
-export function isAwaitingBusyExpired(projectId: string, loopName: string): boolean {
-  const pending = sessionsAwaitingBusy.get(projectLoopKey(projectId, loopName))
+export function isAwaitingBusyExpired(projectId: string, lane: LoopLane): boolean {
+  const pending = sessionsAwaitingBusy.get(projectLoopLaneKey(projectId, lane))
   return !!pending && Date.now() - pending.sentAt > AWAITING_BUSY_TIMEOUT_MS
 }

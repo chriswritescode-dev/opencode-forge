@@ -7,12 +7,14 @@ import type { LoopState } from '../../src/loop/state'
 import { __resetLoopRuntimeSharedState, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
 import { createLoopService } from '../../src/loop/service'
 import { createLoopAttemptsRepo, type LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
-import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
+import { recordInboxEnqueued, recordInboxSettled, markPromptSent, isAwaitingBusy, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
   getPromptInFlight,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
+import { laneOf } from '../../src/loop/section-run'
+import { projectLoopLaneKey, processShared } from '../../src/utils/process-shared'
 import type { PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
@@ -26,6 +28,8 @@ import { LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
 import { CODE_GRAPH_PROBE_COMMAND } from '../../src/loop/code-graph'
 
 const PROJECT_ID = 'test-project'
+/** The persisted lane of every non-sectioned loop state ('plan' run key). */
+const PLAN_LANE = { loopName: 'test-loop', sectionRunKey: 'plan' }
 
 const mockConfig: PluginConfig = {
   executionModel: 'test/model',
@@ -1554,7 +1558,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
   describe('in-flight prompt guard', () => {
     test('rejects audit prompt while code prompt in-flight', async () => {
-      markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
+      markPromptInFlight(PROJECT_ID, PLAN_LANE, 'other-session-id', 'code')
 
       const { client } = createFakeForgeClient({
         session: {
@@ -1585,14 +1589,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
       )
       expect(hasGuardError).toBe(true)
 
-      const prior = getPromptInFlight(PROJECT_ID, 'test-loop')
+      const prior = getPromptInFlight(PROJECT_ID, PLAN_LANE)
       expect(prior).toBeDefined()
       expect(prior!.sessionId).toBe('other-session-id')
       expect(prior!.agent).toBe('code')
     })
 
     test('rejects duplicate auditor prompt for same audit session', async () => {
-      markPromptInFlight(PROJECT_ID, 'test-loop', 'sess', 'auditor-loop')
+      markPromptInFlight(PROJECT_ID, PLAN_LANE, 'sess', 'auditor-loop')
 
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -1626,7 +1630,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
       expect(auditorCalls).toHaveLength(0)
 
-      const prior = getPromptInFlight(PROJECT_ID, 'test-loop')
+      const prior = getPromptInFlight(PROJECT_ID, PLAN_LANE)
       expect(prior).toBeDefined()
       expect(prior!.sessionId).toBe('sess')
       expect(prior!.agent).toBe('auditor-loop')
@@ -1634,7 +1638,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
     test('clears in-flight after busy event', async () => {
       const state = makeLoopState({ phase: 'coding' })
-      markPromptInFlight(PROJECT_ID, 'test-loop', state.sessionId, 'code')
+      markPromptInFlight(PROJECT_ID, PLAN_LANE, state.sessionId, 'code')
 
       const { loop } = buildRuntime()
       loopService.setState(state.loopName, state)
@@ -1647,11 +1651,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      expect(getPromptInFlight(PROJECT_ID, 'test-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, PLAN_LANE)).toBeUndefined()
     })
 
     test('busy event from non-owning session does not clear in-flight', async () => {
-      markPromptInFlight(PROJECT_ID, 'test-loop', 'sess-owner', 'auditor-loop')
+      markPromptInFlight(PROJECT_ID, PLAN_LANE, 'sess-owner', 'auditor-loop')
 
       const { loop } = buildRuntime()
       const state = makeLoopState({ phase: 'coding' })
@@ -1666,7 +1670,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      const entry = getPromptInFlight(PROJECT_ID, 'test-loop')
+      const entry = getPromptInFlight(PROJECT_ID, PLAN_LANE)
       expect(entry).toBeDefined()
       expect(entry!.sessionId).toBe('sess-owner')
       expect(entry!.agent).toBe('auditor-loop')
@@ -1702,7 +1706,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      expect(getPromptInFlight(PROJECT_ID, 'test-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, PLAN_LANE)).toBeUndefined()
     })
 
     test('clears in-flight on prompt completion', async () => {
@@ -1730,11 +1734,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      expect(getPromptInFlight(PROJECT_ID, 'test-loop')).toBeUndefined()
+      expect(getPromptInFlight(PROJECT_ID, PLAN_LANE)).toBeUndefined()
     })
 
     test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
-      markPromptInFlight(PROJECT_ID, 'test-loop', 'other-session-id', 'code')
+      markPromptInFlight(PROJECT_ID, PLAN_LANE, 'other-session-id', 'code')
 
       const { client } = createFakeForgeClient({
         session: {
@@ -1764,7 +1768,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(true)
 
-      const prior = getPromptInFlight(PROJECT_ID, 'test-loop')
+      const prior = getPromptInFlight(PROJECT_ID, PLAN_LANE)
       expect(prior).toBeDefined()
       expect(prior!.sessionId).toBe('other-session-id')
       expect(prior!.agent).toBe('code')
@@ -4719,6 +4723,53 @@ describe('stall handling terminates with stall timeout when configured cap is re
         await loop.tick({ type: 'session.status', properties: { status: { type: 'idle' }, sessionID: sessionId } })
       })()
     }
+
+    test('advancing the section run releases the previous lane markers and hold', async () => {
+      const worktreeDir = mkdtempSync(join(tempDir, 'section-lane-release-'))
+      const { client } = createFakeForgeClient({
+        session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'clear' }] }] },
+      })
+      const { loop } = buildRuntime({
+        client,
+        sandboxManager: fakeSandboxManager(async (command) => successfulExec(command)),
+      })
+
+      const loopName = 'lane-release'
+      seedSectionedAudit(loopName, 'lane-release-audit', worktreeDir)
+      const oldState = loopService.getActiveState(loopName)!
+      const oldLane = laneOf(oldState)
+
+      markPromptInFlight(PROJECT_ID, oldLane, 'old-in-flight', 'code')
+      markPromptSent(PROJECT_ID, oldLane, 'old-gate', createMockLogger())
+      const releaseHold = loop.holdUntilFirstPrompt(oldState)
+
+      const snapshots = processShared<Map<string, string>>('loop-pending-code-graph-snapshots.v2', () => new Map())
+      const oldKey = projectLoopLaneKey(PROJECT_ID, oldLane)
+      expect(getPromptInFlight(PROJECT_ID, oldLane)).toBeDefined()
+      expect(isAwaitingBusy(PROJECT_ID, oldLane, 'old-gate')).toBe(true)
+      expect(snapshots.get(oldKey)).toBeDefined()
+
+      await advanceToSectionTwo(loop, oldState.sessionId)
+      const newState = loopService.getActiveState(loopName)!
+      expect(newState.sectionRunKey).not.toBe(oldState.sectionRunKey)
+
+      expect(getPromptInFlight(PROJECT_ID, oldLane)).toBeUndefined()
+      expect(isAwaitingBusy(PROJECT_ID, oldLane, 'old-gate')).toBe(false)
+      expect(snapshots.has(oldKey)).toBe(false)
+
+      const idleGate = processShared<{ sessionsAwaitingBusy: Map<string, { sessionId: string }> }>(
+        'idle-gate.v3',
+        () => ({ sessionsAwaitingBusy: new Map() }),
+      )
+      const newLane = laneOf(newState)
+      await vi.waitFor(() => {
+        const fresh = loopService.getActiveState(loopName)!
+        expect(laneOf(fresh).sectionRunKey).toBe(newLane.sectionRunKey)
+        expect(isAwaitingBusy(PROJECT_ID, laneOf(fresh), fresh.sessionId)).toBe(true)
+      })
+      expect(idleGate.sessionsAwaitingBusy.has(projectLoopLaneKey(PROJECT_ID, oldLane))).toBe(false)
+      releaseHold()
+    })
 
     test('clean section advance snapshots section 2 and points its first prompt at the report', async () => {
       const worktreeDir = mkdtempSync(join(tempDir, 'section-cg-'))

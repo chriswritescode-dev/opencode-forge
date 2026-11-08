@@ -33,6 +33,7 @@ import { applyPlanDecomposition } from './section-bootstrap'
 import { decomposePlanSections } from './deterministic-decomposer'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
+import { laneOf } from '../loop/section-run'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
@@ -652,6 +653,12 @@ export async function attachLoopToSession(
     }
     const { totalSections } = decomposition
 
+    const decomposedState = deps.loop.service.getActiveState(loopName) ?? state
+    if (sendInitialPrompt && decomposedState.sectionRunKey !== state.sectionRunKey) {
+      releaseFirstPromptHold()
+      releaseFirstPromptHold = deps.loop.holdUntilFirstPrompt(decomposedState)
+    }
+
     // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
     if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
       const dbPath = resolveForgeDbPath(deps.dataDir)
@@ -684,7 +691,8 @@ export async function attachLoopToSession(
       return { ok: true, loopName }
     }
 
-    const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
+    const runState = deps.loop.service.getActiveState(loopName) ?? state
+    const updatedState = { ...runState, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
     if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
     if (!attachOwnsLoop()) {
       deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
@@ -701,14 +709,14 @@ export async function attachLoopToSession(
 
     const promptResult = await sendLoopPrompt({
       projectId: ctx.projectId,
-      loopName,
+      lane: laneOf(updatedState),
       sessionId,
       agent: 'code',
       logger: deps.logger,
       primaryModel: loopModel,
       useInFlightGuard: false,
       performPrompt: async (model) => {
-        markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
+        markPromptSent(ctx.projectId, laneOf(updatedState), sessionId, deps.logger)
         releaseFirstPromptHold()
         try {
           await deps.client.session.promptAsync({
@@ -1836,6 +1844,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         startedAt: new Date(newState.startedAt).getTime(),
       })
 
+      const persistedRestartState = deps.loop.service.getActiveState(stoppedState.loopName)
+      if (persistedRestartState) {
+        newState.sectionRunKind = persistedRestartState.sectionRunKind
+        newState.sectionId = persistedRestartState.sectionId
+        newState.sectionRunKey = persistedRestartState.sectionRunKey
+      }
+
       deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
       deps.loop.registerSessionReverseIndex(effectiveSessionId, stoppedState.loopName)
 
@@ -1858,7 +1873,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
-        markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
+        markPromptSent(ctx.projectId, laneOf(newState), effectiveSessionId, deps.logger)
         const variant = stoppedState.phase === 'post_action'
           ? (postActionCfg?.model && model === loopModel ? undefined : restartAuditorChoice.variant)
           : stoppedState.executionVariant
@@ -1885,7 +1900,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
         const { result } = await sendLoopPrompt({
           projectId: ctx.projectId,
-          loopName: stoppedState.loopName,
+          lane: laneOf(newState),
           sessionId: effectiveSessionId,
           agent: 'code',
           logger: deps.logger,
@@ -1911,7 +1926,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.error))
         if (limitReason) {
           deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
-          clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
+          clearPromptPending(ctx.projectId, laneOf(newState), deps.logger)
           deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
           // Defer the canonical termination (deps.loop.terminate) to outside
           // the runExclusive callback: it reacquires the per-loop state lock
@@ -1928,7 +1943,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
         const isConcurrent = promptResult.error instanceof ConcurrentPromptError
         if (!isConcurrent) {
-          clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
+          clearPromptPending(ctx.projectId, laneOf(newState), deps.logger)
         }
         deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
         // Save section plans before rollback (the DB row stays intact in-place;

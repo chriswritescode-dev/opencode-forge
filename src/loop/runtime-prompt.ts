@@ -5,6 +5,7 @@ import { sendLoopPrompt } from './send-loop-prompt'
 import { resolveLoopModel } from '../utils/loop-helpers'
 import { markPromptSent } from './idle-gate'
 import { promptAuditSession } from '../utils/audit-session'
+import type { LoopLane } from './section-run'
 
 export interface PromptDispatchDeps {
   client: ForgeClient
@@ -15,7 +16,7 @@ export interface PromptDispatchDeps {
 }
 
 export interface SendPromptInput {
-  loopName: string
+  lane: LoopLane
   sessionId: string
   promptText: string
   agent: 'code' | 'auditor-loop'
@@ -39,17 +40,17 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
   const { client, logger, getConfig, loopService, projectId } = deps
 
   async function sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }> {
-    const { loopName, sessionId, promptText, agent } = input
+    const { lane, sessionId, promptText, agent } = input
 
     if (agent === 'auditor-loop') {
       const auditorModel = input.model != null ? input.model : undefined
       const { result, usedModel } = await sendLoopPrompt({
-        projectId, loopName, sessionId, agent: 'auditor-loop', logger,
+        projectId, lane, sessionId, agent: 'auditor-loop', logger,
         primaryModel: auditorModel,
         performPrompt: async (model) => {
-          const freshState = loopService.getActiveState(loopName)
+          const freshState = loopService.getActiveState(lane.loopName)
           if (!freshState?.active) throw new Error('loop_cancelled')
-          markPromptSent(projectId, loopName, sessionId, logger)
+          markPromptSent(projectId, lane, sessionId, logger)
           const r = await promptAuditSession(client, {
             sessionId,
             worktreeDir: freshState.worktreeDir,
@@ -63,15 +64,15 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
       return { error: result.error, usedModel }
     }
 
-    const effectiveModel = input.model != null ? input.model : resolveLoopModel(getConfig(), loopService, loopName)
+    const effectiveModel = input.model != null ? input.model : resolveLoopModel(getConfig(), loopService, lane.loopName)
     const { result, usedModel } = await sendLoopPrompt({
-      projectId, loopName, sessionId, agent: 'code', logger,
+      projectId, lane, sessionId, agent: 'code', logger,
       primaryModel: effectiveModel,
       fallbackModel: input.fallbackModel,
       performPrompt: async (model) => {
-        const freshState = loopService.getActiveState(loopName)
+        const freshState = loopService.getActiveState(lane.loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')
-        markPromptSent(projectId, loopName, sessionId, logger)
+        markPromptSent(projectId, lane, sessionId, logger)
         const isFallbackAttempt = input.fallbackModel != null && model === input.fallbackModel
         const variant = isFallbackAttempt ? input.fallbackVariant : input.variant
         try {

@@ -1,6 +1,12 @@
 import { generatedSectionId } from './section-graph'
+import type { LoopState } from './state'
 
 export type SectionRunKind = 'section' | 'plan' | 'post_action'
+
+export interface LoopLane {
+  loopName: string
+  sectionRunKey: string
+}
 
 export interface SectionRunTarget {
   kind: SectionRunKind
@@ -11,6 +17,11 @@ export interface SectionRunTarget {
 /** Stable identity of a section run within one loop. */
 export function sectionRunKey(kind: SectionRunKind, sectionId: string): string {
   return kind === 'section' ? `section:${sectionId}` : kind
+}
+
+/** The lane (loop plus section run) a loop state currently belongs to. */
+export function laneOf(state: Pick<LoopState, 'loopName' | 'sectionRunKey'>): LoopLane {
+  return { loopName: state.loopName, sectionRunKey: state.sectionRunKey }
 }
 
 /** The section run target implied by the loop's phase and current section. */
