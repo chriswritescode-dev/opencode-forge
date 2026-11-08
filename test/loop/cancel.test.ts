@@ -75,6 +75,7 @@ describe('Loop Runtime cancel()', () => {
         role: 'coder',
         phase: 'coding',
         sectionIndex: 0,
+        sectionRunKey: 'plan',
         iteration: state.iteration,
         payload: {
           changes: [{ summary: 'Pending change', reason: 'Pending reason' }],
@@ -85,7 +86,7 @@ describe('Loop Runtime cancel()', () => {
 
       await loop.cancel(state.loopName)
 
-      expect(loopsRepo.getPendingHandoff(PROJECT_ID, state.loopName)).toBeNull()
+      expect(loopsRepo.getPendingHandoff(PROJECT_ID, state.loopName, 'plan')).toBeNull()
       const history = loopsRepo.listHandoffs(PROJECT_ID, state.loopName)
       expect(history).toHaveLength(1)
       expect(history[0].id).toBe(pending.record.id)

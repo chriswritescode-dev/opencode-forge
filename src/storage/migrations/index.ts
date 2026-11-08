@@ -636,4 +636,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('162_drop_section_run_columns_from_loops.sql'))
     },
   },
+  {
+    id: '163',
+    description: 'Scope pending loop handoffs to the section run that recorded them',
+    apply: (db: Database) => {
+      const columns = db.prepare('PRAGMA table_info(loop_handoffs)').all() as Array<{ name: string }>
+      if (columns.length === 0) return
+      if (columns.some((column) => column.name === 'section_run_key')) return
+      db.run(loadSql('163_scope_pending_handoffs_to_section_runs.sql'))
+    },
+  },
 ]

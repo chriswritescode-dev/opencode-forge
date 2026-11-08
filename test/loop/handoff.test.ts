@@ -159,6 +159,7 @@ describe('LoopService handoff store', () => {
   let db: ReturnType<typeof createTestDb>['db']
   let loopsRepo: ReturnType<typeof createLoopsRepo>
   let service: ReturnType<typeof createLoopService>
+  let runKey: string
 
   const loopRow: LoopRow = {
     projectId: 'handoff-project',
@@ -198,6 +199,7 @@ describe('LoopService handoff store', () => {
     db = testDb.db
     loopsRepo = createLoopsRepo(db)
     loopsRepo.insert(loopRow, { lastAuditResult: null })
+    runKey = loopsRepo.get(loopRow.projectId, loopRow.loopName)!.sectionRunKey
     service = createLoopService(
       loopsRepo,
       createPlansRepo(db),
@@ -218,15 +220,16 @@ describe('LoopService handoff store', () => {
       role: 'coder',
       phase: 'coding',
       sectionIndex: 0,
+      sectionRunKey: runKey,
       iteration: 1,
       payload: coderPayload(),
     })
     expect(first.replaced).toBe(false)
     expect(first.record.projectId).toBe(loopRow.projectId)
 
-    expect(service.getPendingHandoff(loopRow.loopName)?.id).toBe(first.record.id)
-    expect(service.applyPendingHandoff(loopRow.loopName, 'other-session', 'coder')).toBeNull()
-    expect(service.applyPendingHandoff(loopRow.loopName, 'coder-session', 'coder')?.status).toBe('applied')
+    expect(service.getPendingHandoff(loopRow.loopName, runKey)?.id).toBe(first.record.id)
+    expect(service.applyPendingHandoff(loopRow.loopName, runKey, 'other-session', 'coder')).toBeNull()
+    expect(service.applyPendingHandoff(loopRow.loopName, runKey, 'coder-session', 'coder')?.status).toBe('applied')
 
     const second = service.recordPendingHandoff({
       loopName: loopRow.loopName,
@@ -234,13 +237,65 @@ describe('LoopService handoff store', () => {
       role: 'auditor',
       phase: 'auditing',
       sectionIndex: 0,
+      sectionRunKey: runKey,
       iteration: 1,
       payload: { notes: 'looks clear' },
     })
     expect(second.replaced).toBe(false)
-    service.discardPendingHandoff(loopRow.loopName)
+    service.discardPendingHandoff(loopRow.loopName, runKey)
 
-    expect(service.getPendingHandoff(loopRow.loopName)).toBeNull()
+    expect(service.getPendingHandoff(loopRow.loopName, runKey)).toBeNull()
     expect(service.listHandoffs(loopRow.loopName).map((record) => record.status)).toEqual(['applied', 'discarded'])
+  })
+
+  test('keeps one pending handoff per section run and discards them by key', () => {
+    const alpha = service.recordPendingHandoff({
+      loopName: loopRow.loopName,
+      sessionId: 'alpha-session',
+      role: 'coder',
+      phase: 'coding',
+      sectionIndex: 0,
+      sectionRunKey: 'section:alpha',
+      iteration: 1,
+      payload: coderPayload({ changes: [{ summary: 'alpha change', reason: 'alpha reason' }] }),
+    })
+    expect(alpha.replaced).toBe(false)
+    const beta = service.recordPendingHandoff({
+      loopName: loopRow.loopName,
+      sessionId: 'beta-session',
+      role: 'coder',
+      phase: 'coding',
+      sectionIndex: 1,
+      sectionRunKey: 'section:beta',
+      iteration: 1,
+      payload: coderPayload({ changes: [{ summary: 'beta change', reason: 'beta reason' }] }),
+    })
+    expect(beta.replaced).toBe(false)
+
+    expect(service.getPendingHandoff(loopRow.loopName, 'section:alpha')?.id).toBe(alpha.record.id)
+    expect(service.getPendingHandoff(loopRow.loopName, 'section:beta')?.id).toBe(beta.record.id)
+
+    const replacement = service.recordPendingHandoff({
+      loopName: loopRow.loopName,
+      sessionId: 'alpha-session',
+      role: 'coder',
+      phase: 'coding',
+      sectionIndex: 0,
+      sectionRunKey: 'section:alpha',
+      iteration: 2,
+      payload: coderPayload({ changes: [{ summary: 'alpha replacement', reason: 'alpha reason' }] }),
+    })
+    expect(replacement.replaced).toBe(true)
+    expect(replacement.record.id).toBe(alpha.record.id)
+    if (replacement.record.role !== 'coder') throw new Error('expected coder handoff')
+    expect(replacement.record.payload.changes[0].summary).toBe('alpha replacement')
+    expect(service.getPendingHandoff(loopRow.loopName, 'section:beta')?.id).toBe(beta.record.id)
+
+    service.discardPendingHandoff(loopRow.loopName, 'section:alpha')
+    expect(service.getPendingHandoff(loopRow.loopName, 'section:alpha')).toBeNull()
+    expect(service.getPendingHandoff(loopRow.loopName, 'section:beta')?.id).toBe(beta.record.id)
+
+    service.discardPendingHandoff(loopRow.loopName)
+    expect(service.getPendingHandoff(loopRow.loopName, 'section:beta')).toBeNull()
   })
 })

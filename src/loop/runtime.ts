@@ -609,6 +609,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         sessionId: input.sessionId,
         phase: state.phase,
         sectionIndex: state.totalSections > 0 ? state.currentSectionIndex : null,
+        sectionRunKey: state.sectionRunKey,
         iteration: state.iteration,
       }, input.args)
       if (!parsed.ok) return { ok: false, error: formatHandoffValidationError(parsed.error) }
@@ -703,8 +704,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * another role. The row is left pending for the role that wrote it. A row whose payload no
    * longer parses is reported by the repository's row mapper instead.
    */
-  function reportUnappliedPendingHandoff(loopName: string, sessionId: string, expectedRole: LoopHandoffRole): void {
-    const pending = loopService.getPendingHandoff(loopName)
+  function reportUnappliedPendingHandoff(loopName: string, sectionRunKey: string, sessionId: string, expectedRole: LoopHandoffRole): void {
+    const pending = loopService.getPendingHandoff(loopName, sectionRunKey)
     if (!pending || pending.sessionId !== sessionId || pending.role === expectedRole) return
     logger.error(
       `Loop: pending ${pending.role} handoff for session ${sessionId} in ${loopName} does not match the ${expectedRole} phase; leaving it pending`,
@@ -2364,8 +2365,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (await deferWhileLoopSessionsBusy(currentState)) return
 
     const nudgeState = currentState
-    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'coder')
-    if (!record) reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'coder')
+    const record = loopService.applyPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'coder')
+    if (!record) reportUnappliedPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'coder')
     if (!record && !assistantErrorDetected) {
       await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => buildCodingPromptForCurrentState(nudgeState))
       return
@@ -2526,11 +2527,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   function discardCleanSectionHandoffWithoutSummary(loopName: string, state: LoopState): boolean {
     if (!(state.totalSections > 0)) return false
-    const pending = loopService.getPendingHandoff(loopName)
+    const pending = loopService.getPendingHandoff(loopName, state.sectionRunKey)
     if (!pending || pending.role !== 'auditor' || pending.sessionId !== state.sessionId) return false
     if (pending.payload.summary) return false
     if (loopService.getBlockingBugFindings(state).length > 0) return false
-    loopService.discardPendingHandoff(loopName)
+    loopService.discardPendingHandoff(loopName, state.sectionRunKey)
     logger.log(`Loop: section ${state.currentSectionIndex} audit is clean but its handoff carried no summary for ${loopName}; discarding the record and asking the auditor to hand off again`)
     return true
   }
@@ -2569,7 +2570,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
-    const pendingHandoff = loopService.getPendingHandoff(loopName)
+    const pendingHandoff = loopService.getPendingHandoff(loopName, currentState.sectionRunKey)
     const auditAbortedWithHandoff = (auditErrorSignal?.name === 'MessageAbortedError' || auditErrorSignal?.name === 'AbortError')
       && pendingHandoff?.sessionId === currentState.sessionId
       && pendingHandoff.role === 'auditor'
@@ -2591,7 +2592,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (await deferWhileLoopSessionsBusy(currentState)) return
 
     if (assistantErrorDetected) {
-      loopService.discardPendingHandoff(loopName)
+      loopService.discardPendingHandoff(loopName, currentState.sectionRunKey)
       logger.log(`Loop: audit error detected, continuing without incrementing audit count`)
       const nextIteration = await nextIterationOrTerminate(loopName, currentState)
       if (nextIteration === null) return
@@ -2627,9 +2628,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
       return
     }
-    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'auditor')
+    const record = loopService.applyPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'auditor')
     if (!record) {
-      reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'auditor')
+      reportUnappliedPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'auditor')
       await nudgeForMissingHandoff(loopName, nudgeState, auditLastMessageRole, () => loopService.buildAuditPrompt(nudgeState))
       return
     }
@@ -2860,8 +2861,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (assistantInfo.error) {
       logger.error(`Loop: post-action assistant error for ${loopName}: ${assistantInfo.error}, completing best-effort`)
-      const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'post_action')
-      if (!record) reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'post_action')
+      const record = loopService.applyPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'post_action')
+      if (!record) reportUnappliedPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'post_action')
       await completePostAction(loopName, currentState, record, { kind: 'completed' })
       return
     }
@@ -2869,9 +2870,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (await deferWhileLoopSessionsBusy(currentState)) return
 
     const nudgeState = currentState
-    const record = loopService.applyPendingHandoff(loopName, currentState.sessionId, 'post_action')
+    const record = loopService.applyPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'post_action')
     if (!record) {
-      reportUnappliedPendingHandoff(loopName, currentState.sessionId, 'post_action')
+      reportUnappliedPendingHandoff(loopName, currentState.sectionRunKey, currentState.sessionId, 'post_action')
       const cfg = resolvePostActionConfig(getConfig())
       await nudgeForMissingHandoff(loopName, nudgeState, assistantInfo.lastMessageRole, () => loopService.buildPostActionPrompt(nudgeState, { skill: cfg.skill, prompt: cfg.prompt }))
       return
@@ -2944,7 +2945,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             return
           }
           if (state.phase === 'auditing') {
-            if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+            if (loopService.getPendingHandoff(loopName, state.sectionRunKey)?.sessionId === eventSessionId) {
               logger.log(`Loop: audit session ${eventSessionId} aborted with a pending handoff, processing it`)
               await runAuditingPhase(loopName, state)
             } else {
@@ -2954,7 +2955,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             return
           }
           if (state.phase === 'post_action') {
-            if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+            if (loopService.getPendingHandoff(loopName, state.sectionRunKey)?.sessionId === eventSessionId) {
               logger.log(`Loop: post-action session ${eventSessionId} aborted with a pending handoff, processing it`)
               await runPostActionPhase(loopName, state)
             } else {
@@ -3003,13 +3004,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (state.phase === 'auditing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
-          loopService.discardPendingHandoff(loopName)
+          loopService.discardPendingHandoff(loopName, state.sectionRunKey)
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage, 'audit-session-error')
           return
         }
         const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
         if (state.phase === 'post_action') {
-          if (loopService.getPendingHandoff(loopName)?.sessionId === eventSessionId) {
+          if (loopService.getPendingHandoff(loopName, state.sectionRunKey)?.sessionId === eventSessionId) {
             logger.log(`Loop: post-action session ${eventSessionId} errored with a pending loop-complete for ${loopName}, completing with its report`)
             await runPostActionPhase(loopName, state)
             return

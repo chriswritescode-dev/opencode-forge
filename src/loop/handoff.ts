@@ -73,6 +73,8 @@ interface LoopHandoffRecordBase {
   sessionId: string
   phase: LoopHandoffPhase
   sectionIndex: number | null
+  /** Identifies the section run that recorded the handoff. */
+  sectionRunKey: string
   iteration: number
   status: LoopHandoffStatus
   createdAt: number
@@ -92,6 +94,7 @@ export interface LoopHandoffInputBase {
   sessionId: string
   phase: LoopHandoffPhase
   sectionIndex: number | null
+  sectionRunKey: string
   iteration: number
 }
 

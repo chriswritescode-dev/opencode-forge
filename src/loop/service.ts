@@ -183,10 +183,11 @@ export interface LoopService {
     eventType?: string
   }): void
   recordPendingHandoff(input: LoopHandoffWriteInput): { record: LoopHandoffRecord; replaced: boolean }
-  getPendingHandoff(loopName: string): LoopHandoffRecord | null
+  getPendingHandoff(loopName: string, sectionRunKey: string): LoopHandoffRecord | null
   /** Applies the session's pending handoff only when its role matches; any other pending row is left untouched. */
-  applyPendingHandoff<R extends LoopHandoffRole>(loopName: string, sessionId: string, role: R): LoopHandoffRecordFor<R> | null
-  discardPendingHandoff(loopName: string): void
+  applyPendingHandoff<R extends LoopHandoffRole>(loopName: string, sectionRunKey: string, sessionId: string, role: R): LoopHandoffRecordFor<R> | null
+  /** Omitting `sectionRunKey` discards every pending handoff of the loop (cancel/restart path). */
+  discardPendingHandoff(loopName: string, sectionRunKey?: string): void
   listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[]
   adjustRemainingSections(name: string, args: {
     sections?: { title: string; content: string; id?: string; after?: string[] }[]
@@ -881,20 +882,21 @@ export function createLoopService(
     return loopsRepo.upsertPendingHandoff({ projectId, ...input })
   }
 
-  function getPendingHandoff(loopName: string): LoopHandoffRecord | null {
-    return loopsRepo.getPendingHandoff(projectId, loopName)
+  function getPendingHandoff(loopName: string, sectionRunKey: string): LoopHandoffRecord | null {
+    return loopsRepo.getPendingHandoff(projectId, loopName, sectionRunKey)
   }
 
   function applyPendingHandoff<R extends LoopHandoffRole>(
     loopName: string,
+    sectionRunKey: string,
     sessionId: string,
     role: R,
   ): LoopHandoffRecordFor<R> | null {
-    return loopsRepo.applyPendingHandoff(projectId, loopName, sessionId, role)
+    return loopsRepo.applyPendingHandoff(projectId, loopName, sectionRunKey, sessionId, role)
   }
 
-  function discardPendingHandoff(loopName: string): void {
-    loopsRepo.discardPendingHandoff(projectId, loopName)
+  function discardPendingHandoff(loopName: string, sectionRunKey?: string): void {
+    loopsRepo.discardPendingHandoff(projectId, loopName, sectionRunKey)
   }
 
   function listHandoffs(loopName: string, limit?: number): LoopHandoffRecord[] {

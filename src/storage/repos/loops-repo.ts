@@ -159,17 +159,19 @@ export interface LoopsRepo {
   findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] }
   setCurrentSectionIndex(projectId: string, loopName: string, index: number): void
   setTotalSections(projectId: string, loopName: string, total: number): void
-  /** Record the parsed handoff write as the loop's single pending handoff. */
+  /** Record the parsed handoff write as the section run's single pending handoff. */
   upsertPendingHandoff(input: LoopHandoffWriteInput & { projectId: string }): { record: LoopHandoffRecord; replaced: boolean }
-  getPendingHandoff(projectId: string, loopName: string): LoopHandoffRecord | null
+  getPendingHandoff(projectId: string, loopName: string, sectionRunKey: string): LoopHandoffRecord | null
   /** Mark the session's pending handoff of `role` applied; a pending row for any other role stays pending. */
   applyPendingHandoff<R extends LoopHandoffRole>(
     projectId: string,
     loopName: string,
+    sectionRunKey: string,
     sessionId: string,
     role: R,
   ): LoopHandoffRecordFor<R> | null
-  discardPendingHandoff(projectId: string, loopName: string): void
+  /** Omitting `sectionRunKey` discards every pending handoff of the loop (cancel/restart path). */
+  discardPendingHandoff(projectId: string, loopName: string, sectionRunKey?: string): void
   listHandoffs(projectId: string, loopName: string, limit?: number): LoopHandoffRecord[]
 }
 
@@ -293,7 +295,7 @@ const LOOP_SELECT_COLUMNS = `l.project_id, l.loop_name, l.status,
 const LOOP_ACTIVE_RUN_JOIN = `LEFT JOIN section_runs r
   ON r.project_id = l.project_id AND r.loop_name = l.loop_name AND r.status = 'active'`
 
-const HANDOFF_COLUMNS = `id, project_id, loop_name, session_id, role, phase, section_index,
+const HANDOFF_COLUMNS = `id, project_id, loop_name, session_id, role, phase, section_index, section_run_key,
   iteration, payload, status, created_at, resolved_at`
 
 interface LoopHandoffRowRaw {
@@ -304,6 +306,7 @@ interface LoopHandoffRowRaw {
   role: string
   phase: string
   section_index: number | null
+  section_run_key: string
   iteration: number
   payload: string
   status: string
@@ -353,6 +356,7 @@ function mapHandoffRow(raw: LoopHandoffRowRaw, logger?: Logger): LoopHandoffReco
     sessionId: raw.session_id,
     phase,
     sectionIndex: raw.section_index,
+    sectionRunKey: raw.section_run_key,
     iteration: raw.iteration,
     status,
     createdAt: raw.created_at,
@@ -582,20 +586,20 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   const updatePendingHandoffStmt = db.prepare(`
     UPDATE loop_handoffs
     SET session_id = ?, role = ?, phase = ?, section_index = ?, iteration = ?, payload = ?, created_at = ?
-    WHERE project_id = ? AND loop_name = ? AND status = 'pending'
+    WHERE project_id = ? AND loop_name = ? AND section_run_key = ? AND status = 'pending'
   `)
 
   const insertPendingHandoffStmt = db.prepare(`
     INSERT INTO loop_handoffs (
-      project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at, resolved_at
+      project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at, resolved_at, section_run_key
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, ?)
   `)
 
   const getPendingHandoffStmt = db.prepare(`
     SELECT ${HANDOFF_COLUMNS}
     FROM loop_handoffs
-    WHERE project_id = ? AND loop_name = ? AND status = 'pending'
+    WHERE project_id = ? AND loop_name = ? AND section_run_key = ? AND status = 'pending'
     ORDER BY id DESC
     LIMIT 1
   `)
@@ -603,11 +607,17 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   const applyPendingHandoffStmt = db.prepare(`
     UPDATE loop_handoffs
     SET status = 'applied', resolved_at = ?
-    WHERE project_id = ? AND loop_name = ? AND session_id = ? AND role = ? AND status = 'pending'
+    WHERE project_id = ? AND loop_name = ? AND section_run_key = ? AND session_id = ? AND role = ? AND status = 'pending'
     RETURNING ${HANDOFF_COLUMNS}
   `)
 
   const discardPendingHandoffStmt = db.prepare(`
+    UPDATE loop_handoffs
+    SET status = 'discarded', resolved_at = ?
+    WHERE project_id = ? AND loop_name = ? AND section_run_key = ? AND status = 'pending'
+  `)
+
+  const discardLoopPendingHandoffsStmt = db.prepare(`
     UPDATE loop_handoffs
     SET status = 'discarded', resolved_at = ?
     WHERE project_id = ? AND loop_name = ? AND status = 'pending'
@@ -1027,6 +1037,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           now,
           input.projectId,
           input.loopName,
+          input.sectionRunKey,
         ) as unknown as { changes: number }
         const replaced = updated.changes > 0
         if (!replaced) {
@@ -1040,9 +1051,10 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
             input.iteration,
             payload,
             now,
+            input.sectionRunKey,
           )
         }
-        const row = getPendingHandoffStmt.get(input.projectId, input.loopName) as LoopHandoffRowRaw | undefined
+        const row = getPendingHandoffStmt.get(input.projectId, input.loopName, input.sectionRunKey) as LoopHandoffRowRaw | undefined
         const record = row ? mapHandoffRow(row, logger) : null
         if (!record) {
           throw new Error(`LoopsRepo: failed to read back pending handoff for ${input.loopName}`)
@@ -1052,24 +1064,29 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       return runUpsert()
     },
 
-    getPendingHandoff(projectId: string, loopName: string): LoopHandoffRecord | null {
-      const row = getPendingHandoffStmt.get(projectId, loopName) as LoopHandoffRowRaw | undefined
+    getPendingHandoff(projectId: string, loopName: string, sectionRunKey: string): LoopHandoffRecord | null {
+      const row = getPendingHandoffStmt.get(projectId, loopName, sectionRunKey) as LoopHandoffRowRaw | undefined
       return row ? mapHandoffRow(row, logger) : null
     },
 
     applyPendingHandoff<R extends LoopHandoffRole>(
       projectId: string,
       loopName: string,
+      sectionRunKey: string,
       sessionId: string,
       role: R,
     ): LoopHandoffRecordFor<R> | null {
-      const row = applyPendingHandoffStmt.get(Date.now(), projectId, loopName, sessionId, role) as LoopHandoffRowRaw | undefined
+      const row = applyPendingHandoffStmt.get(Date.now(), projectId, loopName, sectionRunKey, sessionId, role) as LoopHandoffRowRaw | undefined
       const record = row ? mapHandoffRow(row, logger) : null
       return record ? handoffRecordForRole(record, role) : null
     },
 
-    discardPendingHandoff(projectId: string, loopName: string): void {
-      discardPendingHandoffStmt.run(Date.now(), projectId, loopName)
+    discardPendingHandoff(projectId: string, loopName: string, sectionRunKey?: string): void {
+      if (sectionRunKey === undefined) {
+        discardLoopPendingHandoffsStmt.run(Date.now(), projectId, loopName)
+      } else {
+        discardPendingHandoffStmt.run(Date.now(), projectId, loopName, sectionRunKey)
+      }
     },
 
     listHandoffs(projectId: string, loopName: string, limit?: number): LoopHandoffRecord[] {

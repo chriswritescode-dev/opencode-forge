@@ -97,7 +97,7 @@ interface LoopState {
 }
 ```
 
-Per-turn output lives in `loop_handoffs`, not on the loop row: only the current record is `pending`, it resolves to `applied` or `discarded`, and the resolved rows remain as history. `lastAuditResult` and `completionSummary` on the loop row are display text, never decision input.
+Per-turn output lives in `loop_handoffs`, not on the loop row: only the current record for each section run is `pending`, it resolves to `applied` or `discarded`, and the resolved rows remain as history. `lastAuditResult` and `completionSummary` on the loop row are display text, never decision input.
 
 **Section runs.** The `section_runs` table is the persisted identity of the loop's current unit of work: `kind` is `plan`, `section`, or `post_action`, and the row carries the live `session_id`, `phase`, `section_index`, `standby_session_id` and `section_id`. A running loop has exactly one `active` run, enforced by a partial unique index, and a finished run stays as history. Migration 161 creates and backfills the table; migration 162 drops the mirrored `current_session_id`, `phase`, `current_section_index` and `standby_session_id` columns from `loops`, so the active run is their only stored home. `createSectionRunsRepo` in `src/storage/repos/section-runs-repo.ts` owns those rows, and `sectionRunKey` in `src/loop/section-run.ts` is the run's stable identity.
 
@@ -115,12 +115,13 @@ A phase turn ends only through a persisted handoff row written by `loop-handoff`
 | `role` | text | `coder`, `auditor`, or `post_action` (`CHECK` constraint) |
 | `phase` | text | Phase at write time: `coding`, `auditing`, or `post_action` |
 | `section_index` | integer / null | Current section for sectioned loops, `null` for non-sectioned plan loops |
+| `section_run_key` | text | Run that recorded the handoff: `section:<id>`, `plan`, or `post_action`; empty on resolved rows from before migration 163 |
 | `iteration` | integer | Loop iteration at write time |
 | `payload` | JSON text | Strictly validated role payload |
 | `status` | text | `pending`, `applied`, or `discarded` (`CHECK` constraint) |
 | `created_at`, `resolved_at` | integer | Write and resolution timestamps; `resolved_at` is `null` while pending |
 
-A partial unique index (`idx_loop_handoffs_pending`) allows at most one `pending` row per loop, and a history index (`idx_loop_handoffs_loop`) keeps every resolved row in id order. Resolution is a single guarded update: marking a row `applied` matches on the recording `session_id`, the expected `role`, and `status = 'pending'`, and discarding matches `status = 'pending'`, so a record resolves exactly once.
+A partial unique index (`idx_loop_handoffs_pending`, migration 163) allows at most one `pending` row per loop and `section_run_key`, so a rewind to an earlier section can hold its own pending handoff without replacing another run's record. A history index (`idx_loop_handoffs_loop`) keeps every resolved row in id order. Resolution is a single guarded update: marking a row `applied` matches on the section run key, the recording `session_id`, the expected `role`, and `status = 'pending'`, and discarding matches `status = 'pending'`, either for one run key or for the whole loop on cancel and restart, so a record resolves exactly once.
 
 Every payload is validated strictly against its role schema once on write, by `parseHandoffWriteInput` inside `recordHandoff` (the repository stores the already-validated payload and does not validate again before the insert), and on every read (`mapHandoffRow`). An invalid row is logged and skipped; its payload is never coerced or partially applied.
 

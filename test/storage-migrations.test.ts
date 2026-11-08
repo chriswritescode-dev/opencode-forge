@@ -1935,6 +1935,7 @@ test('migration 156 creates loop_handoffs with its indexes on fresh databases', 
   expect(cols.map((c) => c.name)).toEqual([
     'id', 'project_id', 'loop_name', 'session_id', 'role', 'phase',
     'section_index', 'iteration', 'payload', 'status', 'created_at', 'resolved_at',
+    'section_run_key',
   ])
 
   expect(indexExists(db, 'idx_loop_handoffs_pending')).toBe(true)
@@ -2540,6 +2541,8 @@ test('migration 162 drops the per-section columns and keeps child rows', () => {
   expect(() => applySingleMigration(db, '162')).not.toThrow()
   expect(countLoopRows(db, 'section_runs', 'proj-1', 'loop-section')).toBe(1)
 
+  applySingleMigration(db, '163')
+
   const loopsRepo = createLoopsRepo(db)
   const service = createLoopService(
     loopsRepo,
@@ -2584,6 +2587,107 @@ test('migration 162 drops the per-section columns and keeps child rows', () => {
     { section_id: 'beta', status: 'active', session_id: 'sess-restarted' },
   ])
   expect(countLoopRows(db, 'section_plans', 'proj-1', 'loop-section')).toBe(1)
+
+  db.close()
+})
+
+test('migration 163 scopes pending handoffs to the section run', () => {
+  const freshDb = openForgeDatabase(createTempDb())
+  expect(loopTableColumns(freshDb, 'loop_handoffs')).toContain('section_run_key')
+  expect(indexExists(freshDb, 'idx_loop_handoffs_pending')).toBe(true)
+  const pendingIndex = freshDb
+    .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loop_handoffs_pending'")
+    .get() as { sql: string } | null
+  expect(pendingIndex?.sql).toContain('section_run_key')
+  const migrationRow = freshDb.prepare('SELECT COUNT(*) AS count FROM migrations WHERE id = ?').get('163') as { count: number }
+  expect(migrationRow.count).toBe(1)
+  freshDb.close()
+
+  const db = new Database(createTempDb())
+  applyMigrationsThrough(db, '160')
+
+  insertLegacyLoop(db, {
+    loopName: 'loop-section',
+    status: 'running',
+    sessionId: 'sess-section',
+    phase: 'auditing',
+    currentSectionIndex: 1,
+    totalSections: 3,
+    startedAt: 10,
+  })
+  db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, created_at)
+    VALUES ('proj-1', 'loop-section', 1, 'beta', 'Beta', 'Beta content', 1)
+  `).run()
+  insertLegacyLoop(db, {
+    loopName: 'loop-plan',
+    status: 'running',
+    sessionId: 'sess-plan',
+    phase: 'coding',
+    totalSections: 0,
+    startedAt: 11,
+  })
+  insertLegacyLoop(db, {
+    loopName: 'loop-post',
+    status: 'running',
+    sessionId: 'sess-post',
+    phase: 'post_action',
+    totalSections: 0,
+    startedAt: 12,
+  })
+
+  applySingleMigration(db, '161')
+
+  for (const handoff of [
+    { loopName: 'loop-section', sessionId: 'sess-section', phase: 'auditing', sectionIndex: 1 },
+    { loopName: 'loop-plan', sessionId: 'sess-plan', phase: 'coding', sectionIndex: null },
+    { loopName: 'loop-post', sessionId: 'sess-post', phase: 'post_action', sectionIndex: null },
+  ]) {
+    db.prepare(`
+      INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at)
+      VALUES ('proj-1', ?, ?, 'coder', ?, ?, 1, '{}', 'pending', 20)
+    `).run(handoff.loopName, handoff.sessionId, handoff.phase, handoff.sectionIndex)
+  }
+
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '162')
+  db.run('PRAGMA foreign_keys=ON')
+
+  applySingleMigration(db, '163')
+
+  const pendingKeys = () =>
+    db.prepare(`
+      SELECT loop_name, section_run_key FROM loop_handoffs WHERE status = 'pending' ORDER BY loop_name
+    `).all()
+  expect(pendingKeys()).toEqual([
+    { loop_name: 'loop-plan', section_run_key: 'plan' },
+    { loop_name: 'loop-post', section_run_key: 'post_action' },
+    { loop_name: 'loop-section', section_run_key: 'section:beta' },
+  ])
+
+  expect(() => applySingleMigration(db, '163')).not.toThrow()
+  expect(pendingKeys()).toEqual([
+    { loop_name: 'loop-plan', section_run_key: 'plan' },
+    { loop_name: 'loop-post', section_run_key: 'post_action' },
+    { loop_name: 'loop-section', section_run_key: 'section:beta' },
+  ])
+
+  const insertPending = (sectionRunKey: string) =>
+    db.prepare(`
+      INSERT INTO loop_handoffs (project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at, section_run_key)
+      VALUES ('proj-1', 'loop-section', 'sess-section', 'coder', 'auditing', 1, 2, '{}', 'pending', 21, ?)
+    `).run(sectionRunKey)
+
+  expect(() => insertPending('section:beta')).toThrow()
+  insertPending('section:gamma')
+  expect(countLoopRows(db, 'loop_handoffs', 'proj-1', 'loop-section')).toBe(2)
+  expect(
+    db.prepare(`
+      SELECT section_run_key FROM loop_handoffs
+      WHERE project_id = 'proj-1' AND loop_name = 'loop-section' AND status = 'pending'
+      ORDER BY section_run_key
+    `).all(),
+  ).toEqual([{ section_run_key: 'section:beta' }, { section_run_key: 'section:gamma' }])
 
   db.close()
 })

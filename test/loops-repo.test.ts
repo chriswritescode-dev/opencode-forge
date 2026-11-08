@@ -864,6 +864,7 @@ describe('LoopsRepo', () => {
       role: 'coder' as const,
       phase: 'coding' as const,
       sectionIndex: 0,
+      sectionRunKey: 'plan',
       iteration: 1,
       payload: coderPayload('first change'),
       ...overrides,
@@ -885,7 +886,7 @@ describe('LoopsRepo', () => {
       if (second.record.role !== 'coder') throw new Error('expected coder handoff')
       expect(second.record.payload.changes[0].summary).toBe('second change')
 
-      const pending = repo.getPendingHandoff(testRow.projectId, testRow.loopName)
+      const pending = repo.getPendingHandoff(testRow.projectId, testRow.loopName, 'plan')
       expect(pending?.sessionId).toBe('session-2')
       if (pending?.role !== 'coder') throw new Error('expected coder handoff')
       expect(pending.payload.changes[0].summary).toBe('second change')
@@ -900,33 +901,33 @@ describe('LoopsRepo', () => {
       repo.insert(testRow, testLarge)
       repo.upsertPendingHandoff(handoffInput())
 
-      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'other-session', 'coder')).toBeNull()
-      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)?.status).toBe('pending')
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'plan', 'other-session', 'coder')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName, 'plan')?.status).toBe('pending')
 
-      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
+      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'plan', testRow.currentSessionId, 'coder')
       expect(applied?.status).toBe('applied')
       expect(applied?.resolvedAt).not.toBeNull()
-      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')).toBeNull()
-      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'plan', testRow.currentSessionId, 'coder')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName, 'plan')).toBeNull()
     })
 
     test('apply with a mismatched role returns null and leaves the row pending', () => {
       repo.insert(testRow, testLarge)
       repo.upsertPendingHandoff(handoffInput())
 
-      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'auditor')).toBeNull()
-      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)?.status).toBe('pending')
+      expect(repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'plan', testRow.currentSessionId, 'auditor')).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName, 'plan')?.status).toBe('pending')
 
-      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
+      const applied = repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'plan', testRow.currentSessionId, 'coder')
       expect(applied?.role).toBe('coder')
       expect(applied?.payload.changes[0].summary).toBe('first change')
-      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName, 'plan')).toBeNull()
     })
 
     test('a post-apply upsert creates a new pending row while the applied row stays in history', () => {
       repo.insert(testRow, testLarge)
       const first = repo.upsertPendingHandoff(handoffInput())
-      repo.applyPendingHandoff(testRow.projectId, testRow.loopName, testRow.currentSessionId, 'coder')
+      repo.applyPendingHandoff(testRow.projectId, testRow.loopName, 'plan', testRow.currentSessionId, 'coder')
 
       const second = repo.upsertPendingHandoff(handoffInput({ iteration: 2, payload: coderPayload('next iteration') }))
       expect(second.record.id).toBeGreaterThan(first.record.id)
@@ -943,7 +944,7 @@ describe('LoopsRepo', () => {
 
       repo.discardPendingHandoff(testRow.projectId, testRow.loopName)
 
-      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName, 'plan')).toBeNull()
       const history = repo.listHandoffs(testRow.projectId, testRow.loopName)
       expect(history).toHaveLength(1)
       expect(history[0].id).toBe(pending.record.id)
@@ -955,11 +956,11 @@ describe('LoopsRepo', () => {
       repo.insert(testRow, testLarge)
       db.prepare(`
         INSERT INTO loop_handoffs (
-          project_id, loop_name, session_id, role, phase, section_index, iteration, payload, status, created_at, resolved_at
-        ) VALUES (?, ?, ?, 'coder', 'coding', 0, 1, ?, 'pending', ?, NULL)
+          project_id, loop_name, session_id, role, phase, section_index, section_run_key, iteration, payload, status, created_at, resolved_at
+        ) VALUES (?, ?, ?, 'coder', 'coding', 0, 'plan', 1, ?, 'pending', ?, NULL)
       `).run(testRow.projectId, testRow.loopName, testRow.currentSessionId, JSON.stringify({ changes: [] }), Date.now())
 
-      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName)).toBeNull()
+      expect(repo.getPendingHandoff(testRow.projectId, testRow.loopName, 'plan')).toBeNull()
       expect(repo.listHandoffs(testRow.projectId, testRow.loopName)).toEqual([])
     })
   })

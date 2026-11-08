@@ -426,7 +426,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 | Repository | Table(s) | Key Types |
 |---|---|---|
-| `LoopsRepo` | `loops`, `loop_large_fields`, `loop_handoffs` | `LoopRow`, `LoopLargeFields`, `LoopHandoffRecord` — `loop_handoffs` is the schema-validated phase handoff history with one pending row per loop |
+| `LoopsRepo` | `loops`, `loop_large_fields`, `loop_handoffs` | `LoopRow`, `LoopLargeFields`, `LoopHandoffRecord` — `loop_handoffs` is the schema-validated phase handoff history with one pending row per section run |
 | `PlansRepo` | `plans` | `PlanRow` |
 | `ReviewFindingsRepo` | `review_findings` | `ReviewFindingRow` |
 | `SectionPlansRepo` | `section_plans` | `SectionPlanRow` — one row per **milestone** (decomposed plan section). See [Loop System](loop-system.md#milestones-aka-sections). |

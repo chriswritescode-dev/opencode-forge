@@ -379,6 +379,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       role: 'coder',
       phase: 'coding',
       sectionIndex: 0,
+      sectionRunKey: loopsRepo.get(PROJECT_ID, 'handoff-restart-loop')!.sectionRunKey,
       iteration: 1,
       payload: {
         changes: [{ summary: 'Old change', reason: 'Old reason' }],
@@ -436,7 +437,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     )
 
     expect(result.ok).toBe(true)
-    expect(loopsRepo.getPendingHandoff(PROJECT_ID, 'handoff-restart-loop')).toBeNull()
+    expect(loopsRepo.getPendingHandoff(PROJECT_ID, 'handoff-restart-loop', loopsRepo.get(PROJECT_ID, 'handoff-restart-loop')!.sectionRunKey)).toBeNull()
     const history = loopsRepo.listHandoffs(PROJECT_ID, 'handoff-restart-loop')
     expect(history).toHaveLength(1)
     expect(history[0].id).toBe(pending.record.id)
