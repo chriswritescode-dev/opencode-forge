@@ -53,7 +53,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
           markPromptSent(projectId, lane, sessionId, logger)
           const r = await promptAuditSession(client, {
             sessionId,
-            worktreeDir: freshState.worktreeDir,
+            worktreeDir: freshState.runDir,
             workspaceId: freshState.workspaceId,
             prompt: promptText,
             ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
@@ -78,7 +78,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         try {
           await client.session.promptAsync({
             sessionID: sessionId,
-            directory: freshState.worktreeDir,
+            directory: freshState.runDir,
             ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
             agent: 'code',
             parts: [{ type: 'text' as const, text: promptText }],

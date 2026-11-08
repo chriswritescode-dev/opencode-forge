@@ -11,7 +11,7 @@ interface LoopStateBase {
   laneDir?: string
   laneBranch?: string
   laneBaseCommit?: string
-  /** The directory this run works in: `laneDir ?? worktreeDir`. */
+  /** The directory this run works in: its lane worktree, or the loop's shared `worktreeDir` for a serial run and for every post-action run. */
   readonly runDir: string
   projectDir?: string
   worktreeBranch?: string
@@ -80,7 +80,7 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     laneDir: row.laneDir ?? undefined,
     laneBranch: row.laneBranch ?? undefined,
     laneBaseCommit: row.laneBaseCommit ?? undefined,
-    runDir: runDirectoryOf({ laneDir: row.laneDir ?? null, worktreeDir: row.worktreeDir }),
+    runDir: runDirectoryOf({ kind: row.sectionRunKind, laneDir: row.laneDir ?? null, worktreeDir: row.worktreeDir }),
     projectDir: row.projectDir,
     worktreeBranch: row.worktreeBranch ?? undefined,
     iteration: row.iteration,

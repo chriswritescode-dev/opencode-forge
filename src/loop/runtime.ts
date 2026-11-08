@@ -3,7 +3,7 @@ import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
 import type { LoopState } from './state'
-import { transitionSectionIndex } from './state'
+import { auditScope, transitionSectionIndex } from './state'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
@@ -279,14 +279,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!state.worktree || !state.worktreeDir) return
     const title = loopService.getSectionPlan(state, idx)?.title.trim() ?? ''
     const message = truncateAtWordBoundary(title, 72) || `Section ${idx + 1}`
-    const outcome = commitWorktreeChanges(gitService, logger, state.worktreeDir, message)
+    const outcome = commitWorktreeChanges(gitService, logger, state.runDir, message)
     if (outcome === 'failed') {
       logger.log(`Loop: section checkpoint commit failed for ${state.loopName ?? 'unknown'}; next section audit will see the accumulated diff`)
     } else if (outcome === 'committed') {
       logger.log(`Loop: committed section checkpoint "${message}" for ${state.loopName ?? 'unknown'}`)
     }
     try {
-      const head = gitService.revParseHead(state.worktreeDir)
+      const head = gitService.revParseHead(state.runDir)
       const sha = head.ok ? head.stdout.trim() : ''
       if (!sha) {
         logger.log(`Loop: could not record the section checkpoint commit for ${state.loopName ?? 'unknown'}: ${head.stderr.trim() || 'unknown error'}`)
@@ -301,14 +301,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const instanceDirectory = deps.directory ? canonicalizePath(deps.directory) : null
 
   /**
-   * Whether this plugin instance may supervise the loop living in `worktreeDir`.
-   * Only the instance bound to that directory receives the loop's session events,
-   * so any other instance would be judging progress it cannot observe. Returns
-   * true when no directory was supplied, which keeps tests ungated.
+   * Whether this plugin instance may supervise the section run working in
+   * `runDir` (its lane worktree, or the loop worktree for a serial run). Only the
+   * instance bound to that directory receives the run's session events, so any
+   * other instance would be judging progress it cannot observe. Returns true when
+   * no directory was supplied, which keeps tests ungated.
    */
-  function ownsLoopWorktree(worktreeDir: string): boolean {
+  function ownsRunDirectory(runDir: string): boolean {
     if (instanceDirectory === null) return true
-    return canonicalizePath(worktreeDir) === instanceDirectory
+    return canonicalizePath(runDir) === instanceDirectory
   }
 
   /**
@@ -509,7 +510,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * callers must never treat an unverifiable status as quiescent.
    */
   async function findBusyLoopSessions(state: LoopState): Promise<string[]> {
-    const statuses = await fetchSessionStatuses(state.worktreeDir)
+    const statuses = await fetchSessionStatuses(state.runDir)
     if (!statuses) throw new Error('Session status is unavailable')
     const busy: string[] = []
     for (const [sessionId, status] of Object.entries(statuses)) {
@@ -775,7 +776,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     role: LoopSessionReuseRole,
   ): Promise<StandbyCandidate | null> {
     try {
-      const messages = await client.session.messages({ sessionID: sessionId, directory: state.worktreeDir, limit: 4 })
+      const messages = await client.session.messages({ sessionID: sessionId, directory: state.runDir, limit: 4 })
       if (messages.length === 0) {
         logger.log(`Loop: session ${sessionId} (${role}) is not reusable for ${state.loopName}; the session has no messages`)
         return null
@@ -837,7 +838,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   ): Promise<boolean> {
     if (!standby.needsCompaction) return true
     try {
-      await client.session.compact({ sessionID: standby.sessionId, directory: state.worktreeDir })
+      await client.session.compact({ sessionID: standby.sessionId, directory: state.runDir })
       logger.log(`Loop: compacting reused session ${standby.sessionId} for ${loopName} before its follow-up turn`)
       return true
     } catch (err) {
@@ -915,7 +916,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await scheduleSessionDelete({
       loopName,
       sessionId: standbySessionId,
-      directory: state.worktreeDir,
+      directory: state.runDir,
       context,
       phase: standbyPhase,
       state,
@@ -932,7 +933,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     try {
       await client.session.update({
         sessionID: sessionId,
-        directory: state.worktreeDir,
+        directory: state.runDir,
         title: formatLoopSessionTitle(loopName, context),
       })
     } catch (err) {
@@ -953,7 +954,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     options?: { keepPreviousSession?: boolean },
   ): Promise<string> {
     const oldSessionId = state.sessionId
-    const sessionDir = state.worktreeDir
+    const sessionDir = state.runDir
 
     logger.log(
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
@@ -1170,7 +1171,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       sectionIndex: transitionSectionIndex(currentState),
     })
 
-    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
+    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.runDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
     const { error } = await sendPostActionPrompt(postActionLane, created.sessionId, prompt)
     if (error) {
@@ -1371,7 +1372,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (input.discardAuditSession) {
       loopService.setStandbySessionId(laneOf(currentState), null)
-      await scheduleSessionDelete({ loopName, sessionId: auditSessionId, directory: currentState.worktreeDir, context: 'after failed audit', phase: 'auditing', state: currentState })
+      await scheduleSessionDelete({ loopName, sessionId: auditSessionId, directory: currentState.runDir, context: 'after failed audit', phase: 'auditing', state: currentState })
     } else {
       loopService.setStandbySessionId(laneOf(currentState), auditSessionId)
     }
@@ -1480,9 +1481,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
     if (state.totalSections > 0) {
-      // `lastAuditResult` is only a "this section has already been audited"
-      // marker here; its text is display-only and never replayed to the coder.
-      if (state.lastAuditResult) {
+      // A finished audit attempt in this run's own section makes the coder
+      // prompt a continuation. `lastAuditResult` is loop-wide (it survives a
+      // section advance and is shared by concurrent runs), so it cannot tell
+      // whether this section was ever audited.
+      const audited = loopService
+        .getAttemptHistory(state.loopName, auditScope(state))
+        .some((attempt) => attempt.outcome !== null)
+      if (audited) {
         return loopService.buildSectionContinuationPrompt(state)
       }
       return loopService.buildSectionInitialPrompt(state)
@@ -1610,7 +1616,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await captureLoopSessionUsage({
       loopName,
       sessionId: state.sessionId,
-      directory: state.worktreeDir,
+      directory: state.runDir,
       role,
       fallbackModel,
     })
@@ -1820,7 +1826,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const signal = extractErrorSignal(err)
     const limitReason = classifyProviderLimit(signal)
     if (limitReason) {
-      if (await handleAuditorProviderLimit(loopName, limitReason)) return
+      if (await handleAuditorProviderLimit(loopName, limitReason, { lane: laneOf(currentState) })) return
       logger.error(`Loop: ${context} — provider limit detected, terminating without retry`)
       await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
       return
@@ -1888,7 +1894,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       try {
         await client.session.promptAsync({
           sessionID: opts.sessionId,
-          directory: freshState.worktreeDir,
+          directory: freshState.runDir,
           ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
           agent: opts.agent,
           parts: [{ type: 'text' as const, text: opts.promptText ?? '' }],
@@ -2130,7 +2136,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return {
       compute: async () => {
         const from = attempt.previousCommit ?? `${snapshotCommit}^`
-        const changedRanges = await listSnapshotChangedRanges(state.worktreeDir, from, snapshotCommit, logger)
+        const changedRanges = await listSnapshotChangedRanges(state.runDir, from, snapshotCommit, logger)
         const files = Object.keys(changedRanges)
         if (files.length === 0) return null
         const text = await codeGraphSnapshotter.snapshotFiles(target, {
@@ -2294,7 +2300,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, undefined, currentState)
           const retryResult = await promptAuditSession(client, {
             sessionId,
-            worktreeDir: currentState.worktreeDir,
+            worktreeDir: currentState.runDir,
             workspaceId: currentState.workspaceId,
             prompt: buildPrompt(currentState),
             auditorModel: retryChoice.model,
@@ -2318,7 +2324,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, undefined, fresh)
           const retryResult = await promptAuditSession(client, {
             sessionId,
-            worktreeDir: fresh.worktreeDir,
+            worktreeDir: fresh.runDir,
             workspaceId: fresh.workspaceId,
             prompt: buildPrompt(fresh),
             auditorModel: retryChoice.model,
@@ -2405,7 +2411,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.runDir)
 
     // Classify persisted provider-limit errors before anything else.
     if (assistantInfo.errorSignal) {
@@ -2503,7 +2509,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       iteration: currentState.iteration ?? 0,
       currentSectionIndex: currentState.currentSectionIndex ?? 0,
       totalSections: currentState.totalSections ?? 0,
-      worktreeDir: currentState.worktreeDir,
+      worktreeDir: currentState.runDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       auditorModel: auditorChoice.model,
       prompt: loopService.buildAuditPrompt(currentState),
@@ -2560,7 +2566,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (retainCoderAsStandby) {
       loopService.setStandbySessionId(laneOf(currentState), codeSessionId)
     } else {
-      void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation (escalated finding)', phase: 'coding', state: currentState })
+      void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.runDir, context: 'after audit creation (escalated finding)', phase: 'coding', state: currentState })
     }
     sessionToLoop.set(codeSessionId, loopName)
     sessionToLoop.set(created.auditSessionId, loopName)
@@ -2617,14 +2623,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const auditSessionId = currentState.sessionId
 
-    const { error: assistantError, errorSignal: auditErrorSignal, lastMessageRole: auditLastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+    const { error: assistantError, errorSignal: auditErrorSignal, lastMessageRole: auditLastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.runDir)
 
     // Classify persisted provider-limit errors first so finish:'error'
     // assistant messages terminate immediately.
     if (auditErrorSignal) {
       const limitReason = classifyProviderLimit(auditErrorSignal)
       if (limitReason) {
-        if (await handleAuditorProviderLimit(loopName, limitReason)) return
+        if (await handleAuditorProviderLimit(loopName, limitReason, { lane: laneOf(currentState) })) return
         logger.error(`Loop: provider limit in persisted auditing error for ${loopName}: ${limitReason}, terminating`)
         await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
         return
@@ -2987,8 +2993,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           // resend from a real user abort. Terminating here would kill a live loop on
           // another instance's abort. Ownership is checked before the marker so the
           // owner still consumes its own aborts normally.
-          if (!ownsLoopWorktree(state.worktreeDir)) {
-            logger.log(`Loop: ignoring aborted event for ${loopName}; worktree ${state.worktreeDir} is owned by another instance`)
+          if (!ownsRunDirectory(state.runDir)) {
+            logger.log(`Loop: ignoring aborted event for ${loopName}; run directory ${state.runDir} is owned by another instance`)
             return
           }
           // Consume an abort we initiated ourselves to re-dispatch the audit
@@ -3531,8 +3537,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   function startWatchdog(name: string): void {
     const states = loopService.listActiveRunStates(name)
     for (const state of states) {
-      if (!ownsLoopWorktree(state.worktreeDir)) {
-        logger.log(`Loop: skipping watchdog for ${name}; instance directory ${instanceDirectory} does not own worktree ${state.worktreeDir}`)
+      if (!ownsRunDirectory(state.runDir)) {
+        logger.log(`Loop: skipping watchdog for ${name}; instance directory ${instanceDirectory} does not own run directory ${state.runDir}`)
         continue
       }
       watchdog.start(laneOf(state))
@@ -3540,25 +3546,27 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Starts watchdogs for active loops this instance owns that were started or restarted
-   * in this process (registered in the loop registry). Loops persisted before this
-   * process are never recovered at boot — plugin init must not resurrect them — while a
-   * worktree instance that loads after another instance in the same process started the
-   * loop still finds it registered and supervises it.
+   * Starts watchdogs for the active runs this instance owns that were started or
+   * restarted in this process (registered in the loop registry). Loops persisted
+   * before this process are never recovered at boot — plugin init must not
+   * resurrect them — while a worktree or lane instance that loads after another
+   * instance in the same process started the loop still finds it registered and
+   * supervises its own run.
    */
   function superviseOwnedLoops(): string[] {
     if (instanceDirectory === null) return []
-    const owned = listActive().filter(
-      (state) =>
-        state.worktreeDir &&
-        ownsLoopWorktree(state.worktreeDir) &&
-        loopRegistry.has(projectId, state.loopName),
-    )
-    for (const state of owned) {
-      logger.log(`Loop: supervising ${state.loopName} owned by instance directory ${instanceDirectory}`)
-      watchdog.start(laneOf(state))
+    const owned: LoopState[] = []
+    for (const state of listActive()) {
+      if (!loopRegistry.has(projectId, state.loopName)) continue
+      for (const run of loopService.listActiveRunStates(state.loopName)) {
+        if (run.worktreeDir && ownsRunDirectory(run.runDir)) owned.push(run)
+      }
     }
-    return owned.map((state) => state.loopName)
+    for (const run of owned) {
+      logger.log(`Loop: supervising ${run.loopName} owned by instance directory ${instanceDirectory}`)
+      watchdog.start(laneOf(run))
+    }
+    return [...new Set(owned.map((run) => run.loopName))]
   }
 
   function getStallInfo(name: string): LoopWatchdogStallInfo | null {

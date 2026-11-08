@@ -575,7 +575,7 @@ export function createLoopService(
   function getPromptAttemptHistory(state: LoopState, limit = 4): LoopAttemptRow[] {
     const rows = getAttemptHistory(state.loopName, auditScope(state), limit)
     const latest = rows.at(-1)
-    if (latest && (latest.planHash !== attemptPlanHash(state) || latest.worktreeDir !== state.worktreeDir ||
+    if (latest && (latest.planHash !== attemptPlanHash(state) || latest.worktreeDir !== state.runDir ||
       (latest.sourceSessionId !== state.sessionId && latest.auditorSessionId !== state.sessionId))) {
       rows[rows.length - 1] = { ...latest, previousCommit: null, diffSummary: null, fallbackReason: 'The plan, workspace, or session has changed; perform the full audit scope.' }
     }
@@ -600,11 +600,11 @@ export function createLoopService(
     let diffSummary: string | null = null
     let fallbackReason: string | null = 'First audit in this scope; review the full scope.'
     try {
-      const snapshot = await captureAuditSnapshot(state.worktreeDir, ref, logger)
+      const snapshot = await captureAuditSnapshot(state.runDir, ref, logger)
       snapshotCommit = snapshot.commit
       snapshotRef = snapshot.ref
-      if (previous?.outcome && previous.snapshotCommit && previous.planHash === planHash && previous.worktreeDir === state.worktreeDir) {
-        diffSummary = await compareAuditSnapshots(state.worktreeDir, previous.snapshotCommit, snapshotCommit, logger)
+      if (previous?.outcome && previous.snapshotCommit && previous.planHash === planHash && previous.worktreeDir === state.runDir) {
+        diffSummary = await compareAuditSnapshots(state.runDir, previous.snapshotCommit, snapshotCommit, logger)
         previousCommit = previous.snapshotCommit
         fallbackReason = null
       } else if (previous) {
@@ -618,17 +618,17 @@ export function createLoopService(
     try {
       const fresh = getRunState(state.loopName, state.sectionRunKey)
       if (!fresh || fresh.sessionId !== source.sessionId || fresh.phase !== source.phase ||
-        fresh.worktreeDir !== source.worktreeDir || attemptPlanHash({ ...fresh, phase: state.phase }) !== planHash) return false
+        fresh.runDir !== source.runDir || attemptPlanHash({ ...fresh, phase: state.phase }) !== planHash) return false
       recorded = loopAttemptsRepo.record({
         projectId, loopName: state.loopName, scope, sourceSessionId: state.sessionId, completionKey,
-        iteration: state.iteration, worktreeDir: state.worktreeDir, planHash, coderDecisions: decisions,
+        iteration: state.iteration, worktreeDir: state.runDir, planHash, coderDecisions: decisions,
         snapshotCommit, snapshotRef, previousCommit, diffSummary, fallbackReason,
         findingsBefore: attemptFindings(state),
       })
       return recorded !== null
     } finally {
       if (snapshotRef && recorded?.snapshotRef !== snapshotRef) {
-        await deleteAuditSnapshot(state.worktreeDir, snapshotRef, logger).catch(err => logger.error('Loop: orphan checkpoint cleanup failed', err))
+        await deleteAuditSnapshot(state.runDir, snapshotRef, logger).catch(err => logger.error('Loop: orphan checkpoint cleanup failed', err))
       }
     }
   }
@@ -650,7 +650,7 @@ export function createLoopService(
       loopAttemptsRepo.record({
         projectId, loopName: state.loopName, scope, sourceSessionId: state.sessionId,
         completionKey: `recovered-audit:${state.sessionId}`, iteration: state.iteration,
-        worktreeDir: state.worktreeDir, planHash: attemptPlanHash(state), coderDecisions: null,
+        worktreeDir: state.runDir, planHash: attemptPlanHash(state), coderDecisions: null,
         snapshotCommit: null, snapshotRef: null, previousCommit: null, diffSummary: null,
         fallbackReason: 'Audit resumed without a matching code handoff; the next audit must use the full scope.', findingsBefore: [],
       })

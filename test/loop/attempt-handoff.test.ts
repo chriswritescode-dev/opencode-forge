@@ -821,6 +821,23 @@ describe('durable attempt handoff', () => {
       expect(vi.mocked(captureAuditSnapshot).mock.calls.length).toBe(1)
     })
 
+    test('a lane run snapshots and records its attempts in its own lane directory', async () => {
+      const loopName = 'handoff-lane'
+      const laneDir = '/tmp/attempt-handoff-lane'
+      queueSnapshotCommits([COMMIT_A])
+      const service = createDurableService()
+      const state = makeLoopState({ ...STATE_DEFAULTS, loopName, sessionId: 'lane-coder', laneDir })
+      service.setState(loopName, state)
+
+      expect(await service.captureAttempt(state, 'lane:key-1', null)).toBe(true)
+
+      expect(vi.mocked(captureAuditSnapshot)).toHaveBeenCalledWith(laneDir, expect.any(String), expect.anything())
+      const rows = service.getAttemptHistory(loopName, 'plan')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].worktreeDir).toBe(laneDir)
+      expect(service.getRunState(loopName, 'plan')?.runDir).toBe(laneDir)
+    })
+
     test('snapshot capture failure records a full-scope fallback attempt without a delta', async () => {
       const loopName = 'handoff-capture-failure'
       vi.mocked(captureAuditSnapshot).mockRejectedValue(new Error('git exploded'))

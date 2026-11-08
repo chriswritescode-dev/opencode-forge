@@ -258,15 +258,19 @@ function auditChangeScope(state: Pick<LoopState, 'baseCommit'>): string {
 }
 
 /**
- * The section audit's review scope: everything since the nearest earlier
- * section's recorded checkpoint commit, or the base-commit / legacy
- * merge-base scope on the first section. A later section with no recorded
+ * The section audit's review scope: a lane run reviews everything since its lane
+ * branched from the loop worktree; a serial run reviews everything since the
+ * nearest earlier section's recorded checkpoint commit, or the base-commit /
+ * legacy merge-base scope on the first section. A later section with no recorded
  * checkpoint either belongs to a loop started before checkpoints were stored,
  * whose checkpoint commits are titled `section <N>:`, or failed to record one;
- * the prompt names both scopes so the auditor never searches for a commit
- * that does not exist.
+ * the prompt names both scopes so the auditor never searches for a commit that
+ * does not exist.
  */
 function sectionAuditScope(ctx: Pick<PromptContext, 'getSectionPlan'>, state: LoopState): string {
+  if (state.laneBaseCommit) {
+    return `every commit since lane base commit \`${state.laneBaseCommit}\` (\`git diff ${state.laneBaseCommit}\` covers committed, staged and unstaged tracked changes) plus untracked files in this lane`
+  }
   for (let index = state.currentSectionIndex - 1; index >= 0; index--) {
     const checkpoint = ctx.getSectionPlan(state, index)?.checkpointCommit
     if (checkpoint) {
@@ -338,6 +342,18 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
   return parts.join('\n') + auditorHandoffInstruction(false)
 }
 
+/**
+ * Names the directory a lane run works in and the environment its shell commands
+ * receive. Empty for a run without a lane (a serial loop). The loop worktree is
+ * only the common ancestor of every lane, so a lane run must never assume it is
+ * its own checkout.
+ */
+function buildLaneEnvironmentBlock(state: Pick<LoopState, 'laneDir' | 'runDir' | 'laneBranch'>): string {
+  if (!state.laneDir) return ''
+  const branch = state.laneBranch ? ` (branch \`${state.laneBranch}\`)` : ''
+  return `\n\n---\n## Lane worktree\nThis section runs in its own lane worktree at \`${state.runDir}\`${branch}, not in the loop worktree. Its shell commands run there with \`FORGE_LANE\` and \`FORGE_PORT_OFFSET\` set, so use them for a dev server or any port-bound check and keep every change inside this directory.`
+}
+
 export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState): string {
   const idx = state.currentSectionIndex
   const total = state.totalSections
@@ -353,6 +369,7 @@ export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState):
     completedSectionDigest: ctx.getCompletedSectionDigest(state),
     codeGraphBlock: ctx.getSectionCodeGraphBlock?.(state) ?? '',
     attemptHistoryBlock: buildAttemptHistoryBlock(ctx, state, 'coder'),
+    laneBlock: buildLaneEnvironmentBlock(state),
   })
 }
 
@@ -365,6 +382,7 @@ export function buildSectionInitialPromptText(input: {
   completedSectionDigest?: SectionDigestEntry[]
   codeGraphBlock?: string
   attemptHistoryBlock?: string
+  laneBlock?: string
 }): string {
   const idx = input.currentSectionIndex
   const digest = input.completedSectionDigest ?? []
@@ -375,6 +393,10 @@ export function buildSectionInitialPromptText(input: {
   }
 
   header += `\n\n## Section plan\n${input.sectionContent}`
+
+  if (input.laneBlock) {
+    header += input.laneBlock
+  }
 
   if (input.codeGraphBlock) {
     header += input.codeGraphBlock
@@ -401,6 +423,8 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
   }
 
   header += `\n\n## Section under audit\n${section.content}`
+
+  header += buildLaneEnvironmentBlock(state)
 
   header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
   header += buildAttemptHistoryBlock(ctx, state, 'auditor')
@@ -438,6 +462,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
 
   header += `\n\n## Section plan\n${section.content}`
 
+  header += buildLaneEnvironmentBlock(state)
   header += ctx.getSectionCodeGraphBlock?.(state) ?? ''
   header += buildLoopNoticeBlock(notice)
   header += buildAttemptHistoryBlock(ctx, state, 'coder')
@@ -474,7 +499,7 @@ export function buildCoderFollowUpPrompt(ctx: PromptContext, state: LoopState, o
     ? 'The audit of your previous changes left the findings below open. Your earlier context still applies; re-read any file you change.'
     : 'The audit of your previous changes left no open findings. Your earlier context still applies; re-read any file you change.'
 
-  let prompt = `${header}${buildLoopNoticeBlock(notice)}\n\n${intro}`
+  let prompt = `${header}${buildLaneEnvironmentBlock(state)}${buildLoopNoticeBlock(notice)}\n\n${intro}`
   prompt += buildOutstandingFindingsCoderBlock(findings)
   prompt += buildRecurringFindingsCoderBlock(ctx, state, state.totalSections > 0 ? findings : outstandingBugs)
   prompt += ctx.getAttemptCodeGraphBlock?.(state) ?? ''
@@ -493,7 +518,7 @@ export function buildAuditFollowUpPrompt(ctx: PromptContext, state: LoopState): 
     ? `[Loop section audit ${String(state.currentSectionIndex + 1)}/${String(state.totalSections)} (follow-up)]`
     : `[Loop audit iteration ${String(state.iteration)}${state.maxIterations > 0 ? ` / ${String(state.maxIterations)}` : ''} (follow-up)]`
 
-  let prompt = `${header}\n\nThe coder has finished the next attempt for this scope. Your earlier file reads and command results may be stale.`
+  let prompt = `${header}${buildLaneEnvironmentBlock(state)}\n\nThe coder has finished the next attempt for this scope. Your earlier file reads and command results may be stale.`
 
   prompt += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
   prompt += buildAttemptHistoryBlock(ctx, state, 'auditor')

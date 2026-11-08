@@ -83,6 +83,7 @@ describe('Loop Runtime', () => {
       client?: ForgeClient
       loopConfig?: Partial<PluginConfig>
       stallConfig?: LoopConfig
+      directory?: string
       withUsageRepo?: boolean
       getParentSessionId?: (sessionId: string) => Promise<string | null>
       sandboxManager?: LoopRuntimeDeps['sandboxManager']
@@ -95,6 +96,7 @@ describe('Loop Runtime', () => {
       config: { ...mockConfig, ...(overrides.loopConfig ?? {}) },
       loopConfig: overrides.stallConfig,
       dataDir: tempDir,
+      directory: overrides.directory,
       withUsageRepo: overrides.withUsageRepo,
       getParentSessionId: overrides.getParentSessionId,
       sandboxManager: overrides.sandboxManager,
@@ -917,6 +919,231 @@ describe('post-action phase', () => {
 
       expect(loopService.getPendingHandoff(loopName, 'section:section-2')).not.toBeNull()
       expect(loopService.getPendingHandoff(loopName, 'section:section-1')).toBeNull()
+    })
+  })
+
+  describe('a lane run works in its own run directory', () => {
+    const loopName = 'lane-loop'
+    const loopWorktreeDir = '/tmp/lane-loop-worktree'
+    const laneDir = '/tmp/lane-loop-worktree.lanes/section-2'
+
+    function seedLaneRuns(): void {
+      const state = makeLoopState({
+        loopName,
+        worktreeDir: loopWorktreeDir,
+        totalSections: 3,
+        currentSectionIndex: 0,
+        sectionRunKind: 'section',
+        sectionId: 'section-1',
+        sectionRunKey: 'section:section-1',
+        sessionId: 'lane-run-a-session',
+        phase: 'coding',
+      })
+      loopService.setState(loopName, state)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [1, 2, 3].map((n) => ({
+          index: n - 1,
+          id: `section-${n}`,
+          after: n === 1 ? [] : [`section-${n - 1}`],
+          title: `Section ${n}`,
+          content: `Content ${n}`,
+        })),
+      })
+      createSectionRunsRepo(db).activate(
+        PROJECT_ID,
+        loopName,
+        { kind: 'section', sectionId: 'section-2', sectionIndex: 1 },
+        {
+          sessionId: 'lane-run-b-session',
+          phase: 'coding',
+          standbySessionId: null,
+          laneDir,
+          laneBranch: 'forge-lane/lane-loop/section-2',
+          laneBaseCommit: 'c'.repeat(40),
+        },
+        { exclusive: false },
+      )
+    }
+
+    function calledDirectories(calls: RecordedCall[], method: string, agent?: string): unknown[] {
+      return calls
+        .filter(c => c.method === method && (agent === undefined || (c.params as { agent?: string })?.agent === agent))
+        .map(c => (c.params as { directory?: string })?.directory)
+    }
+
+    test('the lane run creates its sessions, reads status and prompts in the lane directory', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section two implemented.' }] },
+          ],
+        },
+      })
+      const { loop } = buildRuntime({ client })
+      seedLaneRuns()
+
+      await recordCoderHandoff(loop, 'lane-run-b-session')
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: 'lane-run-b-session' },
+      })
+
+      expect(calledDirectories(calls, 'session.status')).toContain(laneDir)
+      expect(calledDirectories(calls, 'session.messages')).toContain(laneDir)
+      expect(calledDirectories(calls, 'session.create')).toContain(laneDir)
+      expect(calledDirectories(calls, 'session.promptAsync', 'auditor-loop')).toEqual([laneDir])
+      expect(loopService.getRunState(loopName, 'section:section-2')).toMatchObject({ phase: 'auditing' })
+      expect(loopService.getRunState(loopName, 'section:section-1')).toMatchObject({ phase: 'coding' })
+    })
+
+    test('an instance bound to the lane directory supervises that run only', () => {
+      const { loop, logs } = buildRuntime({ directory: laneDir })
+      seedLaneRuns()
+
+      loop.startWatchdog(loopName)
+
+      expect(logs.filter(l => l.message.includes('Loop watchdog: started for loop lane-loop'))).toHaveLength(1)
+      expect(logs.some(l => l.message.includes(`does not own run directory ${loopWorktreeDir}`))).toBe(true)
+
+      void loop.terminateAll()
+    })
+
+    test('an instance bound to the loop worktree does not supervise the lane run', () => {
+      const { loop, logs } = buildRuntime({ directory: loopWorktreeDir })
+      seedLaneRuns()
+
+      loop.startWatchdog(loopName)
+
+      expect(logs.filter(l => l.message.includes('Loop watchdog: started for loop lane-loop'))).toHaveLength(1)
+      expect(logs.some(l => l.message.includes(`does not own run directory ${laneDir}`))).toBe(true)
+
+      void loop.terminateAll()
+    })
+
+    test('the lane instance processes an aborted lane session', async () => {
+      const { loop, logs } = buildRuntime({ directory: laneDir })
+      seedLaneRuns()
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: 'lane-run-b-session', error: { name: 'MessageAbortedError' } },
+      })
+
+      expect(logs.some(l => l.message.includes('aborted, terminating loop'))).toBe(true)
+      expect(loopService.getAnyState(loopName)?.terminationReason).toBe('user_aborted')
+    })
+
+    test('the loop worktree instance ignores an aborted lane session it does not own', async () => {
+      const { loop, logs } = buildRuntime({ directory: loopWorktreeDir })
+      seedLaneRuns()
+
+      await loop.tick({
+        type: 'session.error',
+        properties: { sessionID: 'lane-run-b-session', error: { name: 'MessageAbortedError' } },
+      })
+
+      expect(logs.some(l => l.message.includes(`run directory ${laneDir} is owned by another instance`))).toBe(true)
+      expect(loopService.getRunState(loopName, 'section:section-2')?.active).toBe(true)
+    })
+  })
+
+  describe('section coder prompt selection', () => {
+    const loopName = 'prompt-selection'
+
+    function seedCodingSection(index: number, overrides: Partial<LoopState> = {}): LoopState {
+      const state = makeLoopState({
+        loopName,
+        sessionId: 'prompt-coder',
+        phase: 'coding',
+        totalSections: 2,
+        currentSectionIndex: index,
+        sectionRunKind: 'section',
+        sectionId: `section-${index + 1}`,
+        sectionRunKey: `section:section-${index + 1}`,
+        ...overrides,
+      })
+      loopService.setState(loopName, state)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [1, 2].map((n) => ({
+          index: n - 1,
+          id: `section-${n}`,
+          after: n === 1 ? [] : ['section-1'],
+          title: `Section ${n}`,
+          content: `Content ${n}`,
+        })),
+      })
+      return state
+    }
+
+    async function nudgePrompt(calls: RecordedCall[]): Promise<string> {
+      const codePrompts = calls
+        .filter(c => c.method === 'session.promptAsync' && (c.params as { agent?: string })?.agent === 'code')
+        .map(c => ((c.params as { parts?: Array<{ text?: string }> })?.parts?.[0]?.text ?? ''))
+      expect(codePrompts).toHaveLength(1)
+      return codePrompts[0]
+    }
+
+    function fakeUnansweredCoder(): { client: ForgeClient; calls: RecordedCall[] } {
+      return createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'user' }, parts: [{ type: 'text', text: 'unanswered prompt' }] }],
+        },
+      })
+    }
+
+    test('a leftover loop-wide audit result does not make a fresh section a continuation', async () => {
+      const attemptsRepo = createLoopAttemptsRepo(db)
+      const { client, calls } = fakeUnansweredCoder()
+      const { loop } = buildRuntime({ client, loopAttemptsRepo: attemptsRepo })
+      seedCodingSection(1, { lastAuditResult: 'the previous section audit was dirty' })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: 'prompt-coder' },
+      })
+
+      const prompt = await nudgePrompt(calls)
+      expect(prompt).toContain('[Loop section 2/2')
+      expect(prompt).not.toContain('(continuation)')
+    })
+
+    test('a finished audit attempt in the run section makes the coder nudge a continuation', async () => {
+      const attemptsRepo = createLoopAttemptsRepo(db)
+      const { client, calls } = fakeUnansweredCoder()
+      const { loop } = buildRuntime({ client, loopAttemptsRepo: attemptsRepo })
+      const state = seedCodingSection(0)
+      attemptsRepo.record({
+        projectId: PROJECT_ID,
+        loopName,
+        scope: 'section:0',
+        sourceSessionId: state.sessionId,
+        completionKey: 'finished-attempt',
+        iteration: 1,
+        worktreeDir: state.runDir,
+        planHash: 'plan-hash',
+        coderDecisions: null,
+        snapshotCommit: null,
+        snapshotRef: null,
+        previousCommit: null,
+        diffSummary: null,
+        fallbackReason: null,
+        findingsBefore: [],
+      })
+      attemptsRepo.bindAudit(PROJECT_ID, loopName, 'section:0', state.sessionId, state.sessionId)
+      expect(attemptsRepo.finishAudit(PROJECT_ID, loopName, 'section:0', state.sessionId, 'dirty', [])).toBe(true)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: 'prompt-coder' },
+      })
+
+      const prompt = await nudgePrompt(calls)
+      expect(prompt).toContain('[Loop section 1/2')
+      expect(prompt).toContain('(continuation)')
     })
   })
 

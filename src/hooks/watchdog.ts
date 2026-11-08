@@ -241,7 +241,7 @@ export function createLoopWatchdog(input: {
         const stallReady = elapsed >= stallTimeout
         if (!stallReady && !pollBeforeStallReady) return
 
-        const statusResult = await getStatusWithRetry(state.worktreeDir, statusRetryAttempts, statusRetryBackoffMs)
+        const statusResult = await getStatusWithRetry(state.runDir, statusRetryAttempts, statusRetryBackoffMs)
 
         if (stallWatchdogs.get(key) !== interval) return
         const freshState = input.loopService.getRunState(loopName, lane.sectionRunKey)

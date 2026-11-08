@@ -5,6 +5,7 @@ import type { createLoopEventHandler } from '../../src/hooks'
 import { createLoop, type Loop, type LoopRuntimeDeps, type OnTerminatedCallback } from '../../src/loop/runtime'
 import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
+import { runDirectoryOf } from '../../src/loop/section-run'
 import type { ForgeExecutionServiceDeps } from '../../src/services/execution'
 import type { LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
@@ -56,7 +57,7 @@ export function makeLoopState(overrides: Partial<LoopState> = {}): LoopState {
     sectionRunKey: 'plan',
     ...overrides,
   }
-  return { ...state, runDir: state.laneDir ?? state.worktreeDir }
+  return { ...state, runDir: runDirectoryOf({ kind: state.sectionRunKind, laneDir: state.laneDir, worktreeDir: state.worktreeDir }) }
 }
 
 /** Inserts a loop row through createLoopsRepo so the active section run is created too. */

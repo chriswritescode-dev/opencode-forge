@@ -70,6 +70,13 @@ describe('loopRowToState', () => {
     expect(postAction.phase).toBe('post_action')
   })
 
+  it('a lane run works in its lane directory but a post-action run works in the worktree', () => {
+    const laneDir = '/tmp/wt.lanes/section-2'
+    expect(loopRowToState(makeRow({ laneDir, sectionRunKind: 'section' })).runDir).toBe(laneDir)
+    expect(loopRowToState(makeRow({})).runDir).toBe('/tmp/wt')
+    expect(loopRowToState(makeRow({ phase: 'post_action', laneDir, sectionRunKind: 'post_action' })).runDir).toBe('/tmp/wt')
+  })
+
   it('converts boolean fields correctly', () => {
     const row = makeRow({ worktree: true, modelFailed: true, sandbox: true })
     const state = loopRowToState(row)

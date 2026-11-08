@@ -294,6 +294,46 @@ describe('prompt builders (src/loop/prompts)', () => {
     })
   })
 
+  describe('lane run prompts', () => {
+    const laneDir = '/tmp/test-worktree.lanes/section-2'
+    const laneState = {
+      ...sectionState,
+      currentSectionIndex: 1,
+      laneDir,
+      laneBranch: 'forge-lane/test-loop/section-2',
+      laneBaseCommit: 'c'.repeat(40),
+      runDir: laneDir,
+    }
+
+    test('a lane section audit scopes its review from the lane base commit', () => {
+      const result = buildSectionAuditPrompt(makeCtx(), laneState)
+      expect(result).toContain(`Review scope: this section's work is every commit since lane base commit \`${laneState.laneBaseCommit}\``)
+      expect(result).toContain(`git diff ${laneState.laneBaseCommit}`)
+      expect(result).not.toContain('section <N>:')
+    })
+
+    test('every lane section prompt names its working directory and shell environment', () => {
+      const ctx = makeCtx()
+      const prompts = [
+        buildSectionInitialPrompt(ctx, laneState),
+        buildSectionContinuationPrompt(ctx, laneState),
+        buildSectionAuditPrompt(ctx, laneState),
+        buildCoderFollowUpPrompt(ctx, laneState),
+        buildAuditFollowUpPrompt(ctx, laneState),
+      ]
+      for (const prompt of prompts) {
+        expect(prompt).toContain('## Lane worktree')
+        expect(prompt).toContain(`\`${laneDir}\``)
+        expect(prompt).toContain('`FORGE_LANE` and `FORGE_PORT_OFFSET`')
+      }
+    })
+
+    test('a serial section prompt omits the lane block', () => {
+      expect(buildSectionInitialPrompt(makeCtx(), sectionState)).not.toContain('## Lane worktree')
+      expect(buildSectionAuditPrompt(makeCtx(), sectionState)).not.toContain('## Lane worktree')
+    })
+  })
+
   describe('buildSectionContinuationPrompt', () => {
     test('section prompts keep section content inline and never render the effective-plan block or titles', () => {
       const ctx = makeCtx({
