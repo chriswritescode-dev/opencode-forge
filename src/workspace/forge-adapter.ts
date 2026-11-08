@@ -1,17 +1,16 @@
 import { mkdir } from 'fs/promises'
-import { existsSync, readFileSync, appendFileSync, realpathSync } from 'fs'
+import { existsSync, mkdirSync, realpathSync } from 'fs'
 import type { Logger, LoopSandboxSettings } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { LOOP_SANDBOX_EXTRA_KEY, readLoopSandboxSettings } from '../sandbox/loop-settings'
 import { getForgeWorkspaceBaseRef, getForgeWorkspaceBranch } from './forge-worktree'
 import { describeBranchInUse, describeBranchReuseConflict } from './loop-branch'
-import { forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot, resolveLoopBranchName } from './forge-naming'
+import { forgeLanesDir, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot, resolveLoopBranchName } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
-import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
+import { prepareForgeWorktree } from './worktree-prepare'
 import { commitWorktreeChanges } from './worktree-commit'
 import { sandboxContainerName } from '../sandbox/msb'
-import { CODE_GRAPH_LINK_NAME } from '../constants/loop'
 
 export interface ForgeWorkspaceInfo {
   id: string
@@ -145,24 +144,6 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
     const forgeLoop = ((info.extra ?? {}) as { forgeLoop?: unknown }).forgeLoop
     if (typeof forgeLoop !== 'object' || forgeLoop === null) return false
     return (forgeLoop as { sandboxEnabled?: unknown }).sandboxEnabled === false
-  }
-
-  function addToGitExclude(directory: string, patterns: string[]): void {
-    if (patterns.length === 0) return
-    const excludeRes = git.revParseGitPath(directory, 'info/exclude')
-    if (!excludeRes.ok || !excludeRes.stdout) return
-    const excludeFile = excludeRes.stdout.trim()
-    try {
-      const content = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf-8') : ''
-      const present = new Set(content.split('\n').map((l) => l.trim()))
-      const missing = patterns.filter((p) => !present.has(p))
-      if (missing.length > 0) {
-        appendFileSync(excludeFile, `\n${missing.join('\n')}\n`)
-        logger.log(`forge-adapter: added ${missing.join(', ')} to git exclude in ${directory}`)
-      }
-    } catch (err) {
-      logger.log(`forge-adapter: could not update git exclude: ${err instanceof Error ? err.message : String(err)}`)
-    }
   }
 
   function resolveLoopName(info: ForgeWorkspaceInfo): string {
@@ -337,24 +318,16 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
         logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)
       }
 
-      // Idempotently add .forge/ (overflow/scratch), the sandbox code-graph link,
-      // and any forge-written opencode config to git exclude so they never enter
-      // loop commits.
-      const excludePatterns = ['.forge/']
       const sandboxProvisioned = Boolean(sandboxManager) && !isLoopSandboxOptedOut(info)
-      if (sandboxProvisioned && codeGraphEnabled !== false) {
-        excludePatterns.push(CODE_GRAPH_LINK_NAME)
-      }
-      const cfgResult = writeWorktreeOpencodeConfig({
-        directory: info.directory,
-        config: worktreeOpencodeConfig,
-        sandboxContainerName: sandboxProvisioned ? sandboxContainerName(info.name) : undefined,
+      prepareForgeWorktree(info.directory, {
+        git,
         logger,
+        worktreeOpencodeConfig,
+        sandboxContainerName: sandboxProvisioned ? sandboxContainerName(info.name) : undefined,
+        excludeCodeGraphLink: sandboxProvisioned && codeGraphEnabled !== false,
       })
-      if (cfgResult.written) {
-        excludePatterns.push(WORKTREE_OPENCODE_CONFIG_FILENAME)
-      }
-      addToGitExclude(info.directory, excludePatterns)
+
+      mkdirSync(forgeLanesDir(info.directory), { recursive: true })
 
       if (sandboxManager && isLoopSandboxOptedOut(info)) {
         logger.log(`forge-adapter: skipping sandbox provisioning for ${info.name} (loop opted out via sandboxEnabled=false)`)

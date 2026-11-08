@@ -26,6 +26,11 @@ export function createFakeGitService(overrides?: Partial<GitService>): GitServic
     checkRefFormatBranch: vi.fn<(a: string, b: string) => GitResult>(() => ({ ...defaultOk })),
     isAncestor: vi.fn<(a: string, b: string, c: string) => boolean>(() => false),
     branchForceUpdate: vi.fn<(a: string, b: string, c: string) => GitResult>(() => ({ ...defaultOk })),
+    merge: vi.fn<(a: string, b: string, c: string) => GitResult>(() => ({ ...defaultOk })),
+    mergeIntoWorktree: vi.fn<(a: string, b: string) => GitResult>(() => ({ ...defaultOk })),
+    mergeAbort: vi.fn<(a: string) => GitResult>(() => ({ ...defaultOk })),
+    listUnmergedFiles: vi.fn<(a: string) => GitResult>(() => ({ ...defaultOk })),
+    listBranches: vi.fn<(a: string, b: string) => GitResult>(() => ({ ...defaultOk })),
     ...overrides,
   }
 }

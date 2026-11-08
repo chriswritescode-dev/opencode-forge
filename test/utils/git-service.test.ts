@@ -191,4 +191,88 @@ describe('GitService', () => {
     })
   })
 
+  describe('merge', () => {
+    it('creates a merge commit when merging with --no-ff', () => {
+      const base = execSync('git branch --show-current', { cwd: repo, encoding: 'utf-8' }).trim()
+      execSync('git checkout -b topic', { cwd: repo, encoding: 'utf-8' })
+      writeFileSync(join(repo, 'topic.txt'), 'topic', 'utf-8')
+      execSync('git add topic.txt && git commit -m topic', { cwd: repo, encoding: 'utf-8' })
+      execSync(`git checkout ${base}`, { cwd: repo, encoding: 'utf-8' })
+      writeFileSync(join(repo, 'base.txt'), 'base', 'utf-8')
+      execSync('git add base.txt && git commit -m base', { cwd: repo, encoding: 'utf-8' })
+
+      const before = git.revParseHead(repo).stdout.trim()
+      const result = git.merge(repo, 'topic', 'Merge branch topic')
+      expect(result.ok).toBe(true)
+
+      const after = git.revParseHead(repo).stdout.trim()
+      expect(after).not.toBe(before)
+      expect(execSync('git rev-list --merges --count HEAD', { cwd: repo, encoding: 'utf-8' }).trim()).toBe('1')
+    })
+  })
+
+  describe('listUnmergedFiles / mergeAbort', () => {
+    it('lists conflicted paths and clears them after abort', () => {
+      const base = execSync('git branch --show-current', { cwd: repo, encoding: 'utf-8' }).trim()
+      writeFileSync(join(repo, 'conflict.txt'), 'base\n', 'utf-8')
+      execSync('git add conflict.txt && git commit -m base', { cwd: repo, encoding: 'utf-8' })
+
+      execSync('git checkout -b side', { cwd: repo, encoding: 'utf-8' })
+      writeFileSync(join(repo, 'conflict.txt'), 'side\n', 'utf-8')
+      execSync('git add conflict.txt && git commit -m side', { cwd: repo, encoding: 'utf-8' })
+
+      execSync(`git checkout ${base}`, { cwd: repo, encoding: 'utf-8' })
+      writeFileSync(join(repo, 'conflict.txt'), 'other\n', 'utf-8')
+      execSync('git add conflict.txt && git commit -m other', { cwd: repo, encoding: 'utf-8' })
+
+      const mergeResult = git.merge(repo, 'side', 'Merge side')
+      expect(mergeResult.ok).toBe(false)
+
+      const unmerged = git.listUnmergedFiles(repo)
+      expect(unmerged.ok).toBe(true)
+      expect(unmerged.stdout.split('\n').map((line) => line.trim()).filter(Boolean)).toContain('conflict.txt')
+
+      const abortResult = git.mergeAbort(repo)
+      expect(abortResult.ok).toBe(true)
+      expect(git.statusPorcelain(repo).stdout.trim()).toBe('')
+    })
+  })
+
+  describe('listBranches', () => {
+    it('returns only branches matching the pattern', () => {
+      execSync('git branch forge-lane/demo/one', { cwd: repo, encoding: 'utf-8' })
+      execSync('git branch forge-lane/demo/two', { cwd: repo, encoding: 'utf-8' })
+      execSync('git branch forge-lane/other', { cwd: repo, encoding: 'utf-8' })
+
+      const result = git.listBranches(repo, 'forge-lane/demo/*')
+      expect(result.ok).toBe(true)
+      const names = result.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+      expect(names.sort()).toEqual(['forge-lane/demo/one', 'forge-lane/demo/two'])
+      expect(names).not.toContain('forge-lane/other')
+    })
+  })
+
+  describe('mergeIntoWorktree', () => {
+    it('leaves a conflicting merge in place', () => {
+      const base = execSync('git branch --show-current', { cwd: repo, encoding: 'utf-8' }).trim()
+      writeFileSync(join(repo, 'shared.txt'), 'base\n', 'utf-8')
+      execSync('git add shared.txt && git commit -m base', { cwd: repo, encoding: 'utf-8' })
+
+      execSync('git checkout -b side', { cwd: repo, encoding: 'utf-8' })
+      writeFileSync(join(repo, 'shared.txt'), 'side\n', 'utf-8')
+      execSync('git add shared.txt && git commit -m side', { cwd: repo, encoding: 'utf-8' })
+
+      execSync(`git checkout ${base}`, { cwd: repo, encoding: 'utf-8' })
+      writeFileSync(join(repo, 'shared.txt'), 'other\n', 'utf-8')
+      execSync('git add shared.txt && git commit -m other', { cwd: repo, encoding: 'utf-8' })
+
+      const result = git.mergeIntoWorktree(repo, 'side')
+      expect(result.ok).toBe(false)
+      expect(git.statusPorcelain(repo).stdout).toContain('UU shared.txt')
+      expect(execSync('cat shared.txt', { cwd: repo, encoding: 'utf-8' })).toContain('<<<<<<<')
+
+      expect(git.mergeAbort(repo).ok).toBe(true)
+    })
+  })
+
 })

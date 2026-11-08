@@ -1,7 +1,9 @@
-import { join, relative, isAbsolute, sep } from 'path'
+import { join, relative, isAbsolute, sep, dirname, basename } from 'path'
 import { readdirSync } from 'fs'
 import { slugify } from '../utils/logger'
 import { defaultGitService, type GitService } from '../utils/git-service'
+import { canonicalizePath } from '../sandbox/path'
+import { SECTION_ID_PATTERN } from '../loop/section-graph'
 
 /**
  * Canonical naming for forge worktrees and their scratch branches.
@@ -38,16 +40,64 @@ export function forgeWorktreeDir(dataDir: string, loopName: string): string {
   return join(forgeWorktreesRoot(dataDir), forgeWorktreeSlug(loopName))
 }
 
+const LANES_DIR_SUFFIX = '.lanes'
+
 /**
- * Absolute paths of every directory directly under `<dataDir>/worktrees`, or an
- * empty list when that root does not exist. Other filesystem errors propagate to
- * the caller.
+ * Root directory holding a loop worktree's parallel section lanes: sibling
+ * directories named `<worktreeDir>.lanes` so they never nest inside the loop
+ * worktree they belong to.
+ */
+export function forgeLanesDir(worktreeDir: string): string {
+  return `${worktreeDir}${LANES_DIR_SUFFIX}`
+}
+
+/**
+ * Directory a single section lane is checked out into, under its loop worktree's
+ * lanes root and named after the section id.
+ */
+export function forgeLaneDir(worktreeDir: string, sectionId: string): string {
+  return join(forgeLanesDir(worktreeDir), sectionId)
+}
+
+/**
+ * Branch a section lane runs on, scoped to the loop's worktree slug so lanes of
+ * different loops cannot collide.
+ */
+export function forgeLaneBranchName(loopName: string, sectionId: string): string {
+  return `forge-lane/${forgeWorktreeSlug(loopName)}/${sectionId}`
+}
+
+/**
+ * Splits a lane directory back into the loop worktree it belongs to and the
+ * section id it runs. Returns null unless `directory` is
+ * `<worktreeDir>.lanes/<sectionId>` with a slug-shaped worktree name and a valid
+ * section id.
+ */
+export function parseForgeLaneDir(directory: string): { loopWorktreeDir: string; sectionId: string } | null {
+  if (!directory) return null
+  const canonical = canonicalizePath(directory)
+  const lanesDir = dirname(canonical)
+  const lanesName = basename(lanesDir)
+  if (!lanesName.endsWith(LANES_DIR_SUFFIX)) return null
+  const slug = lanesName.slice(0, -LANES_DIR_SUFFIX.length)
+  if (!slug || slug !== forgeWorktreeSlug(slug)) return null
+  const sectionId = basename(canonical)
+  if (!SECTION_ID_PATTERN.test(sectionId)) return null
+  return { loopWorktreeDir: join(dirname(lanesDir), slug), sectionId }
+}
+
+/**
+ * Absolute paths of every loop worktree directory directly under
+ * `<dataDir>/worktrees`, or an empty list when that root does not exist. Lane
+ * roots (`<worktreeDir>.lanes`) are skipped because they are siblings of the
+ * worktrees, not worktrees themselves. Other filesystem errors propagate to the
+ * caller.
  */
 export function listForgeWorktreeDirs(dataDir: string): string[] {
   const root = forgeWorktreesRoot(dataDir)
   try {
     return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.endsWith(LANES_DIR_SUFFIX))
       .map((entry) => join(root, entry.name))
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []

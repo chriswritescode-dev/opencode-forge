@@ -1,5 +1,19 @@
 import { describe, test, expect, vi } from 'vitest'
-import { gitBranchExists, loopBranchExists, isForgeWorktreeDir, isWithinDir, resolveLoopBranchName } from '../../src/workspace/forge-naming'
+import { mkdirSync, mkdtempSync, rmSync } from 'fs'
+import { basename, join } from 'path'
+import { tmpdir } from 'os'
+import {
+  forgeLaneBranchName,
+  forgeLaneDir,
+  forgeLanesDir,
+  gitBranchExists,
+  listForgeWorktreeDirs,
+  loopBranchExists,
+  isForgeWorktreeDir,
+  isWithinDir,
+  parseForgeLaneDir,
+  resolveLoopBranchName,
+} from '../../src/workspace/forge-naming'
 import { createFakeGitService } from '../helpers/fake-git'
 import type { GitService } from '../../src/utils/git-service'
 
@@ -128,5 +142,93 @@ describe('loopBranchExists', () => {
     })
     expect(loopBranchExists({ loopName: 'missing' }, '/repo', fake)).toBe(false)
     expect(fake.branchExists).toHaveBeenCalledWith('/repo', 'forge/missing')
+  })
+})
+
+describe('forgeLanesDir', () => {
+  test('appends the lanes suffix to the loop worktree dir', () => {
+    expect(forgeLanesDir('/root/loops/my-loop')).toBe('/root/loops/my-loop.lanes')
+  })
+})
+
+describe('forgeLaneDir', () => {
+  test('nests the section dir under the lanes root', () => {
+    expect(forgeLaneDir('/root/loops/my-loop', 'section-1')).toBe('/root/loops/my-loop.lanes/section-1')
+  })
+})
+
+describe('forgeLaneBranchName', () => {
+  test('scopes the lane branch to the loop worktree slug and section', () => {
+    expect(forgeLaneBranchName('my-loop', 'section-1')).toBe('forge-lane/my-loop/section-1')
+  })
+
+  test('slugifies the loop name', () => {
+    expect(forgeLaneBranchName('My Loop!', 'section-1')).toBe('forge-lane/my-loop/section-1')
+  })
+})
+
+describe('parseForgeLaneDir', () => {
+  test('splits a lane dir into its loop worktree and section id', () => {
+    expect(parseForgeLaneDir('/root/loops/my-loop.lanes/section-2')).toEqual({
+      loopWorktreeDir: '/root/loops/my-loop',
+      sectionId: 'section-2',
+    })
+  })
+
+  test('rejects a normal worktree path', () => {
+    expect(parseForgeLaneDir('/root/loops/my-loop')).toBeNull()
+  })
+
+  test('rejects a directory whose parent is not a lanes root', () => {
+    expect(parseForgeLaneDir('/root/loops/my-loop/section-2')).toBeNull()
+  })
+
+  test('rejects a lanes parent whose slug is not slug-shaped', () => {
+    expect(parseForgeLaneDir('/root/loops/bad.slug.lanes/section-2')).toBeNull()
+  })
+
+  test('rejects a lanes parent with an empty slug', () => {
+    expect(parseForgeLaneDir('/root/loops/.lanes/section-2')).toBeNull()
+  })
+
+  test('rejects an empty section id', () => {
+    expect(parseForgeLaneDir('/root/loops/my-loop.lanes/')).toBeNull()
+  })
+
+  test('rejects an uppercase section id', () => {
+    expect(parseForgeLaneDir('/root/loops/my-loop.lanes/Section-2')).toBeNull()
+  })
+
+  test('rejects a section id containing a path separator', () => {
+    expect(parseForgeLaneDir('/root/loops/my-loop.lanes/section-2/nested')).toBeNull()
+  })
+
+  test('rejects empty input', () => {
+    expect(parseForgeLaneDir('')).toBeNull()
+  })
+})
+
+describe('listForgeWorktreeDirs', () => {
+  test('lists loop worktrees and skips lane roots', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'forge-naming-'))
+    try {
+      const root = join(dataDir, 'worktrees')
+      mkdirSync(join(root, 'loop-a'), { recursive: true })
+      mkdirSync(join(root, 'loop-a.lanes'), { recursive: true })
+      mkdirSync(join(root, 'loop-b'), { recursive: true })
+      const names = listForgeWorktreeDirs(dataDir).map((dir) => basename(dir))
+      expect(names.sort()).toEqual(['loop-a', 'loop-b'])
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('returns an empty list when the worktrees root does not exist', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'forge-naming-'))
+    try {
+      expect(listForgeWorktreeDirs(join(dataDir, 'missing'))).toEqual([])
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 })

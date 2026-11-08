@@ -35,6 +35,16 @@ export interface GitService {
   isAncestor(cwd: string, ancestor: string, descendant: string): boolean
   /** Points `branch` at `startPoint`, moving it even when the move is not a fast-forward. */
   branchForceUpdate(cwd: string, branch: string, startPoint: string): GitResult
+  /** Merges `ref` into the current branch with an explicit merge commit (`git merge --no-ff --no-edit -m <message> <ref>`). */
+  merge(cwd: string, ref: string, message: string): GitResult
+  /** Merges `ref` into the current worktree without forcing a commit; conflicts are expected and left in place (`git merge --no-edit <ref>`). */
+  mergeIntoWorktree(cwd: string, ref: string): GitResult
+  /** Aborts an in-progress merge (`git merge --abort`). */
+  mergeAbort(cwd: string): GitResult
+  /** Lists paths with unresolved merge conflicts (`git diff --name-only --diff-filter=U`); stdout is one path per line. */
+  listUnmergedFiles(cwd: string): GitResult
+  /** Lists local branches matching `pattern` (`git branch --list --format=%(refname:short) <pattern>`); stdout is one branch name per line. */
+  listBranches(cwd: string, pattern: string): GitResult
 }
 
 /**
@@ -143,6 +153,26 @@ export function createGitService(): GitService {
 
     branchForceUpdate(cwd: string, branch: string, startPoint: string): GitResult {
       return runGit(['branch', '-f', branch, startPoint], cwd)
+    },
+
+    merge(cwd: string, ref: string, message: string): GitResult {
+      return runGit(['merge', '--no-ff', '--no-edit', '-m', message, ref], cwd)
+    },
+
+    mergeIntoWorktree(cwd: string, ref: string): GitResult {
+      return runGit(['merge', '--no-edit', ref], cwd)
+    },
+
+    mergeAbort(cwd: string): GitResult {
+      return runGit(['merge', '--abort'], cwd)
+    },
+
+    listUnmergedFiles(cwd: string): GitResult {
+      return runGit(['diff', '--name-only', '--diff-filter=U'], cwd)
+    },
+
+    listBranches(cwd: string, pattern: string): GitResult {
+      return runGit(['branch', '--list', '--format=%(refname:short)', pattern], cwd)
     },
   }
 }
