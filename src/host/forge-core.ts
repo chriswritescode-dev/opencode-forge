@@ -47,6 +47,7 @@ import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecution
 import type { ForgeExecutePlanInput, ForgeExecutePlanOutput, ForgeAutoApproveState, ForgeLoopDefaults, ForgeTuiEvent } from './forge-rpc'
 import { createTuiRpcService, type TuiRpcService } from '../services/tui-rpc-service'
 import { createDashboardService, type DashboardService } from '../services/dashboard-service'
+import { createSectionRunsRepo } from '../storage/repos/section-runs-repo'
 import { processShared } from '../utils/process-shared'
 import { emitTuiEvent, registerTuiEventEmitter } from './tui-events'
 import { withWriteNotifications } from '../utils/write-notifications'
@@ -934,6 +935,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     loopsRepo,
     plansRepo,
     sectionPlansRepo,
+    sectionRunsRepo: createSectionRunsRepo(db),
     reviewFindingsRepo,
     loopSessionUsageRepo,
     loopTransitionsRepo,

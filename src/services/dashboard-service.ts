@@ -13,9 +13,11 @@ import {
   type SectionPlanRow,
 } from '../storage'
 import type { LoopRow } from '../storage/repos/loops-repo'
+import type { ActiveSectionLaneRow, SectionRunsRepo } from '../storage/repos/section-runs-repo'
 import {
   type ForgeAmendmentDiff,
   type ForgeAmendmentDiffOutput,
+  type ForgeDashboardLane,
   type ForgeDashboardLoopSummary,
   type ForgeDashboardProjectSummary,
   type ForgeDashboardSummary,
@@ -51,6 +53,7 @@ export interface DashboardServiceDeps {
   /** Wrapped plan repo the write path uses, so deleting a plan publishes `plansChanged`. */
   plansRepo: ReturnType<typeof createPlansRepo>
   sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  sectionRunsRepo: SectionRunsRepo
   reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   loopSessionUsageRepo: ReturnType<typeof createLoopSessionUsageRepo>
   loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo>
@@ -93,12 +96,25 @@ function sortDashboardLoops(loopRows: LoopRow[]): LoopRow[] {
   })
 }
 
+function dashboardLane(row: ActiveSectionLaneRow): ForgeDashboardLane {
+  return {
+    sectionIndex: row.sectionIndex,
+    sectionId: row.sectionId,
+    title: row.title,
+    phase: row.phase,
+    attempts: row.attempts,
+    startedAt: row.startedAt,
+  }
+}
+
 function loopSummary(
   loop: LoopRow,
   sectionCounts: Map<string, number>,
   bugCounts: Map<string, number>,
   planLoopNames: Set<string>,
   totalCosts: Map<string, number>,
+  completedCounts: Map<string, number>,
+  lanesByLoop: Map<string, ForgeDashboardLane[]>,
 ): ForgeDashboardLoopSummary {
   const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
   const totalCost = totalCosts.get(loop.loopName)
@@ -109,7 +125,9 @@ function loopSummary(
     iteration: loop.iteration,
     maxIterations: loop.maxIterations,
     currentSectionIndex: loop.currentSectionIndex,
+    completedSections: completedCounts.get(loop.loopName) ?? 0,
     totalSections: loop.totalSections,
+    lanes: loop.status === 'running' ? (lanesByLoop.get(loop.loopName) ?? []) : [],
     sectionCount: sectionCounts.get(loop.loopName) ?? 0,
     bugCount: bugCounts.get(loop.loopName) ?? 0,
     hasPlan: planLoopNames.has(loop.loopName),
@@ -252,6 +270,7 @@ function buildLoopDetail(deps: DashboardServiceDeps, loop: LoopRow): ForgeLoopDe
     plansRepo,
     reviewFindingsRepo,
     sectionPlansRepo,
+    sectionRunsRepo,
     loopSessionUsageRepo,
     loopTransitionsRepo,
     amendmentsRepo,
@@ -271,6 +290,7 @@ function buildLoopDetail(deps: DashboardServiceDeps, loop: LoopRow): ForgeLoopDe
     ...(large?.postActionReport != null ? { postActionReport: large.postActionReport } : {}),
     ...(loop.completionSummary != null ? { completionSummary: loop.completionSummary } : {}),
     ...(plan !== undefined ? { plan } : {}),
+    lanes: loop.status === 'running' ? sectionRunsRepo.listActiveSectionLanes(projectId, loopName).map(dashboardLane) : [],
     sections: sectionPlansRepo.list(projectId, loopName).map(sectionPlanRow),
     findings: reviewFindingsRepo.listByLoopName(projectId, loopName).map(reviewFindingRow),
     ...(usage ? { usage } : {}),
@@ -304,6 +324,7 @@ function buildSummary(deps: DashboardServiceDeps): ForgeDashboardSummary {
     plansRepo,
     reviewFindingsRepo,
     sectionPlansRepo,
+    sectionRunsRepo,
     loopSessionUsageRepo,
   } = deps
 
@@ -313,11 +334,19 @@ function buildSummary(deps: DashboardServiceDeps): ForgeDashboardSummary {
     const loopRows = loopsRepo.listAll(entry.projectId)
     const planLoopNames = new Set(plansRepo.listLoopNames(entry.projectId))
     const sectionCounts = sectionPlansRepo.countsByLoop(entry.projectId)
+    const completedCounts = sectionPlansRepo.completedCountsByLoop(entry.projectId)
+    const lanesByLoop = new Map<string, ForgeDashboardLane[]>()
+    for (const lane of sectionRunsRepo.listActiveSectionLanes(entry.projectId)) {
+      const bucket = lanesByLoop.get(lane.loopName)
+      const mapped = dashboardLane(lane)
+      if (bucket) bucket.push(mapped)
+      else lanesByLoop.set(lane.loopName, [mapped])
+    }
     const bugCounts = reviewFindingsRepo.bugCountsByLoop(entry.projectId)
     const totalCosts = loopSessionUsageRepo.totalCostsByLoop(entry.projectId)
 
     const loops = sortDashboardLoops(loopRows).map((loop) =>
-      loopSummary(loop, sectionCounts, bugCounts, planLoopNames, totalCosts))
+      loopSummary(loop, sectionCounts, bugCounts, planLoopNames, totalCosts, completedCounts, lanesByLoop))
     const unexecutedPlans = plansRepo.listUnexecuted(entry.projectId).map(planSummary)
     const projectDir = loopRows.length > 0 ? loopRows[0].projectDir : null
 

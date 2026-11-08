@@ -1,4 +1,8 @@
-import type { ForgeDashboardLoopSummary, ForgeLoopTransition } from '../../src/host/forge-rpc'
+import type {
+  ForgeDashboardLane,
+  ForgeDashboardLoopSummary,
+  ForgeLoopTransition,
+} from '../../src/host/forge-rpc'
 import type { LoopRow } from '../../src/storage'
 
 /** Builds a loop transition row for machine-diagram and timeline tests. */
@@ -26,12 +30,27 @@ export function makeLoopSummary(overrides: Partial<ForgeDashboardLoopSummary> = 
     iteration: 3,
     maxIterations: 10,
     currentSectionIndex: 1,
+    completedSections: 1,
     totalSections: 5,
+    lanes: [],
     sectionCount: 2,
     bugCount: 0,
     hasPlan: false,
     startedAt: 1700000000000,
     activityAt: 1700000000000,
+    ...overrides,
+  }
+}
+
+/** Builds a dashboard lane row for tests. */
+export function makeLane(overrides: Partial<ForgeDashboardLane> = {}): ForgeDashboardLane {
+  return {
+    sectionIndex: 1,
+    sectionId: 'section-2',
+    title: 'Section B',
+    phase: 'coding',
+    attempts: 1,
+    startedAt: 1700000000000,
     ...overrides,
   }
 }

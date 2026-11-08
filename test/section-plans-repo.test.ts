@@ -778,4 +778,49 @@ describe('SectionPlansRepo', () => {
       expect(repo.count(projectId, otherLoop)).toBe(1)
     })
   })
+
+  describe('completedCountsByLoop', () => {
+    test('counts completed sections per loop, scoped to the project', () => {
+      const otherLoop = 'other-loop'
+      const otherProject = 'other-project'
+      insertLoop(projectId, otherLoop)
+      insertLoop(otherProject, loopName)
+
+      repo.bulkInsert({
+        projectId,
+        loopName,
+        sections: [
+          { index: 0, title: 'A', content: 'A content' },
+          { index: 1, title: 'B', content: 'B content' },
+          { index: 2, title: 'C', content: 'C content' },
+        ],
+      })
+      repo.bulkInsert({
+        projectId,
+        loopName: otherLoop,
+        sections: [
+          { index: 0, title: 'D', content: 'D content' },
+          { index: 1, title: 'E', content: 'E content' },
+        ],
+      })
+      repo.bulkInsert({
+        projectId: otherProject,
+        loopName,
+        sections: [{ index: 0, title: 'F', content: 'F content' }],
+      })
+
+      repo.setStatus(projectId, loopName, 0, 'completed')
+      repo.setStatus(projectId, loopName, 2, 'completed')
+      repo.setStatus(projectId, otherLoop, 0, 'completed')
+      repo.setStatus(otherProject, loopName, 0, 'completed')
+
+      expect(repo.completedCountsByLoop(projectId)).toEqual(
+        new Map([
+          [loopName, 2],
+          [otherLoop, 1],
+        ]),
+      )
+      expect(repo.completedCountsByLoop('missing-project')).toEqual(new Map())
+    })
+  })
 })

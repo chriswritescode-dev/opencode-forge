@@ -2,7 +2,7 @@ import type { Database } from 'bun:sqlite'
 import { sectionRunKey, splitRunKey, type SectionRunKind, type SectionRunTarget } from '../../loop/section-run'
 import { hasTable } from '../database'
 
-type SectionRunPhase = 'coding' | 'auditing' | 'post_action'
+export type SectionRunPhase = 'coding' | 'auditing' | 'post_action'
 type SectionRunStatus = 'active' | 'finished'
 
 export interface SectionRunRow {
@@ -55,11 +55,23 @@ export interface SectionRunActivateOptions {
   now?: number
 }
 
+/** One active section run joined to its plan row, for the dashboard lane display. */
+export interface ActiveSectionLaneRow {
+  loopName: string
+  sectionIndex: number
+  sectionId: string
+  title: string
+  phase: SectionRunPhase
+  attempts: number
+  startedAt: number
+}
+
 export interface SectionRunsRepo {
   get(projectId: string, loopName: string, runKey: string): SectionRunRow | null
   /** The active run that owns `sessionId`, across every loop of the project. */
   getBySession(projectId: string, sessionId: string): SectionRunRow | null
   listActive(projectId: string, loopName: string): SectionRunRow[]
+  listActiveSectionLanes(projectId: string, loopName?: string): ActiveSectionLaneRow[]
   listForLoop(projectId: string, loopName: string): SectionRunRow[]
   activate(
     projectId: string,
@@ -112,6 +124,18 @@ function mapRow(row: Record<string, unknown>): SectionRunRow {
   }
 }
 
+function mapActiveLaneRow(row: Record<string, unknown>): ActiveSectionLaneRow {
+  return {
+    loopName: row.loop_name as string,
+    sectionIndex: row.section_index as number,
+    sectionId: row.section_id as string,
+    title: row.title as string,
+    phase: row.phase as SectionRunPhase,
+    attempts: row.attempts as number,
+    startedAt: row.started_at as number,
+  }
+}
+
 export function createSectionRunsRepo(db: Database): SectionRunsRepo {
   const stmtGet = db.prepare(`
     SELECT ${RUN_COLUMNS}
@@ -132,6 +156,26 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
     FROM section_runs
     WHERE project_id = ? AND loop_name = ? AND status = 'active'
     ORDER BY section_index ASC, kind ASC, section_id ASC
+  `)
+
+  const stmtListActiveSectionLanes = db.prepare(`
+    SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
+    FROM section_runs r
+    JOIN section_plans p
+      ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
+    WHERE r.project_id = ?
+      AND r.status = 'active' AND r.kind = 'section'
+    ORDER BY r.loop_name, r.section_index
+  `)
+
+  const stmtListActiveSectionLanesForLoop = db.prepare(`
+    SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
+    FROM section_runs r
+    JOIN section_plans p
+      ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
+    WHERE r.project_id = ? AND r.loop_name = ?
+      AND r.status = 'active' AND r.kind = 'section'
+    ORDER BY r.loop_name, r.section_index
   `)
 
   const stmtList = db.prepare(`
@@ -210,6 +254,15 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
   function listActive(projectId: string, loopName: string): SectionRunRow[] {
     const rows = stmtListActive.all(projectId, loopName) as Array<Record<string, unknown>>
     return rows.map(mapRow)
+  }
+
+  function listActiveSectionLanes(projectId: string, loopName?: string): ActiveSectionLaneRow[] {
+    const rows = (
+      loopName === undefined
+        ? stmtListActiveSectionLanes.all(projectId)
+        : stmtListActiveSectionLanesForLoop.all(projectId, loopName)
+    ) as Array<Record<string, unknown>>
+    return rows.map(mapActiveLaneRow)
   }
 
   function activate(
@@ -341,6 +394,7 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
     get,
     getBySession,
     listActive,
+    listActiveSectionLanes,
     listForLoop(projectId, loopName) {
       const rows = stmtList.all(projectId, loopName) as Array<Record<string, unknown>>
       return rows.map(mapRow)

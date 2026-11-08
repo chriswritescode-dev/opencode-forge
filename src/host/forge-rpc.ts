@@ -17,6 +17,7 @@ import type { ForgeRpcError } from './forge-rpc-result'
 export type {
   ForgeAmendmentDiff,
   ForgeAmendmentDiffOutput,
+  ForgeDashboardLane,
   ForgeDashboardLoopSummary,
   ForgeDashboardProjectSummary,
   ForgeDashboardSummary,

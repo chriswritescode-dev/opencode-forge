@@ -291,4 +291,52 @@ describe('SectionRunsRepo', () => {
     expect(sectionRuns.get('proj', 'loop', 'section:alpha')!.auditorFallbackIndex).toBe(0)
     expect(sectionRuns.advanceAuditorFallbackIndex('proj', 'loop', 'section:beta', 0)).toBe(false)
   })
+
+  test('listActiveSectionLanes joins active section runs to plan rows and skips other kinds', () => {
+    seedSectionPlans()
+    loopsRepo.insert(loopRow({ totalSections: 2, currentSectionIndex: 0, phase: 'coding' }), {
+      lastAuditResult: null,
+    })
+
+    sectionRuns.activate(
+      'proj',
+      'loop',
+      { kind: 'section', sectionId: 'beta', sectionIndex: 1 },
+      { sessionId: 'sess-beta', phase: 'coding', standbySessionId: null },
+      { exclusive: false },
+    )
+
+    const unfiltered = sectionRuns.listActiveSectionLanes('proj')
+    expect(unfiltered.map((lane) => lane.sectionIndex)).toEqual([0, 1])
+
+    const filtered = sectionRuns.listActiveSectionLanes('proj', 'loop')
+    expect(filtered.map((lane) => lane.sectionId)).toEqual(['alpha', 'beta'])
+    expect(filtered).toEqual(unfiltered)
+
+    expect(filtered[0]).toMatchObject({
+      loopName: 'loop',
+      sectionIndex: 0,
+      sectionId: 'alpha',
+      title: 'Alpha',
+      phase: 'coding',
+      attempts: 0,
+    })
+    expect(typeof filtered[0].startedAt).toBe('number')
+    expect(filtered[1]).toMatchObject({
+      loopName: 'loop',
+      sectionIndex: 1,
+      sectionId: 'beta',
+      title: 'Beta',
+      phase: 'coding',
+      attempts: 0,
+    })
+
+    expect(sectionRuns.listActiveSectionLanes('proj', 'other-loop')).toEqual([])
+
+    sectionRuns.finish('proj', 'loop', 'section:alpha')
+    expect(sectionRuns.listActiveSectionLanes('proj').map((lane) => lane.sectionId)).toEqual(['beta'])
+
+    loopsRepo.updatePhase('proj', 'loop', 'post_action')
+    expect(sectionRuns.listActiveSectionLanes('proj')).toEqual([])
+  })
 })

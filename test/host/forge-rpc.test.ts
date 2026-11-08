@@ -188,6 +188,24 @@ describe('FORGE_RPC', () => {
     expect(method.input).toEqual({ type: 'object', properties: {}, additionalProperties: false })
     expect(method.output.properties.generatedAt).toEqual({ type: 'number' })
     expect(method.output.properties.projects.type).toBe('array')
+    expect(method.output.properties.projects.items.properties.loops.items.properties.completedSections)
+      .toEqual({ type: 'integer' })
+    expect(method.output.properties.projects.items.properties.loops.items.properties.lanes).toEqual({
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          sectionIndex: { type: 'integer' },
+          sectionId: { type: 'string' },
+          title: { type: 'string' },
+          phase: { type: 'string', enum: ['coding', 'auditing', 'post_action'] },
+          attempts: { type: 'integer' },
+          startedAt: { type: 'number' },
+        },
+        required: ['sectionIndex', 'sectionId', 'title', 'phase', 'attempts', 'startedAt'],
+        additionalProperties: false,
+      },
+    })
     expect(method.output.properties.error).toEqual({ type: 'string' })
     expect(method.output.additionalProperties).toBe(false)
   })
@@ -222,7 +240,9 @@ describe('FORGE_RPC', () => {
       iteration: 1,
       maxIterations: 5,
       currentSectionIndex: 0,
+      completedSections: 0,
       totalSections: 1,
+      lanes: [],
       sectionCount: 1,
       bugCount: 0,
       hasPlan: true,
@@ -339,7 +359,7 @@ describe('FORGE_RPC', () => {
       currentSectionIndex: 0,
       totalSections: 1,
     }
-    const detail = { loop, sections: [], findings: [], transitions: [], transitionsCapped: false, amendments: [] }
+    const detail = { loop, lanes: [], sections: [], findings: [], transitions: [], transitionsCapped: false, amendments: [] }
     expect(readForgeLoopDetail(detail)).toEqual(detail)
     expect(readForgeLoopDetail({ ...detail, durationText: '1s', plan: '# Plan' }))
       .toEqual({ ...detail, durationText: '1s', plan: '# Plan' })

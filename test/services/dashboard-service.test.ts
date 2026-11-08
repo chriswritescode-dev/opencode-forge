@@ -11,6 +11,7 @@ import {
   type LoopSessionUsageRow,
 } from '../../src/storage'
 import { createDashboardService, type DashboardService, type DashboardServiceDeps } from '../../src/services/dashboard-service'
+import { createSectionRunsRepo } from '../../src/storage/repos/section-runs-repo'
 import { withWriteNotifications } from '../../src/utils/write-notifications'
 import { FORGE_RPC, type ForgeDashboardSummary } from '../../src/host/forge-rpc'
 import { makeLoopRow } from '../helpers/dashboard-fixtures'
@@ -55,6 +56,7 @@ describe('DashboardService', () => {
       loopsRepo: createLoopsRepo(db),
       plansRepo: createPlansRepo(db),
       sectionPlansRepo: createSectionPlansRepo(db),
+      sectionRunsRepo: createSectionRunsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       loopSessionUsageRepo: createLoopSessionUsageRepo(db),
       loopTransitionsRepo: createLoopTransitionsRepo(db),
@@ -213,12 +215,122 @@ describe('DashboardService', () => {
   })
 
   test('the summary matches the dashboardSummary output schema and contains no nulls', () => {
-    createLoopsRepo(db).insert(makeLoopRow({ projectId: 'p1', loopName: 'loop-a', worktreeBranch: 'feat/a' }), { lastAuditResult: null })
+    const loopsRepo = createLoopsRepo(db)
+    const sectionsRepo = createSectionPlansRepo(db)
+    const sectionRuns = createSectionRunsRepo(db)
+    loopsRepo.insert(makeLoopRow({ projectId: 'p1', loopName: 'loop-a', worktreeBranch: 'feat/a', totalSections: 1 }), { lastAuditResult: null })
+    sectionsRepo.bulkInsert({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      sections: [
+        { index: 0, title: 'Section A', content: 'Content A', id: 'section-1', after: [] },
+      ],
+    })
+    sectionRuns.activate(
+      'p1',
+      'loop-a',
+      { kind: 'section', sectionId: 'section-1', sectionIndex: 0 },
+      { sessionId: 'ses-lane-code', phase: 'coding', standbySessionId: null },
+      { exclusive: false },
+    )
     createPlansRepo(db).writeForSession('p2', 'session-plan', '# Objective\n\nA plan')
 
     const result = summary()
+    expect(result.projects[0].loops[0].lanes).toHaveLength(1)
     expectMatchesJsonSchema(FORGE_RPC.methods.dashboardSummary.output, result)
     expect(JSON.stringify(result)).not.toContain('null')
+  })
+
+  test('reports completed sections and one lane per active section run in the summary and the detail', () => {
+    const loopsRepo = createLoopsRepo(db)
+    const sectionsRepo = createSectionPlansRepo(db)
+    const sectionRuns = createSectionRunsRepo(db)
+    loopsRepo.insert(makeLoopRow({ projectId: 'p1', loopName: 'loop-a', status: 'running', totalSections: 3, currentSectionIndex: 0 }), { lastAuditResult: null })
+    sectionsRepo.bulkInsert({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      sections: [
+        { index: 0, title: 'Section A', content: 'Content A', id: 'section-1', after: [] },
+        { index: 1, title: 'Section B', content: 'Content B', id: 'section-2', after: [] },
+        { index: 2, title: 'Section C', content: 'Content C', id: 'section-3', after: [] },
+      ],
+    })
+    sectionsRepo.setStatus('p1', 'loop-a', 0, 'completed')
+    sectionRuns.finish('p1', 'loop-a', 'section:section-1')
+    sectionsRepo.incrementAttempts('p1', 'loop-a', 1)
+    sectionRuns.activate(
+      'p1',
+      'loop-a',
+      { kind: 'section', sectionId: 'section-2', sectionIndex: 1 },
+      { sessionId: 'ses-lane-code', phase: 'coding', standbySessionId: null },
+      { exclusive: false },
+    )
+    sectionRuns.activate(
+      'p1',
+      'loop-a',
+      { kind: 'section', sectionId: 'section-3', sectionIndex: 2 },
+      { sessionId: 'ses-lane-audit', phase: 'auditing', standbySessionId: null },
+      { exclusive: false },
+    )
+
+    const loop = summary().projects[0].loops[0]
+    expect(loop.completedSections).toBe(1)
+    expect(loop.lanes).toHaveLength(2)
+    expect(loop.lanes[0]).toMatchObject({
+      sectionIndex: 1,
+      sectionId: 'section-2',
+      title: 'Section B',
+      phase: 'coding',
+      attempts: 1,
+    })
+    expect(loop.lanes[1]).toMatchObject({
+      sectionIndex: 2,
+      sectionId: 'section-3',
+      title: 'Section C',
+      phase: 'auditing',
+      attempts: 0,
+    })
+    for (const lane of loop.lanes) {
+      expect(typeof lane.startedAt).toBe('number')
+    }
+
+    const detail = service().getLoopDetail('p1', 'loop-a')
+    if ('error' in detail) throw new Error(detail.error)
+    expect(detail.lanes).toEqual(loop.lanes)
+  })
+
+  test('reports no lanes for a completed loop with an active run row', () => {
+    const loopsRepo = createLoopsRepo(db)
+    const sectionsRepo = createSectionPlansRepo(db)
+    const sectionRuns = createSectionRunsRepo(db)
+    loopsRepo.insert(makeLoopRow({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      status: 'completed',
+      totalSections: 1,
+      currentSectionIndex: 0,
+      completedAt: Date.now(),
+    }), { lastAuditResult: null })
+    sectionsRepo.bulkInsert({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      sections: [{ index: 0, title: 'Section A', content: 'Content A', id: 'section-1', after: [] }],
+    })
+    expect(sectionRuns.listActiveSectionLanes('p1', 'loop-a')).toHaveLength(1)
+
+    expect(summary().projects[0].loops[0].lanes).toEqual([])
+
+    const detail = service().getLoopDetail('p1', 'loop-a')
+    if ('error' in detail) throw new Error(detail.error)
+    expect(detail.lanes).toEqual([])
+  })
+
+  test('does not report a post-action run as a lane', () => {
+    const loopsRepo = createLoopsRepo(db)
+    loopsRepo.insert(makeLoopRow({ projectId: 'p1', loopName: 'loop-a', status: 'running', totalSections: 0 }), { lastAuditResult: null })
+    loopsRepo.updatePhase('p1', 'loop-a', 'post_action')
+
+    expect(summary().projects[0].loops[0].lanes).toEqual([])
   })
 
   test('expectMatchesJsonSchema rejects a mismatching value with its failing path', () => {
@@ -356,6 +468,24 @@ describe('DashboardService', () => {
 
       expectMatchesJsonSchema(FORGE_RPC.methods.loopDetail.output, result)
       expect(JSON.stringify(result)).not.toContain('null')
+    })
+
+    test('matches the loopDetail output schema with an active lane', () => {
+      const loopsRepo = createLoopsRepo(db)
+      const sectionsRepo = createSectionPlansRepo(db)
+      loopsRepo.insert(makeLoopRow({ projectId: 'p1', loopName: 'loop-a', status: 'running', totalSections: 1, currentSectionIndex: 0 }), { lastAuditResult: null })
+      sectionsRepo.bulkInsert({
+        projectId: 'p1',
+        loopName: 'loop-a',
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A', id: 'section-1', after: [] },
+        ],
+      })
+
+      const result = detail()
+
+      expect(result.lanes).toHaveLength(1)
+      expectMatchesJsonSchema(FORGE_RPC.methods.loopDetail.output, result)
     })
 
     test('returns Loop not found for an unknown loop', () => {

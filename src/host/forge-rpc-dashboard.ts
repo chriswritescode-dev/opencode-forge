@@ -49,6 +49,16 @@ export interface ForgeDashboardUnexecutedPlan {
   charCount: number
 }
 
+/** One running section of a loop. */
+export interface ForgeDashboardLane {
+  sectionIndex: number
+  sectionId: string
+  title: string
+  phase: LoopRow['phase']
+  attempts: number
+  startedAt: number
+}
+
 export interface ForgeDashboardLoopSummary {
   loopName: string
   status: LoopRow['status']
@@ -56,7 +66,9 @@ export interface ForgeDashboardLoopSummary {
   iteration: number
   maxIterations: number
   currentSectionIndex: number
+  completedSections: number
   totalSections: number
+  lanes: ForgeDashboardLane[]
   sectionCount: number
   bugCount: number
   hasPlan: boolean
@@ -89,6 +101,20 @@ export type ForgeDashboardSummaryOutput = ForgeDashboardSummary | ForgeRpcError
 
 const DASHBOARD_SUMMARY_INPUT = { type: 'object', properties: {}, additionalProperties: false } as const
 
+const DASHBOARD_LANE_SCHEMA = {
+  type: 'object',
+  properties: {
+    sectionIndex: { type: 'integer' },
+    sectionId: { type: 'string' },
+    title: { type: 'string' },
+    phase: { type: 'string', enum: DASHBOARD_LOOP_PHASES },
+    attempts: { type: 'integer' },
+    startedAt: { type: 'number' },
+  },
+  required: ['sectionIndex', 'sectionId', 'title', 'phase', 'attempts', 'startedAt'],
+  additionalProperties: false,
+} as const satisfies JsonSchemaShape
+
 const DASHBOARD_LOOP_SUMMARY_SCHEMA = {
   type: 'object',
   properties: {
@@ -98,7 +124,9 @@ const DASHBOARD_LOOP_SUMMARY_SCHEMA = {
     iteration: { type: 'integer' },
     maxIterations: { type: 'integer' },
     currentSectionIndex: { type: 'integer' },
+    completedSections: { type: 'integer' },
     totalSections: { type: 'integer' },
+    lanes: { type: 'array', items: DASHBOARD_LANE_SCHEMA },
     sectionCount: { type: 'integer' },
     bugCount: { type: 'integer' },
     hasPlan: { type: 'boolean' },
@@ -118,7 +146,9 @@ const DASHBOARD_LOOP_SUMMARY_SCHEMA = {
     'iteration',
     'maxIterations',
     'currentSectionIndex',
+    'completedSections',
     'totalSections',
+    'lanes',
     'sectionCount',
     'bugCount',
     'hasPlan',
@@ -327,6 +357,7 @@ export interface ForgeLoopDetail {
   postActionReport?: string
   completionSummary?: string
   plan?: string
+  lanes: ForgeDashboardLane[]
   sections: ForgeSectionPlan[]
   findings: ForgeReviewFinding[]
   usage?: ForgeLoopUsage
@@ -563,6 +594,7 @@ const LOOP_DETAIL_SCHEMA = {
     postActionReport: { type: 'string' },
     completionSummary: { type: 'string' },
     plan: { type: 'string' },
+    lanes: { type: 'array', items: DASHBOARD_LANE_SCHEMA },
     sections: { type: 'array', items: SECTION_PLAN_SCHEMA },
     findings: { type: 'array', items: REVIEW_FINDING_SCHEMA },
     usage: LOOP_USAGE_SCHEMA,
@@ -570,7 +602,7 @@ const LOOP_DETAIL_SCHEMA = {
     transitionsCapped: { type: 'boolean' },
     amendments: { type: 'array', items: PLAN_AMENDMENT_SCHEMA },
   },
-  required: ['loop', 'sections', 'findings', 'transitions', 'transitionsCapped', 'amendments'],
+  required: ['loop', 'lanes', 'sections', 'findings', 'transitions', 'transitionsCapped', 'amendments'],
   additionalProperties: false,
 } as const satisfies JsonSchemaShape
 

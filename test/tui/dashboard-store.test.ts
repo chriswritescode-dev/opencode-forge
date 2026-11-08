@@ -81,6 +81,7 @@ function detailFixture(loopName: string): ForgeLoopDetail {
       totalSections: 1,
     },
     sections: [],
+    lanes: [],
     findings: [],
     transitions: [],
     transitionsCapped: false,
