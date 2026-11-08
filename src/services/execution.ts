@@ -20,7 +20,7 @@ import { createUsageCapture } from '../loop/runtime-usage'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopPermissionOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopPermissionOptions, resolveMaxParallelSections } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -121,6 +121,8 @@ export interface AttachLoopInput {
   executionVariant?: string
   auditorVariant?: string
   maxIterations: number
+  /** Sections this worktree loop may run at once; omitted means a serial in-place loop. */
+  maxParallelSections?: number
   sandboxEnabled: boolean
   sandboxContainer?: string
   /** Exact commit sha the loop's worktree branched from; omitted for legacy rows. */
@@ -594,7 +596,7 @@ export async function attachLoopToSession(
       worktreeBranch,
       iteration: 1,
       maxIterations,
-      maxParallelSections: 1,
+      maxParallelSections: input.maxParallelSections ?? 1,
       runDir: worktreeDir ?? ctx.directory,
       startedAt: new Date().toISOString(),
       prompt: planText,
@@ -1208,6 +1210,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         executionVariant: resolvedExecutionVariant,
         auditorVariant: resolvedAuditorVariant,
         maxIterations,
+        maxParallelSections: resolveMaxParallelSections(deps.config),
         sandboxEnabled: sandboxEnabledForLoop,
         sandboxContainer: sandboxContainer ?? undefined,
         sandboxSettings: command.sandbox,

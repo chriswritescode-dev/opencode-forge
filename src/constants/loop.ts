@@ -14,6 +14,9 @@ export type LoopSessionReuseRole = 'code' | 'auditor'
 /** Worktree path of the code-graph index link Forge writes for sandboxed loops. */
 export const CODE_GRAPH_LINK_NAME = '.codegraph'
 
+/** Sections a worktree loop runs at once when `loop.maxParallelSections` is unset. */
+export const DEFAULT_MAX_PARALLEL_SECTIONS = 2
+
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 /** Maximum number of plan sections a loop may execute. Shared by the
@@ -261,6 +264,46 @@ export function resolveSessionReuseContextPercent(
 /** Collects warnings produced while parsing `loop.sessionReuse`. */
 export function collectSessionReuseConfigWarnings(config: PluginConfig | undefined): string[] {
   return parseSessionReuseConfig(config?.loop?.sessionReuse).warnings
+}
+
+export interface ParsedMaxParallelSections {
+  value: number
+  warnings: string[]
+}
+
+/**
+ * Parses and validates `loop.maxParallelSections`, falling back to the default
+ * for anything that is not an integer of at least 1, and clamping values above
+ * the section cap.
+ */
+export function parseMaxParallelSections(raw: unknown): ParsedMaxParallelSections {
+  const warnings: string[] = []
+  if (raw === undefined || raw === null) {
+    return { value: DEFAULT_MAX_PARALLEL_SECTIONS, warnings }
+  }
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+    warnings.push(
+      `loop.maxParallelSections is ignored: expected an integer of at least 1, using the default ${DEFAULT_MAX_PARALLEL_SECTIONS}`,
+    )
+    return { value: DEFAULT_MAX_PARALLEL_SECTIONS, warnings }
+  }
+  if (raw > MAX_TOTAL_SECTIONS) {
+    warnings.push(
+      `loop.maxParallelSections ${raw} exceeds the ${MAX_TOTAL_SECTIONS}-section cap, using ${MAX_TOTAL_SECTIONS}`,
+    )
+    return { value: MAX_TOTAL_SECTIONS, warnings }
+  }
+  return { value: raw, warnings }
+}
+
+/** Sections a worktree loop may run at once, clamped to the section cap. */
+export function resolveMaxParallelSections(config: PluginConfig | undefined): number {
+  return parseMaxParallelSections(config?.loop?.maxParallelSections).value
+}
+
+/** Collects warnings produced while parsing `loop.maxParallelSections`. */
+export function collectMaxParallelSectionsWarnings(config: PluginConfig | undefined): string[] {
+  return parseMaxParallelSections(config?.loop?.maxParallelSections).warnings
 }
 
 /**

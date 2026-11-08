@@ -2,6 +2,7 @@ import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
 import type { ForgeExecutionServiceDeps, ForgeLoopExtra, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
+import { resolveMaxParallelSections } from '../constants/loop'
 import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
@@ -280,6 +281,7 @@ async function attachForgeSession(
           executionVariant: cfg.executionVariant,
           auditorVariant: cfg.auditorVariant,
           maxIterations: cfg.maxIterations ?? 50,
+          maxParallelSections: resolveMaxParallelSections(deps.execDeps.config),
           sandboxEnabled: sandbox.enabled,
           sandboxContainer: sandbox.containerName,
           planText,

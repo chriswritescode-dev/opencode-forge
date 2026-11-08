@@ -1235,3 +1235,90 @@ describe('handleStartLoop section graph validation', () => {
     expect(h.loopService.getActiveState(result.data.loopName)!.totalSections).toBe(4)
   })
 })
+
+describe('loop maxParallelSections persistence', () => {
+  let db: ReturnType<typeof createTestDb>['db']
+
+  beforeEach(() => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    db = testDb.db
+  })
+
+  function buildHarness(config: { maxParallelSections: number }) {
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_parallel',
+          directory: '/tmp/wt/parallel',
+          branch: 'forge/parallel',
+          type: 'worktree',
+          name: 'forge/parallel',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+        warp: async () => {},
+      },
+      session: {
+        create: async () => ({ id: 'sess-parallel' }),
+        get: async () => ({}),
+      },
+    })
+    const built = buildExecutionDeps(db, {
+      client,
+      gitService: mockGitService,
+      config: {
+        loop: { enabled: true, maxParallelSections: config.maxParallelSections },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      loop: {
+        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
+      },
+    })
+    return { ...built, client }
+  }
+
+  test('a new worktree loop persists the configured value', async () => {
+    const h = buildHarness({ maxParallelSections: 3 })
+    const service = createForgeExecutionService(h.deps)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText: '# Parallel Plan\n\nBody.' } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(h.deps.loopsRepo.get(PROJECT_ID, result.data.loopName)!.maxParallelSections).toBe(3)
+    expect(h.loopService.getActiveState(result.data.loopName)!.maxParallelSections).toBe(3)
+  })
+
+  test('an attach without a worktree parallelism override persists 1', async () => {
+    const h = buildHarness({ maxParallelSections: 3 })
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      h.deps,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_in_place',
+        worktreeDir: '/tmp/wt/in-place',
+        loopName: 'in-place-loop',
+        displayName: 'In Place',
+        executionName: 'in-place-loop',
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        maxIterations: 5,
+        sandboxEnabled: false,
+        planText: '# In-Place Plan\n\nBody.',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(h.deps.loopsRepo.get(PROJECT_ID, 'in-place-loop')!.maxParallelSections).toBe(1)
+    expect(h.loopService.getActiveState('in-place-loop')!.maxParallelSections).toBe(1)
+  })
+})

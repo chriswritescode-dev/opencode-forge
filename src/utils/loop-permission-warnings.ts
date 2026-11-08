@@ -1,4 +1,4 @@
-import { collectLoopPermissionConfigWarnings, collectSessionReuseConfigWarnings } from '../constants/loop'
+import { collectLoopPermissionConfigWarnings, collectMaxParallelSectionsWarnings, collectSessionReuseConfigWarnings } from '../constants/loop'
 import { isForgeWorktreeDir } from '../workspace/forge-naming'
 import type { Logger, PluginConfig } from '../types'
 
@@ -48,4 +48,14 @@ export function emitLoopSessionReuseConfigWarnings(
   sink: LoopPermissionWarningSink,
 ): void {
   emitLoopConfigWarnings(collectSessionReuseConfigWarnings(config), dataDir, directory, sink)
+}
+
+/** Emits warnings produced while parsing `loop.maxParallelSections`. */
+export function emitLoopMaxParallelSectionsConfigWarnings(
+  config: PluginConfig | undefined,
+  dataDir: string,
+  directory: string,
+  sink: LoopPermissionWarningSink,
+): void {
+  emitLoopConfigWarnings(collectMaxParallelSectionsWarnings(config), dataDir, directory, sink)
 }

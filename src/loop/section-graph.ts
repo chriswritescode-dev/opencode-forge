@@ -112,6 +112,52 @@ export function selectNextSection<T extends SectionGraphRow>(rows: T[]): T | nul
   return readySections(rows)[0] ?? null
 }
 
+/** Two planned file lists conflict when both are non-empty and share a repo-relative path; an empty list conflicts with everything. */
+function fileListsOverlap(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return true
+  const files = new Set(a)
+  return b.some((file) => files.has(file))
+}
+
+export interface SelectSectionsToStartInput<T> {
+  rows: T[]
+  /** Section ids of sections that already have a live run. */
+  runningIds: Set<string>
+  /** Free section slots; zero or less selects nothing. */
+  slots: number
+  filesOf: (row: T) => string[]
+}
+
+/**
+ * Ready sections to start in parallel, by section index, up to `slots`.
+ * Sections already running are skipped, and a candidate whose planned files
+ * overlap a running or already-picked section is skipped too. An empty file
+ * list overlaps everything, so such a section starts only when nothing else
+ * runs and nothing starts next to it.
+ */
+export function selectSectionsToStart<T extends SectionGraphRow>(
+  input: SelectSectionsToStartInput<T>,
+): T[] {
+  const { rows, runningIds, slots, filesOf } = input
+  if (slots <= 0) return []
+
+  const occupiedFiles = rows
+    .filter((row) => runningIds.has(row.sectionId))
+    .map((row) => filesOf(row))
+  const picked: T[] = []
+
+  for (const row of readySections(rows)) {
+    if (picked.length >= slots) break
+    if (runningIds.has(row.sectionId)) continue
+    const files = filesOf(row)
+    if (occupiedFiles.some((occupied) => fileListsOverlap(files, occupied))) continue
+    picked.push(row)
+    occupiedFiles.push(files)
+  }
+
+  return picked
+}
+
 /** True when every row other than `currentIndex` is completed. */
 export function isLastOpenSectionIndex(rows: SectionGraphRow[], currentIndex: number): boolean {
   return rows.every(

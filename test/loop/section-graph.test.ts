@@ -6,6 +6,7 @@ import {
   isLastOpenSectionIndex,
   readySections,
   selectNextSection,
+  selectSectionsToStart,
   validateSectionGraph,
   type SectionGraphNode,
   type SectionGraphRow,
@@ -141,6 +142,103 @@ describe('readySections and selectNextSection', () => {
 
   test('treats an in-progress section as open', () => {
     expect(selectNextSection([row(0, 'a', [], 'in_progress')])?.sectionId).toBe('a')
+  })
+})
+
+describe('selectSectionsToStart', () => {
+  const diamond = [
+    row(0, 'a', [], 'completed'),
+    row(1, 'b', ['a'], 'pending'),
+    row(2, 'c', ['a'], 'pending'),
+    row(3, 'd', ['b', 'c'], 'pending'),
+  ]
+  const diamondFiles: Record<string, string[]> = {
+    a: ['src/a.ts'],
+    b: ['src/b.ts'],
+    c: ['src/c.ts'],
+    d: ['src/d.ts'],
+  }
+  const filesOf = (r: SectionGraphRow): string[] => diamondFiles[r.sectionId] ?? []
+
+  test('selects the diamond branches in index order while slots remain', () => {
+    const picked = selectSectionsToStart({ rows: diamond, runningIds: new Set(), slots: 2, filesOf })
+    expect(picked.map((r) => r.sectionId)).toEqual(['b', 'c'])
+  })
+
+  test('skips sections that are already running', () => {
+    const picked = selectSectionsToStart({
+      rows: diamond,
+      runningIds: new Set(['b', 'c']),
+      slots: 2,
+      filesOf,
+    })
+    expect(picked).toEqual([])
+  })
+
+  test('selects the join section once both branches complete', () => {
+    const rows = diamond.map((r) =>
+      r.sectionId === 'b' || r.sectionId === 'c' ? { ...r, status: 'completed' } : r,
+    )
+    const picked = selectSectionsToStart({ rows, runningIds: new Set(), slots: 2, filesOf })
+    expect(picked.map((r) => r.sectionId)).toEqual(['d'])
+  })
+
+  test('never starts overlapping file lists together', () => {
+    const rows = [
+      row(0, 'a', [], 'completed'),
+      row(1, 'b', ['a'], 'pending'),
+      row(2, 'c', ['a'], 'pending'),
+      row(3, 'd', ['a'], 'pending'),
+    ]
+    const files: Record<string, string[]> = {
+      a: ['src/a.ts'],
+      b: ['src/shared.ts'],
+      c: ['src/shared.ts'],
+      d: ['src/other.ts'],
+    }
+    const picked = selectSectionsToStart({
+      rows,
+      runningIds: new Set(),
+      slots: 2,
+      filesOf: (r) => files[r.sectionId] ?? [],
+    })
+    expect(picked.map((r) => r.sectionId)).toEqual(['b', 'd'])
+  })
+
+  test('an empty file list starts alone', () => {
+    const rows = [
+      row(0, 'a', [], 'completed'),
+      row(1, 'b', ['a'], 'pending'),
+      row(2, 'c', ['a'], 'pending'),
+    ]
+    const files: Record<string, string[]> = { a: ['src/a.ts'], b: [], c: ['src/c.ts'] }
+    const picked = selectSectionsToStart({
+      rows,
+      runningIds: new Set(),
+      slots: 2,
+      filesOf: (r) => files[r.sectionId] ?? [],
+    })
+    expect(picked.map((r) => r.sectionId)).toEqual(['b'])
+  })
+
+  test('an empty candidate skips a running section and blocks later candidates', () => {
+    const rows = [
+      row(0, 'a', [], 'completed'),
+      row(1, 'b', ['a'], 'pending'),
+      row(2, 'c', ['a'], 'pending'),
+    ]
+    const files: Record<string, string[]> = { a: ['src/shared.ts'], b: [], c: ['src/shared.ts'] }
+    const picked = selectSectionsToStart({
+      rows,
+      runningIds: new Set(['a']),
+      slots: 2,
+      filesOf: (r) => files[r.sectionId] ?? [],
+    })
+    expect(picked).toEqual([])
+  })
+
+  test('a non-positive slot count selects nothing', () => {
+    expect(selectSectionsToStart({ rows: diamond, runningIds: new Set(), slots: 0, filesOf })).toEqual([])
   })
 })
 

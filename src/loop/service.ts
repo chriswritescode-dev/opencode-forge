@@ -27,6 +27,7 @@ import {
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { extractSectionFiles } from '../utils/plan-structure'
 import { canonicalizePath } from '../sandbox/path'
 import { parseForgeLaneDir } from '../workspace/forge-naming'
 import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
@@ -162,6 +163,8 @@ export interface LoopService {
   /** The newest attempt row for the state's current audit scope, or null when attempts are not stored. */
   getLatestAttempt(state: LoopState): LoopAttemptRow | null
   getNextReadySectionPlan(state: LoopState): SectionPlanRow | null
+  /** Repo-relative files a section plans to touch; the parallel scheduler's single source of file lists. */
+  sectionFilesOf(row: SectionPlanRow): string[]
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
 
   buildPlanInitialPrompt(planText: string): string
@@ -840,6 +843,10 @@ export function createLoopService(
     return selectNextSection(getSectionPlans(state))
   }
 
+  function sectionFilesOf(row: SectionPlanRow): string[] {
+    return extractSectionFiles(row.content)
+  }
+
   function isLastOpenSection(state: LoopState): boolean {
     if (state.totalSections <= 0) return false
     const sections = getSectionPlans(state)
@@ -1313,6 +1320,7 @@ export function createLoopService(
     recordAttemptCodeGraph,
     getLatestAttempt,
     getNextReadySectionPlan,
+    sectionFilesOf,
     getCompletedSectionDigest,
 
     buildPlanInitialPrompt,

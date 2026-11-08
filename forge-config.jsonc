@@ -49,6 +49,8 @@
     "stallTimeoutMs": 60000,
     "maxConsecutiveStalls": 5,  // 0 = disabled; default 5
     "busyStallTimeoutMs": 900000,  // busy with no tool activity or streamed content → abort + continue; 0 = disabled
+    // Maximum sections a worktree loop runs at once in parallel lanes; 1 = serial. Default 2.
+    "maxParallelSections": 2,
     // Retain and resume the coder/audit session on a same-section retry. When a reused
     // session's last turn reached this percent of the model's context window, it is compacted
     // before its next turn. 0 disables reuse for that role.

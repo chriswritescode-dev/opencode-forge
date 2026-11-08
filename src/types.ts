@@ -97,6 +97,8 @@ export interface LoopConfig {
   maxConsecutiveStalls?: number
   /** Time in ms a loop session may stay busy with no tool activity before the watchdog aborts the wedged message and sends a continue prompt. 0 = disabled (default: 900000). */
   busyStallTimeoutMs?: number
+  /** Maximum sections a worktree loop runs at once in parallel lanes; 1 = serial. Default 2. */
+  maxParallelSections?: number
   /** Session reuse on same-section retries. */
   sessionReuse?: LoopSessionReuseConfig
   /**
