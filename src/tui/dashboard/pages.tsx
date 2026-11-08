@@ -34,6 +34,7 @@ import {
   formatRelativeTime,
   formatSectionDuration,
   formatSectionNumber,
+  formatSectionRefs,
   formatSpanDuration,
   formatTokenCount,
   formatUsageCost,
@@ -49,6 +50,7 @@ import {
   repoRawPath,
   roleUsageBars,
   sectionCompletion,
+  sectionRowStates,
   splitFindings,
   summarizeAmendments,
   tabsForLoop,
@@ -56,6 +58,8 @@ import {
   tokenBreakdownSegments,
   type LoopTab,
   type PhaseSpan,
+  type SectionDependency,
+  type SectionState,
   type TimelineEntry,
 } from './view-model'
 
@@ -140,6 +144,14 @@ function phaseColor(colors: DashboardColors, phase: string): ColorInput {
   if (phase === 'auditing') return colors.warning
   if (phase === 'post_action') return colors.success
   return colors.muted
+}
+
+function sectionStateColor(colors: DashboardColors, state: SectionState): ColorInput {
+  if (state === 'done') return colors.success
+  if (state === 'running') return colors.info
+  if (state === 'ready') return colors.text
+  if (state === 'blocked') return colors.warning
+  return colors.error
 }
 
 function severityColor(colors: DashboardColors, severity: string): ColorInput {
@@ -1350,6 +1362,7 @@ function SectionsTab(props: {
   expanded: Accessor<number | null>
 }): JSX.Element {
   const adjusted = createMemo(() => amendedSectionIndexes(props.detail.amendments))
+  const states = createMemo(() => sectionRowStates(props.detail.sections, props.detail.lanes))
   return (
     <box flexDirection="column" paddingTop={1}>
       <Show when={props.detail.sections.length === 0}>
@@ -1360,15 +1373,22 @@ function SectionsTab(props: {
           const selected = () => index() === props.cursor()
           const isExpanded = () => props.expanded() === section.sectionIndex
           const duration = () => formatSectionDuration(section.startedAt, section.completedAt)
+          const rowState = () => states().get(section.sectionIndex)!
           return (
             <box flexDirection="column" paddingBottom={1}>
               <box flexDirection="row" gap={1}>
                 {marker(selected, props.colors)}
                 <text flexShrink={0} fg={props.colors.muted}>{`#${formatSectionNumber(section.sectionIndex)}`}</text>
                 <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>{section.title}</text>
-                <text flexShrink={0} fg={section.status === 'completed' ? props.colors.success : props.colors.muted}>
-                  {section.status}
-                </text>
+                <text flexShrink={0} fg={sectionStateColor(props.colors, rowState().state)}>{rowState().state}</text>
+                <Show when={rowState().lane}>
+                  {(lane) => (
+                    <text flexShrink={0} fg={phaseColor(props.colors, lane().phase)}>{phaseLabel(lane().phase)}</text>
+                  )}
+                </Show>
+                <Show when={rowState().state === 'blocked' && rowState().waitingOn.length > 0}>
+                  <text flexShrink={0} fg={props.colors.muted}>{`waits on ${formatSectionRefs(rowState().waitingOn)}`}</text>
+                </Show>
                 <Show when={adjusted().has(section.sectionIndex)}>
                   <text flexShrink={0} fg={props.colors.warning}>adjusted</text>
                 </Show>
@@ -1381,7 +1401,12 @@ function SectionsTab(props: {
                 <text flexShrink={0} fg={props.colors.muted}>{isExpanded() ? '▾' : '▸'}</text>
               </box>
               <Show when={isExpanded()}>
-                <SectionDetails section={section} context={props.context} colors={props.colors} />
+                <SectionDetails
+                  section={section}
+                  dependencies={rowState().dependencies}
+                  context={props.context}
+                  colors={props.colors}
+                />
               </Show>
             </box>
           )
@@ -1393,11 +1418,17 @@ function SectionsTab(props: {
 
 function SectionDetails(props: {
   section: ForgeSectionPlan
+  dependencies: SectionDependency[]
   context: Plugin.Context
   colors: DashboardColors
 }): JSX.Element {
   return (
     <box flexDirection="column" paddingLeft={2}>
+      <Show when={props.dependencies.length > 0}>
+        <text fg={props.colors.muted}>
+          {`Depends on ${props.dependencies.map((dep) => `#${formatSectionNumber(dep.sectionIndex)} ${dep.sectionId}`).join(', ')}`}
+        </text>
+      </Show>
       <Show when={props.section.startedAt || props.section.completedAt}>
         <text fg={props.colors.muted}>
           {`${props.section.startedAt ? 'Started ' + fmtTime(props.section.startedAt) : 'Not started'}${props.section.completedAt ? ' → completed ' + fmtTime(props.section.completedAt) : ''}`}
@@ -1432,6 +1463,7 @@ function SectionDetails(props: {
         && !props.section.summaryDeviations
         && !props.section.summaryFollowUps
         && !props.section.content
+        && props.dependencies.length === 0
       }>
         <text fg={props.colors.muted}>No details captured for this section yet.</text>
       </Show>

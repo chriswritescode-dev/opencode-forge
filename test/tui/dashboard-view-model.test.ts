@@ -18,6 +18,7 @@ import {
   formatRelativeTime,
   formatSectionDuration,
   formatSectionNumber,
+  formatSectionRefs,
   formatSpanDuration,
   formatTokenCount,
   formatUsageCost,
@@ -32,6 +33,7 @@ import {
   repoLabel,
   roleUsageBars,
   sectionCompletion,
+  sectionRowStates,
   shareUnchanged,
   sortLoops,
   splitFindings,
@@ -128,6 +130,21 @@ function makeProject(overrides: Partial<ForgeDashboardProjectSummary> = {}): For
 
 function makeSummary(projects: ForgeDashboardProjectSummary[]): ForgeDashboardSummary {
   return { generatedAt: 100, projects }
+}
+
+function makeSection(overrides: Partial<ForgeSectionPlan> = {}): ForgeSectionPlan {
+  return {
+    projectId: 'p1',
+    loopName: 'loop-a',
+    sectionIndex: 0,
+    sectionId: 'section-a',
+    dependsOn: [],
+    title: 'Section A',
+    content: '',
+    status: 'pending',
+    attempts: 0,
+    ...overrides,
+  }
 }
 
 describe('capList', () => {
@@ -1422,5 +1439,72 @@ describe('groupFindingsBySection', () => {
 
   test('returns no groups for no findings', () => {
     expect(groupFindingsBySection([])).toEqual([])
+  })
+})
+
+describe('sectionRowStates / formatSectionRefs', () => {
+  test('derives diamond states, lanes, waiting dependencies, and dependency refs', () => {
+    const sections = [
+      makeSection({ sectionIndex: 0, sectionId: 'a', status: 'completed' }),
+      makeSection({ sectionIndex: 1, sectionId: 'b', dependsOn: ['a'], status: 'pending' }),
+      makeSection({ sectionIndex: 2, sectionId: 'c', dependsOn: ['a'], status: 'pending' }),
+      makeSection({ sectionIndex: 3, sectionId: 'd', dependsOn: ['b', 'c'], status: 'pending' }),
+      makeSection({ sectionIndex: 4, sectionId: 'e', dependsOn: ['a'], status: 'pending' }),
+    ]
+    const lanes = [
+      makeLane({ sectionIndex: 1, sectionId: 'b', phase: 'coding' }),
+      makeLane({ sectionIndex: 2, sectionId: 'c', phase: 'auditing' }),
+    ]
+    const states = sectionRowStates(sections, lanes)
+
+    expect(states.get(0)?.state).toBe('done')
+    expect(states.get(0)?.waitingOn).toEqual([])
+
+    expect(states.get(1)?.state).toBe('running')
+    expect(states.get(1)?.lane?.phase).toBe('coding')
+    expect(states.get(1)?.waitingOn).toEqual([])
+
+    expect(states.get(2)?.state).toBe('running')
+    expect(states.get(2)?.lane?.phase).toBe('auditing')
+    expect(states.get(2)?.waitingOn).toEqual([])
+
+    expect(states.get(3)?.state).toBe('blocked')
+    expect(states.get(3)?.waitingOn).toEqual([1, 2])
+    expect(states.get(3)?.dependencies).toEqual([
+      { sectionIndex: 1, sectionId: 'b' },
+      { sectionIndex: 2, sectionId: 'c' },
+    ])
+
+    expect(states.get(4)?.state).toBe('ready')
+    expect(states.get(4)?.waitingOn).toEqual([])
+  })
+
+  test('reports a failed section as failed even when its dependencies are complete', () => {
+    const sections = [makeSection({ sectionIndex: 0, sectionId: 'a', status: 'failed' })]
+    const states = sectionRowStates(sections, [])
+
+    expect(states.get(0)?.state).toBe('failed')
+    expect(states.get(0)?.waitingOn).toEqual([])
+  })
+
+  test('marks a lane-less chain ready, then blocked on its unfinished predecessors', () => {
+    const sections = [
+      makeSection({ sectionIndex: 0, sectionId: 'a', status: 'in_progress' }),
+      makeSection({ sectionIndex: 1, sectionId: 'b', dependsOn: ['a'], status: 'pending' }),
+      makeSection({ sectionIndex: 2, sectionId: 'c', dependsOn: ['b'], status: 'pending' }),
+    ]
+    const states = sectionRowStates(sections, [])
+
+    expect(states.get(0)?.state).toBe('ready')
+    expect(states.get(0)?.waitingOn).toEqual([])
+    expect(states.get(1)?.state).toBe('blocked')
+    expect(states.get(1)?.waitingOn).toEqual([0])
+    expect(states.get(2)?.state).toBe('blocked')
+    expect(states.get(2)?.waitingOn).toEqual([1])
+  })
+
+  test('formats section references and the empty set', () => {
+    expect(formatSectionRefs([1, 3])).toBe('#2, #4')
+    expect(formatSectionRefs([])).toBe('')
   })
 })

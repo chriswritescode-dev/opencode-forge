@@ -9,6 +9,7 @@ import type {
   ForgeReviewFinding,
   ForgeSectionPlan,
 } from '../../host/forge-rpc'
+import { readySections } from '../../loop/section-graph'
 import { computeElapsedSeconds, formatDuration } from '../../utils/duration'
 import { phaseLabel } from '../../utils/phase-label'
 
@@ -344,6 +345,68 @@ export function loopPhaseText(loop: { phase: string; completedAt?: number; lanes
 /** Single-line lane summary: `#N title · Phase · X attempts`. */
 export function formatLaneLine(lane: ForgeDashboardLane): string {
   return `#${formatSectionNumber(lane.sectionIndex)} ${lane.title} · ${phaseLabel(lane.phase)} · ${formatCount(lane.attempts, 'attempt')}`
+}
+
+export type SectionState = 'done' | 'running' | 'ready' | 'blocked' | 'failed'
+
+export interface SectionDependency {
+  sectionIndex: number
+  sectionId: string
+}
+
+export interface SectionRowState {
+  sectionIndex: number
+  state: SectionState
+  lane?: ForgeDashboardLane
+  waitingOn: number[]
+  dependencies: SectionDependency[]
+}
+
+/** Derived per-section display state, lane binding, and dependency status. */
+export function sectionRowStates(
+  sections: ForgeSectionPlan[],
+  lanes: ForgeDashboardLane[],
+): Map<number, SectionRowState> {
+  const byId = new Map<string, ForgeSectionPlan>()
+  for (const section of sections) {
+    if (!byId.has(section.sectionId)) byId.set(section.sectionId, section)
+  }
+  const laneBySectionId = new Map<string, ForgeDashboardLane>()
+  for (const lane of lanes) laneBySectionId.set(lane.sectionId, lane)
+  const readyIds = new Set(readySections(sections).map((section) => section.sectionId))
+
+  const states = new Map<number, SectionRowState>()
+  for (const section of sections) {
+    const dependencies = section.dependsOn
+      .map((id) => byId.get(id))
+      .filter((dep): dep is ForgeSectionPlan => dep !== undefined)
+      .sort((a, b) => a.sectionIndex - b.sectionIndex)
+      .map((dep) => ({ sectionIndex: dep.sectionIndex, sectionId: dep.sectionId }))
+
+    const lane = laneBySectionId.get(section.sectionId)
+    let state: SectionState
+    if (section.status === 'completed') state = 'done'
+    else if (lane) state = 'running'
+    else if (section.status === 'failed') state = 'failed'
+    else if (readyIds.has(section.sectionId)) state = 'ready'
+    else state = 'blocked'
+
+    const waitingOn = state === 'blocked'
+      ? dependencies
+        .filter((dep) => byId.get(dep.sectionId)?.status !== 'completed')
+        .map((dep) => dep.sectionIndex)
+      : []
+
+    const row: SectionRowState = { sectionIndex: section.sectionIndex, state, waitingOn, dependencies }
+    if (lane) row.lane = lane
+    states.set(section.sectionIndex, row)
+  }
+  return states
+}
+
+/** Section references like `#2, #4` from zero-based section indexes. */
+export function formatSectionRefs(indexes: number[]): string {
+  return indexes.map((index) => `#${formatSectionNumber(index)}`).join(', ')
 }
 
 export function formatFinding(f: ForgeReviewFinding): string {
