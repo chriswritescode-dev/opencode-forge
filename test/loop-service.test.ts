@@ -192,6 +192,45 @@ describe('Loop', () => {
     })
   })
 
+  describe('getActiveLane', () => {
+    function insertLoop(loopName: string, overrides: Partial<LoopRow> = {}) {
+      insertTestLoopRow(db, {
+        projectId,
+        loopName,
+        status: 'running',
+        currentSessionId: `sess-${loopName}`,
+        worktree: true,
+        worktreeDir: '/tmp/wt',
+        projectDir: '/tmp/proj',
+        maxIterations: 10,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        startedAt: Date.now(),
+        currentSectionIndex: 0,
+        totalSections: 0,
+        ...overrides,
+      })
+    }
+
+    test('returns the lane of the active section run', () => {
+      insertLoop('lane-loop', { totalSections: 2 })
+
+      expect(loop.service.getActiveLane('lane-loop')).toEqual({
+        loopName: 'lane-loop',
+        sectionRunKey: 'section:section-1',
+      })
+    })
+
+    test('returns null for a missing or non-running loop', () => {
+      insertLoop('lane-finished', { status: 'completed' })
+
+      expect(loop.service.getActiveLane('lane-missing')).toBeNull()
+      expect(loop.service.getActiveLane('lane-finished')).toBeNull()
+    })
+  })
+
   describe('buildAuditPrompt', () => {
     test('contains plan completeness check instructions', () => {
       const state = {

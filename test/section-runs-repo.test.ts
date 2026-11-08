@@ -191,6 +191,34 @@ describe('SectionRunsRepo', () => {
     expect(retrieved.sectionId).toBe('beta')
   })
 
+  test('restore finishes the displaced run at restore time, never before it started', () => {
+    seedSectionPlans()
+    loopsRepo.insert(loopRow({ totalSections: 2, currentSectionIndex: 0 }), { lastAuditResult: null })
+
+    loopsRepo.restart('proj', 'loop', {
+      sessionId: 'sess-2',
+      phase: 'coding',
+      iteration: 2,
+      auditCount: 0,
+      sandbox: false,
+      sandboxContainer: null,
+      workspaceId: null,
+      currentSectionIndex: 1,
+      totalSections: 2,
+      startedAt: 2000,
+      auditorModel: null,
+    })
+
+    loopsRepo.restore(loopRow({ totalSections: 2, currentSectionIndex: 0 }), { lastAuditResult: null })
+
+    const displaced = sectionRuns.listForLoop('proj', 'loop').find((run) => run.sectionId === 'beta')!
+    expect(displaced.status).toBe('finished')
+    expect(displaced.startedAt).toBe(2000)
+    expect(displaced.finishedAt).not.toBeNull()
+    expect(displaced.finishedAt!).toBeGreaterThanOrEqual(displaced.startedAt)
+    expect(sectionRuns.getActive('proj', 'loop')?.sectionId).toBe('alpha')
+  })
+
   test('terminate clears the active run standby and keeps the run active', () => {
     loopsRepo.insert(loopRow({ standbySessionId: 'standby-1' }), { lastAuditResult: null })
 

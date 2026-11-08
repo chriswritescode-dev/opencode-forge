@@ -208,8 +208,8 @@ Only valid in the `post_action` phase. Arguments:
 Both tools share these rules:
 
 - Only the loop's current session may call them. A call is rejected outside an active loop and from any other session, including subagent sessions.
-- A call is rejected while any other loop session (a subagent) is busy or retrying. The error names the busy sessions and asks the caller to retry after they finish.
-- A successful call returns `Handoff recorded — end your turn now; make no further changes.` The call does not advance the loop by itself: the loop applies the pending record when the session's turn ends, after every other loop session has settled and any queued prompt has run.
+- A call is rejected while a subagent of the current section run's session is busy or retrying (the standby session is excluded). The error names the busy sessions and asks the caller to retry after they finish.
+- A successful call returns `Handoff recorded — end your turn now; make no further changes.` The call does not advance the loop by itself: the loop applies the pending record when the session's turn ends, after the current section run's session and its subagents have settled and any queued prompt has run.
 - The last call wins: a second call in the same turn replaces the earlier pending record, and the reply says so.
 - A record is applied once and only by the session that wrote it. The loop never parses assistant text to decide that a turn ended.
 - `loop-handoff` is rejected in `post_action` with an error that says to use `loop-complete`; `loop-complete` is rejected outside `post_action`.

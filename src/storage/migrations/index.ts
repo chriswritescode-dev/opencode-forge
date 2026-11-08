@@ -606,24 +606,6 @@ export const migrations: Migration[] = [
           'active', l.started_at, l.started_at, NULL
         FROM loops l
       `)
-      const triggerSectionIdExpr = hasSectionPlans
-        ? `COALESCE((SELECT section_id FROM section_plans WHERE project_id = NEW.project_id AND loop_name = NEW.loop_name AND section_index = NEW.current_section_index), 'section-' || (NEW.current_section_index + 1))`
-        : `'section-' || (NEW.current_section_index + 1)`
-      db.run(`
-        CREATE TRIGGER IF NOT EXISTS trg_loops_insert_section_run AFTER INSERT ON loops
-        BEGIN
-          INSERT OR REPLACE INTO section_runs (
-            project_id, loop_name, kind, section_id, section_index, phase, session_id,
-            standby_session_id, status, started_at, updated_at, finished_at
-          ) VALUES (
-            NEW.project_id, NEW.loop_name,
-            CASE WHEN NEW.phase = 'post_action' THEN 'post_action' WHEN NEW.total_sections > 0 THEN 'section' ELSE 'plan' END,
-            CASE WHEN NEW.phase = 'post_action' OR NEW.total_sections <= 0 THEN '' ELSE ${triggerSectionIdExpr} END,
-            NEW.current_section_index, NEW.phase, NEW.current_session_id, NEW.standby_session_id,
-            'active', NEW.started_at, NEW.started_at, NULL
-          );
-        END
-      `)
     },
   },
   {

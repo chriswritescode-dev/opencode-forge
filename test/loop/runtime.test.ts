@@ -793,6 +793,34 @@ describe('post-action phase', () => {
       expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.status).toBe('in_progress')
     })
 
+    test('advancing starts the next section run watchdog even when session rotation fails', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }],
+          create: async () => {
+            throw new Error('rotation failed')
+          },
+        },
+      })
+      const { loop } = buildRuntime({ client })
+
+      const loopName = 'advance-watchdog'
+      seedAuditingLoop(loopName, 'advance-audit', 2, 0)
+      seedSections(loopName, ['in_progress', 'pending'])
+
+      await recordAuditorHandoff(loop, 'advance-audit', cleanSectionHandoff)
+      await auditTick(loop, 'advance-audit')
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.currentSectionIndex).toBe(1)
+      expect(afterState!.sectionRunKey).toBe('section:section-2')
+      // Session rotation failed, so only the advance itself can have started
+      // the new section run's watchdog.
+      expect(loop.getStallInfo(loopName)).not.toBeNull()
+    })
+
     test('rewind: all other sections completed makes an earlier index the last open section', async () => {
       const { client } = createFakeForgeClient({
         session: { messages: async () => [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: auditReplyText }] }] },

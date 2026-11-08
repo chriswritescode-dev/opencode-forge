@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import { sectionRunKey, type SectionRunKind, type SectionRunTarget } from '../../loop/section-run'
+import { hasTable } from '../database'
 
 type SectionRunPhase = 'coding' | 'auditing' | 'post_action'
 type SectionRunStatus = 'active' | 'finished'
@@ -86,7 +87,7 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
     SELECT ${RUN_COLUMNS}
     FROM section_runs
     WHERE project_id = ? AND loop_name = ?
-    ORDER BY started_at ASC, CASE kind WHEN 'section' THEN 'section:' || section_id ELSE kind END ASC
+    ORDER BY started_at ASC, kind ASC, section_id ASC
   `)
 
   const stmtFinishOthers = db.prepare(`
@@ -139,19 +140,6 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
       at,
     )
   })
-
-  let sectionPlansTableExists: boolean | null = null
-  let stmtSectionIdAt: ReturnType<Database['prepare']> | null = null
-
-  function hasSectionPlansTable(): boolean {
-    if (sectionPlansTableExists === null) {
-      sectionPlansTableExists =
-        (db
-          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'")
-          .all() as unknown[]).length > 0
-    }
-    return sectionPlansTableExists
-  }
 
   function getActive(projectId: string, loopName: string): SectionRunRow | null {
     const row = stmtGetActive.get(projectId, loopName) as Record<string, unknown> | null
@@ -223,8 +211,10 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
     )
   }
 
+  let stmtSectionIdAt: ReturnType<Database['prepare']> | null = null
+
   function sectionIdAt(projectId: string, loopName: string, index: number): string | null {
-    if (!hasSectionPlansTable()) return null
+    if (!hasTable(db, 'section_plans')) return null
     if (!stmtSectionIdAt) {
       stmtSectionIdAt = db.prepare(`
         SELECT section_id

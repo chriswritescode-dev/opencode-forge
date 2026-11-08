@@ -426,7 +426,7 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 
 | Repository | Table(s) | Key Types |
 |---|---|---|
-| `LoopsRepo` | `loops`, `loop_large_fields`, `loop_handoffs` | `LoopRow`, `LoopLargeFields`, `LoopHandoffRecord` — `loop_handoffs` is the schema-validated phase handoff history with one pending row per section run |
+| `LoopsRepo` | `loops`, `loop_large_fields`, `loop_handoffs` | `LoopRow`, `LoopLargeFields`, `LoopHandoffRecord` — `loop_handoffs` is the schema-validated phase handoff history with one pending row per section run; the active section run is read through a join, and `LoopsRepo` writes its per-section fields to `section_runs` via `SectionRunsRepo` |
 | `PlansRepo` | `plans` | `PlanRow` |
 | `ReviewFindingsRepo` | `review_findings` | `ReviewFindingRow` |
 | `SectionPlansRepo` | `section_plans` | `SectionPlanRow` — one row per **milestone** (decomposed plan section). See [Loop System](loop-system.md#milestones-aka-sections). |
@@ -444,7 +444,7 @@ The `section_runs` table is the persisted identity of a loop's current unit of w
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–162; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `157` drops the removed goals feature's `goals` and `goal_chunks` tables; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`; `159` adds the nullable `checkpoint_commit` sha section audits scope from; `161` creates `section_runs`, and `162` drops the session, phase, section-index and standby columns it replaced on `loops`.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–163; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table. `156` creates `loop_handoffs`; `157` drops the removed goals feature's `goals` and `goal_chunks` tables; `158` adds the nullable `code_graph` report column to `section_plans` and `loop_attempts`; `159` adds the nullable `checkpoint_commit` sha section audits scope from; `161` creates `section_runs`; `162` drops the session, phase, section-index and standby columns it replaced on `loops`; `163` adds `section_run_key` to `loop_handoffs` and rescopes the one-pending-handoff unique index to `(project_id, loop_name, section_run_key)`, backfilling pending rows from each loop's active run.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -595,7 +595,7 @@ createMsbRuntime(logger)          // Sandbox
 createLogger(config)              // Logging
 ```
 
-Dependencies are injected via parameter objects, not global singletons. The one deliberate exception is process-shared state (`processShared` in `src/utils/process-shared.ts`): OpenCode loads a separate module graph per location in one process, so state that must be one per process (host sandbox controllers, idle-gate markers, the loop registry) lives on `globalThis` under registered symbols, and every module copy resolves the same value.
+Dependencies are injected via parameter objects, not global singletons. The one deliberate exception is process-shared state (`processShared` in `src/utils/process-shared.ts`): OpenCode loads a separate module graph per location in one process, so state that must be one per process (host sandbox controllers, idle-gate markers, the loop registry) lives on `globalThis` under registered symbols, and every module copy resolves the same value. Loop-scoped entries key on `projectLoopKey`, section-run-scoped entries on `projectLoopLaneKey`, and `deleteLoopLaneEntries` clears one loop's lane entries in a shared map.
 
 ### Barrel Exports
 

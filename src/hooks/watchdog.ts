@@ -243,6 +243,10 @@ export function createLoopWatchdog(input: {
 
         const statusResult = await getStatusWithRetry(state.worktreeDir, statusRetryAttempts, statusRetryBackoffMs)
 
+        if (stallWatchdogs.get(key) !== interval) return
+        const freshState = input.loopService.getActiveState(loopName)
+        if (!freshState?.active || freshState.sectionRunKey !== lane.sectionRunKey) return
+
         if (!statusResult.ok) {
           if (!stallReady) return
           input.logger.error(`Loop watchdog: failed to check session status after retries for ${loopName}, treating as stall`, statusResult.error)

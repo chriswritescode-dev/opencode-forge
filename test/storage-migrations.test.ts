@@ -2436,7 +2436,7 @@ test('migration 161 backfills generated section ids when section_plans is missin
   db.close()
 })
 
-test('migration 161 trigger creates an active run for a raw loop insert', () => {
+test('migration 161 leaves raw loop inserts to the repository', () => {
   const dbPath = createTempDb()
   const db = new Database(dbPath)
   applyMigrationsThrough(db, '161')
@@ -2446,36 +2446,25 @@ test('migration 161 trigger creates an active run for a raw loop insert', () => 
     VALUES ('proj-1', 'loop-raw', 'running', 'sess-raw', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 7)
   `).run()
 
-  const rawRuns = db.prepare(`
-    SELECT kind, section_id, section_index, session_id, status, started_at
-    FROM section_runs
-    WHERE project_id = 'proj-1' AND loop_name = 'loop-raw' AND status = 'active'
-  `).all() as Array<{ kind: string; section_id: string; section_index: number; session_id: string; status: string; started_at: number }>
-  expect(rawRuns).toEqual([
-    { kind: 'plan', section_id: '', section_index: 0, session_id: 'sess-raw', status: 'active', started_at: 7 },
-  ])
-
   db.prepare(`
     INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, current_section_index, total_sections)
     VALUES ('proj-1', 'loop-raw-section', 'running', 'sess-raw-section', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 8, 1, 2)
   `).run()
 
-  const sectionRuns = db.prepare(`
-    SELECT kind, section_id, section_index, session_id, status
+  const rawInsertRuns = db.prepare(`
+    SELECT COUNT(*) AS c
     FROM section_runs
-    WHERE project_id = 'proj-1' AND loop_name = 'loop-raw-section' AND status = 'active'
-  `).all() as Array<{ kind: string; section_id: string; section_index: number; session_id: string; status: string }>
-  expect(sectionRuns).toEqual([
-    { kind: 'section', section_id: 'section-2', section_index: 1, session_id: 'sess-raw-section', status: 'active' },
-  ])
-
-  db.run('PRAGMA foreign_keys=OFF')
-  applySingleMigration(db, '162')
-  db.run('PRAGMA foreign_keys=ON')
+    WHERE project_id = 'proj-1' AND loop_name IN ('loop-raw', 'loop-raw-section')
+  `).get() as { c: number }
+  expect(rawInsertRuns.c).toBe(0)
 
   expect(
     db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name='trg_loops_insert_section_run'").get(),
   ).toBeFalsy()
+
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '162')
+  db.run('PRAGMA foreign_keys=ON')
 
   const runsBefore = db.prepare('SELECT COUNT(*) AS c FROM section_runs').get() as { c: number }
   db.prepare(`

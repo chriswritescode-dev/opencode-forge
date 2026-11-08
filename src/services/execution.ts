@@ -1776,15 +1776,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId: stoppedState.hostSessionId,
         currentSectionIndex: stoppedState.currentSectionIndex,
         totalSections: stoppedState.totalSections,
-        sectionRunKind: restartPhase === 'post_action' ? 'post_action' : stoppedState.totalSections > 0 ? 'section' : 'plan',
-        sectionId: restartPhase !== 'post_action' && stoppedState.totalSections > 0
-          ? stoppedState.sectionId
-          : '',
-        sectionRunKey: restartPhase === 'post_action'
-          ? 'post_action'
-          : stoppedState.totalSections > 0
-            ? `section:${stoppedState.sectionId}`
-            : 'plan',
+        sectionRunKind: stoppedState.sectionRunKind,
+        sectionId: stoppedState.sectionId,
+        sectionRunKey: stoppedState.sectionRunKey,
       }
       // Build appropriate prompt based on persisted state
       let promptText: string

@@ -258,8 +258,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function activeLane(loopName: string): LoopLane | null {
-    const state = loopService.getActiveState(loopName)
-    return state ? laneOf(state) : null
+    return loopService.getActiveLane(loopName)
   }
 
   /**
@@ -538,6 +537,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!pending) return
     clearTimeout(pending)
     handoffDeferTimers.delete(key)
+  }
+
+  /** Cancels any scheduled retry re-dispatch for a section-run lane. */
+  function clearRetryTimeout(lane: LoopLane): void {
+    const key = laneKey(lane)
+    const pending = retryTimeouts.get(key)
+    if (!pending) return
+    clearTimeout(pending)
+    retryTimeouts.delete(key)
   }
 
   /**
@@ -863,11 +871,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   function activateLoopSession(loopName: string, lane: LoopLane, previousSessionId: string | null, newSessionId: string): void {
     clearPromptPending(projectId, lane, logger)
     const key = laneKey(lane)
-    const oldRetryTimeout = retryTimeouts.get(key)
-    if (oldRetryTimeout) {
-      clearTimeout(oldRetryTimeout)
-      retryTimeouts.delete(key)
-    }
+    clearRetryTimeout(lane)
     clearHandoffDeferTimer(lane)
     handoffNudges.delete(key)
     loopService.registerLoopSession(newSessionId, loopName)
@@ -1551,7 +1555,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     state = current
 
     const sessionId = state.sessionId
-    watchdog.stopLoop(loopName)
     loopRegistry.remove(projectId, loopName)
 
     loopService.discardPendingHandoff(loopName)
@@ -2039,11 +2042,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearPromptPending(projectId, lane, logger)
     clearPromptInFlight(projectId, lane)
     pendingCodeGraphSnapshots.delete(key)
-    const retry = retryTimeouts.get(key)
-    if (retry) {
-      clearTimeout(retry)
-      retryTimeouts.delete(key)
-    }
+    clearRetryTimeout(lane)
     clearHandoffDeferTimer(lane)
     handoffNudges.delete(key)
   }
@@ -2751,6 +2750,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         })
 
         const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
+        watchdog.start(laneOf(updatedState))
         const auditedState = currentState
         await continueAfterCodeGraphSnapshot(
           loopName,
@@ -3444,8 +3444,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function clearLoopTimers(loopName: string): Promise<void> {
-    watchdog.stopLoop(loopName)
-
     releaseLoopLanes(loopName)
     coalescedLimitSessions.delete(loopName)
 

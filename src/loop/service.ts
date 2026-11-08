@@ -6,6 +6,7 @@ import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopState } from './state'
+import type { LoopLane } from './section-run'
 import { auditScope, loopRowToState, loopStateToRow } from './state'
 import { createHash, randomUUID } from 'node:crypto'
 import type { LoopAttemptsRepo, LoopAttemptRow } from '../storage/repos/loop-attempts-repo'
@@ -59,6 +60,12 @@ export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hi
 
 export interface LoopService {
   getActiveState(name: string): LoopState | null
+  /**
+   * The lane of the loop's active section run, or null when the loop is absent
+   * or not running. Reads only the loop row (no plan text or large fields), so
+   * it stays cheap enough for per-tool-call and per-event activity checks.
+   */
+  getActiveLane(name: string): LoopLane | null
   getAnyState(name: string): LoopState | null
   setState(name: string, state: LoopState): void
   /** In-place row restore via UPDATE (preserves child rows such as loop_transitions/section_plans that would be cascade-deleted by deleteState + setState). Falls back to INSERT if the row was concurrently deleted. */
@@ -238,6 +245,12 @@ export function createLoopService(
       return null
     }
     return state
+  }
+
+  function getActiveLane(name: string): LoopLane | null {
+    const row = loopsRepo.get(projectId, name)
+    if (row?.status !== 'running') return null
+    return { loopName: name, sectionRunKey: row.sectionRunKey }
   }
 
   /**
@@ -1188,6 +1201,7 @@ export function createLoopService(
 
   return {
     getActiveState,
+    getActiveLane,
     getAnyState,
     setState,
     restoreState,

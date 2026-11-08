@@ -1180,4 +1180,94 @@ describe('createLoopWatchdog', () => {
       vi.useRealTimers()
     }
   })
+
+  it('drops a stall tick whose status query resolves after the section run advanced', async () => {
+    const oldLane: LoopLane = { loopName: 'test-loop', sectionRunKey: 'section:one' }
+    const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sectionRunKey: 'section:one' }) }
+    const recoverCalls: unknown[] = []
+    let releaseStatus!: (value: any) => void
+    const statusGate = new Promise((resolve) => {
+      releaseStatus = resolve
+    })
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
+      loopService: {
+        ...createMockLoopService({ getActiveState: () => stateRef.current }),
+      },
+      client: createMockClient(() => statusGate),
+      logger,
+      nudge: vi.fn(),
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+    })
+
+    vi.useFakeTimers()
+    try {
+      watchdog.start(oldLane)
+      await vi.advanceTimersByTimeAsync(12)
+
+      // The status query is in flight; the loop advances to another section run.
+      stateRef.current = makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sectionRunKey: 'section:two' })
+      releaseStatus({ 'coding-session': { type: 'idle' } })
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(recoverCalls).toHaveLength(0)
+    } finally {
+      watchdog.stop(oldLane)
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops a stall tick from a superseded interval after the lane watchdog restarts', async () => {
+    const stateRef = { current: makeLoopState(WATCHDOG_STATE_DEFAULTS) }
+    const recoverCalls: unknown[] = []
+    let statusCalls = 0
+    let releaseFirst!: (value: any) => void
+    const firstStatusGate = new Promise((resolve) => {
+      releaseFirst = resolve
+    })
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
+      loopService: {
+        ...createMockLoopService({ getActiveState: () => stateRef.current }),
+      },
+      client: createMockClient(() => {
+        statusCalls += 1
+        return statusCalls === 1 ? firstStatusGate : Promise.resolve({})
+      }),
+      logger,
+      nudge: vi.fn(),
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async () => {},
+    })
+
+    vi.useFakeTimers()
+    try {
+      watchdog.start(PLAN_LANE)
+      await vi.advanceTimersByTimeAsync(12)
+
+      // Restart replaces the interval while the first tick is still awaiting status.
+      watchdog.stop(PLAN_LANE)
+      watchdog.start(PLAN_LANE)
+      releaseFirst({ 'coding-session': { type: 'idle' } })
+      await vi.advanceTimersByTimeAsync(0)
+
+      // The superseded tick must not recover on the restarted lane.
+      expect(recoverCalls).toHaveLength(0)
+
+      await vi.advanceTimersByTimeAsync(14)
+      expect(recoverCalls.length).toBeGreaterThanOrEqual(1)
+    } finally {
+      watchdog.stop(PLAN_LANE)
+      vi.useRealTimers()
+    }
+  })
 })

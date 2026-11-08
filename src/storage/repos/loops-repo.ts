@@ -510,11 +510,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
-  const setPhaseAndResetErrorStmt = db.prepare(`
-    UPDATE loops SET error_count = 0, model_failed = 0
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
   const replaceSessionStmt = db.prepare(`
     UPDATE loops SET
       iteration = COALESCE(?, iteration),
@@ -749,7 +744,6 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
             phase: row.phase,
             standbySessionId: row.standbySessionId ?? null,
           },
-          row.startedAt,
         )
       })
       runRestore()
@@ -890,7 +884,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     setPhaseAndResetError(projectId: string, loopName: string, phase: LoopRow['phase']): void {
       const runTxn = db.transaction(() => {
-        setPhaseAndResetErrorStmt.run(projectId, loopName)
+        resetErrorStmt.run(projectId, loopName)
         applyPhaseChange(projectId, loopName, phase)
       })
       runTxn()
@@ -915,7 +909,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           resetErrorStmt.run(projectId, loopName)
         }
         applyPhaseChange(projectId, loopName, opts.phase)
-        sectionRuns.updateActive(projectId, loopName, { sessionId: opts.sessionId, phase: opts.phase })
+        sectionRuns.updateActive(projectId, loopName, { sessionId: opts.sessionId })
       })
       runTxn()
     },
