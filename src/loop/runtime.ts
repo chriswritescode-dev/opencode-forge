@@ -13,7 +13,7 @@ import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-r
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopAttemptsRepo } from '../storage/repos/loop-attempts-repo'
-import { activeLoopSessions, createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
+import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
 import { resolveLoopModel, resolveLoopAuditorChoice, buildAuditorModelChain, nextAuditorFallbackIndex, isAuditorPhase, usageRoleForPhase, standbyPhaseFor } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
@@ -499,18 +499,27 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Session ids of every loop session that is busy or retrying, excluding the standby
-   * sibling, which is idle by construction until the next rotation reuses it. Throws when
-   * the status query fails or ancestry cannot be resolved: callers must never treat an
-   * unverifiable status as quiescent.
+   * Session ids of the current section run's session and its descendants that are busy or
+   * retrying, excluding the standby sibling, which is idle by construction until the next
+   * rotation reuses it. Throws when the status query fails or ancestry cannot be resolved:
+   * callers must never treat an unverifiable status as quiescent.
    */
   async function findBusyLoopSessions(state: LoopState): Promise<string[]> {
     const statuses = await fetchSessionStatuses(state.worktreeDir)
     if (!statuses) throw new Error('Session status is unavailable')
-    const active = await activeLoopSessions(statuses, state.loopName, sessionId => resolveSessionLoopName(sessionId, true))
-    return active
-      .map(([sessionId]) => sessionId)
-      .filter((sessionId) => sessionId !== state.standbySessionId)
+    const busy: string[] = []
+    for (const [sessionId, status] of Object.entries(statuses)) {
+      if (status.type !== 'busy' && status.type !== 'retry') continue
+      if (sessionId === state.standbySessionId) continue
+      if (sessionId === state.sessionId) {
+        busy.push(sessionId)
+        continue
+      }
+      if (!getParentSessionId) throw new Error('Session ancestry lookup is unavailable')
+      const isDescendant = await findSessionAncestor(sessionId, getParentSessionId, parentId => (parentId === state.sessionId ? true : null))
+      if (isDescendant === true) busy.push(sessionId)
+    }
+    return busy
   }
 
   /**
@@ -532,11 +541,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   /**
-   * Defers a phase handoff indefinitely while any loop session (the current turn's session,
-   * its subagents, and the other role's session) is busy or retrying, or a prompt is still
-   * queued in the session inbox, re-checking on the existing 1.5s retry timer. Only the
-   * standby sibling is exempt. Genuinely wedged sessions are left to the watchdog's
-   * progress-aware stall handling rather than a wall-clock cutoff here.
+   * Defers a phase handoff indefinitely while the current run's session tree (the current
+   * turn's session and its subagents) is busy or retrying, or a prompt is still queued in the
+   * session inbox, re-checking on the existing 1.5s retry timer. Only the standby sibling is
+   * exempt. Genuinely wedged sessions are left to the watchdog's progress-aware stall handling
+   * rather than a wall-clock cutoff here.
    */
   async function deferWhileLoopSessionsBusy(state: LoopState): Promise<boolean> {
     const loopName = state.loopName

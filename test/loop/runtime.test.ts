@@ -21,7 +21,7 @@ import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
 import { createMockLogger } from '../helpers/logger'
 import { makeLoopState, buildLoopRuntime } from '../helpers/loop-fixtures'
-import { recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
+import { coderPayload, recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
 import { formatAuditHandoffResult, formatPostActionReport, formatPostActionSummary } from '../../src/loop/handoff'
 import { buildHandoffNudgePrompt } from '../../src/loop/prompts'
 import { LOOP_HANDOFF_TOOL_NAME } from '../../src/constants/loop'
@@ -4643,6 +4643,61 @@ describe('stall handling terminates with stall timeout when configured cap is re
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    test('a busy subagent of the current session blocks the handoff', async () => {
+      const statuses = { 'child-1': { type: 'busy' } }
+      const { client } = createFakeForgeClient({ session: { status: async () => statuses } })
+      const { loop } = buildRuntime({
+        client,
+        getParentSessionId: async (sessionId) => (sessionId === 'child-1' ? 'coder-1' : null),
+      })
+
+      const state = makeLoopState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('coder-1', state.loopName)
+
+      const result = await loop.recordHandoff({ sessionId: 'coder-1', tool: LOOP_HANDOFF_TOOL_NAME, args: coderPayload() })
+
+      expect(result.ok).toBe(false)
+      expect(result.ok ? '' : result.error).toContain('Wait for these subagent sessions to finish')
+    })
+
+    test('a busy session from an earlier run no longer blocks the handoff', async () => {
+      const statuses = { 'retired-1': { type: 'busy' } }
+      const { client } = createFakeForgeClient({ session: { status: async () => statuses } })
+      const { loop } = buildRuntime({ client, getParentSessionId: async () => null })
+
+      const state = makeLoopState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('coder-1', state.loopName)
+      loop.registerSessionReverseIndex('retired-1', state.loopName)
+
+      await recordCoderHandoff(loop, 'coder-1')
+
+      expect(loopService.listHandoffs(state.loopName)).toHaveLength(1)
+    })
+
+    test('an unverifiable child ancestry deferring a handoff surfaces as an error', async () => {
+      const statuses = { 'child-2': { type: 'busy' } }
+      const { client } = createFakeForgeClient({ session: { status: async () => statuses } })
+      const { loop } = buildRuntime({
+        client,
+        getParentSessionId: async () => {
+          throw new Error('parent lookup unavailable')
+        },
+      })
+
+      const state = makeLoopState({ phase: 'coding', sessionId: 'coder-1', totalSections: 0 })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('coder-1', state.loopName)
+
+      const result = await loop.recordHandoff({ sessionId: 'coder-1', tool: LOOP_HANDOFF_TOOL_NAME, args: coderPayload() })
+
+      expect(result.ok).toBe(false)
+      const error = result.ok ? '' : result.error
+      expect(error).toContain('Could not check subagent sessions:')
+      expect(error).toContain('parent lookup unavailable')
     })
   })
 
