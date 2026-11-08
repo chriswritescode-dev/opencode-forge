@@ -32,6 +32,7 @@ import {
   repoLabel,
   roleUsageBars,
   sectionCompletion,
+  sectionDependencyLevels,
   sectionRowStates,
   shareUnchanged,
   sortLoops,
@@ -1500,5 +1501,75 @@ describe('sectionRowStates / formatSectionRefs', () => {
   test('formats section references and the empty set', () => {
     expect(formatSectionRefs([1, 3])).toBe('#2, #4')
     expect(formatSectionRefs([])).toBe('')
+  })
+})
+
+describe('sectionDependencyLevels', () => {
+  test('groups a diamond plan by dependency depth', () => {
+    const sections = [
+      makeSection({ sectionIndex: 0, sectionId: 'a' }),
+      makeSection({ sectionIndex: 1, sectionId: 'b', dependsOn: ['a'] }),
+      makeSection({ sectionIndex: 2, sectionId: 'c', dependsOn: ['a'] }),
+      makeSection({ sectionIndex: 3, sectionId: 'd', dependsOn: ['b', 'c'] }),
+      makeSection({ sectionIndex: 4, sectionId: 'e', dependsOn: ['a'] }),
+    ]
+
+    expect(sectionDependencyLevels(sections)).toEqual([[0], [1, 2, 4], [3]])
+  })
+
+  test('groups independent sections into one level', () => {
+    const sections = [
+      makeSection({ sectionIndex: 0, sectionId: 'a' }),
+      makeSection({ sectionIndex: 1, sectionId: 'b' }),
+      makeSection({ sectionIndex: 2, sectionId: 'c' }),
+    ]
+
+    expect(sectionDependencyLevels(sections)).toEqual([[0, 1, 2]])
+  })
+
+  test('returns no levels for a chain of singleton levels', () => {
+    const sections = [
+      makeSection({ sectionIndex: 0, sectionId: 'a' }),
+      makeSection({ sectionIndex: 1, sectionId: 'b', dependsOn: ['a'] }),
+      makeSection({ sectionIndex: 2, sectionId: 'c', dependsOn: ['b'] }),
+    ]
+
+    expect(sectionDependencyLevels(sections)).toEqual([])
+  })
+
+  test('places a section at its longest dependency path', () => {
+    const sections = [
+      makeSection({ sectionIndex: 0, sectionId: 'a' }),
+      makeSection({ sectionIndex: 1, sectionId: 'b', dependsOn: ['a'] }),
+      makeSection({ sectionIndex: 2, sectionId: 'c', dependsOn: ['a', 'b'] }),
+    ]
+
+    expect(sectionDependencyLevels(sections)).toEqual([])
+  })
+
+  test('skips unknown dependency ids', () => {
+    const sections = [
+      makeSection({ sectionIndex: 0, sectionId: 'a' }),
+      makeSection({ sectionIndex: 1, sectionId: 'b', dependsOn: ['missing'] }),
+      makeSection({ sectionIndex: 2, sectionId: 'c', dependsOn: ['a'] }),
+    ]
+
+    expect(sectionDependencyLevels(sections)).toEqual([[0, 1], [2]])
+  })
+
+  test('gives the same result for unsorted input', () => {
+    const sections = [
+      makeSection({ sectionIndex: 3, sectionId: 'd', dependsOn: ['b', 'c'] }),
+      makeSection({ sectionIndex: 0, sectionId: 'a' }),
+      makeSection({ sectionIndex: 4, sectionId: 'e', dependsOn: ['a'] }),
+      makeSection({ sectionIndex: 2, sectionId: 'c', dependsOn: ['a'] }),
+      makeSection({ sectionIndex: 1, sectionId: 'b', dependsOn: ['a'] }),
+    ]
+
+    expect(sectionDependencyLevels(sections)).toEqual([[0], [1, 2, 4], [3]])
+  })
+
+  test('returns no levels for an empty plan', () => {
+    expect(sectionDependencyLevels([])).toEqual([])
   })
 })

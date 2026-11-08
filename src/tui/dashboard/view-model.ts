@@ -404,6 +404,27 @@ export function formatSectionRefs(indexes: number[]): string {
   return indexes.map((index) => `#${formatSectionNumber(index)}`).join(', ')
 }
 
+/** Section indexes grouped by dependency depth (one more than the deepest known dependency, 0 without one), each level ascending; `[]` when no level holds two or more sections. */
+export function sectionDependencyLevels(
+  sections: Pick<ForgeSectionPlan, 'sectionIndex' | 'sectionId' | 'dependsOn'>[],
+): number[][] {
+  const sorted = [...sections].sort((a, b) => a.sectionIndex - b.sectionIndex)
+  const depthById = new Map<string, number>()
+  const levels: number[][] = []
+  for (const section of sorted) {
+    if (depthById.has(section.sectionId)) continue
+    let depth = 0
+    for (const dependencyId of section.dependsOn) {
+      const dependencyDepth = depthById.get(dependencyId)
+      if (dependencyDepth !== undefined) depth = Math.max(depth, dependencyDepth + 1)
+    }
+    depthById.set(section.sectionId, depth)
+    if (!levels[depth]) levels[depth] = []
+    levels[depth].push(section.sectionIndex)
+  }
+  return levels.every((level) => level.length < 2) ? [] : levels
+}
+
 export function formatFinding(f: ForgeReviewFinding): string {
   let text = f.file + ':' + f.line + ' — ' + f.description
   if (f.scenario) {

@@ -50,6 +50,7 @@ import {
   repoRawPath,
   roleUsageBars,
   sectionCompletion,
+  sectionDependencyLevels,
   sectionRowStates,
   splitFindings,
   summarizeAmendments,
@@ -59,6 +60,7 @@ import {
   type LoopTab,
   type PhaseSpan,
   type SectionDependency,
+  type SectionRowState,
   type SectionState,
   type TimelineEntry,
 } from './view-model'
@@ -197,6 +199,33 @@ function LaneLine(props: { lane: ForgeDashboardLane; colors: DashboardColors }):
       <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>{props.lane.title}</text>
       <text flexShrink={0} fg={phaseColor(props.colors, props.lane.phase)}>{phaseLabel(props.lane.phase)}</text>
       <text flexShrink={0} fg={props.colors.muted}>{formatCount(props.lane.attempts, 'attempt')}</text>
+    </box>
+  )
+}
+
+function SectionDependencyLine(props: {
+  levels: number[][]
+  states: Map<number, SectionRowState>
+  colors: DashboardColors
+}): JSX.Element {
+  return (
+    <box flexDirection="row" flexWrap="wrap" columnGap={1} paddingBottom={1}>
+      <For each={props.levels}>
+        {(level, levelIndex) => (
+          <>
+            <For each={level}>
+              {(index) => (
+                <text flexShrink={0} fg={sectionStateColor(props.colors, props.states.get(index)?.state ?? 'blocked')}>
+                  {`#${formatSectionNumber(index)}`}
+                </text>
+              )}
+            </For>
+            <Show when={levelIndex() < props.levels.length - 1}>
+              <text flexShrink={0} fg={props.colors.muted}>→</text>
+            </Show>
+          </>
+        )}
+      </For>
     </box>
   )
 }
@@ -1365,10 +1394,14 @@ function SectionsTab(props: {
 }): JSX.Element {
   const adjusted = createMemo(() => amendedSectionIndexes(props.detail.amendments))
   const states = createMemo(() => sectionRowStates(props.detail.sections, props.detail.lanes))
+  const levels = createMemo(() => sectionDependencyLevels(props.detail.sections))
   return (
     <box flexDirection="column" paddingTop={1}>
       <Show when={props.detail.sections.length === 0}>
         <text fg={props.colors.muted}>No sections recorded for this loop.</text>
+      </Show>
+      <Show when={levels().length > 0}>
+        <SectionDependencyLine levels={levels()} states={states()} colors={props.colors} />
       </Show>
       <For each={props.detail.sections}>
         {(section, index) => {
