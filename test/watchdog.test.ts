@@ -20,12 +20,16 @@ function wait(ms: number): Promise<void> {
 
 function createMockLoopService(overrides?: {
   getActiveState?: () => LoopState | null
+  getRunState?: (loopName: string, runKey: string) => LoopState | null
   resolveLoopName?: (sessionId: string) => string | null
   getBusyStallTimeoutMs?: () => number
   getStallTimeoutMs?: () => number
 }) {
+  const getActiveState = overrides?.getActiveState ?? (() => makeLoopState(WATCHDOG_STATE_DEFAULTS))
+  const getRunState = overrides?.getRunState ?? ((_loopName: string, _runKey: string) => getActiveState())
   return {
-    getActiveState: overrides?.getActiveState ?? (() => makeLoopState(WATCHDOG_STATE_DEFAULTS)),
+    getActiveState,
+    getRunState,
     getStallTimeoutMs: overrides?.getStallTimeoutMs ?? (() => 10),
     getMaxConsecutiveStalls: () => 3,
     getBusyStallTimeoutMs: overrides?.getBusyStallTimeoutMs ?? (() => 900_000),
@@ -1147,7 +1151,11 @@ describe('createLoopWatchdog', () => {
     const watchdog = createLoopWatchdog({
       projectId: 'test-project',
       loopService: {
-        ...createMockLoopService({ getActiveState: () => stateRef.current }),
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getRunState: (_loopName, runKey) =>
+            stateRef.current?.sectionRunKey === runKey ? stateRef.current : null,
+        }),
       },
       client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
@@ -1181,6 +1189,75 @@ describe('createLoopWatchdog', () => {
     }
   })
 
+  it('reads the state of its own section run instead of the loop primary run', async () => {
+    const laneA: LoopLane = { loopName: 'test-loop', sectionRunKey: 'section:a' }
+    const laneB: LoopLane = { loopName: 'test-loop', sectionRunKey: 'section:b' }
+    const stateA = makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sectionRunKey: laneA.sectionRunKey, sessionId: 'session-a' })
+    const stateB = makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sectionRunKey: laneB.sectionRunKey, sessionId: 'session-b', phase: 'auditing' })
+    const aFinished = { current: false }
+    let statusCalls = 0
+    const recoverCalls: unknown[] = []
+    const terminateCalls: unknown[] = []
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
+      loopService: {
+        ...createMockLoopService({
+          // The primary run is a different section run, in a different phase and session.
+          getActiveState: () => stateB,
+          getRunState: (_loopName, runKey) => {
+            if (runKey === laneB.sectionRunKey) return stateB
+            return aFinished.current ? null : stateA
+          },
+          resolveLoopName: (sessionId) =>
+            sessionId === 'session-a' || sessionId === 'session-b' ? 'test-loop' : null,
+        }),
+      },
+      client: createMockClient(async () => {
+        statusCalls += 1
+        return {
+          'session-a': { type: 'busy', message: 'working' },
+          'session-b': { type: 'idle' },
+        }
+      }),
+      logger,
+      nudge: vi.fn(),
+      recover: async (_ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async (_ln, _s, reason) => {
+        terminateCalls.push(reason)
+      },
+    })
+
+    vi.useFakeTimers()
+    try {
+      watchdog.start(laneA)
+      await vi.advanceTimersByTimeAsync(12)
+
+      // A is busy on its own run, so the idle primary run B must not stall it.
+      expect(statusCalls).toBeGreaterThanOrEqual(1)
+      expect(recoverCalls).toHaveLength(0)
+      expect(terminateCalls).toHaveLength(0)
+      expect(watchdog.getStallInfo(laneA)).not.toBeNull()
+
+      // A's run finishes: the watchdog stops instead of reading B's state.
+      aFinished.current = true
+      await vi.advanceTimersByTimeAsync(60)
+      expect(watchdog.getStallInfo(laneA)).toBeNull()
+
+      const statusCallsAfterStop = statusCalls
+      await vi.advanceTimersByTimeAsync(60)
+      expect(statusCalls).toBe(statusCallsAfterStop)
+      expect(recoverCalls).toHaveLength(0)
+      expect(terminateCalls).toHaveLength(0)
+    } finally {
+      watchdog.stop(laneA)
+      vi.useRealTimers()
+    }
+  })
+
   it('drops a stall tick whose status query resolves after the section run advanced', async () => {
     const oldLane: LoopLane = { loopName: 'test-loop', sectionRunKey: 'section:one' }
     const stateRef = { current: makeLoopState({ ...WATCHDOG_STATE_DEFAULTS, sectionRunKey: 'section:one' }) }
@@ -1194,7 +1271,11 @@ describe('createLoopWatchdog', () => {
     const watchdog = createLoopWatchdog({
       projectId: 'test-project',
       loopService: {
-        ...createMockLoopService({ getActiveState: () => stateRef.current }),
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          getRunState: (_loopName, runKey) =>
+            stateRef.current?.sectionRunKey === runKey ? stateRef.current : null,
+        }),
       },
       client: createMockClient(() => statusGate),
       logger,

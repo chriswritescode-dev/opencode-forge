@@ -7,6 +7,7 @@ import { createLoopsRepo, type LoopRow } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
+import { createSectionRunsRepo } from '../src/storage/repos/section-runs-repo'
 import { createPlanAmendmentsRepo } from '../src/storage/repos/plan-amendments-repo'
 import { createLoopService } from '../src/loop/service'
 import { createLoop } from '../src/loop/runtime'
@@ -192,9 +193,9 @@ describe('Loop', () => {
     })
   })
 
-  describe('getActiveLane', () => {
+  describe('getRunState', () => {
     function insertLoop(loopName: string, overrides: Partial<LoopRow> = {}) {
-      insertTestLoopRow(db, {
+      return insertTestLoopRow(db, {
         projectId,
         loopName,
         status: 'running',
@@ -214,20 +215,44 @@ describe('Loop', () => {
       })
     }
 
-    test('returns the lane of the active section run', () => {
+    test('returns the state of the requested active section run', () => {
       insertLoop('lane-loop', { totalSections: 2 })
 
-      expect(loop.service.getActiveLane('lane-loop')).toEqual({
+      expect(loop.service.getRunState('lane-loop', 'section:section-1')).toMatchObject({
         loopName: 'lane-loop',
         sectionRunKey: 'section:section-1',
+        active: true,
+        phase: 'coding',
       })
     })
 
-    test('returns null for a missing or non-running loop', () => {
-      insertLoop('lane-finished', { status: 'completed' })
+    test('returns null for a missing run, a missing loop, or a finished run', () => {
+      insertLoop('lane-loop', { totalSections: 2 })
+      insertLoop('lane-finished', { status: 'completed', totalSections: 2 })
+      createSectionRunsRepo(db).finish(projectId, 'lane-finished', 'section:section-1')
 
-      expect(loop.service.getActiveLane('lane-missing')).toBeNull()
-      expect(loop.service.getActiveLane('lane-finished')).toBeNull()
+      expect(loop.service.getRunState('lane-loop', 'section:missing')).toBeNull()
+      expect(loop.service.getRunState('lane-missing', 'section:section-1')).toBeNull()
+      expect(loop.service.getRunState('lane-finished', 'section:section-1')).toBeNull()
+    })
+
+    test('getRunStateForSession resolves the calling run and rejects unknown sessions', () => {
+      const running = insertLoop('plan-loop', { totalSections: 0 })
+
+      expect(loop.service.getRunStateForSession(running.currentSessionId)).toMatchObject({
+        loopName: 'plan-loop',
+        sectionRunKey: 'plan',
+      })
+      expect(loop.service.getRunStateForSession('sess-unknown')).toBeNull()
+    })
+
+    test('listActiveRunStates returns exactly the loop active runs', () => {
+      insertLoop('lane-loop', { totalSections: 2 })
+
+      expect(loop.service.listActiveRunStates('lane-loop').map((state) => state.sectionRunKey)).toEqual([
+        'section:section-1',
+      ])
+      expect(loop.service.listActiveRunStates('lane-missing')).toEqual([])
     })
   })
 

@@ -13,19 +13,23 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
   const loop = ctx.loop
 
   /**
-   * Resolve the loop owning the current tool context using the single canonical
-   * resolver (`resolveActiveLoopForSession`), which follows parent-session hops.
-   * Read, write, and delete MUST share this so a finding written under a loop —
-   * even from a descendant session such as an audit subagent — is always
-   * visible and deletable from that loop. Returns null outside any active loop.
+   * Resolve the loop and section run owning the current tool context using the
+   * single canonical resolver (`resolveActiveLoopForSession`), which follows
+   * parent-session hops. Read, write, and delete MUST share this so a finding
+   * written under a loop — even from a descendant session such as an audit
+   * subagent — is always visible and deletable from that loop. Returns a null
+   * loop outside any active loop.
    */
-  async function resolveLoopName(toolCtx?: { sessionID?: string }): Promise<string | null> {
+  async function resolveLoopScope(toolCtx?: { sessionID?: string }): Promise<{ loopName: string | null; state: LoopState | null }> {
     const sessionId = toolCtx?.sessionID
-    if (!sessionId) return null
+    if (!sessionId) return { loopName: null, state: null }
     const resolved = await ctx.resolveActiveLoopForSession(sessionId)
     const loopName = resolved?.loopName ?? null
-    logger.log(`review-scope: session=${sessionId} resolved loop=${loopName ?? 'none'}`)
-    return loopName
+    const state = resolved?.sectionRunKey
+      ? loop.service.getRunState(resolved.loopName, resolved.sectionRunKey)
+      : (loopName ? loop.service.getActiveState(loopName) : null)
+    logger.log(`review-scope: session=${sessionId} resolved loop=${loopName ?? 'none'}${resolved?.sectionRunKey ? ` run=${resolved.sectionRunKey}` : ''}`)
+    return { loopName, state }
   }
 
   /**
@@ -51,6 +55,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
         sectionIndex: z.number().optional().describe('Explicitly set section index. Defaults to current section in a sectioned loop.'),
       },
       execute: async (args, toolCtx) => {
+        const { loopName, state } = await resolveLoopScope(toolCtx)
         const row = {
           projectId,
           file: args.file,
@@ -62,12 +67,9 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           sectionIndex: null as number | null,
         }
 
-        row.loopName = await resolveLoopName(toolCtx)
-        if (row.loopName) {
-          const loopState = loop.service.getActiveState(row.loopName)
-          if (loopState && loopState.totalSections > 0) {
-            row.sectionIndex = loopState.currentSectionIndex
-          }
+        row.loopName = loopName
+        if (state && state.totalSections > 0) {
+          row.sectionIndex = state.currentSectionIndex
         }
 
         // Apply explicit section index or crossSection override
@@ -77,13 +79,9 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           if (!Number.isInteger(args.sectionIndex)) {
             return `Invalid sectionIndex ${args.sectionIndex}: must be an integer.`
           }
-          const loopName = row.loopName
-          if (loopName) {
-            const loopState = loop.service.getActiveState(loopName)
-            if (loopState && loopState.totalSections > 0) {
-              if (args.sectionIndex < 0 || args.sectionIndex >= loopState.totalSections) {
-                return `Invalid sectionIndex ${args.sectionIndex}: must be between 0 and ${loopState.totalSections - 1}.`
-              }
+          if (state && state.totalSections > 0) {
+            if (args.sectionIndex < 0 || args.sectionIndex >= state.totalSections) {
+              return `Invalid sectionIndex ${args.sectionIndex}: must be between 0 and ${state.totalSections - 1}.`
             }
           }
           row.sectionIndex = args.sectionIndex
@@ -125,9 +123,12 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
           }
           const trimmedLoop = typeof args.loopName === 'string' ? args.loopName.trim() : ''
           const explicitLoop = trimmedLoop !== ''
-          const loopName = explicitLoop ? trimmedLoop : await resolveLoopName(toolCtx)
+          const callingScope = explicitLoop ? null : await resolveLoopScope(toolCtx)
+          const loopName = explicitLoop ? trimmedLoop : callingScope?.loopName ?? null
           if (!loopName) return JSON.stringify({ attempts: [], nextBeforeId: null })
-          const state = loop.service.getAnyState(loopName)
+          const state = explicitLoop
+            ? loop.service.getAnyState(loopName)
+            : (callingScope?.state ?? loop.service.getAnyState(loopName))
           if (!state) return JSON.stringify({ attempts: [], nextBeforeId: null })
           const scope = explicitLoop || args.allSections ? undefined : auditScope(state)
           const limit = args.limit ?? ATTEMPT_PAGE_LIMIT_DEFAULT
@@ -144,13 +145,14 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
 
         const trimmedLoop = typeof args.loopName === 'string' ? args.loopName.trim() : ''
         const explicitLoop = trimmedLoop !== ''
+        const callingScope = explicitLoop ? null : await resolveLoopScope(toolCtx)
         const loopName: string | null = explicitLoop
           ? trimmedLoop
-          : await resolveLoopName(toolCtx)
+          : callingScope?.loopName ?? null
         let findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
 
         if (loopName && !explicitLoop && !args.allSections) {
-          const loopState = loop.service.getActiveState(loopName)
+          const loopState = callingScope?.state ?? null
           if (loopState && isSectionScopedPhase(loopState)) {
             if (args.crossSection) {
               // crossSection: return only cross-section findings (sectionIndex === null)
@@ -204,23 +206,22 @@ export function createReviewTools(ctx: ToolContext): Record<string, ToolDefiniti
         crossSection: z.boolean().optional().describe('Set to true to delete cross-section findings (sectionIndex=null). Overrides sectionIndex.'),
       },
       execute: async (args, toolCtx) => {
-        const loopName = await resolveLoopName(toolCtx)
+        const { loopName, state } = await resolveLoopScope(toolCtx)
         let sectionIndex: number | null | undefined = args.sectionIndex
 
         if (args.crossSection === true) {
           sectionIndex = null
         } else if (sectionIndex === undefined && loopName) {
-          const loopState = loop.service.getActiveState(loopName)
-          if (loopState && isSectionScopedPhase(loopState)) {
-            const sectionScope = loop.service.getSectionScope(loopState)
+          if (state && isSectionScopedPhase(state)) {
+            const sectionScope = loop.service.getSectionScope(state)
             const matches = reviewFindingsRepo
               .listByLoopName(projectId, loopName)
               .filter(f => f.file === args.file && f.line === args.line && isFindingInSectionScope(f, sectionScope))
             const target =
-              matches.find(f => f.sectionIndex === loopState.currentSectionIndex) ??
+              matches.find(f => f.sectionIndex === state.currentSectionIndex) ??
               matches.filter(f => f.sectionIndex !== null).sort((a, b) => (b.sectionIndex ?? 0) - (a.sectionIndex ?? 0))[0] ??
               matches.find(f => f.sectionIndex === null)
-            sectionIndex = target ? target.sectionIndex : loopState.currentSectionIndex
+            sectionIndex = target ? target.sectionIndex : state.currentSectionIndex
           }
         }
 

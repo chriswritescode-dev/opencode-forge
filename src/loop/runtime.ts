@@ -197,7 +197,7 @@ export interface Loop {
    * Exposed for the restart path, which must invoke it after releasing the
    * per-loop state lock. Returns true when the limit was absorbed.
    */
-  handleAuditorProviderLimit(loopName: string, limitReason: string, opts?: { eventSessionId?: string; eventType?: 'status' | 'error' }): Promise<boolean>
+  handleAuditorProviderLimit(loopName: string, limitReason: string, opts?: { eventSessionId?: string; eventType?: 'status' | 'error'; lane?: LoopLane }): Promise<boolean>
 }
 
 export { isWorkspaceNotFoundError } from './runtime-workspace'
@@ -257,8 +257,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return projectLoopLaneKey(projectId, lane)
   }
 
-  function activeLane(loopName: string): LoopLane | null {
-    return loopService.getActiveLane(loopName)
+  function laneForSession(sessionId: string): LoopLane | null {
+    const state = loopService.getRunStateForSession(sessionId)
+    return state ? laneOf(state) : null
+  }
+
+  function resolveEventState(loopName: string, sessionId: string): LoopState | null {
+    return loopService.getRunStateForSession(sessionId) ?? loopService.getActiveState(loopName)
   }
 
   /**
@@ -566,7 +571,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err)
     }
-    const fresh = loopService.getActiveState(loopName)
+    const fresh = loopService.getRunState(loopName, lane.sectionRunKey)
     if (!fresh || fresh.sessionId !== state.sessionId || fresh.phase !== state.phase) return true
     if (!reason) {
       clearHandoffDeferTimer(lane)
@@ -579,10 +584,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const timer = setTimeout(() => {
       handoffDeferTimers.delete(key)
       void withStateLock(loopName, async () => {
-        const current = loopService.getActiveState(loopName)
+        const current = loopService.getRunState(loopName, lane.sectionRunKey)
         if (!current || current.sessionId !== state.sessionId || current.phase !== state.phase) return
         try {
-          await phaseRunners[current.phase](loopName, current)
+          await phaseRunners[current.phase](loopName, laneOf(current))
         } catch (err) {
           await handlePromptError(loopName, current, 'handoff retry failed', err)
         }
@@ -888,11 +893,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   function replaceLoopSession(
     loopName: string,
+    lane: LoopLane,
     update: Parameters<LoopService['replaceSession']>[1],
   ): void {
-    const prior = loopService.getActiveState(loopName)
-    loopService.replaceSession(prior ? laneOf(prior) : loopName, update)
-    if (prior && prior.phase !== update.phase) handoffNudges.delete(laneKey(laneOf(prior)))
+    const prior = loopService.getRunState(loopName, lane.sectionRunKey)
+    loopService.replaceSession(lane, update)
+    if (prior && prior.phase !== update.phase) handoffNudges.delete(laneKey(lane))
   }
 
   /**
@@ -981,7 +987,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       detachFromWorkspace(loopName, state, 'during session rotation')
     }
 
-    activateLoopSession(loopName, activeLane(loopName) ?? laneOf(state), oldSessionId, newSessionId)
+    activateLoopSession(loopName, laneForSession(state.sessionId) ?? laneOf(state), oldSessionId, newSessionId)
 
     if (!options?.keepPreviousSession) {
       void scheduleSessionDelete({ loopName, sessionId: oldSessionId, directory: sessionDir, context: 'after session rotation', phase: state.phase, state })
@@ -1028,7 +1034,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
       loopService.setModelFailed(laneOf(currentState), true)
       logger.log(`Loop: marking model as failed, will fall back to default model (error ${nextErrorCount}/${MAX_RETRIES})`)
-      return { assistantErrorDetected: true, currentState: loopService.getActiveState(loopName)! }
+      return { assistantErrorDetected: true, currentState: loopService.getRunState(loopName, currentState.sectionRunKey)! }
     }
 
     return { assistantErrorDetected: true, currentState }
@@ -1142,12 +1148,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const prompt = loopService.buildPostActionPrompt(currentState, { skill: cfg.skill, prompt: cfg.prompt })
     loopService.setPhaseAndResetError(laneOf(currentState), 'post_action')
+    const postActionLane = laneForSession(created.sessionId) ?? laneOf(currentState)
     releaseSectionRunLane(laneOf(currentState))
     // Retain the old session in the reverse index so delayed errors from the
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(currentState.sessionId, loopName)
-    replaceLoopSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
-    const postActionLane = laneOf(loopService.getActiveState(loopName) ?? currentState)
+    replaceLoopSession(loopName, postActionLane, { newSessionId: created.sessionId, phase: 'post_action' })
     watchdog.start(postActionLane)
 
     // Record the *entry* into post_action here — after the persisted phase commit
@@ -1168,7 +1174,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const { error } = await sendPostActionPrompt(postActionLane, created.sessionId, prompt)
     if (error) {
-      const targetState = loopService.getActiveState(loopName) ?? currentState
+      const targetState = loopService.getRunState(loopName, postActionLane.sectionRunKey) ?? currentState
       logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
       await terminateLoop(loopName, targetState, { kind: 'completed' })
       return true
@@ -1206,7 +1212,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopService.resetError(laneOf(currentState))
       loopService.setModelFailed(laneOf(currentState), false)
       logger.log(`Loop: resetting error count after successful retry in ${phase} phase`)
-      return loopService.getActiveState(loopName)!
+      return loopService.getRunState(loopName, currentState.sectionRunKey)!
     }
     return currentState
   }
@@ -1241,7 +1247,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
     }
 
-    replaceLoopSession(loopName, {
+    const lane = laneForSession(activeSessionId) ?? laneOf(currentState)
+    replaceLoopSession(loopName, lane, {
       newSessionId: activeSessionId,
       phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
@@ -1251,7 +1258,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
 
     if (options?.keepPreviousSessionAsStandby && activeSessionId !== currentState.sessionId) {
-      loopService.setStandbySessionId(laneOf(currentState), currentState.sessionId)
+      loopService.setStandbySessionId(lane, currentState.sessionId)
     }
 
     if (transition) {
@@ -1347,7 +1354,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    replaceLoopSession(loopName, {
+    replaceLoopSession(loopName, laneOf(currentState), {
       newSessionId: standby.sessionId,
       phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
@@ -1432,7 +1439,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await discardStandbySession(loopName, state, 'before coder rotation')
     const newSessionId = await rotateSession(loopName, state)
 
-    replaceLoopSession(loopName, {
+    replaceLoopSession(loopName, laneOf(state), {
       newSessionId,
       phase: 'coding',
       resetError: false,
@@ -1467,7 +1474,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       variant: state.executionVariant,
     })
     if (error) {
-      await handlePromptError(loopName, loopService.getActiveState(loopName) ?? state, 'rotateToCodingAfterAuditFailure: failed to send continuation prompt', error)
+      await handlePromptError(loopName, loopService.getRunStateForSession(newSessionId) ?? state, 'rotateToCodingAfterAuditFailure: failed to send continuation prompt', error)
     }
   }
 
@@ -1541,7 +1548,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     try {
     // Idempotency guard: if the loop was already terminated by a concurrent
     // path (e.g. watchdog vs. runtime event), skip duplicate side effects.
-    const current = loopService.getActiveState(loopName)
+    const current = loopService.getRunState(loopName, laneOf(state).sectionRunKey) ?? loopService.getActiveState(loopName)
     if (!current?.active) {
       logger.debug(`Loop: terminateLoop called for already-terminated loop ${loopName}, skipping`)
       return
@@ -1558,7 +1565,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopRegistry.remove(projectId, loopName)
 
     loopService.discardPendingHandoff(loopName)
-    coalescedLimitSessions.delete(loopName)
+    deleteLoopLaneEntries(coalescedLimitSessions, projectId, loopName)
     releaseLoopLanes(loopName)
 
     await discardStandbySession(loopName, state, 'at loop termination')
@@ -1735,7 +1742,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       // Record this session as coalesced so companion signals for the same
       // failed prompt are absorbed above rather than advancing again.
-      coalescedLimitSessions.set(loopName, state.sessionId)
+      coalescedLimitSessions.set(laneKey(laneOf(state)), state.sessionId)
 
       current = { ...current, auditorFallbackIndex: committed }
       if (!current.active || !isAuditorPhase(current.phase)) return { kind: 'concurrent' }
@@ -1747,7 +1754,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (error instanceof ConcurrentPromptError) return { kind: 'concurrent' }
 
       if (classifyProviderLimit(extractErrorSignal(error)) !== null) {
-        const rechecked = loopService.getActiveState(loopName)
+        const rechecked = loopService.getRunState(loopName, laneOf(state).sectionRunKey)
         if (!rechecked?.active) return { kind: 'concurrent' }
         current = rechecked
         from = next
@@ -1767,9 +1774,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function handleAuditorProviderLimit(
     loopName: string,
     limitReason: string,
-    opts?: { eventSessionId?: string; eventType?: 'status' | 'error' },
+    opts?: { eventSessionId?: string; eventType?: 'status' | 'error'; lane?: LoopLane },
   ): Promise<boolean> {
-    const state = loopService.getActiveState(loopName)
+    const state = opts?.lane
+      ? loopService.getRunState(loopName, opts.lane.sectionRunKey)
+      : opts?.eventSessionId
+        ? loopService.getRunStateForSession(opts.eventSessionId)
+        : loopService.getActiveState(loopName)
     if (!state?.active || !isAuditorPhase(state.phase)) return false
     if (opts?.eventSessionId && opts.eventSessionId !== state.sessionId) return false
 
@@ -1783,7 +1794,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // so a genuine limit from the active replacement prompt always advances or
     // exhausts the chain. Prompt-send failures (no event type) are also genuine.
     if (opts?.eventType === 'error' || opts?.eventType === 'status') {
-      if (coalescedLimitSessions.get(loopName) === state.sessionId) {
+      if (coalescedLimitSessions.get(laneKey(laneOf(state))) === state.sessionId) {
         logger.log(`Loop: coalescing duplicate auditor provider limit for ${loopName} (${limitReason})`)
         return true
       }
@@ -1800,7 +1811,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    const currentState = loopService.getActiveState(loopName)
+    const currentState = loopService.getRunState(loopName, _state.sectionRunKey) ?? loopService.getActiveState(loopName)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} already terminated, ignoring error: ${context}`)
       return
@@ -1821,7 +1832,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), will retry`, err)
       loopService.incrementError(laneOf(currentState))
       if (retryFn) {
-        const retryKey = laneKey(laneOf(loopService.getActiveState(loopName) ?? currentState))
+        const retryKey = laneKey(laneOf(loopService.getRunState(loopName, laneOf(_state).sectionRunKey) ?? currentState))
         const retryTimeout = setTimeout(() => {
           // Serialize the retry send and its failure/exhaustion handling with
           // phase-rotation ticks (which also acquire the per-loop state
@@ -1838,7 +1849,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           // in withStateLock — only its public callers do), so there is no
           // nested-lock deadlock.
           void withStateLock(loopName, async () => {
-            const freshState = loopService.getActiveState(loopName)
+            const freshState = loopService.getRunState(loopName, laneOf(_state).sectionRunKey) ?? currentState
             if (!freshState?.active) {
               logger.log(`Loop: loop cancelled, skipping retry`)
               retryTimeouts.delete(retryKey)
@@ -1888,7 +1899,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     const send = opts.send ?? defaultSend
     return async () => {
-      const freshState = loopService.getActiveState(opts.loopName)
+      const freshState = loopService.getRunStateForSession(opts.sessionId) ?? loopService.getActiveState(opts.loopName)
       if (!freshState?.active || (opts.isRetryValid && !opts.isRetryValid(freshState))) throw new Error('loop_cancelled')
       try {
         await withInFlightGuard(projectId, laneOf(freshState), opts.sessionId, opts.agent, logger, () => send(freshState))
@@ -1920,7 +1931,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     opts: SendPromptWithRetryRecoveryOptions,
   ): Promise<{ sent: boolean; usedModel?: Awaited<ReturnType<typeof sendPromptWithFallback>>['usedModel'] }> {
     const { error, usedModel } = await sendPromptWithFallback({
-      lane: laneOf(loopService.getActiveState(opts.loopName) ?? opts.errorState),
+      lane: laneOf(loopService.getRunStateForSession(opts.sessionId) ?? opts.errorState),
       sessionId: opts.sessionId,
       promptText: opts.promptText,
       agent: opts.agent,
@@ -1934,7 +1945,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await handlePromptError(opts.loopName, opts.errorState, context, error, buildPromptRetryFn(opts))
       return { sent: false }
     }
-    if (opts.activityTag) watchdog.recordActivity(laneOf(loopService.getActiveState(opts.loopName) ?? opts.errorState), opts.activityTag)
+    if (opts.activityTag) watchdog.recordActivity(laneOf(loopService.getRunStateForSession(opts.sessionId) ?? opts.errorState), opts.activityTag)
     return { sent: true, usedModel }
   }
 
@@ -1944,11 +1955,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     context: LoopWatchdogRecoveryContext,
   ): Promise<void> {
     await withStateLock(loopName, async () => {
-      const freshState = loopService.getActiveState(loopName)
+      const freshState = loopService.getRunState(loopName, laneOf(_state).sectionRunKey)
       if (!freshState?.active) return
 
       try {
-        await phaseRunners[freshState.phase](loopName, freshState)
+        await phaseRunners[freshState.phase](loopName, laneOf(freshState))
       } catch (err) {
         await handlePromptError(loopName, freshState, `watchdog recovery in ${freshState.phase} phase (${context.reason})`, err)
       }
@@ -1967,7 +1978,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     context: LoopWatchdogRecoveryContext,
   ): Promise<void> {
     await withStateLock(loopName, async () => {
-      const fresh = loopService.getActiveState(loopName)
+      const fresh = loopService.getRunState(loopName, laneOf(_state).sectionRunKey)
       if (!fresh?.active) return
 
       logger.error(`Loop: nudging wedged session ${fresh.sessionId} for ${loopName} (phase=${fresh.phase}, busy=${context.elapsedMs}ms, stall #${context.stallCount})`)
@@ -2006,7 +2017,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    */
   async function tryTerminateLoop(loopName: string, _state: LoopState, reason: TerminationReason): Promise<void> {
     await withStateLock(loopName, async () => {
-      const fresh = loopService.getActiveState(loopName)
+      const fresh = loopService.getRunState(loopName, laneOf(_state).sectionRunKey)
       if (!fresh?.active) return
       await terminateLoop(loopName, fresh, reason)
     })
@@ -2020,8 +2031,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     recover: recoverWatchdogStall,
     nudge: nudgeStuckSession,
     terminate: tryTerminateLoop,
-    handleAuditorProviderLimit: (loopName: string, limitReason: string) =>
-      withStateLock(loopName, () => handleAuditorProviderLimit(loopName, limitReason)),
+    handleAuditorProviderLimit: (loopName: string, limitReason: string, lane: LoopLane) =>
+      withStateLock(loopName, () => handleAuditorProviderLimit(loopName, limitReason, { lane })),
     resolveSessionLoopName,
     isPromptQueued,
   })
@@ -2180,7 +2191,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * itself.
    */
   async function snapshotSectionCodeGraph(state: LoopState): Promise<void> {
-    const active = loopService.getActiveState(state.loopName)
+    const active = loopService.getRunState(state.loopName, state.sectionRunKey)
     if (active && active.sessionId !== state.sessionId) return
     const plan = planCodeGraphSnapshot(state.loopName, () => planSectionCodeGraph(state))
     if (!plan) return
@@ -2233,7 +2244,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const text = await computeCodeGraphSnapshot(laneOf(expected), plan)
       await withStateLock(loopName, async () => {
         clearPending()
-        const fresh = loopService.getActiveState(loopName)
+        const fresh = loopService.getRunState(loopName, laneOf(expected).sectionRunKey)
         if (!fresh?.active || codeGraphTransitionToken(fresh) !== token) {
           logger.log(`[code-graph] ${loopName} moved on during the snapshot; dropping the deferred transition`)
           return
@@ -2242,7 +2253,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         try {
           await resume(fresh)
         } catch (err) {
-          const current = loopService.getActiveState(loopName) ?? fresh
+          const current = loopService.getRunState(loopName, laneOf(expected).sectionRunKey) ?? fresh
           await handlePromptError(loopName, current, `unhandled error resuming ${current.phase} after a code-graph snapshot`, err)
         }
       })
@@ -2278,7 +2289,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       let effectiveErr: unknown = auditPromptErr
       if (isWorkspaceNotFoundError(auditPromptErr) && currentState.workspaceId) {
         const recovered = await recoverFromMissingWorkspace(loopName, currentState, sessionId, 'during audit prompt recovery')
-        currentState = loopService.getActiveState(loopName) ?? currentState
+        currentState = loopService.getRunState(loopName, laneOf(state).sectionRunKey) ?? currentState
         if (recovered.recovered || !currentState.workspaceId) {
           const retryChoice = resolveLoopAuditorChoice(getConfig(), loopService, loopName, undefined, currentState)
           const retryResult = await promptAuditSession(client, {
@@ -2347,7 +2358,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const codeSessionId = currentState.sessionId
     const auditSessionId = standby.sessionId
 
-    replaceLoopSession(loopName, { newSessionId: auditSessionId, phase: 'auditing' })
+    replaceLoopSession(loopName, laneOf(currentState), { newSessionId: auditSessionId, phase: 'auditing' })
     activateLoopSession(loopName, laneOf(currentState), codeSessionId, auditSessionId)
     loopService.setStandbySessionId(laneOf(currentState), codeSessionId)
     logTransition(loopName, currentState, { type: 'coder-handoff' }, idleTrans, 'auditing')
@@ -2371,8 +2382,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  async function runCodingPhase(loopName: string, _state: LoopState): Promise<void> {
-    let currentState = loopService.getActiveState(loopName)
+  async function runCodingPhase(loopName: string, lane: LoopLane): Promise<void> {
+    let currentState = loopService.getRunState(loopName, lane.sectionRunKey)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} no longer active, skipping coding phase`)
       return
@@ -2478,7 +2489,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const created = await createAuditSession({ client, ...input, logger })
         if (created) return created
         loopService.incrementError(loopName)
-        const state = loopService.getActiveState(loopName)
+        const state = loopService.getRunState(loopName, currentState.sectionRunKey)
         if (!state?.active) return null
         if ((state.errorCount ?? 0) >= MAX_RETRIES) return null
         await new Promise((r) => setTimeout(r, 500 * (i + 1)))
@@ -2505,7 +2516,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopService.resetError(laneOf(currentState))
       try {
         const rotatedSessionId = await rotateSession(loopName, currentState)
-        replaceLoopSession(loopName, {
+        replaceLoopSession(loopName, laneOf(currentState), {
           newSessionId: rotatedSessionId,
           phase: 'coding',
           resetError: false,
@@ -2522,7 +2533,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           variant: currentState.executionVariant,
         })
         if (promptErr) {
-          await handlePromptError(loopName, loopService.getActiveState(loopName) ?? currentState, 'failed to send continuation prompt after audit creation failure', promptErr)
+          await handlePromptError(loopName, loopService.getRunState(loopName, laneOf(currentState).sectionRunKey) ?? currentState, 'failed to send continuation prompt after audit creation failure', promptErr)
         }
         return
       } catch (err) {
@@ -2534,7 +2545,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (created.bindFailed && currentState.workspaceId) {
       const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, 'during audit bind', created.bindError)
-      currentState = loopService.getActiveState(loopName) ?? currentState
+      currentState = loopService.getRunState(loopName, laneOf(currentState).sectionRunKey) ?? currentState
       if (!recovered.recovered) {
         logger.log(`Loop: workspace re-provision failed for ${loopName}, continuing without workspace backing`)
       }
@@ -2542,7 +2553,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     await discardStandbySession(loopName, currentState, 'after audit creation')
     const retainCoderAsStandby = !loopService.hasEscalatedBugFindings(currentState)
-    replaceLoopSession(loopName, {
+    replaceLoopSession(loopName, laneOf(currentState), {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
     })
@@ -2586,8 +2597,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  async function runAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
-    let currentState = loopService.getActiveState(loopName)
+  async function runAuditingPhase(loopName: string, lane: LoopLane): Promise<void> {
+    let currentState = loopService.getRunState(loopName, lane.sectionRunKey)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} no longer active, skipping auditing phase`)
       return
@@ -2741,16 +2752,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         releaseSectionRunLane(laneOf(currentState))
         loopService.startSection(loopName, nextIdx)
 
-        const advancedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
+        const advancedState = loopService.getRunStateForSession(currentState.sessionId) ?? { ...currentState, currentSectionIndex: nextIdx }
         await discardStandbySession(loopName, advancedState, 'after section advance')
 
-        replaceLoopSession(loopName, {
+        replaceLoopSession(loopName, laneOf(advancedState), {
           newSessionId: currentState.sessionId,
           phase: 'coding',
           iteration: nextIter,
         })
 
-        const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
+        const updatedState = loopService.getRunStateForSession(currentState.sessionId) ?? { ...currentState, currentSectionIndex: nextIdx }
         watchdog.start(laneOf(updatedState))
         const auditedState = currentState
         await continueAfterCodeGraphSnapshot(
@@ -2892,8 +2903,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * then applies the pending `loop-complete` record and renders the post-action report. A
    * turn without a record is nudged; past MAX_HANDOFF_NUDGES the loop completes best-effort.
    */
-  async function runPostActionPhase(loopName: string, _state: LoopState): Promise<void> {
-    const currentState = loopService.getActiveState(loopName)
+  async function runPostActionPhase(loopName: string, lane: LoopLane): Promise<void> {
+    const currentState = loopService.getRunState(loopName, lane.sectionRunKey)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} no longer active, skipping post-action phase`)
       return
@@ -2940,7 +2951,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   // Single source of truth for idle/watchdog dispatch. Every persisted phase maps to
   // exactly one phase runner; new phases must be added here to be reachable.
-  const phaseRunners: Record<LoopState['phase'], (loopName: string, state: LoopState) => Promise<void>> = {
+  const phaseRunners: Record<LoopState['phase'], (loopName: string, lane: LoopLane) => Promise<void>> = {
     coding: runCodingPhase,
     auditing: runAuditingPhase,
     post_action: runPostActionPhase,
@@ -2969,7 +2980,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const loopName = loopService.resolveLoopName(eventSessionId)
         if (!loopName) return
         await withStateLock(loopName, async () => {
-          const state = loopService.getActiveState(loopName)
+          const state = resolveEventState(loopName, eventSessionId)
           if (!state?.active) return
           // An instance that does not own the worktree never nudges this loop, so it
           // also never holds the internal-abort marker that distinguishes a forge
@@ -3000,7 +3011,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           if (state.phase === 'auditing') {
             if (loopService.getPendingHandoff(loopName, state.sectionRunKey)?.sessionId === eventSessionId) {
               logger.log(`Loop: audit session ${eventSessionId} aborted with a pending handoff, processing it`)
-              await runAuditingPhase(loopName, state)
+              await runAuditingPhase(loopName, laneOf(state))
             } else {
               logger.log(`Loop: audit session ${eventSessionId} aborted without a pending handoff, cleaning up and rolling back to coding`)
               await rotateToCodingAfterAuditFailure(loopName, state, 'aborted', 'audit-session-aborted')
@@ -3010,7 +3021,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           if (state.phase === 'post_action') {
             if (loopService.getPendingHandoff(loopName, state.sectionRunKey)?.sessionId === eventSessionId) {
               logger.log(`Loop: post-action session ${eventSessionId} aborted with a pending handoff, processing it`)
-              await runPostActionPhase(loopName, state)
+              await runPostActionPhase(loopName, laneOf(state))
             } else {
               logger.log(`Loop: post-action session ${eventSessionId} aborted without a pending handoff, terminating as completed (best-effort)`)
               await terminateLoop(loopName, state, { kind: 'completed' })
@@ -3034,7 +3045,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
       if (!loopName) return
       await withStateLock(loopName, async () => {
-        const state = loopService.getActiveState(loopName)
+        const state = resolveEventState(loopName, eventSessionId)
         if (!state?.active) return
 
         const limitReason = classifyProviderLimit({
@@ -3065,7 +3076,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (state.phase === 'post_action') {
           if (loopService.getPendingHandoff(loopName, state.sectionRunKey)?.sessionId === eventSessionId) {
             logger.log(`Loop: post-action session ${eventSessionId} errored with a pending loop-complete for ${loopName}, completing with its report`)
-            await runPostActionPhase(loopName, state)
+            await runPostActionPhase(loopName, laneOf(state))
             return
           }
           logger.error(`Loop: post-action session error for ${eventSessionId}: ${errorMessage}, completing as best-effort`)
@@ -3092,7 +3103,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (status?.type === 'busy') {
       const loopName = loopService.resolveLoopName(sessionId)
-      const lane = loopName ? activeLane(loopName) : null
+      const lane = loopName ? laneForSession(sessionId) : null
       // The replacement prompt has begun its own lifecycle, so the idle-gate and
       // in-flight markers for this session belong to the freshly dispatched
       // prompt and are cleared. This `busy` also closes the failed prompt's
@@ -3128,12 +3139,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
         clearPromptPending(projectId, lane, logger)
       }
-      if (loopName) {
-        const coalesced = coalescedLimitSessions.get(loopName) === sessionId
-        if (lane) clearPromptInFlightBySession(projectId, lane, sessionId)
+      if (loopName && lane) {
+        const coalesced = coalescedLimitSessions.get(laneKey(lane)) === sessionId
+        clearPromptInFlightBySession(projectId, lane, sessionId)
         if (coalesced) {
           await withStateLock(loopName, async () => {
-            coalescedLimitSessions.delete(loopName)
+            coalescedLimitSessions.delete(laneKey(lane))
           })
         }
       }
@@ -3155,9 +3166,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
       await withStateLock(loopName, async () => {
-        const state = loopService.getActiveState(loopName)
+        const state = loopService.getRunStateForSession(sessionId) ?? loopService.getActiveState(loopName)
         if (!state?.active) return
-        if (await handleAuditorProviderLimit(loopName, limitReason, { eventSessionId: sessionId, eventType: 'status' })) return
+        if (await handleAuditorProviderLimit(loopName, limitReason, { lane: laneOf(state), eventSessionId: sessionId, eventType: 'status' })) return
         logger.error(`Loop: provider limit detected via retry status for ${loopName}: ${limitReason}, terminating`)
         await terminateLoop(loopName, state, { kind: 'provider_limit', message: limitReason })
       })
@@ -3181,7 +3192,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    const pendingLane = activeLane(loopName)
+    const pendingLane = laneForSession(sessionId)
     if (pendingLane && isAwaitingBusy(projectId, pendingLane, sessionId)) {
       if (!isAwaitingBusyExpired(projectId, pendingLane)) {
         logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
@@ -3196,7 +3207,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     await withStateLock(loopName, async () => {
-      const state = loopService.getActiveState(loopName)
+      const state = pendingLane
+        ? loopService.getRunState(loopName, pendingLane.sectionRunKey)
+        : loopService.getActiveState(loopName)
       if (!state || !state.active) return
       const lane = laneOf(state)
 
@@ -3239,8 +3252,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // so its companion limit signal (if any) has arrived. Clear the coalescing
       // window so a genuine limit from the replacement prompt advances normally
       // even when the original failure emitted no companion signal.
-      if (coalescedLimitSessions.get(loopName) === sessionId) {
-        coalescedLimitSessions.delete(loopName)
+      if (coalescedLimitSessions.get(laneKey(lane)) === sessionId) {
+        coalescedLimitSessions.delete(laneKey(lane))
       }
 
       const isCurrentSession = state.sessionId === sessionId
@@ -3252,9 +3265,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       try {
         watchdog.start(lane)
 
-        await phaseRunners[state.phase](loopName, state)
+        await phaseRunners[state.phase](loopName, lane)
       } catch (err) {
-        const freshState = loopService.getActiveState(loopName)
+        const freshState = loopService.getRunState(loopName, lane.sectionRunKey)
         await handlePromptError(loopName, freshState ?? state, `unhandled error in ${(freshState ?? state).phase} phase`, err)
       }
     })
@@ -3446,7 +3459,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   async function clearLoopTimers(loopName: string): Promise<void> {
     releaseLoopLanes(loopName)
-    coalescedLimitSessions.delete(loopName)
+    deleteLoopLaneEntries(coalescedLimitSessions, projectId, loopName)
 
     const stateForStandby = loopService.getAnyState(loopName)
     if (stateForStandby) {
@@ -3510,19 +3523,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function recordActivity(name: string, source?: string): void {
-    const lane = activeLane(name)
-    if (!lane) return
-    watchdog.recordActivity(lane, source)
+    const state = loopService.getActiveState(name)
+    if (!state) return
+    watchdog.recordActivity(laneOf(state), source)
   }
 
   function startWatchdog(name: string): void {
-    const state = loopService.getActiveState(name)
-    if (!state) return
-    if (!ownsLoopWorktree(state.worktreeDir)) {
-      logger.log(`Loop: skipping watchdog for ${name}; instance directory ${instanceDirectory} does not own worktree ${state.worktreeDir}`)
-      return
+    const states = loopService.listActiveRunStates(name)
+    for (const state of states) {
+      if (!ownsLoopWorktree(state.worktreeDir)) {
+        logger.log(`Loop: skipping watchdog for ${name}; instance directory ${instanceDirectory} does not own worktree ${state.worktreeDir}`)
+        continue
+      }
+      watchdog.start(laneOf(state))
     }
-    watchdog.start(laneOf(state))
   }
 
   /**
@@ -3548,9 +3562,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function getStallInfo(name: string): LoopWatchdogStallInfo | null {
-    const lane = activeLane(name)
-    if (!lane) return null
-    return watchdog.getStallInfo(lane)
+    const state = loopService.getActiveState(name)
+    if (!state) return null
+    return watchdog.getStallInfo(laneOf(state))
   }
 
   function generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string {

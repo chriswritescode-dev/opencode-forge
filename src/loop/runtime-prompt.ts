@@ -48,7 +48,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         projectId, lane, sessionId, agent: 'auditor-loop', logger,
         primaryModel: auditorModel,
         performPrompt: async (model) => {
-          const freshState = loopService.getActiveState(lane.loopName)
+          const freshState = loopService.getRunState(lane.loopName, lane.sectionRunKey)
           if (!freshState?.active) throw new Error('loop_cancelled')
           markPromptSent(projectId, lane, sessionId, logger)
           const r = await promptAuditSession(client, {
@@ -70,7 +70,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
       primaryModel: effectiveModel,
       fallbackModel: input.fallbackModel,
       performPrompt: async (model) => {
-        const freshState = loopService.getActiveState(lane.loopName)
+        const freshState = loopService.getRunState(lane.loopName, lane.sectionRunKey)
         if (!freshState?.active) throw new Error('loop_cancelled')
         markPromptSent(projectId, lane, sessionId, logger)
         const isFallbackAttempt = input.fallbackModel != null && model === input.fallbackModel

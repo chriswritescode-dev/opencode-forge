@@ -923,6 +923,9 @@ describe('durable attempt handoff', () => {
         sessionId: 'ss-coder',
         totalSections: 1,
         currentSectionIndex: 0,
+        sectionRunKey: 'section:section-1',
+        sectionRunKind: 'section',
+        sectionId: 'section-1',
       })
       service.setState(loopName, state)
       reviewFindingsRepo.write({
@@ -963,6 +966,9 @@ describe('durable attempt handoff', () => {
         sessionId: 'sr-coder',
         totalSections: 2,
         currentSectionIndex: 1,
+        sectionRunKey: 'section:section-2',
+        sectionRunKind: 'section',
+        sectionId: 'section-2',
       })
       service.setState(loopName, state)
       reviewFindingsRepo.write({

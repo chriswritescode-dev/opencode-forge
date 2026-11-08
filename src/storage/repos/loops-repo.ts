@@ -67,6 +67,8 @@ export interface LoopRow {
   sectionRunKind: SectionRunKind
   sectionId: string
   sectionRunKey: string
+  /** Active/finished status of the joined section run; undefined when no run is joined. */
+  runStatus?: 'active' | 'finished'
 }
 
 export interface LoopLargeFields {
@@ -94,6 +96,8 @@ export interface LoopsRepo {
   get(projectId: string, loopName: string): LoopRow | null
   /** The loop row joined to a specific active/or finished section run. */
   getForRun(projectId: string, loopName: string, runKey: string): LoopRow | null
+  /** Keys of the loop's active section runs, primary first. */
+  listActiveRunKeys(projectId: string, loopName: string): string[]
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
@@ -224,6 +228,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     sectionRunKind: row.section_run_kind as SectionRunKind,
     sectionId: row.section_run_section_id,
     sectionRunKey: sectionRunKey(row.section_run_kind as SectionRunKind, row.section_run_section_id),
+    runStatus: row.run_status === 'active' || row.run_status === 'finished' ? row.run_status : undefined,
   }
 }
 
@@ -281,6 +286,7 @@ interface LoopRowRaw {
   run_standby: string | null
   section_run_kind: string
   section_run_section_id: string
+  run_status: string | null
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, worktree, worktree_dir,
@@ -308,7 +314,8 @@ const LOOP_SELECT_COLUMNS = `l.project_id, l.loop_name, l.status,
   r.standby_session_id AS run_standby,
   r.lane_dir AS run_lane_dir, r.lane_branch AS run_lane_branch, r.lane_base_commit AS run_lane_base_commit,
   r.kind AS section_run_kind,
-  r.section_id AS section_run_section_id`
+  r.section_id AS section_run_section_id,
+  r.status AS run_status`
 
 /** Joins the primary run: the active run with the lowest section index keeps one row per loop. */
 const LOOP_ACTIVE_RUN_JOIN = `LEFT JOIN section_runs r
@@ -837,6 +844,10 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         : [runKey, '']
       const row = getForRunStmt.get(kind, sectionId, projectId, loopName) as LoopRowRaw | null
       return row ? mapRow(row) : null
+    },
+
+    listActiveRunKeys(projectId: string, loopName: string): string[] {
+      return sectionRuns.listActive(projectId, loopName).map((run) => run.sectionRunKey)
     },
 
     getLarge(projectId: string, loopName: string): LoopLargeFields | null {

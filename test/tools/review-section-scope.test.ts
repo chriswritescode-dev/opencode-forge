@@ -7,6 +7,7 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import { createSectionRunsRepo } from '../../src/storage/repos/section-runs-repo'
 import { createLoopService } from '../../src/loop/service'
 import { createReviewTools } from '../../src/tools/review'
 import { createSessionLoopResolver } from '../../src/services/session-loop-resolver'
@@ -23,6 +24,7 @@ describe('review section scoping', () => {
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  let sectionRunsRepo: ReturnType<typeof createSectionRunsRepo>
   let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createReviewTools>
   let parentSessions: Record<string, string>
@@ -40,6 +42,7 @@ describe('review section scoping', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
+    sectionRunsRepo = createSectionRunsRepo(db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
     const sessionLoopResolver = createSessionLoopResolver({
       loop: { service: loopService },
@@ -369,6 +372,49 @@ describe('review section scoping', () => {
       const findings = reviewFindingsRepo.listByLoopName(projectId, 'write-loop')
       expect(findings).toHaveLength(1)
       expect(findings[0].sectionIndex).toBe(1)
+    })
+
+    test('scopes the finding to the calling section run, not the primary run', async () => {
+      insertLoop('parallel-write-loop', { totalSections: 3, currentSectionIndex: 0 })
+      seedSections('parallel-write-loop', ['in_progress', 'in_progress', 'pending'])
+      sectionRunsRepo.activate(
+        projectId,
+        'parallel-write-loop',
+        { kind: 'section', sectionId: 'section-2', sectionIndex: 1 },
+        { sessionId: 'parallel-write-second-session', phase: 'coding', standbySessionId: null },
+        { exclusive: false },
+      )
+
+      await tools['review-write'].execute(
+        {
+          file: 'src/primary.ts',
+          line: 5,
+          severity: 'bug',
+          description: 'Primary run finding',
+        },
+        makeToolContext('parallel-write-loop-session'),
+      )
+
+      const result = await tools['review-write'].execute(
+        {
+          file: 'src/second.ts',
+          line: 7,
+          severity: 'bug',
+          description: 'Second run finding',
+        },
+        makeToolContext('parallel-write-second-session'),
+      )
+
+      expect(result).toContain('Stored review finding')
+      expect(result).toContain('for section 1')
+
+      const findings = reviewFindingsRepo.listByLoopName(projectId, 'parallel-write-loop')
+      expect(findings.find((f) => f.description === 'Second run finding')?.sectionIndex).toBe(1)
+      expect(findings.find((f) => f.description === 'Primary run finding')?.sectionIndex).toBe(0)
+
+      const primary = loopService.getActiveState('parallel-write-loop')
+      expect(primary?.sessionId).toBe('parallel-write-loop-session')
+      expect(primary?.currentSectionIndex).toBe(0)
     })
   })
 

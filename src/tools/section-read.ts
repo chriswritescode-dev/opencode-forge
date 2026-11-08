@@ -14,13 +14,14 @@ export function createSectionReadTool(ctx: ToolContext): ToolDefinition {
     },
     execute: async (args, toolCtx) => {
       const sessionId = toolCtx?.sessionID ?? ''
-      const loopName = loop.service.resolveLoopName(sessionId)
+      const runState = loop.service.getRunStateForSession(sessionId)
+      const loopName = runState?.loopName ?? loop.service.resolveLoopName(sessionId)
 
       if (!loopName) {
         return JSON.stringify({ error: 'Not in a loop session. This tool can only be used within an active loop session.' })
       }
 
-      const state = loop.service.getAnyState(loopName)
+      const state = runState ?? loop.service.getAnyState(loopName)
       if (!state) return JSON.stringify({ error: `Loop "${loopName}" not found.` })
 
       if (state.totalSections === 0) {
@@ -39,7 +40,9 @@ export function createSectionReadTool(ctx: ToolContext): ToolDefinition {
 
       const explicitIndex = args.section_index
       const selectedSection = explicitIndex === undefined
-        ? loop.service.getNextReadySectionPlan(state)
+        ? (runState
+            ? loop.service.getSectionPlan(runState, runState.currentSectionIndex)
+            : loop.service.getNextReadySectionPlan(state))
         : null
 
       const idx = explicitIndex ?? selectedSection?.sectionIndex ?? state.currentSectionIndex

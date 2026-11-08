@@ -118,6 +118,7 @@ export function createMockLoopsRepo(overrides?: Partial<LoopsRepo>): LoopsRepo {
     restore: vi.fn(),
     get: vi.fn().mockReturnValue(null),
     getForRun: vi.fn().mockReturnValue(null),
+    listActiveRunKeys: vi.fn().mockReturnValue([]),
     getLarge: vi.fn(),
     getBySessionId: vi.fn(),
     listByStatus: vi.fn(),

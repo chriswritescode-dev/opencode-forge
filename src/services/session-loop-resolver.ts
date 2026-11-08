@@ -5,7 +5,7 @@ import { LRUCache } from '../utils/lru-cache'
 
 export interface SessionLoopResolverDeps {
   loop: {
-    service: Pick<LoopService, 'resolveLoopName' | 'getActiveState' | 'findActiveByWorktreeDir'>
+    service: Pick<LoopService, 'getRunStateForSession' | 'getActiveState' | 'findActiveByWorktreeDir'>
   }
   getParentSessionId(sessionId: string): Promise<string | null>
   getSessionDirectory?(sessionId: string): Promise<string | null>
@@ -19,6 +19,8 @@ export interface ResolvedLoop {
   worktree?: boolean
   worktreeDir?: string
   workspaceId?: string
+  /** The section run the resolved session belongs to. */
+  sectionRunKey: string
 }
 
 interface Resolution {
@@ -32,8 +34,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
   const lastLogged = new LRUCache<string>(1000)
 
   const resolve = async (sessionId: string): Promise<Resolution> => {
-    const directLoopName = deps.loop.service.resolveLoopName(sessionId)
-    const directState = directLoopName ? deps.loop.service.getActiveState(directLoopName) : null
+    const directState = deps.loop.service.getRunStateForSession(sessionId)
     if (directState?.active) return { loop: directState, via: 'direct' }
 
     // Walk the ancestor chain so deeply-nested sub-agents (a sub-agent that
@@ -45,8 +46,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
     let via = 'none'
     const ancestorState = await tolerateUndeterminedParent(findSessionAncestor(sessionId, deps.getParentSessionId, (parentId, depth) => {
       if (depth === 0) firstParentId = parentId
-      const parentLoopName = deps.loop.service.resolveLoopName(parentId)
-      const parentState = parentLoopName ? deps.loop.service.getActiveState(parentLoopName) : null
+      const parentState = deps.loop.service.getRunStateForSession(parentId)
       if (parentState?.active) {
         via = `ancestor=${parentId} depth=${depth}`
         return parentState

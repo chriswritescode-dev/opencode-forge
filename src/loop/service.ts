@@ -69,12 +69,12 @@ export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hi
 
 export interface LoopService {
   getActiveState(name: string): LoopState | null
-  /**
-   * The lane of the loop's active section run, or null when the loop is absent
-   * or not running. Reads only the loop row (no plan text or large fields), so
-   * it stays cheap enough for per-tool-call and per-event activity checks.
-   */
-  getActiveLane(name: string): LoopLane | null
+  /** The loop row joined to one specific active section run, or null when that run is absent/finished. */
+  getRunState(name: string, runKey: string): LoopState | null
+  /** Every active section run of a running loop, primary first. */
+  listActiveRunStates(name: string): LoopState[]
+  /** The active section run that owns `sessionId`, or null when the session is not any running loop's current run session. */
+  getRunStateForSession(sessionId: string): LoopState | null
   getAnyState(name: string): LoopState | null
   setState(name: string, state: LoopState): void
   /** In-place row restore via UPDATE (preserves child rows such as loop_transitions/section_plans that would be cascade-deleted by deleteState + setState). Falls back to INSERT if the row was concurrently deleted. */
@@ -256,10 +256,28 @@ export function createLoopService(
     return state
   }
 
-  function getActiveLane(name: string): LoopLane | null {
-    const row = loopsRepo.get(projectId, name)
-    if (row?.status !== 'running') return null
-    return { loopName: name, sectionRunKey: row.sectionRunKey }
+  function getRunState(name: string, runKey: string): LoopState | null {
+    const row = loopsRepo.getForRun(projectId, name, runKey)
+    if (!row || row.runStatus !== 'active') return null
+    const large = loopsRepo.getLarge(projectId, name)
+    return hydratePlanFromPlans(loopRowToState(row, large))
+  }
+
+  function getRunStateForSession(sessionId: string): LoopState | null {
+    const row = loopsRepo.getBySessionId(projectId, sessionId)
+    if (!row || row.runStatus !== 'active') return null
+    const large = loopsRepo.getLarge(projectId, row.loopName)
+    return hydratePlanFromPlans(loopRowToState(row, large))
+  }
+
+  function listActiveRunStates(name: string): LoopState[] {
+    const large = loopsRepo.getLarge(projectId, name)
+    const states: LoopState[] = []
+    for (const runKey of loopsRepo.listActiveRunKeys(projectId, name)) {
+      const row = loopsRepo.getForRun(projectId, name, runKey)
+      if (row?.runStatus === 'active') states.push(hydratePlanFromPlans(loopRowToState(row, large)))
+    }
+    return states
   }
 
   /**
@@ -338,10 +356,8 @@ export function createLoopService(
   }
 
   function resolveActiveLoopForSession(sessionId: string): LoopState | null {
-    const row = loopsRepo.getBySessionId(projectId, sessionId)
-    if (!row) return null
-    const large = loopsRepo.getLarge(projectId, row.loopName)
-    return hydratePlanFromPlans(loopRowToState(row, large))
+    const state = getRunStateForSession(sessionId)
+    return state && state.sessionId === sessionId && state.active ? state : null
   }
 
   function findActiveByWorktreeDir(directory: string, options?: { worktreeOnly?: boolean }): LoopState | null {
@@ -551,7 +567,7 @@ export function createLoopService(
       setCoderDecisions(state.loopName, decisions)
       return true
     }
-    const source = getActiveState(state.loopName)
+    const source = getRunState(state.loopName, state.sectionRunKey)
     if (!source || source.sessionId !== state.sessionId) return false
     const scope = auditScope(state)
     const previous = loopAttemptsRepo.latest(projectId, state.loopName, scope)
@@ -580,7 +596,7 @@ export function createLoopService(
     }
     let recorded: LoopAttemptRow | null = null
     try {
-      const fresh = getActiveState(state.loopName)
+      const fresh = getRunState(state.loopName, state.sectionRunKey)
       if (!fresh || fresh.sessionId !== source.sessionId || fresh.phase !== source.phase ||
         fresh.worktreeDir !== source.worktreeDir || attemptPlanHash({ ...fresh, phase: state.phase }) !== planHash) return false
       recorded = loopAttemptsRepo.record({
@@ -607,7 +623,7 @@ export function createLoopService(
   function finishAttempt(state: LoopState, outcome: 'clean' | 'dirty'): void {
     if (!loopAttemptsRepo || state.phase !== 'auditing') return
     const scope = auditScope(state)
-    const active = getActiveState(state.loopName)
+    const active = getRunState(state.loopName, state.sectionRunKey)
     if (!active || active.sessionId !== state.sessionId || active.phase !== state.phase || auditScope(active) !== scope) return
     const latest = loopAttemptsRepo.latest(projectId, state.loopName, scope)
     if (!latest || latest.auditorSessionId !== state.sessionId) {
@@ -1222,7 +1238,9 @@ export function createLoopService(
 
   return {
     getActiveState,
-    getActiveLane,
+    getRunState,
+    listActiveRunStates,
+    getRunStateForSession,
     getAnyState,
     setState,
     restoreState,

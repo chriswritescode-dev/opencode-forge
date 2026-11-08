@@ -581,7 +581,7 @@ export async function attachLoopToSession(
     (await resolveHostSessionDirectory(deps.client, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
 
   let releaseFirstPromptHold = (): void => {}
-  const attachOwnsLoop = (): boolean => deps.loop.service.getActiveState(loopName)?.sessionId === sessionId
+  const attachOwnsLoop = (): boolean => deps.loop.service.getRunStateForSession(sessionId)?.loopName === loopName
 
   try {
     // Persist loop state
@@ -655,7 +655,7 @@ export async function attachLoopToSession(
     }
     const { totalSections } = decomposition
 
-    const decomposedState = deps.loop.service.getActiveState(loopName) ?? state
+    const decomposedState = deps.loop.service.getRunStateForSession(sessionId) ?? state
     if (sendInitialPrompt && decomposedState.sectionRunKey !== state.sectionRunKey) {
       releaseFirstPromptHold()
       releaseFirstPromptHold = deps.loop.holdUntilFirstPrompt(decomposedState)
@@ -693,7 +693,7 @@ export async function attachLoopToSession(
       return { ok: true, loopName }
     }
 
-    const runState = deps.loop.service.getActiveState(loopName) ?? state
+    const runState = deps.loop.service.getRunStateForSession(sessionId) ?? state
     const updatedState = { ...runState, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
     if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
     if (!attachOwnsLoop()) {

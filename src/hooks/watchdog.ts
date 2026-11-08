@@ -79,7 +79,7 @@ function formatError(err: unknown): string {
 
 export function createLoopWatchdog(input: {
   projectId: string
-  loopService: Pick<LoopService, 'getActiveState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'getBusyStallTimeoutMs' | 'resolveLoopName'>
+  loopService: Pick<LoopService, 'getActiveState' | 'getRunState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'getBusyStallTimeoutMs' | 'resolveLoopName'>
   client: ForgeClient
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
@@ -91,7 +91,7 @@ export function createLoopWatchdog(input: {
   nudge(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
   terminate(loopName: string, state: LoopState, reason: TerminationReason): Promise<void>
   /** Routes an auditor provider limit into the fallback chain. Returns true when absorbed (do not terminate), false when the caller must terminate. */
-  handleAuditorProviderLimit?: (loopName: string, limitReason: string) => Promise<boolean>
+  handleAuditorProviderLimit?: (loopName: string, limitReason: string, lane: LoopLane) => Promise<boolean>
   /** Ancestor-aware session→loop resolver for child/subagent sessions. Falls back to loopService.resolveLoopName when absent. */
   resolveSessionLoopName?: (sessionId: string) => Promise<string | null>
   /** True while the loop's current session has an inbox prompt that has not been delivered yet. */
@@ -231,8 +231,8 @@ export function createLoopWatchdog(input: {
         const lastActivity = lastActivityTime.get(key)
         if (!lastActivity) return
 
-        const state = input.loopService.getActiveState(loopName)
-        if (!state?.active || state.sectionRunKey !== lane.sectionRunKey) {
+        const state = input.loopService.getRunState(loopName, lane.sectionRunKey)
+        if (!state?.active) {
           stop(lane)
           return
         }
@@ -244,8 +244,8 @@ export function createLoopWatchdog(input: {
         const statusResult = await getStatusWithRetry(state.worktreeDir, statusRetryAttempts, statusRetryBackoffMs)
 
         if (stallWatchdogs.get(key) !== interval) return
-        const freshState = input.loopService.getActiveState(loopName)
-        if (!freshState?.active || freshState.sectionRunKey !== lane.sectionRunKey) return
+        const freshState = input.loopService.getRunState(loopName, lane.sectionRunKey)
+        if (!freshState?.active) return
 
         if (!statusResult.ok) {
           if (!stallReady) return
@@ -281,10 +281,10 @@ export function createLoopWatchdog(input: {
               // Re-fetch active state to avoid terminating with a stale snapshot.
               // The loop may have been cancelled, restarted, or rotated during the
               // async status poll and ancestor-resolution window.
-              const freshState = input.loopService.getActiveState(loopName)
-              if (!freshState?.active || freshState.sectionRunKey !== lane.sectionRunKey) return
+              const freshState = input.loopService.getRunState(loopName, lane.sectionRunKey)
+              if (!freshState?.active) return
               if (input.handleAuditorProviderLimit && isAuditorPhase(freshState.phase)) {
-                const absorbed = await input.handleAuditorProviderLimit(loopName, limitReason)
+                const absorbed = await input.handleAuditorProviderLimit(loopName, limitReason, lane)
                 if (absorbed) {
                   resetActivity(lane, 'status:retry')
                   input.logger.debug(`Loop watchdog: auditor provider limit absorbed via fallback for ${loopName}, resetting timer`)
@@ -398,7 +398,7 @@ export function createLoopWatchdog(input: {
 
   function recordActivity(lane: LoopLane, source = 'external'): void {
     if (!stallWatchdogs.has(laneKey(lane))) return
-    const state = input.loopService.getActiveState(lane.loopName)
+    const state = input.loopService.getRunState(lane.loopName, lane.sectionRunKey)
     if (!state?.active) return
     resetActivity(lane, source)
   }

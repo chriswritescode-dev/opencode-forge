@@ -19,6 +19,7 @@ import type { PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { createTestDb } from '../helpers/test-db'
+import { createSectionRunsRepo } from '../../src/storage/repos/section-runs-repo'
 import { createMockLogger } from '../helpers/logger'
 import { makeLoopState, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { coderPayload, recordAuditorHandoff, recordCoderHandoff, recordPostActionComplete } from '../helpers/loop-handoff'
@@ -839,6 +840,83 @@ describe('post-action phase', () => {
       expect(afterState.active).toBe(false)
       expect(afterState.terminationReason).toBe('completed')
       expect(sectionPlansRepo.get(PROJECT_ID, loopName, 0)!.status).toBe('completed')
+    })
+  })
+
+  describe('section run resolution', () => {
+    const loopName = 'test-loop'
+
+    function seedTwoActiveRuns() {
+      const state = makeLoopState({
+        loopName,
+        totalSections: 3,
+        currentSectionIndex: 0,
+        sectionRunKind: 'section',
+        sectionId: 'section-1',
+        sectionRunKey: 'section:section-1',
+        sessionId: 'run-a-session',
+        phase: 'coding',
+      })
+      loopService.setState(state.loopName, state)
+
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName,
+        sections: [1, 2, 3].map((n) => ({
+          index: n - 1,
+          id: `section-${n}`,
+          after: n === 1 ? [] : [`section-${n - 1}`],
+          title: `Section ${n}`,
+          content: `Content ${n}`,
+        })),
+      })
+
+      // A second active run of the same loop, created directly so the loop row
+      // keeps pointing at run A as its primary run.
+      createSectionRunsRepo(db).activate(
+        PROJECT_ID,
+        loopName,
+        { kind: 'section', sectionId: 'section-2', sectionIndex: 1 },
+        { sessionId: 'run-b-session', phase: 'coding', standbySessionId: null },
+        { exclusive: false },
+      )
+    }
+
+    test('an idle section run applies its own handoff without touching the primary run', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section two implemented.' }] },
+          ],
+        },
+      })
+      const { loop } = buildRuntime({ client })
+      seedTwoActiveRuns()
+
+      await recordCoderHandoff(loop, 'run-b-session')
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: 'run-b-session' },
+      })
+
+      expect(loopService.getRunState(loopName, 'section:section-1')).toMatchObject({
+        sessionId: 'run-a-session',
+        phase: 'coding',
+      })
+      expect(loopService.getRunState(loopName, 'section:section-2')).toMatchObject({
+        phase: 'auditing',
+      })
+    })
+
+    test('a handoff is recorded against the session\'s own section run', async () => {
+      const { loop } = buildRuntime()
+      seedTwoActiveRuns()
+
+      await recordCoderHandoff(loop, 'run-b-session')
+
+      expect(loopService.getPendingHandoff(loopName, 'section:section-2')).not.toBeNull()
+      expect(loopService.getPendingHandoff(loopName, 'section:section-1')).toBeNull()
     })
   })
 

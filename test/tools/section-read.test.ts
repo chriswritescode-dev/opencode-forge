@@ -7,6 +7,7 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import { createSectionRunsRepo } from '../../src/storage/repos/section-runs-repo'
 import { createLoopService } from '../../src/loop/service'
 import { createSectionReadTool } from '../../src/tools/section-read'
 import { createMockLogger } from '../helpers/logger'
@@ -22,6 +23,7 @@ describe('section-read tool', () => {
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  let sectionRunsRepo: ReturnType<typeof createSectionRunsRepo>
   let tempDir: string
   const projectId = 'test-project'
 
@@ -34,6 +36,7 @@ describe('section-read tool', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
+    sectionRunsRepo = createSectionRunsRepo(db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
   })
 
@@ -157,31 +160,31 @@ describe('section-read tool', () => {
       expect(result.summary_follow_ups).toBeNull()
     })
 
-    test('returns lowest-index pending when currentSectionIndex points later', async () => {
+    test('reads the run own section when currentSectionIndex points later', async () => {
       insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 2 })
       insertSections('test-loop', 3)
       const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
-      expect(result.index).toBe(0)
-      expect(result.title).toBe('Section 1')
-      expect(result.content).toBe('Content for section 1')
+      expect(result.index).toBe(2)
+      expect(result.title).toBe('Section 3')
+      expect(result.content).toBe('Content for section 3')
     })
 
-    test('returns lowest-index failed before later pending', async () => {
+    test('reads the run own section instead of an earlier failed section', async () => {
       insertLoop('test-loop', { totalSections: 2, currentSectionIndex: 1 })
       insertSections('test-loop', 2)
       sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'failed')
       const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
-      expect(result.index).toBe(0)
-      expect(result.status).toBe('failed')
+      expect(result.index).toBe(1)
+      expect(result.status).toBe('pending')
     })
 
-    test('skips completed sections', async () => {
+    test('reads the run own section when an earlier section is completed', async () => {
       insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 2 })
       insertSections('test-loop', 3)
       sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
       const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
-      expect(result.index).toBe(1)
-      expect(result.title).toBe('Section 2')
+      expect(result.index).toBe(2)
+      expect(result.title).toBe('Section 3')
     })
 
     test('falls back to state.currentSectionIndex when all sections are completed', async () => {
@@ -320,12 +323,29 @@ describe('section-read tool', () => {
   })
 
   describe('state-driven behavior', () => {
-    test('returns the next ready section instead of currentSectionIndex', async () => {
+    test('returns the run own section instead of the next ready one', async () => {
       insertLoop('test-loop', { currentSectionIndex: 2, totalSections: 5 })
       insertSections('test-loop', 5)
       const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
-      expect(result.index).toBe(0)
-      expect(result.title).toBe('Section 1')
+      expect(result.index).toBe(2)
+      expect(result.title).toBe('Section 3')
+    })
+
+    test('a caller owning a non-primary section run reads its own section', async () => {
+      insertLoop('test-loop', { currentSectionIndex: 0, totalSections: 3 })
+      insertSections('test-loop', 3)
+      sectionRunsRepo.activate(
+        projectId,
+        'test-loop',
+        { kind: 'section', sectionId: 'section-3', sectionIndex: 2 },
+        { sessionId: 'second-run-session', phase: 'coding', standbySessionId: null },
+        { exclusive: false },
+      )
+
+      const result = parseJson(await executeSectionRead({}, 'second-run-session'))
+      expect(result.index).toBe(2)
+      expect(result.title).toBe('Section 3')
+      expect(result.content).toBe('Content for section 3')
     })
 
     test('allows reading sections beyond current index', async () => {

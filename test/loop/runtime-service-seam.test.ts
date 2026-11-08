@@ -13,7 +13,9 @@ import { createMockLogger } from '../helpers/logger'
 function makeFakeLoopService(): LoopService {
   return {
     getActiveState: vi.fn(() => null),
-    getActiveLane: vi.fn(() => null),
+    getRunState: vi.fn(() => null),
+    getRunStateForSession: vi.fn(() => null),
+    listActiveRunStates: vi.fn(() => []),
     getAnyState: vi.fn(() => null),
     setState: vi.fn(),
     buildPlanInitialPrompt: vi.fn(() => ''),
