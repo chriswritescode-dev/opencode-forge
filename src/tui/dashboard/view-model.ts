@@ -342,11 +342,6 @@ export function loopPhaseText(loop: { phase: string; completedAt?: number; lanes
   return phaseLabel(loop.phase)
 }
 
-/** Single-line lane summary: `#N title · Phase · X attempts`. */
-export function formatLaneLine(lane: ForgeDashboardLane): string {
-  return `#${formatSectionNumber(lane.sectionIndex)} ${lane.title} · ${phaseLabel(lane.phase)} · ${formatCount(lane.attempts, 'attempt')}`
-}
-
 export type SectionState = 'done' | 'running' | 'ready' | 'blocked' | 'failed'
 
 export interface SectionDependency {

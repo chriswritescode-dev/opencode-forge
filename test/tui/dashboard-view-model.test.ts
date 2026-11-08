@@ -13,7 +13,6 @@ import {
   findingsLevel,
   fmtTime,
   formatFinding,
-  formatLaneLine,
   formatCount,
   formatRelativeTime,
   formatSectionDuration,
@@ -588,7 +587,7 @@ describe('formatCount / formatSectionNumber / sectionCompletion', () => {
   })
 })
 
-describe('completedSectionCount / parallelLanes / loopPhaseText / formatLaneLine', () => {
+describe('completedSectionCount / parallelLanes / loopPhaseText', () => {
   test('completedSectionCount counts only completed statuses', () => {
     const sections = [
       { status: 'completed' },
@@ -615,11 +614,6 @@ describe('completedSectionCount / parallelLanes / loopPhaseText / formatLaneLine
     expect(loopPhaseText({ phase: 'coding', completedAt: 5, lanes: [makeLane()] })).toBe('—')
     expect(loopPhaseText({ phase: 'coding', lanes: [] })).toBe('Coding')
     expect(loopPhaseText({ phase: 'coding', lanes: [makeLane(), makeLane({ sectionIndex: 3 })] })).toBe('2 lanes')
-  })
-
-  test('formatLaneLine joins number, title, phase and attempts', () => {
-    expect(formatLaneLine(makeLane({ sectionIndex: 2, title: 'TUI view model', phase: 'auditing', attempts: 2 })))
-      .toBe('#3 TUI view model · Auditing · 2 attempts')
   })
 })
 

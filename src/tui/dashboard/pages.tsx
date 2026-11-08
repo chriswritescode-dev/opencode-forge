@@ -1187,9 +1187,11 @@ function LoopHeader(props: { detail: ForgeLoopDetail; colors: DashboardColors })
         <text flexGrow={1} flexShrink={1} wrapMode="none" truncate fg={props.colors.text}>
           <b>{loop().loopName}</b>
         </text>
-        <text flexShrink={0} fg={props.colors.info}>
-          {loopPhaseText({ phase: loop().phase, completedAt: loop().completedAt, lanes: props.detail.lanes })}
-        </text>
+        <Show when={loop().completedAt === undefined}>
+          <text flexShrink={0} fg={props.colors.info}>
+            {loopPhaseText({ phase: loop().phase, completedAt: loop().completedAt, lanes: props.detail.lanes })}
+          </text>
+        </Show>
       </box>
       <For each={parallelLanes(props.detail.lanes)}>
         {(lane) => <LaneLine lane={lane} colors={props.colors} />}

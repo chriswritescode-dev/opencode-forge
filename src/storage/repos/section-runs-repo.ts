@@ -243,25 +243,18 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
 
   function prepareLaneStatements() {
     if (!laneStatements) {
+      const laneQuery = (loopFilter: string) => `
+        SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
+        FROM section_runs r
+        JOIN section_plans p
+          ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
+        WHERE r.project_id = ?${loopFilter}
+          AND r.status = 'active' AND r.kind = 'section'
+        ORDER BY r.loop_name, r.section_index
+      `
       laneStatements = {
-        all: db.prepare(`
-          SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
-          FROM section_runs r
-          JOIN section_plans p
-            ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
-          WHERE r.project_id = ?
-            AND r.status = 'active' AND r.kind = 'section'
-          ORDER BY r.loop_name, r.section_index
-        `),
-        forLoop: db.prepare(`
-          SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
-          FROM section_runs r
-          JOIN section_plans p
-            ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
-          WHERE r.project_id = ? AND r.loop_name = ?
-            AND r.status = 'active' AND r.kind = 'section'
-          ORDER BY r.loop_name, r.section_index
-        `),
+        all: db.prepare(laneQuery('')),
+        forLoop: db.prepare(laneQuery(' AND r.loop_name = ?')),
       }
     }
     return laneStatements
