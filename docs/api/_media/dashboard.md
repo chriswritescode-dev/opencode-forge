@@ -24,7 +24,7 @@ The first view lists one row per project with Forge data: the union of loop proj
 
 ### Loops
 
-Each row shows the loop status, name, current phase (`—` once the loop has completed), an iteration meter, a 1-based section meter (`—` when the loop has no sections), the bug count, cost, duration, and last activity.
+Each row shows the loop status, name, a phase column (`—` for a completed loop, `N lanes` when two or more section lanes run in parallel, or the phase label otherwise), an iteration meter, a completed/total section count (`—` when the loop has no sections), the bug count, cost, duration, and last activity. When two or more lanes run in parallel, one indented line per lane follows the row, showing the section number, title, phase, and attempts.
 
 - `s` cycles the sort: recent (server order), cost, duration, findings (bug count).
 - `f` cycles the status filter: all, running, completed, cancelled, errored, stalled.
@@ -39,13 +39,13 @@ The Plans section lists unexecuted session-scoped plans authored by `plan-write`
 
 ### Loop page
 
-`enter` on a loop opens its page. The header shows the status, name, current phase while the loop runs, duration, cost, iteration and section meters (the section meter's label and fill both use the 1-based section number), bug and warning counts, the execution and auditor models (the auditor appends its fallback index when it is non-zero), branch, sandbox on/off, audit and error counts, and any termination reason.
+`enter` on a loop opens its page. The header shows the status, name, current phase while the loop runs (or `N lanes` when two or more section lanes run in parallel), duration, cost, the iteration meter and a completed/total section meter, and the same per-lane lines when two or more lanes run; then bug and warning counts, the execution and auditor models (the auditor appends its fallback index when it is non-zero), branch, sandbox on/off, audit and error counts, and any termination reason.
 
 The tabs are Overview, Timeline, Sections (only when the loop has sections), Findings, Plan (only when the loop has a plan), and Usage.
 
 - **Overview:** a phase bar and legend with each phase's duration and percentage, a plan-adjusted callout when the loop's plan was amended, the post-action report (falling back to the completion summary), and the last audit result.
 - **Timeline:** a text state-machine diagram of coding → auditing → post_action with per-edge traversal counts and the current phase highlighted while the loop runs, the phase bar and legend, the most recent transitions, and a merged timeline of transitions and plan amendments.
-- **Sections:** the section list with each section's status, an `adjusted` marker when the plan changed it, duration, and attempt count; `enter` expands its captured done/deviations/follow-ups and stored section plan.
+- **Sections:** each section row shows its derived state — `done`, `running` with the lane phase, `ready`, `blocked` with `waits on #…` naming only its unfinished dependencies, or `failed` — plus an `adjusted` marker when the plan changed it, duration, and attempt count; `enter` expands its captured done/deviations/follow-ups, the stored section plan, and a `Depends on #N id` line listing its dependencies.
 - **Findings:** the current findings grouped by section, with severity.
 - **Plan:** the stored plan markdown and its amendments; `j`/`k` selects an amendment, `enter` loads and expands its before/after diff.
 - **Usage:** totals (cost, tokens, message count), then role-split bars, token-composition bars, and cost-by-model bars.

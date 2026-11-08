@@ -158,26 +158,6 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
     ORDER BY section_index ASC, kind ASC, section_id ASC
   `)
 
-  const stmtListActiveSectionLanes = db.prepare(`
-    SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
-    FROM section_runs r
-    JOIN section_plans p
-      ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
-    WHERE r.project_id = ?
-      AND r.status = 'active' AND r.kind = 'section'
-    ORDER BY r.loop_name, r.section_index
-  `)
-
-  const stmtListActiveSectionLanesForLoop = db.prepare(`
-    SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
-    FROM section_runs r
-    JOIN section_plans p
-      ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
-    WHERE r.project_id = ? AND r.loop_name = ?
-      AND r.status = 'active' AND r.kind = 'section'
-    ORDER BY r.loop_name, r.section_index
-  `)
-
   const stmtList = db.prepare(`
     SELECT ${RUN_COLUMNS}
     FROM section_runs
@@ -256,11 +236,44 @@ export function createSectionRunsRepo(db: Database): SectionRunsRepo {
     return rows.map(mapRow)
   }
 
+  let laneStatements: {
+    all: ReturnType<Database['prepare']>
+    forLoop: ReturnType<Database['prepare']>
+  } | null = null
+
+  function prepareLaneStatements() {
+    if (!laneStatements) {
+      laneStatements = {
+        all: db.prepare(`
+          SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
+          FROM section_runs r
+          JOIN section_plans p
+            ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
+          WHERE r.project_id = ?
+            AND r.status = 'active' AND r.kind = 'section'
+          ORDER BY r.loop_name, r.section_index
+        `),
+        forLoop: db.prepare(`
+          SELECT r.loop_name, r.section_index, r.section_id, r.phase, r.started_at, p.title, p.attempts
+          FROM section_runs r
+          JOIN section_plans p
+            ON p.project_id = r.project_id AND p.loop_name = r.loop_name AND p.section_id = r.section_id
+          WHERE r.project_id = ? AND r.loop_name = ?
+            AND r.status = 'active' AND r.kind = 'section'
+          ORDER BY r.loop_name, r.section_index
+        `),
+      }
+    }
+    return laneStatements
+  }
+
   function listActiveSectionLanes(projectId: string, loopName?: string): ActiveSectionLaneRow[] {
+    if (!hasTable(db, 'section_plans')) return []
+    const statements = prepareLaneStatements()
     const rows = (
       loopName === undefined
-        ? stmtListActiveSectionLanes.all(projectId)
-        : stmtListActiveSectionLanesForLoop.all(projectId, loopName)
+        ? statements.all.all(projectId)
+        : statements.forLoop.all(projectId, loopName)
     ) as Array<Record<string, unknown>>
     return rows.map(mapActiveLaneRow)
   }

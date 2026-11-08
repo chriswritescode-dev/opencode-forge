@@ -11,7 +11,7 @@ const dashboardStoreMock = vi.hoisted(() => {
     handleResubscribed: vi.fn(),
     dispose: vi.fn(),
   }
-  return { store, createDashboardStore: vi.fn(() => store) }
+  return { store, createDashboardStore: vi.fn((_deps: DashboardStoreDeps) => store) }
 })
 
 vi.mock('../../src/tui/dashboard/store', () => ({
@@ -20,7 +20,8 @@ vi.mock('../../src/tui/dashboard/store', () => ({
 
 import { createSignal } from 'solid-js'
 import type { Plugin } from '@opencode/plugin/tui'
-import type { ForgeHostSandboxSetInput, ForgeHostSandboxState } from '../../src/host/forge-rpc'
+import type { ForgeHostSandboxSetInput, ForgeHostSandboxState, ForgeLoopDetail } from '../../src/host/forge-rpc'
+import type { DashboardStoreDeps } from '../../src/tui/dashboard/store'
 import { resolveV2TuiProjectId, setupForgeTuiV2 } from '../../src/tui/v2'
 import tuiModule from '../../src/tui'
 import { formatForgeTitle, resolveTuiOptions } from '../../src/tui/options'
@@ -96,6 +97,40 @@ interface FakeV2TuiOptions {
 
 type DataHandler = (event: { data: Record<string, unknown> }) => void
 
+function loopDetailFixture(): ForgeLoopDetail {
+  return {
+    loop: {
+      projectId: 'proj-a',
+      loopName: 'loop-a',
+      status: 'running',
+      currentSessionId: 'ses-loop',
+      worktree: false,
+      worktreeDir: '/work/a',
+      projectDir: '/work/a',
+      maxIterations: 10,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      auditorFallbackIndex: 0,
+      modelFailed: false,
+      sandbox: false,
+      startedAt: 100,
+      currentSectionIndex: 0,
+      totalSections: 2,
+    },
+    lanes: [
+      { sectionIndex: 0, sectionId: 'sec-1', title: 'Section one', phase: 'coding', attempts: 1, startedAt: 100 },
+      { sectionIndex: 1, sectionId: 'sec-2', title: 'Section two', phase: 'auditing', attempts: 0, startedAt: 200 },
+    ],
+    sections: [],
+    findings: [],
+    transitions: [],
+    transitionsCapped: false,
+    amendments: [],
+  }
+}
+
 function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const layers: RecordedLayer[] = []
   const slots: RecordedSlot[] = []
@@ -129,6 +164,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
   const autoApproveSet = vi.fn(async () => ({ enabled: true, inherited: false }))
   const version = vi.fn(async () => fakeOptions.version ?? { version: VERSION })
   const sessionPlan = vi.fn(async () => ({ plan: null }))
+  const loopDetail = vi.fn(async (_input: { projectId: string; loopName: string }) => loopDetailFixture())
 
   const locationGet = vi.fn(
     fakeOptions.locationGet ?? (async () => ({ project: { id: 'proj-1' } })),
@@ -146,6 +182,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
       autoApproveSet,
       version,
       sessionPlan,
+      loopDetail,
       events: {
         subscribe: vi.fn((name: string, options?: { signal?: AbortSignal }) => {
           type Event = { data: Record<string, unknown> }
@@ -277,6 +314,7 @@ function createFakeV2TuiContext(fakeOptions: FakeV2TuiOptions = {}) {
     autoApproveSet,
     version,
     sessionPlan,
+    loopDetail,
     setRoute,
     setLocation,
     findRpcSubscription: (name: string) => rpcSubscriptions.find((subscription) => subscription.name === name),
@@ -756,6 +794,36 @@ describe('V2 TUI setup', () => {
         { sessionId: 'ses_b' },
         { location: { directory: '/work/b' } },
       ))
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('reads loop detail with lanes from the location the TUI currently shows', async () => {
+    const fake = createFakeV2TuiContext({ location: { directory: '/work/a' } })
+
+    const cleanup = setupForgeTuiV2(fake.ctx)
+    try {
+      const deps = dashboardStoreMock.createDashboardStore.mock.calls.at(-1)?.[0]
+      if (!deps) throw new Error('createDashboardStore was not called with deps')
+
+      const first = await deps.readLoopDetail({ projectId: 'proj-a', loopName: 'loop-a' })
+      if ('error' in first) throw new Error(`loop detail failed: ${first.error}`)
+      expect(first.lanes).toHaveLength(2)
+      expect(fake.loopDetail).toHaveBeenCalledWith(
+        { projectId: 'proj-a', loopName: 'loop-a' },
+        { location: { directory: '/work/a' } },
+      )
+
+      fake.setLocation({ directory: '/work/b' })
+      const second = await deps.readLoopDetail({ projectId: 'proj-b', loopName: 'loop-b' })
+      if ('error' in second) throw new Error(`loop detail failed: ${second.error}`)
+      expect(fake.loopDetail).toHaveBeenLastCalledWith(
+        { projectId: 'proj-b', loopName: 'loop-b' },
+        { location: { directory: '/work/b' } },
+      )
+      expect(deps.currentDirectory()).toBe('/work/b')
+      expect(second.lanes).toHaveLength(2)
     } finally {
       cleanup()
     }
