@@ -19,6 +19,14 @@ export function sectionRunKey(kind: SectionRunKind, sectionId: string): string {
   return kind === 'section' ? `section:${sectionId}` : kind
 }
 
+/** Inverse of {@link sectionRunKey}: recovers the run kind and section id from a stored run key. */
+export function splitRunKey(runKey: string): { kind: SectionRunKind; sectionId: string } {
+  if (runKey.startsWith('section:')) {
+    return { kind: 'section', sectionId: runKey.slice('section:'.length) }
+  }
+  return { kind: runKey as SectionRunKind, sectionId: '' }
+}
+
 /** The lane (loop plus section run) a loop state currently belongs to. */
 export function laneOf(state: Pick<LoopState, 'loopName' | 'sectionRunKey'>): LoopLane {
   return { loopName: state.loopName, sectionRunKey: state.sectionRunKey }

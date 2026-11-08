@@ -8,6 +8,9 @@ type PartialState = {
   active: boolean
   sandbox?: boolean
   worktreeDir?: string
+  laneDir?: string
+  sectionId?: string
+  currentSectionIndex?: number
   sectionRunKey?: string
 }
 
@@ -302,6 +305,45 @@ describe('createSessionLoopResolver', () => {
       const result = await resolver.resolveActiveLoopForSession('session-subagent')
       expect(result).toEqual({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' })
       expect(findActiveByWorktreeDir).toHaveBeenCalledWith('/worktree', { worktreeOnly: true })
+    })
+
+    it('returns the matched lane run rather than the loop\'s lowest-index run', async () => {
+      const getParentSessionId = async (sessionId: string) => sessionId === 'lane-b-subagent' ? 'lane-b-session' : null
+      const laneRun = {
+        loopName: 'active-loop',
+        active: true,
+        sandbox: true,
+        worktree: true,
+        worktreeDir: '/worktree',
+        laneDir: '/worktree.lanes/section-b',
+        sectionId: 'section-b',
+        currentSectionIndex: 1,
+        sectionRunKey: 'section:section-b',
+      }
+      const getActiveState = (name: string) =>
+        name === 'active-loop'
+          ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree', sectionRunKey: 'section:section-a' }
+          : null
+
+      const loop = {
+        service: {
+          getRunStateForSession: () => null,
+          getActiveState,
+          findActiveByWorktreeDir: (dir: string, opts?: { worktreeOnly?: boolean }) =>
+            dir === '/worktree.lanes/section-b' && opts?.worktreeOnly ? laneRun : null,
+        },
+      }
+
+      const resolver = createSessionLoopResolver({
+        loop: mockLoop(loop),
+        getParentSessionId,
+        getSessionDirectory: async () => '/worktree.lanes/section-b',
+        logger: mockLogger,
+      })
+
+      const result = await resolver.resolveActiveLoopForSession('lane-b-subagent')
+      expect(result).toEqual(laneRun)
+      expect(result?.sectionRunKey).toBe('section:section-b')
     })
 
     it('does not resolve a top-level new session by directory alone', async () => {

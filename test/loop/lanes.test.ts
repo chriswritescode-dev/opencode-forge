@@ -1,12 +1,14 @@
 import { execSync } from 'child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { isAbsolute, join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createLane, laneExists, mergeLane, removeLoopLanes } from '../../src/loop/lanes'
+import { createLane, laneExists, lanePrepareOptions, listLaneUnmergedFiles, mergeLane, removeLoopLanes } from '../../src/loop/lanes'
 import { createGitService } from '../../src/utils/git-service'
 import { forgeLanesDir } from '../../src/workspace/forge-naming'
+import type { PluginConfig } from '../../src/types'
 import { createMockLogger } from '../helpers/logger'
+import { createFakeGitService } from '../helpers/fake-git'
 
 const tempDirs: string[] = []
 
@@ -30,14 +32,20 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
+function excludeContent(dir: string): string {
+  let excludePath = git(dir, 'rev-parse --git-path info/exclude').trim()
+  if (!isAbsolute(excludePath)) excludePath = join(dir, excludePath)
+  return readFileSync(excludePath, 'utf-8')
+}
+
 describe('section lanes', () => {
   it('merges lanes that edit different files into the loop worktree', () => {
     const { loopDir } = initRepoWithLoopWorktree()
     const gitService = createGitService()
     const logger = createMockLogger()
 
-    const lane1 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1' })
-    const lane2 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-2' })
+    const lane1 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1', prepare: {} })
+    const lane2 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-2', prepare: {} })
 
     expect(laneExists(lane1.laneDir)).toBe(true)
     writeFileSync(join(lane1.laneDir, 'one.txt'), 'one\n')
@@ -60,8 +68,8 @@ describe('section lanes', () => {
     const gitService = createGitService()
     const logger = createMockLogger()
 
-    const lane1 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1' })
-    const lane2 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-2' })
+    const lane1 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1', prepare: {} })
+    const lane2 = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-2', prepare: {} })
     writeFileSync(join(lane1.laneDir, 'conflict.txt'), 'from-one\n')
     writeFileSync(join(lane2.laneDir, 'conflict.txt'), 'from-two\n')
 
@@ -100,8 +108,8 @@ describe('section lanes', () => {
     const gitService = createGitService()
     const logger = createMockLogger()
 
-    createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1' })
-    createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-2' })
+    createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1', prepare: {} })
+    createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-2', prepare: {} })
 
     await removeLoopLanes({ git: gitService, logger, worktreeDir: loopDir, loopName: 'demo' })
 
@@ -121,9 +129,108 @@ describe('section lanes', () => {
     const loopTip = git(loopDir, 'rev-parse HEAD').trim()
     expect(git(repoDir, 'rev-parse forge-lane/demo/section-1').trim()).not.toBe(loopTip)
 
-    const lane = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1' })
+    const lane = createLane({ git: gitService, logger, loopName: 'demo', worktreeDir: loopDir, sectionId: 'section-1', prepare: {} })
 
     expect(lane.baseCommit).toBe(loopTip)
     expect(git(lane.laneDir, 'rev-parse HEAD').trim()).toBe(loopTip)
+  })
+
+  it('prepares a lane with the loop opencode config and git excludes', () => {
+    const { loopDir } = initRepoWithLoopWorktree()
+    const gitService = createGitService()
+    const logger = createMockLogger()
+    const config = {
+      loop: {
+        worktreeOpencodeConfig: { mcp: { demo: { type: 'local', command: ['x'], enabled: true } } },
+      },
+    } as PluginConfig
+
+    const lane = createLane({
+      git: gitService,
+      logger,
+      loopName: 'demo',
+      worktreeDir: loopDir,
+      sectionId: 'section-1',
+      prepare: lanePrepareOptions(config, { loopName: 'demo', sandbox: false }),
+    })
+
+    expect(JSON.parse(readFileSync(join(lane.laneDir, 'opencode.jsonc'), 'utf-8'))).toEqual(
+      config.loop!.worktreeOpencodeConfig,
+    )
+    const exclude = excludeContent(lane.laneDir)
+    expect(exclude).toContain('.forge/')
+    expect(exclude).toContain('opencode.jsonc')
+    expect(exclude).not.toContain('.codegraph')
+  })
+
+  it('prepares a sandboxed lane with the container name and code-graph exclude', () => {
+    const { loopDir } = initRepoWithLoopWorktree()
+    const gitService = createGitService()
+    const logger = createMockLogger()
+    const config = {
+      loop: {
+        worktreeOpencodeConfig: {
+          mcp: { demo: { type: 'local', command: ['docker', 'exec', '{{FORGE_SANDBOX_CONTAINER}}', 'x'] } },
+        },
+      },
+    } as PluginConfig
+
+    const lane = createLane({
+      git: gitService,
+      logger,
+      loopName: 'demo',
+      worktreeDir: loopDir,
+      sectionId: 'section-1',
+      prepare: lanePrepareOptions(config, { loopName: 'demo', sandbox: true }),
+    })
+
+    const written = JSON.parse(readFileSync(join(lane.laneDir, 'opencode.jsonc'), 'utf-8'))
+    expect(written.mcp.demo.command).toEqual(['docker', 'exec', 'forge-demo', 'x'])
+    expect(excludeContent(lane.laneDir)).toContain('.codegraph')
+  })
+})
+
+describe('lane merge failures', () => {
+  it('reports a failed merge into the lane when no conflict files are listed', () => {
+    const gitService = createFakeGitService({
+      revParseHead: () => ({ ok: true, status: 0, stdout: 'abc123\n', stderr: '' }),
+      merge: () => ({ ok: false, status: 1, stdout: '', stderr: 'CONFLICT' }),
+      mergeAbort: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+      statusPorcelain: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+      mergeIntoWorktree: () => ({ ok: false, status: 1, stdout: '', stderr: 'fatal: merge failed' }),
+      listUnmergedFiles: () => ({ ok: true, status: 0, stdout: '\n', stderr: '' }),
+    })
+
+    const result = mergeLane({
+      git: gitService,
+      logger: createMockLogger(),
+      worktreeDir: '/loop',
+      laneDir: '/loop.lanes/section-1',
+      laneBranch: 'forge-lane/demo/section-1',
+      title: 'section 1',
+    })
+
+    expect(result).toEqual({
+      kind: 'failed',
+      error: 'lanes: could not merge loop tip into lane: fatal: merge failed',
+    })
+  })
+
+  it('returns null when the lane conflict list cannot be read', () => {
+    expect(
+      listLaneUnmergedFiles(
+        createFakeGitService({ listUnmergedFiles: () => ({ ok: false, status: 1, stdout: '', stderr: 'boom' }) }),
+        '/lane',
+      ),
+    ).toBeNull()
+  })
+
+  it('returns trimmed non-empty lane conflict paths', () => {
+    expect(
+      listLaneUnmergedFiles(
+        createFakeGitService({ listUnmergedFiles: () => ({ ok: true, status: 0, stdout: ' a.txt\n\nb.txt \n', stderr: '' }) }),
+        '/lane',
+      ),
+    ).toEqual(['a.txt', 'b.txt'])
   })
 })

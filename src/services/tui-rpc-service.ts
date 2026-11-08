@@ -76,6 +76,26 @@ function rowToLoopInfo(row: LoopRow): LoopInfo {
   }
 }
 
+/**
+ * Session id -> sandbox flag for every session of every running loop, including each active
+ * section lane's current and standby sessions. The TUI shows a lane session's sandbox state from
+ * this map, so it must not be limited to the loop's lowest-index run.
+ */
+function collectActiveLoopSandboxes(loopsRepo: LoopsRepo, projectId: string): Record<string, boolean> {
+  const sandboxes: Record<string, boolean> = {}
+  for (const loop of loopsRepo.listByStatus(projectId, ['running'])) {
+    const runKeys = loopsRepo.listActiveRunKeys(projectId, loop.loopName)
+    const runs = runKeys.length > 0
+      ? runKeys.map((runKey) => loopsRepo.getForRun(projectId, loop.loopName, runKey)).filter((row): row is LoopRow => row !== null)
+      : [loop]
+    for (const run of runs) {
+      if (run.currentSessionId) sandboxes[run.currentSessionId] = run.sandbox
+      if (run.standbySessionId) sandboxes[run.standbySessionId] = run.sandbox
+    }
+  }
+  return sandboxes
+}
+
 export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
   return {
     listLoops(): ForgeLoopsOutput {
@@ -129,9 +149,9 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
           applied: pair.applied,
           controller: pair.controller,
         }
-        const activeLoops = deps.loopsRepo.listByStatus(deps.projectId, ['running'])
-        if (activeLoops.length > 0) {
-          state.activeLoopSandboxes = Object.fromEntries(activeLoops.map((loop) => [loop.currentSessionId, loop.sandbox]))
+        const activeLoopSandboxes = collectActiveLoopSandboxes(deps.loopsRepo, deps.projectId)
+        if (Object.keys(activeLoopSandboxes).length > 0) {
+          state.activeLoopSandboxes = activeLoopSandboxes
         }
         return state
       } catch (err) {

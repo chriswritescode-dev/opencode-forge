@@ -7,6 +7,7 @@ import { getForgeWorkspaceBaseRef, getForgeWorkspaceBranch } from './forge-workt
 import { describeBranchInUse, describeBranchReuseConflict } from './loop-branch'
 import { forgeLanesDir, forgeWorktreeDir, forgeWorktreeSlug, forgeWorktreesRoot, resolveLoopBranchName } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
+import { removeLoopWorktreeWithLanes } from '../loop/lanes'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { prepareForgeWorktree } from './worktree-prepare'
 import { commitWorktreeChanges } from './worktree-commit'
@@ -202,14 +203,15 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
     return result
   }
 
-  async function stepRemoveWorktree(worktreeDir: string, ctx: TeardownContext): Promise<void> {
+  async function stepRemoveWorktree(worktreeDir: string, loopName: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doRemoveWorktree) return
 
-    const result = await cleanupLoopWorktree({
+    const result = await removeLoopWorktreeWithLanes({
       worktreeDir,
       logPrefix: 'forge-adapter',
       logger,
       git,
+      loopName,
     })
     if (result.error) {
       throw new Error(result.error)
@@ -367,7 +369,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): ForgeWorksp
 
       // Remove the worktree directory and prune dead records.
       // Skip on error/stall/abort so restart can reuse it.
-      await stepRemoveWorktree(info.directory, ctx)
+      await stepRemoveWorktree(info.directory, loopName, ctx)
 
       // Branches are never deleted — `forge/*` scratch branches stay in place for potential restart.
     },

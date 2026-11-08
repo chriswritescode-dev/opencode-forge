@@ -5,6 +5,8 @@ import { findPartialMatch } from '../../utils/partial-match'
 import {
   resolveSectionRunTarget,
   sectionRunKey,
+  splitRunKey,
+  type LoopLane,
   type SectionRunKind,
   type SectionRunTarget,
 } from '../../loop/section-run'
@@ -108,6 +110,10 @@ export interface LoopsRepo {
   finishRun(projectId: string, loopName: string, runKey: string): void
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
+  /** The lane whose active section run owns `sessionId`, or null when no running loop has such a run. */
+  getLaneForSession(projectId: string, sessionId: string): LoopLane | null
+  /** Light check for hot paths: true when the loop is running and `runKey` is one of its active section runs. */
+  isRunActive(projectId: string, loopName: string, runKey: string): boolean
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
   listAll(projectId: string): LoopRow[]
   listSidebarRows(projectId: string, limit: number): LoopSidebarRow[]
@@ -115,8 +121,8 @@ export interface LoopsRepo {
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string, runKey?: string): number
   resetError(projectId: string, loopName: string, runKey?: string): void
-  /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the row is absent/non-running/index mismatch. */
-  advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number, runKey?: string): number | null
+  /** Compare-and-swap advance of the auditor fallback index by one; returns the new index on success or null when the row is absent/non-running/index mismatch. */
+  advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, runKey?: string): number | null
   /** Reset the auditor fallback index to 0; returns true when a running row was actually changed, false when it was already 0 / non-running / absent. */
   resetAuditorFallbackIndex(projectId: string, loopName: string, runKey?: string): boolean
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string, runKey?: string): void
@@ -445,6 +451,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   const getLargeStmt = db.prepare(`
     SELECT last_audit_result, post_action_report
     FROM loop_large_fields
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const getLoopStatusStmt = db.prepare(`
+    SELECT status
+    FROM loops
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -850,9 +862,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     getForRun(projectId: string, loopName: string, runKey: string): LoopRow | null {
-      const [kind, sectionId] = runKey.startsWith('section:')
-        ? ['section', runKey.slice('section:'.length)]
-        : [runKey, '']
+      const { kind, sectionId } = splitRunKey(runKey)
       const row = getForRunStmt.get(kind, sectionId, projectId, loopName) as LoopRowRaw | null
       return row ? mapRow(row) : null
     },
@@ -881,6 +891,20 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     getBySessionId(projectId: string, sessionId: string): LoopRow | null {
       const row = getBySessionIdStmt.get(sessionId, projectId) as LoopRowRaw | null
       return row ? mapRow(row) : null
+    },
+
+    getLaneForSession(projectId: string, sessionId: string): LoopLane | null {
+      const run = sectionRuns.getBySession(projectId, sessionId)
+      if (!run) return null
+      const loop = getLoopStatusStmt.get(projectId, run.loopName) as { status: LoopRow['status'] } | null
+      if (loop?.status !== 'running') return null
+      return { loopName: run.loopName, sectionRunKey: run.sectionRunKey }
+    },
+
+    isRunActive(projectId: string, loopName: string, runKey: string): boolean {
+      if (sectionRuns.get(projectId, loopName, runKey)?.status !== 'active') return false
+      const loop = getLoopStatusStmt.get(projectId, loopName) as { status: LoopRow['status'] } | null
+      return loop?.status === 'running'
     },
 
     listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[] {
@@ -948,13 +972,13 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       sectionRuns.update(projectId, loopName, key, { errorCount: 0, modelFailed: false })
     },
 
-    advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, toIndex: number, runKey?: string): number | null {
+    advanceAuditorFallbackIndex(projectId: string, loopName: string, fromIndex: number, runKey?: string): number | null {
       const key = runKey ?? primaryRunKey(projectId, loopName)
       if (!key) return null
       const loop = getStmt.get(projectId, loopName) as LoopRowRaw | null
       if (!loop || loop.status !== 'running') return null
       const changed = sectionRuns.advanceAuditorFallbackIndex(projectId, loopName, key, fromIndex)
-      return changed ? toIndex : null
+      return changed ? fromIndex + 1 : null
     },
 
     resetAuditorFallbackIndex(projectId: string, loopName: string, runKey?: string): boolean {

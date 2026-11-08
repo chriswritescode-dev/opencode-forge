@@ -34,7 +34,7 @@ import { decomposePlanSections } from './deterministic-decomposer'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
 import { isLaneLoop, laneOf } from '../loop/section-run'
-import { createLane } from '../loop/lanes'
+import { createLane, lanePrepareOptions, removeLoopWorktreeWithLanes } from '../loop/lanes'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { transitionSectionIndex } from '../loop/state'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
@@ -1102,17 +1102,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await deps.client.workspace.remove({ id: createdWorkspaceId }).catch(() => {})
       }
       if (hostWorktreeDir) {
-        const { removeLoopLanes } = await import('../loop/lanes')
-        try {
-          await removeLoopLanes({ git, logger: deps.logger, worktreeDir: hostWorktreeDir, loopName: uniqueLoopName })
-        } catch (err) {
-          deps.logger.error(`handleStartLoop: failed to remove section lanes for ${uniqueLoopName}`, err)
-        }
-        const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
-        await cleanupLoopWorktree({
-          worktreeDir: hostWorktreeDir,
-          logPrefix: 'handleStartLoop',
+        await removeLoopWorktreeWithLanes({
+          git,
           logger: deps.logger,
+          worktreeDir: hostWorktreeDir,
+          loopName: uniqueLoopName,
+          logPrefix: 'handleStartLoop',
         })
       }
       restoreBranchTip()
@@ -1168,6 +1163,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return fail('internal_error', 500, 'Failed to resolve loop base commit')
       }
 
+      const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager) && command.sandbox?.enabled !== false
+      sandboxEnabledForLoop = sandboxEnabled
+
       let firstLane: { laneDir: string; laneBranch: string; laneBaseCommit: string } | undefined
       if (firstSection && hostWorktreeDir) {
         try {
@@ -1177,6 +1175,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             loopName: uniqueLoopName,
             worktreeDir: hostWorktreeDir,
             sectionId: firstSection.id,
+            prepare: lanePrepareOptions(deps.config, { loopName: uniqueLoopName, sandbox: sandboxEnabled }),
           })
           firstLane = { laneDir: lane.laneDir, laneBranch: lane.laneBranch, laneBaseCommit: lane.baseCommit }
         } catch (err) {
@@ -1185,10 +1184,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           return fail('internal_error', 500, 'Failed to create the first section lane')
         }
       }
-
-      // Build permissions
-      const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager) && command.sandbox?.enabled !== false
-      sandboxEnabledForLoop = sandboxEnabled
 
       const permissionRuleset = buildLoopPermissionRuleset(resolveLoopPermissionOptions(deps.config))
 
@@ -1490,17 +1485,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let worktreeRemoved = false
     const cleanupRequested = command.cleanupWorktree ?? deps.config.loop?.cleanupWorktree
     if (cleanupRequested && state.worktree && state.worktreeDir) {
-      const { removeLoopLanes } = await import('../loop/lanes')
-      try {
-        await removeLoopLanes({ git, logger: deps.logger, worktreeDir: state.worktreeDir, loopName: state.loopName })
-      } catch (err) {
-        deps.logger.error(`loop-cancel: failed to remove section lanes for ${state.loopName}`, err)
-      }
-      const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
-      const result = await cleanupLoopWorktree({
-        worktreeDir: state.worktreeDir,
-        logPrefix: 'loop-cancel',
+      const result = await removeLoopWorktreeWithLanes({
+        git,
         logger: deps.logger,
+        worktreeDir: state.worktreeDir,
+        loopName: state.loopName,
+        logPrefix: 'loop-cancel',
       })
       worktreeRemoved = result.removed
     }
@@ -1584,6 +1574,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // this marker so the outer flow performs the canonical termination
       // without any lock held.
       | { ok: false; error: string; providerLimitMessage: string }
+      | { ok: false; error: string; laneResumeFailed: true }
 
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
       // Re-read authoritative state under the per-loop lock.
@@ -1786,10 +1777,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
         const laneSessionId = resumed?.sessionId
         if (!laneSessionId) {
-          if (deps.loop.service.getAnyState(stoppedState.loopName)?.active) {
-            deps.loop.service.terminate(stoppedState.loopName, { status: 'errored', reason: 'restart_prompt_failed', completedAt: Date.now() })
-          }
-          return { ok: false, error: 'Restart failed: could not resume any section lane.' }
+          return { ok: false, error: 'Restart failed: could not resume any section lane.', laneResumeFailed: true }
         }
         if (stoppedState.phase !== 'coding') {
           deps.loop.service.recordTransition(stoppedState.loopName, {
@@ -2182,6 +2170,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (restartSandbox && deps.sandboxManager) {
         await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
       }
+      return fail('internal_error', 500, outcome.error)
+    }
+
+    if (!outcome.ok && 'laneResumeFailed' in outcome) {
+      await deps.loop.terminate(stoppedState.loopName, { kind: 'restart_prompt_failed' })
       return fail('internal_error', 500, outcome.error)
     }
 

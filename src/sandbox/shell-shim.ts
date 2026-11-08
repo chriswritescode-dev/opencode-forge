@@ -67,7 +67,7 @@ export function buildShimScript(hostShell: string): string {
 # exec propagates the guest command's exit code verbatim, so the bash tool keeps
 # seeing real exit statuses.
 if [ -n "\${${SHIM_ENV_CONTAINER}:-}" ]; then
-  exec msb exec --quiet "$${SHIM_ENV_CONTAINER}" --no-tty -w "$PWD" -- env $FORGE_SANDBOX_ENV bash "$@"
+  exec msb exec --quiet "$${SHIM_ENV_CONTAINER}" --no-tty -w "$PWD" -- env $${SHIM_ENV_SANDBOX_ENV} bash "$@"
 fi
 exec "${hostShell}" "$@"
 `

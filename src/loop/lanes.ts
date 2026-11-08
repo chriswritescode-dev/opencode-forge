@@ -1,10 +1,36 @@
 import { dirname, join } from 'path'
 import { existsSync, mkdirSync, readdirSync, rmSync, type Dirent } from 'fs'
-import type { Logger } from '../types'
+import type { Logger, PluginConfig } from '../types'
 import { defaultGitService, type GitResult, type GitService } from '../utils/git-service'
 import { forgeLaneBranchName, forgeLaneDir, forgeLanesDir, forgeWorktreeSlug } from '../workspace/forge-naming'
 import { commitWorktreeChanges } from '../workspace/worktree-commit'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
+import { prepareForgeWorktree, type PrepareForgeWorktreeOptions } from '../workspace/worktree-prepare'
+import { sandboxContainerName } from '../sandbox/msb'
+import { isCodeGraphEnabled } from '../constants/loop'
+
+/** Options a lane passes to {@link prepareForgeWorktree}; the git and logger seams stay in `createLane`. */
+export type LanePrepareOptions = Omit<PrepareForgeWorktreeOptions, 'git' | 'logger'>
+
+/** Per-loop values needed to derive a lane's worktree preparation options. */
+export interface LanePrepareState {
+  loopName: string
+  sandbox?: boolean
+}
+
+/**
+ * Derives the lane's {@link prepareForgeWorktree} options from the plugin config, mirroring the
+ * workspace adapter: the loop's inline opencode config, its sandbox container name (only when a
+ * sandbox is provisioned), and the code-graph link exclusion.
+ */
+export function lanePrepareOptions(config: PluginConfig, state: LanePrepareState): LanePrepareOptions {
+  const sandbox = Boolean(state.sandbox)
+  return {
+    worktreeOpencodeConfig: config.loop?.worktreeOpencodeConfig,
+    sandboxContainerName: sandbox ? sandboxContainerName(forgeWorktreeSlug(state.loopName)) : undefined,
+    excludeCodeGraphLink: sandbox && isCodeGraphEnabled(config),
+  }
+}
 
 /** A section lane checked out beside the loop worktree it belongs to. */
 export interface Lane {
@@ -23,6 +49,13 @@ function gitFailure(prefix: string, result: GitResult): Error {
   return new Error(`${prefix}: ${result.stderr.trim() || 'unknown error'}`)
 }
 
+function nonEmptyLines(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+}
+
 /**
  * Creates (or re-creates) a lane worktree for `sectionId` from the loop
  * worktree's current head. A surviving lane branch is force-updated to that
@@ -34,7 +67,7 @@ export function createLane(input: {
   loopName: string
   worktreeDir: string
   sectionId: string
-  prepare?: (laneDir: string) => void
+  prepare: LanePrepareOptions
 }): Lane {
   const head = input.git.revParseHead(input.worktreeDir)
   if (!head.ok) throw gitFailure(`lanes: could not resolve HEAD of ${input.worktreeDir}`, head)
@@ -54,7 +87,7 @@ export function createLane(input: {
   }
   if (!addResult.ok) throw gitFailure(`lanes: could not add worktree ${laneDir}`, addResult)
 
-  input.prepare?.(laneDir)
+  prepareForgeWorktree(laneDir, { git: input.git, logger: input.logger, ...input.prepare })
   input.logger.log(`lanes: created ${laneBranch} at ${laneDir} from ${baseCommit}`)
 
   return { laneDir, laneBranch, baseCommit }
@@ -112,18 +145,28 @@ export function mergeLane(input: {
     }
   }
 
-  input.git.mergeIntoWorktree(input.laneDir, preMergeSha)
+  const mergeIntoResult = input.git.mergeIntoWorktree(input.laneDir, preMergeSha)
 
   const unmerged = input.git.listUnmergedFiles(input.laneDir)
   if (!unmerged.ok) {
     return { kind: 'failed', error: gitFailure(`lanes: could not list unmerged files in ${input.laneDir}`, unmerged).message }
   }
-  const files = unmerged.stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
+  const files = nonEmptyLines(unmerged.stdout)
+  if (!mergeIntoResult.ok && files.length === 0) {
+    return { kind: 'failed', error: gitFailure('lanes: could not merge loop tip into lane', mergeIntoResult).message }
+  }
   input.logger.log(`lanes: ${input.laneBranch} conflicts in ${files.join(', ')}`)
   return { kind: 'conflict', files }
+}
+
+/**
+ * Lists the files an in-progress merge left conflicted in a lane, or `null` when
+ * git could not report them.
+ */
+export function listLaneUnmergedFiles(git: GitService, laneDir: string): string[] | null {
+  const unmerged = git.listUnmergedFiles(laneDir)
+  if (!unmerged.ok) return null
+  return nonEmptyLines(unmerged.stdout)
 }
 
 /**
@@ -190,10 +233,7 @@ export async function removeLoopLanes(input: {
 
   const branches = input.git.listBranches(input.worktreeDir, `forge-lane/${forgeWorktreeSlug(input.loopName)}/*`)
   if (branches.ok) {
-    for (const branch of branches.stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)) {
+    for (const branch of nonEmptyLines(branches.stdout)) {
       const deleteResult = input.git.branchDelete(input.worktreeDir, branch)
       if (!deleteResult.ok) {
         input.logger.log(`lanes: could not delete branch ${branch}: ${deleteResult.stderr.trim() || 'unknown error'}`)
@@ -203,6 +243,35 @@ export async function removeLoopLanes(input: {
 
   rmSync(lanesDir, { recursive: true, force: true })
   input.git.worktreePrune(input.worktreeDir)
+}
+
+/**
+ * Removes a loop's lanes and then its worktree. Lane removal failures are logged
+ * and never block the worktree cleanup, whose result is returned.
+ */
+export async function removeLoopWorktreeWithLanes(input: {
+  git: GitService
+  logger: Logger
+  worktreeDir: string
+  loopName: string
+  logPrefix: string
+}): Promise<{ removed: boolean; error?: string }> {
+  try {
+    await removeLoopLanes({
+      git: input.git,
+      logger: input.logger,
+      worktreeDir: input.worktreeDir,
+      loopName: input.loopName,
+    })
+  } catch (err) {
+    input.logger.error(`${input.logPrefix}: failed to remove section lanes for ${input.loopName}`, err)
+  }
+  return cleanupLoopWorktree({
+    worktreeDir: input.worktreeDir,
+    logPrefix: input.logPrefix,
+    logger: input.logger,
+    git: input.git,
+  })
 }
 
 /** True when `laneDir` exists and is a checkout inside a git work tree. */

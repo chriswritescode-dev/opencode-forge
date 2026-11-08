@@ -5,7 +5,7 @@ import { LRUCache } from '../utils/lru-cache'
 
 export interface SessionLoopResolverDeps {
   loop: {
-    service: Pick<LoopService, 'getRunStateForSession' | 'getActiveState' | 'findActiveByWorktreeDir'>
+    service: Pick<LoopService, 'getRunStateForSession' | 'findActiveByWorktreeDir'>
   }
   getParentSessionId(sessionId: string): Promise<string | null>
   getSessionDirectory?(sessionId: string): Promise<string | null>
@@ -19,6 +19,12 @@ export interface ResolvedLoop {
   worktree?: boolean
   worktreeDir?: string
   workspaceId?: string
+  /** The lane checkout this run works in; undefined for serial runs. */
+  laneDir?: string
+  /** The section this run belongs to, empty for plan-scoped runs. */
+  sectionId?: string
+  /** Zero-based index of the run's section, used for its lane environment. */
+  currentSectionIndex?: number
   /** The section run the resolved session belongs to. */
   sectionRunKey: string
 }
@@ -59,10 +65,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
       const dir = await deps.getSessionDirectory(sessionId)
       if (dir) {
         const matched = deps.loop.service.findActiveByWorktreeDir(dir, { worktreeOnly: true })
-        if (matched) {
-          const full = deps.loop.service.getActiveState(matched.loopName)
-          if (full?.active) return { loop: full, via: 'directory match' }
-        }
+        if (matched?.active) return { loop: matched, via: 'directory match' }
       }
     }
 

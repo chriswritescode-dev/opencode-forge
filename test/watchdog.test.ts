@@ -21,6 +21,7 @@ function wait(ms: number): Promise<void> {
 function createMockLoopService(overrides?: {
   getActiveState?: () => LoopState | null
   getRunState?: (loopName: string, runKey: string) => LoopState | null
+  isRunActive?: (lane: LoopLane) => boolean
   resolveLoopName?: (sessionId: string) => string | null
   getBusyStallTimeoutMs?: () => number
   getStallTimeoutMs?: () => number
@@ -30,6 +31,7 @@ function createMockLoopService(overrides?: {
   return {
     getActiveState,
     getRunState,
+    isRunActive: overrides?.isRunActive ?? (() => true),
     getStallTimeoutMs: overrides?.getStallTimeoutMs ?? (() => 10),
     getMaxConsecutiveStalls: () => 3,
     getBusyStallTimeoutMs: overrides?.getBusyStallTimeoutMs ?? (() => 900_000),
@@ -76,6 +78,26 @@ describe('createLoopWatchdog', () => {
     expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
 
     watchdog.stop(PLAN_LANE)
+  })
+
+  it('reports whether a stall interval is running for a lane', () => {
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
+      loopService: createMockLoopService(),
+      client: createMockClient(async () => ({ 'coding-session': { type: 'busy' } })),
+      logger,
+      nudge: vi.fn(),
+      recover: vi.fn(),
+      terminate: vi.fn(),
+    })
+
+    expect(watchdog.isRunning(PLAN_LANE)).toBe(false)
+    watchdog.start(PLAN_LANE)
+    expect(watchdog.isRunning(PLAN_LANE)).toBe(true)
+    watchdog.stop(PLAN_LANE)
+    expect(watchdog.isRunning(PLAN_LANE)).toBe(false)
+    watchdog.clearAll()
   })
 
   it('treats busy child/subagent sessions as loop being busy', async () => {
@@ -468,6 +490,34 @@ describe('createLoopWatchdog', () => {
     expect(watchdog.getStallInfo(PLAN_LANE)?.consecutiveStalls).toBe(0)
     expect(watchdog.getStallInfo(PLAN_LANE)?.lastReason).toBeUndefined()
 
+    watchdog.stop(PLAN_LANE)
+  })
+
+  it('recordActivity checks run activity without loading the full run state', () => {
+    const state = makeLoopState(WATCHDOG_STATE_DEFAULTS)
+    const getRunState = vi.fn(() => state)
+    const isRunActive = vi.fn(() => true)
+
+    const { logger } = createCapturingLogger()
+    const watchdog = createLoopWatchdog({
+      projectId: 'test-project',
+      loopService: {
+        ...createMockLoopService({ getRunState, isRunActive, getStallTimeoutMs: () => 60_000 }),
+      },
+      client: createMockClient(async () => ({})),
+      logger,
+      nudge: vi.fn(),
+      recover: vi.fn(),
+      terminate: vi.fn(),
+    })
+
+    watchdog.start(PLAN_LANE)
+    expect(getRunState).not.toHaveBeenCalled()
+
+    watchdog.recordActivity(PLAN_LANE, 'tool-before:edit')
+
+    expect(isRunActive).toHaveBeenCalledWith(PLAN_LANE)
+    expect(getRunState).not.toHaveBeenCalled()
     watchdog.stop(PLAN_LANE)
   })
 

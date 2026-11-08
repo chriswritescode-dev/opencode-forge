@@ -10,9 +10,8 @@ import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-r
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
 import { publishToast, type ToastVariant } from '../utils/toast'
-import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { deleteSessionBestEffort } from '../utils/loop-session'
-import { removeLoopLanes } from '../loop/lanes'
+import { removeLoopWorktreeWithLanes } from '../loop/lanes'
 import { defaultGitService, type GitService } from '../utils/git-service'
 
 export interface TerminationSideEffectsContext {
@@ -203,20 +202,12 @@ async function teardownWorktree(
     if (settleMs > 0) {
       await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
     }
-    try {
-      await removeLoopLanes({
-        git: ctx.gitService ?? defaultGitService,
-        logger: ctx.logger,
-        worktreeDir: state.worktreeDir,
-        loopName: state.loopName,
-      })
-    } catch (err) {
-      ctx.logger.error(`Loop: failed to remove section lanes for ${state.loopName}`, err)
-    }
-    await cleanupLoopWorktree({
-      worktreeDir: state.worktreeDir,
-      logPrefix: 'Loop: post-workspace-remove',
+    await removeLoopWorktreeWithLanes({
+      git: ctx.gitService ?? defaultGitService,
       logger: ctx.logger,
+      worktreeDir: state.worktreeDir,
+      loopName: state.loopName,
+      logPrefix: 'Loop: post-workspace-remove',
     })
     if (state.sessionId && state.sessionId !== state.hostSessionId) {
       await deleteSessionBestEffort(

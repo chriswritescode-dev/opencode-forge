@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
 import { Database } from 'bun:sqlite'
 import { sandboxContainerName } from '../../src/sandbox/msb'
+import { forgeLaneBranchName, forgeLanesDir } from '../../src/workspace/forge-naming'
 import { cleanupForgeDb } from '../../scripts/cleanup-loop'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -448,5 +449,41 @@ describe('cleanup-loop git cleanup', () => {
     expect(run.stdout).toContain('Dry run complete.')
     expect(run.stdout).toContain('would: git branch -D forge/dry-run-branch')
     expect(branchExists(projectDir, 'forge/dry-run-branch')).toBe(true)
+  })
+
+  test('removes the lanes root beside the worktree directory', () => {
+    const xdg = join(homeDir, 'xdg-lanes-dir')
+    const worktreeDir = join(xdg, 'opencode', 'forge', 'worktrees', 'foo_bar')
+    const lanesDir = forgeLanesDir(worktreeDir)
+    mkdirSync(join(lanesDir, 'section-1'), { recursive: true })
+
+    const run = runCleanup('foo_bar', {
+      lsOut: '[]',
+      xdgDataHome: xdg,
+    })
+
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain(`✓ rm -rf ${worktreeDir}`)
+    expect(run.stdout).toContain(`✓ rm -rf ${lanesDir}`)
+    expect(existsSync(worktreeDir)).toBe(false)
+    expect(existsSync(lanesDir)).toBe(false)
+  })
+
+  test('deletes the loop lane branches in --project-dir', () => {
+    const xdg = join(homeDir, 'xdg-lane-branches')
+    const projectDir = initProjectRepo()
+    const laneBranch = forgeLaneBranchName('foo_bar', 'section-1')
+    createBranch(projectDir, laneBranch)
+    createForgeDb(xdg, 'foo_bar', 'forge/foo_bar')
+
+    const run = runCleanup('foo_bar', {
+      lsOut: '[]',
+      xdgDataHome: xdg,
+      args: [`--project-dir=${projectDir}`],
+    })
+
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain(`✓ git branch -D ${laneBranch}`)
+    expect(branchExists(projectDir, laneBranch)).toBe(false)
   })
 })

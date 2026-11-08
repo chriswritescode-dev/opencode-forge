@@ -1753,13 +1753,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // Start watchdog
       vi.useFakeTimers()
       loop.startWatchdog(state.loopName)
-      loop.recordActivity(state.loopName, 'initial')
+      loop.recordActivity(PLAN_LANE, 'initial')
 
       // Advance past the first stall detection and recovery
       await vi.advanceTimersByTimeAsync(150)
 
       // Record activity again and advance to another stall detection cycle
-      loop.recordActivity(state.loopName, 'after-recovery')
+      loop.recordActivity(PLAN_LANE, 'after-recovery')
       await vi.advanceTimersByTimeAsync(150)
 
       // After two stalls (exceeding max of 2), the loop must be terminated with stall_timeout

@@ -210,11 +210,32 @@ describe('resolveSandboxContextForLoop', () => {
     expect(context).toEqual({
       runtime: manager.runtime,
       containerName: 'forge-loop',
-      hostDir: '/worktree',
+      hostDir: '/worktree-section-1',
       mounts,
       env: { FORGE_LANE: 'section-1', FORGE_PORT_OFFSET: '300' },
     })
     expect(manager.ensureRunning).toHaveBeenCalledWith('loop', '/worktree')
+  })
+
+  it('targets the lane directory even when no section id is known', async () => {
+    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/worktree' }]
+    const manager = {
+      runtime: {} as never,
+      restore: vi.fn(),
+      ensureRunning: vi.fn().mockResolvedValue('forge-loop'),
+      getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree', mounts }),
+    }
+
+    const context = await resolveSandboxContextForLoop(manager, {
+      loopName: 'loop',
+      active: true,
+      sandbox: true,
+      worktreeDir: '/worktree',
+      laneDir: '/worktree-section-1',
+    })
+
+    expect(context).toMatchObject({ hostDir: '/worktree-section-1', mounts })
+    expect(context).not.toHaveProperty('env')
   })
 
   it('returns null after ensureRunning failure unless configured to throw', async () => {

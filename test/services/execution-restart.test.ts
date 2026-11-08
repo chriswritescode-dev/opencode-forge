@@ -3060,6 +3060,127 @@ describe('lane-loop restart resumes section lanes', () => {
     expect(loopsRepo.get(PROJECT_ID, loopName)!.status).toBe('running')
     expect(loopsRepo.listActiveRunKeys(PROJECT_ID, loopName)).toContain('section:a')
   })
+
+  test('routes a lane resume failure through the canonical terminate path', async () => {
+    const loopName = 'lane-resume-failure-loop'
+    loopsRepo.insert({
+      projectId: PROJECT_ID,
+      loopName,
+      status: 'cancelled',
+      currentSessionId: 'session-lane-a',
+      worktree: true,
+      worktreeDir: tempDir,
+      worktreeBranch: 'forge/lane-resume-failure',
+      projectDir: '/tmp/test',
+      maxIterations: 10,
+      maxParallelSections: 2,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: null,
+      auditorModel: null,
+      executionVariant: null,
+      auditorVariant: null,
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      startedAt: Date.now(),
+      completedAt: Date.now(),
+      terminationReason: 'user_aborted',
+      completionSummary: null,
+      workspaceId: 'ws_old',
+      hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 2,
+      baseCommit: null,
+      standbySessionId: null,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }, { lastAuditResult: null })
+
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName,
+      sections: [
+        { index: 0, id: 'a', after: [], title: 'A', content: 'content A' },
+        { index: 1, id: 'b', after: ['a'], title: 'B', content: 'content B' },
+      ],
+    })
+    sectionPlansRepo.setStatus(PROJECT_ID, loopName, 0, 'in_progress')
+
+    loopsRepo.activateSectionRun(
+      PROJECT_ID,
+      loopName,
+      { kind: 'section', sectionId: 'a', sectionIndex: 0 },
+      {
+        sessionId: 'session-lane-a',
+        phase: 'coding',
+        standbySessionId: null,
+        laneDir: '/tmp/lane-a',
+        laneBranch: 'forge-lane/lane-resume-failure/a',
+        laneBaseCommit: 'abc',
+      },
+      { exclusive: false },
+    )
+
+    const serviceTerminate = vi.fn()
+    const mockService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      listActiveRunStates: (name) => loopService.listActiveRunStates(name),
+      setState: (name, state) => loopService.setState(name, state),
+      terminate: serviceTerminate,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      discardPendingHandoff: (name) => loopService.discardPendingHandoff(name),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+    }
+
+    const terminate = vi.fn(async () => true)
+    const resumeLanes = vi.fn().mockRejectedValue(new Error('lane session creation failed'))
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: vi.fn(async () => ({ id: 'unexpected-single-session' })),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: {
+        create: async () => ({ id: 'ws_restart', directory: tempDir, branch: 'forge/lane-resume-failure' }),
+        list: async () => [],
+        remove: async () => {},
+        warp: async () => {},
+      },
+      toast: async () => {},
+    })
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, {
+        client,
+        loop: { service: mockService as LoopService, resumeLanes, terminate },
+        loopHandler: { clearLoopTimers: async () => {}, startWatchdog: vi.fn() },
+      }).deps,
+    )
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toBe('Restart failed: could not resume any section lane.')
+    expect(terminate).toHaveBeenCalledWith(loopName, { kind: 'restart_prompt_failed' })
+    expect(serviceTerminate).not.toHaveBeenCalled()
+  })
 })
 
 describe('loop.cancel removes section lanes with cleanupWorktree', () => {

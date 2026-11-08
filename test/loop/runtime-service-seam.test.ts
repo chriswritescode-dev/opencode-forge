@@ -15,6 +15,8 @@ function makeFakeLoopService(): LoopService {
     getActiveState: vi.fn(() => null),
     getRunState: vi.fn(() => null),
     getRunStateForSession: vi.fn(() => null),
+    getLaneForSession: vi.fn(() => null),
+    isRunActive: vi.fn(() => false),
     listActiveRunStates: vi.fn(() => []),
     getAnyState: vi.fn(() => null),
     setState: vi.fn(),

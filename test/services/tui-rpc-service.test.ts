@@ -251,6 +251,41 @@ describe('createTuiRpcService', () => {
       expect(result.activeLoopSandboxes).toEqual({ 'session-loop': true })
     })
 
+    test('includes every active lane run\'s current and standby session', () => {
+      loopsRepo.insert(makeLoopRow({
+        projectId: PROJECT,
+        loopName: 'loop-lanes',
+        status: 'running',
+        currentSessionId: 'session-a',
+        standbySessionId: 'session-a-standby',
+        sandbox: true,
+        totalSections: 2,
+      }), { lastAuditResult: null })
+      loopsRepo.activateSectionRun(
+        PROJECT,
+        'loop-lanes',
+        { kind: 'section', sectionId: 'a', sectionIndex: 0 },
+        { sessionId: 'session-a', phase: 'coding', standbySessionId: 'session-a-standby', laneDir: '/tmp/lanes/a' },
+        { exclusive: true },
+      )
+      loopsRepo.activateSectionRun(
+        PROJECT,
+        'loop-lanes',
+        { kind: 'section', sectionId: 'b', sectionIndex: 1 },
+        { sessionId: 'session-b', phase: 'coding', standbySessionId: null, laneDir: '/tmp/lanes/b' },
+        { exclusive: false },
+      )
+
+      const result = createService().getHostSandboxState()
+      if ('error' in result) throw new Error(result.error)
+
+      expect(result.activeLoopSandboxes).toEqual({
+        'session-a': true,
+        'session-a-standby': true,
+        'session-b': true,
+      })
+    })
+
     test('omits activeLoopSandboxes when no loop is running and honors a disabled config', () => {
       const result = createService({ config: { sandbox: { enabled: false } } }).getHostSandboxState()
       if ('error' in result) throw new Error(result.error)

@@ -6,7 +6,7 @@ import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-
 import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
 import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopState } from './state'
-import type { LoopLane, SectionRunTarget } from './section-run'
+import { sectionRunKey, type LoopLane, type SectionRunTarget } from './section-run'
 import type { SectionRunActivateFields } from '../storage/repos/section-runs-repo'
 import { auditScope, loopRowToState, loopStateToRow } from './state'
 import { createHash, randomUUID } from 'node:crypto'
@@ -78,6 +78,10 @@ export interface LoopService {
   listActiveRunStates(name: string): LoopState[]
   /** The active section run that owns `sessionId`, or null when the session is not any running loop's current run session. */
   getRunStateForSession(sessionId: string): LoopState | null
+  /** The lane whose active section run owns `sessionId`, or null. A hot-path alternative to {@link getRunStateForSession}. */
+  getLaneForSession(sessionId: string): LoopLane | null
+  /** Light active check for hot paths: true when the loop is running and the lane's run is active. */
+  isRunActive(lane: LoopLane): boolean
   /** Activate (insert or reactivate) one section run row; `exclusive` finishes the loop's other active runs first. */
   activateSectionRun(loopName: string, target: SectionRunTarget, fields: SectionRunActivateFields, opts?: { exclusive?: boolean }): void
   /** Mark one section run finished. */
@@ -138,8 +142,8 @@ export interface LoopService {
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(lane: LoopLaneRef): number
   resetError(lane: LoopLaneRef): void
-  /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the loop is absent/non-running/index mismatch. */
-  advanceAuditorFallbackIndex(lane: LoopLaneRef, fromIndex: number, toIndex: number): number | null
+  /** Compare-and-swap advance of the auditor fallback index by one; returns the new index on success or null when the loop is absent/non-running/index mismatch. */
+  advanceAuditorFallbackIndex(lane: LoopLaneRef, fromIndex: number): number | null
   /** Reset the auditor fallback index to 0 after a successful audit; returns true when a running row was actually changed. */
   resetAuditorFallbackIndex(lane: LoopLaneRef): boolean
   setPhase(lane: LoopLaneRef, phase: LoopState['phase']): void
@@ -286,12 +290,25 @@ export function createLoopService(
     return hydratePlanFromPlans(loopRowToState(row, large))
   }
 
+  function getLaneForSession(sessionId: string): LoopLane | null {
+    return loopsRepo.getLaneForSession(projectId, sessionId)
+  }
+
+  function isRunActive(lane: LoopLane): boolean {
+    return loopsRepo.isRunActive(projectId, lane.loopName, lane.sectionRunKey)
+  }
+
   function listActiveRunStates(name: string): LoopState[] {
     const large = loopsRepo.getLarge(projectId, name)
+    const loopPlan = plansRepo.getForLoop(projectId, name)
     const states: LoopState[] = []
     for (const runKey of loopsRepo.listActiveRunKeys(projectId, name)) {
       const row = loopsRepo.getForRun(projectId, name, runKey)
-      if (row?.runStatus === 'active') states.push(hydratePlanFromPlans(loopRowToState(row, large)))
+      if (row?.runStatus !== 'active') continue
+      const state = loopRowToState(row, large)
+      if (loopPlan) state.prompt = loopPlan.content
+      else hydratePlanFromPlans(state)
+      states.push(state)
     }
     return states
   }
@@ -385,12 +402,12 @@ export function createLoopService(
     const lane = parseForgeLaneDir(directory)
     if (lane) {
       const loopWorktree = canonicalizePath(lane.loopWorktreeDir)
+      const runKey = sectionRunKey('section', lane.sectionId)
       for (const row of loopsRepo.listByStatus(projectId, ['running'])) {
         if (!row.worktreeDir || canonicalizePath(row.worktreeDir) !== loopWorktree) continue
         if (options?.worktreeOnly && !row.worktree) continue
-        for (const state of listActiveRunStates(row.loopName)) {
-          if (state.laneDir && canonicalizePath(state.laneDir) === canonical) return state
-        }
+        const state = getRunState(row.loopName, runKey)
+        if (state?.laneDir && canonicalizePath(state.laneDir) === canonical) return state
       }
       return null
     }
@@ -732,9 +749,9 @@ export function createLoopService(
     notifyLoopChange('error', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function advanceAuditorFallbackIndex(ref: LoopLaneRef, fromIndex: number, toIndex: number): number | null {
+  function advanceAuditorFallbackIndex(ref: LoopLaneRef, fromIndex: number): number | null {
     const { loopName: name, runKey } = laneRef(ref)
-    const result = loopsRepo.advanceAuditorFallbackIndex(projectId, name, fromIndex, toIndex, runKey)
+    const result = loopsRepo.advanceAuditorFallbackIndex(projectId, name, fromIndex, runKey)
     if (result !== null) {
       const state = getAnyState(name)
       notifyLoopChange('auditor-fallback', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
@@ -1382,6 +1399,8 @@ export function createLoopService(
     getRunState,
     listActiveRunStates,
     getRunStateForSession,
+    getLaneForSession,
+    isRunActive,
     getAnyState,
     setState,
     restoreState,

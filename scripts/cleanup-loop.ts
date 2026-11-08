@@ -22,7 +22,7 @@ import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { readFlagValue } from '../src/utils/cli-flags'
 import { defaultGitService } from '../src/utils/git-service'
-import { resolveLoopBranchName } from '../src/workspace/forge-naming'
+import { resolveLoopBranchName, forgeLaneBranchName, forgeLanesDir } from '../src/workspace/forge-naming'
 import { loadPluginConfig } from '../src/setup'
 import { resolveForgeDataDir, resolveForgeDbPath, resolveOpencodeDataDir } from '../src/utils/opencode-paths'
 import { createMsbRuntime, type SandboxRuntime } from '../src/sandbox/msb'
@@ -186,14 +186,17 @@ async function cleanupOpencodeDb(loopName: string, dryRun: boolean): Promise<voi
 
 async function cleanupWorktreeDirectory(loopName: string, dryRun: boolean, worktreesRoot: string): Promise<void> {
   const path = join(worktreesRoot, loopName)
-  if (!existsSync(path)) {
+  const targets = [path, forgeLanesDir(path)].filter((target) => existsSync(target))
+  if (targets.length === 0) {
     console.log(`\nworktree directory ${path} — already gone`)
     return
   }
   console.log(`\nworktree directory:`)
-  await logAction(dryRun, `rm -rf ${path}`, () => {
-    rmSync(path, { recursive: true, force: true })
-  })
+  for (const target of targets) {
+    await logAction(dryRun, `rm -rf ${target}`, () => {
+      rmSync(target, { recursive: true, force: true })
+    })
+  }
 }
 
 async function cleanupGitWorktree(
@@ -244,6 +247,19 @@ async function cleanupGitWorktree(
       const r = defaultGitService.branchDelete(projectDir, branch)
       if (!r.ok) throw new Error(r.stderr || 'unknown error')
     })
+  }
+
+  const lanePattern = forgeLaneBranchName(loopName, '*')
+  const laneBranches = defaultGitService.listBranches(projectDir, lanePattern)
+  if (!laneBranches.ok) {
+    console.error(`  ✗ git branch --list ${lanePattern}: ${laneBranches.stderr || 'unknown error'}`)
+  } else {
+    for (const branch of laneBranches.stdout.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)) {
+      await logAction(dryRun, `git branch -D ${branch}`, () => {
+        const r = defaultGitService.branchDelete(projectDir, branch)
+        if (!r.ok) throw new Error(r.stderr || 'unknown error')
+      })
+    }
   }
 }
 

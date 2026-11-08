@@ -150,6 +150,12 @@ export interface SandboxContextManager {
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
+/**
+ * Resolves the sandbox context for a loop run. A lane run's `hostDir` is its lane directory
+ * (mounted at the identical host and container path), because `hostDir` is the default search
+ * path/cwd of sandboxed grep/glob and the base of the file-tool fence; the loop worktree would
+ * make a lane run search the wrong checkout.
+ */
 export async function resolveSandboxContextForLoop(
   sandboxManager: SandboxContextManager | null | undefined,
   state: SandboxLoopContextState | null | undefined,
@@ -171,16 +177,17 @@ export async function resolveSandboxContextForLoop(
   const active = sandboxManager.getActive(state.loopName)
   if (!active) return null
   const context = sandboxContextFromActive(sandboxManager.runtime, active)
+  const laneContext = state.laneDir ? { ...context, hostDir: state.laneDir } : context
   if (state.laneDir && state.sectionId) {
     return {
-      ...context,
+      ...laneContext,
       env: {
         FORGE_LANE: state.sectionId,
         FORGE_PORT_OFFSET: String(((state.currentSectionIndex ?? 0) + 1) * 100),
       },
     }
   }
-  return context
+  return laneContext
 }
 
 /**

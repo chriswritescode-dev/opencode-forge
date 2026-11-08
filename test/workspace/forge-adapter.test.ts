@@ -829,6 +829,34 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
+  it('remove also removes section lanes and their branches', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-lanes-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+      })
+      const configured = adapter.configure(makeInfo('lanes-loop', tmpRepo))
+      await adapter.create(configured)
+
+      const lanesDir = `${configured.directory!}.lanes`
+      const laneDir = join(lanesDir, 'a')
+      const laneBranch = `forge-lane/${configured.name}/a`
+      execSync(`git -C "${tmpRepo}" worktree add -b ${laneBranch} "${laneDir}"`, { encoding: 'utf-8' })
+      expect(existsSync(laneDir)).toBe(true)
+
+      await adapter.remove(configured)
+
+      expect(existsSync(lanesDir)).toBe(false)
+      expect(existsSync(configured.directory!)).toBe(false)
+      const branches = execSync(`git -C "${tmpRepo}" branch --list 'forge-lane/*'`, { encoding: 'utf-8' })
+      expect(branches.trim()).toBe('')
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
   it('create writes opencode.jsonc and adds it to git exclude', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-opencode-'))
     try {

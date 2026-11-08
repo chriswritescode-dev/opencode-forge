@@ -3,6 +3,7 @@ import type { LoopChangeNotifier, TerminationReason } from '../loop'
 import { createLoop, isWorkspaceNotFoundError } from '../loop'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { createSandboxManager } from '../sandbox/manager'
+import type { LoopLane } from '../loop/section-run'
 export { isWorkspaceNotFoundError }
 import type { LoopWatchdogStallInfo } from './watchdog'
 import { performTerminationSideEffects } from './host-side-effects'
@@ -27,7 +28,7 @@ export interface LoopEventHandler {
   terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean>
   runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T>
   clearLoopTimers(loopName: string): Promise<void>
-  recordActivity(loopName: string, source?: string): void
+  recordActivity(lane: LoopLane, source?: string): void
   loop: import('../loop/runtime').Loop
 }
 
@@ -104,7 +105,7 @@ export function createLoopEventHandler(
     terminateLoopByName: (name, reason) => loop.terminate(name, reason),
     runExclusive: <T>(loopName: string, fn: () => Promise<T>) => loop.runExclusive(loopName, fn),
     clearLoopTimers: (name) => loop.clearLoopTimers(name),
-    recordActivity: (name, source?) => loop.recordActivity(name, source),
+    recordActivity: (lane, source?) => loop.recordActivity(lane, source),
     loop,
   }
 }

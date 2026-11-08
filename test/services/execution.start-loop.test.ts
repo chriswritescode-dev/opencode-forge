@@ -23,6 +23,7 @@ const mockGitService = {
   worktreeAdd: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
   worktreeRemove: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
   worktreePrune: () => ({ ok: true, status: 0, stdout: '', stderr: '' }),
+  revParseGitPath: () => ({ ok: false, status: 128, stdout: '', stderr: 'not a git repo' }),
   isAncestor: () => true,
 } as any
 

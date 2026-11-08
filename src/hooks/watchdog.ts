@@ -33,6 +33,8 @@ export interface LoopWatchdogRecoveryContext {
 export interface LoopWatchdog {
   start(lane: LoopLane): void
   stop(lane: LoopLane): void
+  /** True while a stall interval is running for the lane. */
+  isRunning(lane: LoopLane): boolean
   /** Stops the watchdog for every section run of one loop. */
   stopLoop(loopName: string): void
   clearAll(): void
@@ -79,7 +81,7 @@ function formatError(err: unknown): string {
 
 export function createLoopWatchdog(input: {
   projectId: string
-  loopService: Pick<LoopService, 'getActiveState' | 'getRunState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'getBusyStallTimeoutMs' | 'resolveLoopName'>
+  loopService: Pick<LoopService, 'getActiveState' | 'getRunState' | 'isRunActive' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'getBusyStallTimeoutMs' | 'resolveLoopName'>
   client: ForgeClient
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
@@ -372,6 +374,10 @@ export function createLoopWatchdog(input: {
     stallDetails.delete(key)
   }
 
+  function isRunning(lane: LoopLane): boolean {
+    return stallWatchdogs.has(laneKey(lane))
+  }
+
   function stopLoop(loopName: string): void {
     for (const interval of deleteLoopLaneEntries(stallWatchdogs, projectId, loopName)) {
       clearInterval(interval)
@@ -398,8 +404,7 @@ export function createLoopWatchdog(input: {
 
   function recordActivity(lane: LoopLane, source = 'external'): void {
     if (!stallWatchdogs.has(laneKey(lane))) return
-    const state = input.loopService.getRunState(lane.loopName, lane.sectionRunKey)
-    if (!state?.active) return
+    if (!input.loopService.isRunActive(lane)) return
     resetActivity(lane, source)
   }
 
@@ -425,6 +430,7 @@ export function createLoopWatchdog(input: {
   return {
     start,
     stop,
+    isRunning,
     stopLoop,
     clearAll,
     recordActivity,

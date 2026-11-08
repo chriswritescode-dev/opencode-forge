@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite'
-import { sectionRunKey, type SectionRunKind, type SectionRunTarget } from '../../loop/section-run'
+import { sectionRunKey, splitRunKey, type SectionRunKind, type SectionRunTarget } from '../../loop/section-run'
 import { hasTable } from '../database'
 
 type SectionRunPhase = 'coding' | 'auditing' | 'post_action'
@@ -85,13 +85,6 @@ export interface SectionRunsRepo {
 const RUN_COLUMNS = `project_id, loop_name, kind, section_id, section_index, phase, session_id,
   standby_session_id, status, started_at, updated_at, finished_at,
   lane_dir, lane_branch, lane_base_commit, error_count, model_failed, auditor_fallback_index`
-
-function splitRunKey(runKey: string): { kind: SectionRunKind; sectionId: string } {
-  if (runKey.startsWith('section:')) {
-    return { kind: 'section', sectionId: runKey.slice('section:'.length) }
-  }
-  return { kind: runKey as SectionRunKind, sectionId: '' }
-}
 
 function mapRow(row: Record<string, unknown>): SectionRunRow {
   const kind = row.kind as SectionRunKind

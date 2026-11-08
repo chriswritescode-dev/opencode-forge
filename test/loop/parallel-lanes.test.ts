@@ -5,6 +5,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { __resetLoopRuntimeSharedState, createLoop, type Loop } from '../../src/loop/runtime'
 import { createPlanAmendmentsRepo } from '../../src/storage/repos/plan-amendments-repo'
+import { createLoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { __resetIdleGate } from '../../src/loop/idle-gate'
 import { __resetInFlightGuard } from '../../src/loop/in-flight-guard'
 import { createGitService } from '../../src/utils/git-service'
@@ -855,8 +856,8 @@ describe('parallel section lanes', () => {
 
     const gitService = createGitService()
     const laneLogger = createMockLogger()
-    const laneA = createLane({ git: gitService, logger: laneLogger, loopName: LOOP_NAME, worktreeDir: loopDir, sectionId: 'a' })
-    const laneB = createLane({ git: gitService, logger: laneLogger, loopName: LOOP_NAME, worktreeDir: loopDir, sectionId: 'b' })
+    const laneA = createLane({ git: gitService, logger: laneLogger, loopName: LOOP_NAME, worktreeDir: loopDir, sectionId: 'a', prepare: {} })
+    const laneB = createLane({ git: gitService, logger: laneLogger, loopName: LOOP_NAME, worktreeDir: loopDir, sectionId: 'b', prepare: {} })
     expect(existsSync(laneA.laneDir)).toBe(true)
     expect(existsSync(laneB.laneDir)).toBe(true)
     expect(git(join(rootDir, 'repo'), 'branch --list "forge-lane/*"')).not.toBe('')
@@ -881,5 +882,462 @@ describe('parallel section lanes', () => {
     expect(existsSync(forgeLanesDir(loopDir))).toBe(false)
     expect(existsSync(loopDir)).toBe(false)
     expect(git(join(rootDir, 'repo'), 'branch --list "forge-lane/*"').trim()).toBe('')
+  })
+
+  test('a failed first lane prompt is retried and leaves the lane watchdog running', async () => {
+    vi.useFakeTimers()
+    let lanePromptAttempts = 0
+    let failLanePrompts = true
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        promptAsync: async (params) => {
+          const directory = String((params as { directory?: string }).directory)
+          if (!directory.includes('.lanes')) return
+          lanePromptAttempts++
+          if (failLanePrompts) throw new Error('prompt rejected')
+        },
+      },
+    })
+    const runtime = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+    })
+    loopService = runtime.loopService
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loop = runtime.loop
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+
+    const attemptsBeforeRetry = lanePromptAttempts
+    expect(attemptsBeforeRetry).toBeGreaterThan(0)
+    const failed = loopService.getRunState(LOOP_NAME, 'section:a')!
+    expect(failed.phase).toBe('coding')
+    expect(failed.errorCount).toBe(1)
+    expect(loop!.getStallInfo(LOOP_NAME)).not.toBeNull()
+
+    failLanePrompts = false
+    await vi.advanceTimersByTimeAsync(2500)
+
+    expect(lanePromptAttempts).toBeGreaterThan(attemptsBeforeRetry)
+    const retried = loopService.getRunState(LOOP_NAME, 'section:a')!
+    expect(retried.active).toBe(true)
+    expect(retried.errorCount).toBe(1)
+    const lanePrompts = calls.filter((call) =>
+      call.method === 'session.promptAsync'
+      && String((call.params as { directory?: string }).directory).includes('.lanes'))
+    expect(lanePrompts.at(-1)!.params).toMatchObject({ sessionID: retried.sessionId })
+  })
+
+  test('a failed lane session creation removes the freshly created lane worktree and branch', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => { throw new Error('session create failed') },
+      },
+    })
+    const runtime = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+    })
+    loopService = runtime.loopService
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loop = runtime.loop
+    seedDiamond(2)
+    sectionPlansRepo.setStatus(PROJECT_ID, LOOP_NAME, 0, 'completed')
+
+    await loop!.startReadySections(LOOP_NAME)
+
+    expect(existsSync(join(forgeLanesDir(loopDir), 'b'))).toBe(false)
+    expect(git(join(rootDir, 'repo'), 'branch --list "forge-lane/*"').trim()).toBe('')
+    const state = loopService.getAnyState(LOOP_NAME)!
+    expect(state.active).toBe(false)
+    expect(state.terminationReason).toBe('session_creation_failed')
+    const terminal = runtime.loopTransitionsRepo
+      .listForLoop(PROJECT_ID, LOOP_NAME)
+      .filter((row) => row.eventType === 'session_creation_failed')
+    expect(terminal).toHaveLength(1)
+    expect(terminal[0].sectionIndex).toBe(1)
+  })
+
+  test('a failed lane start terminates through terminateLoop with the failing section index', async () => {
+    const laneB = join(forgeLanesDir(loopDir), 'b')
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async (params) => {
+          if ((params as { directory?: string }).directory === laneB) throw new Error('session create failed')
+          return { id: 'ses_lane_a' }
+        },
+      },
+    })
+    const terminated: Array<{ kind: string }> = []
+    const notify = vi.fn()
+    const runtime = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+      notify,
+      onTerminated: async (_state, reason) => { terminated.push({ kind: reason.kind }) },
+    })
+    loopService = runtime.loopService
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loop = runtime.loop
+    loopService.setState(LOOP_NAME, makeLoopState({
+      loopName: LOOP_NAME,
+      sessionId: 'seed-session',
+      worktree: true,
+      worktreeDir: loopDir,
+      maxParallelSections: 2,
+      maxIterations: 10,
+      iteration: 1,
+      totalSections: 0,
+      currentSectionIndex: 0,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }))
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      sections: [
+        { index: 0, id: 'a', after: [], title: 'Section A', content: 'A body.\n\n### Files\n- a.txt' },
+        { index: 1, id: 'b', after: [], title: 'Section B', content: 'B body.\n\n### Files\n- b.txt' },
+      ],
+    })
+    loopService.setTotalSections(LOOP_NAME, 2)
+
+    await loop!.startReadySections(LOOP_NAME)
+
+    expect(existsSync(laneB)).toBe(false)
+    expect(git(join(rootDir, 'repo'), 'branch --list "forge-lane/*"')).not.toContain('/b')
+    expect(terminated).toEqual([{ kind: 'session_creation_failed' }])
+    expect(notify).toHaveBeenCalledWith('settled', LOOP_NAME, expect.anything())
+    const terminal = runtime.loopTransitionsRepo
+      .listForLoop(PROJECT_ID, LOOP_NAME)
+      .filter((row) => row.eventType === 'session_creation_failed')
+    expect(terminal).toHaveLength(1)
+    expect(terminal[0].sectionIndex).toBe(1)
+  })
+
+  test('resuming lanes resets each resumed run retry and fallback counters', async () => {
+    build()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+
+    for (const run of [b, c]) {
+      const lane = { loopName: LOOP_NAME, sectionRunKey: run.sectionRunKey }
+      loopService.incrementError(lane)
+      loopService.setModelFailed(lane, true)
+      expect(loopService.advanceAuditorFallbackIndex(lane, 0)).toBe(1)
+    }
+    expect(loopService.getRunState(LOOP_NAME, 'section:b')!.auditorFallbackIndex).toBe(1)
+
+    await loop!.cancel(LOOP_NAME)
+
+    loopsRepo.restart(PROJECT_ID, LOOP_NAME, {
+      sessionId: b.sessionId,
+      phase: 'coding',
+      iteration: 1,
+      auditCount: 0,
+      sandbox: false,
+      sandboxContainer: null,
+      workspaceId: null,
+      auditorModel: null,
+      currentSectionIndex: 0,
+      totalSections: 4,
+      startedAt: Date.now(),
+      keepActiveRuns: true,
+    })
+
+    await loop!.resumeLanes(LOOP_NAME)
+
+    for (const runKey of ['section:b', 'section:c']) {
+      const resumed = loopService.getRunState(LOOP_NAME, runKey)!
+      expect(resumed.errorCount).toBe(0)
+      expect(resumed.modelFailed).toBe(false)
+      expect(resumed.auditorFallbackIndex).toBe(0)
+    }
+  })
+
+  test('credits tool activity to the run\'s own lane, not the primary run', async () => {
+    build()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    const activeSpy = vi.spyOn(loopService, 'getActiveState')
+    const runActiveSpy = vi.spyOn(loopService, 'isRunActive')
+
+    loop!.recordActivity({ loopName: LOOP_NAME, sectionRunKey: 'section:c' }, 'tool-before:edit')
+
+    expect(activeSpy).not.toHaveBeenCalled()
+    expect(runActiveSpy).toHaveBeenCalledWith({ loopName: LOOP_NAME, sectionRunKey: 'section:c' })
+    expect(loopService.getRunState(LOOP_NAME, 'section:c')!.sessionId).toBe(c.sessionId)
+
+    activeSpy.mockRestore()
+    runActiveSpy.mockRestore()
+  })
+
+  test('a busy event resolves the lane session without loading the full run state', async () => {
+    build()
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    const runStateSpy = vi.spyOn(loopService, 'getRunStateForSession')
+    const laneSpy = vi.spyOn(loopService, 'getLaneForSession')
+
+    await loop!.tick({ type: 'session.status', properties: { status: { type: 'busy' }, sessionID: b.sessionId } })
+
+    expect(laneSpy).toHaveBeenCalledWith(b.sessionId)
+    expect(runStateSpy).not.toHaveBeenCalled()
+
+    runStateSpy.mockRestore()
+    laneSpy.mockRestore()
+  })
+
+  test('an internal auditor resend discards only its own lane pending handoff', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section work complete.' }] },
+        ],
+      },
+    })
+    const runtime = buildLoopRuntime(testDb.db, {
+      client,
+      config: { ...mockConfig, auditorFallbackModels: ['test/fallback'] },
+      gitService: createGitService(),
+    })
+    loopService = runtime.loopService
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loop = runtime.loop
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    writeFileSync(join(c.runDir, 'c.txt'), 'c.txt\n')
+    await recordCoderHandoff(loop!, c.sessionId)
+    await completeSessionTurn(c.sessionId)
+
+    const cAudit = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(cAudit.phase).toBe('auditing')
+
+    const discardSpy = vi.spyOn(loopService, 'discardPendingHandoff')
+    const absorbed = await loop!.handleAuditorProviderLimit(LOOP_NAME, 'usage limit reached', {
+      lane: { loopName: LOOP_NAME, sectionRunKey: 'section:c' },
+    })
+
+    expect(absorbed).toBe(true)
+    expect(discardSpy).toHaveBeenCalledWith(LOOP_NAME, 'section:c')
+    expect(discardSpy.mock.calls.every(([, runKey]) => runKey === 'section:c')).toBe(true)
+    discardSpy.mockRestore()
+  })
+
+  test('a failed audit-session creation increments the failing lane\'s error count', async () => {
+    const cLaneDir = join(forgeLanesDir(loopDir), 'c')
+    let auditCreateFailures = 0
+    let createdSessions = 0
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section work complete.' }] },
+        ],
+        create: async (params) => {
+          const directory = (params as { directory?: string }).directory
+          if (auditCreateFailures > 0 && directory === cLaneDir) {
+            auditCreateFailures -= 1
+            throw new Error('audit session create failed')
+          }
+          createdSessions += 1
+          return { id: `ses_fake_${String(createdSessions)}_created` }
+        },
+      },
+    })
+    const runtime = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+    })
+    loopService = runtime.loopService
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loop = runtime.loop
+    seedDiamond(2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    const incrementSpy = vi.spyOn(loopService, 'incrementError')
+    auditCreateFailures = 3
+
+    writeFileSync(join(c.runDir, 'c.txt'), 'c.txt\n')
+    await recordCoderHandoff(loop!, c.sessionId)
+    await completeSessionTurn(c.sessionId)
+
+    const increments = incrementSpy.mock.calls.map(([lane]) => lane)
+    expect(increments.length).toBe(3)
+    expect(increments.every((lane) => typeof lane === 'object' && lane.sectionRunKey === 'section:c')).toBe(true)
+    incrementSpy.mockRestore()
+  })
+
+  test('restarting a run whose section already completed reopens the section and refills lanes', async () => {
+    build()
+    loopService.setState(LOOP_NAME, makeLoopState({
+      loopName: LOOP_NAME,
+      sessionId: 'seed-session',
+      worktree: true,
+      worktreeDir: loopDir,
+      maxParallelSections: 2,
+      maxIterations: 10,
+      iteration: 1,
+      totalSections: 0,
+      currentSectionIndex: 0,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }))
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      sections: [
+        { index: 0, id: 'a', after: [], title: 'Section A', content: 'A body.\n\n### Files\n- a.txt' },
+        { index: 1, id: 'b', after: [], title: 'Section B', content: 'B body.\n\n### Files\n- b.txt' },
+      ],
+    })
+    loopService.setTotalSections(LOOP_NAME, 2)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    expect(sectionPlansRepo.get(PROJECT_ID, LOOP_NAME, 0)!.status).toBe('completed')
+    expect(loopService.getRunState(LOOP_NAME, 'section:a')).toBeNull()
+
+    await loop!.restartRunCoding(LOOP_NAME, 'section:a', 'test reopen')
+
+    const reopened = sectionPlansRepo.get(PROJECT_ID, LOOP_NAME, 0)!
+    expect(reopened.status).toBe('in_progress')
+    const aRerun = loopService.getRunState(LOOP_NAME, 'section:a')!
+    expect(aRerun.phase).toBe('coding')
+    expect(aRerun.laneDir).toBe(join(forgeLanesDir(loopDir), 'a'))
+  })
+
+  test('a lane merge conflict finishes the audit attempt as dirty', async () => {
+    const attemptsRepo = createLoopAttemptsRepo(testDb.db)
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Section work complete.' }] },
+        ],
+      },
+    })
+    const runtime = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+      loopAttemptsRepo: attemptsRepo,
+    })
+    loopService = runtime.loopService
+    sectionPlansRepo = runtime.sectionPlansRepo
+    loop = runtime.loop
+
+    loopService.setState(LOOP_NAME, makeLoopState({
+      loopName: LOOP_NAME,
+      sessionId: 'seed-session',
+      worktree: true,
+      worktreeDir: loopDir,
+      maxParallelSections: 2,
+      maxIterations: 10,
+      iteration: 1,
+      totalSections: 0,
+      currentSectionIndex: 0,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
+    }))
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      sections: [
+        { index: 0, id: 'a', after: [], title: 'Section A', content: 'A body.\n\n### Files\n- a.txt' },
+        { index: 1, id: 'b', after: ['a'], title: 'Section B', content: 'B body.\n\n### Files\n- b.txt' },
+        { index: 2, id: 'c', after: ['a'], title: 'Section C', content: 'C body.\n\n### Files\n- c.txt' },
+      ],
+    })
+    loopService.setTotalSections(LOOP_NAME, 3)
+
+    await loop!.startReadySections(LOOP_NAME)
+    await runSection('a', 'a.txt')
+
+    const b = loopService.getRunState(LOOP_NAME, 'section:b')!
+    writeFileSync(join(b.runDir, 'b.txt'), 'b.txt\n')
+    writeFileSync(join(b.runDir, 'shared.txt'), 'from b\n')
+    await recordCoderHandoff(loop!, b.sessionId)
+    await completeSessionTurn(b.sessionId)
+    const bAudit = loopService.getRunState(LOOP_NAME, 'section:b')!
+    await recordAuditorHandoff(loop!, bAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(bAudit.sessionId)
+
+    const c = loopService.getRunState(LOOP_NAME, 'section:c')!
+    writeFileSync(join(c.runDir, 'c.txt'), 'c.txt\n')
+    writeFileSync(join(c.runDir, 'shared.txt'), 'from c\n')
+    await recordCoderHandoff(loop!, c.sessionId)
+    await completeSessionTurn(c.sessionId)
+    const cAudit = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(cAudit.phase).toBe('auditing')
+    await recordAuditorHandoff(loop!, cAudit.sessionId, CLEAN_AUDIT)
+    await completeSessionTurn(cAudit.sessionId)
+
+    const retried = loopService.getRunState(LOOP_NAME, 'section:c')!
+    expect(retried.phase).toBe('coding')
+    expect(attemptsRepo.latest(PROJECT_ID, LOOP_NAME, 'section:2')!.outcome).toBe('dirty')
+  })
+
+  test('only the instance that owns the lane directory runs its watchdog', async () => {
+    const { client } = createFakeForgeClient()
+    const nonOwner = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+      directory: join(rootDir, 'other-instance'),
+    })
+    loopService = nonOwner.loopService
+    sectionPlansRepo = nonOwner.sectionPlansRepo
+    loop = nonOwner.loop
+    seedDiamond(2)
+
+    await loop.startReadySections(LOOP_NAME)
+
+    const a = loopService.getRunState(LOOP_NAME, 'section:a')!
+    expect(nonOwner.loop.getStallInfo(LOOP_NAME)).toBeNull()
+
+    const owner = buildLoopRuntime(testDb.db, {
+      client,
+      config: mockConfig,
+      gitService: createGitService(),
+      directory: a.laneDir!,
+    })
+    loop = owner.loop
+    expect(owner.loop.getStallInfo(LOOP_NAME)).toBeNull()
+
+    await owner.loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'busy' }, sessionID: a.sessionId },
+    })
+
+    expect(owner.loop.getStallInfo(LOOP_NAME)).not.toBeNull()
+    expect(nonOwner.loop.getStallInfo(LOOP_NAME)).toBeNull()
   })
 })
