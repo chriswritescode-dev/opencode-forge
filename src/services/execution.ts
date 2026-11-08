@@ -612,6 +612,9 @@ export async function attachLoopToSession(
       hostSessionId: input.hostSessionId,
       currentSectionIndex: 0,
       totalSections: 0,
+      sectionRunKind: 'plan',
+      sectionId: '',
+      sectionRunKey: 'plan',
     }
 
     deps.loop.service.setState(loopName, state)
@@ -1765,6 +1768,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId: stoppedState.hostSessionId,
         currentSectionIndex: stoppedState.currentSectionIndex,
         totalSections: stoppedState.totalSections,
+        sectionRunKind: restartPhase === 'post_action' ? 'post_action' : stoppedState.totalSections > 0 ? 'section' : 'plan',
+        sectionId: restartPhase !== 'post_action' && stoppedState.totalSections > 0
+          ? `section-${stoppedState.currentSectionIndex + 1}`
+          : '',
+        sectionRunKey: restartPhase === 'post_action'
+          ? 'post_action'
+          : stoppedState.totalSections > 0
+            ? `section:section-${stoppedState.currentSectionIndex + 1}`
+            : 'plan',
       }
       // Build appropriate prompt based on persisted state
       let promptText: string

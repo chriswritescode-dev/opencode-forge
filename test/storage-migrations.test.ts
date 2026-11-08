@@ -2176,3 +2176,262 @@ test('deleting a loop cascades its section_dependencies rows away', () => {
 
   db.close()
 })
+
+interface LegacyLoopInput {
+  loopName: string
+  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  sessionId: string
+  phase: 'coding' | 'auditing' | 'post_action'
+  startedAt: number
+  currentSectionIndex?: number
+  totalSections?: number
+  standbySessionId?: string | null
+  completedAt?: number | null
+}
+
+function insertLegacyLoop(db: Database, loop: LegacyLoopInput): void {
+  db.prepare(`
+    INSERT INTO loops (
+      project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch,
+      project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, completed_at,
+      standby_session_id, current_section_index, total_sections
+    )
+    VALUES ('proj-1', ?, ?, ?, 0, '/tmp/wt', NULL, '/tmp/proj', 5, 0, 0, 0, ?, ?, ?, ?, ?, ?)
+  `).run(
+    loop.loopName,
+    loop.status,
+    loop.sessionId,
+    loop.phase,
+    loop.startedAt,
+    loop.completedAt ?? null,
+    loop.standbySessionId ?? null,
+    loop.currentSectionIndex ?? 0,
+    loop.totalSections ?? 0,
+  )
+}
+
+const SECTION_RUN_SELECT = `
+  SELECT project_id, loop_name, kind, section_id, section_index, phase, session_id,
+         standby_session_id, status, started_at, updated_at, finished_at
+  FROM section_runs
+  WHERE project_id = 'proj-1'
+  ORDER BY loop_name ASC
+`
+
+interface SectionRunSelectRow {
+  project_id: string
+  loop_name: string
+  kind: string
+  section_id: string
+  section_index: number
+  phase: string
+  session_id: string
+  standby_session_id: string | null
+  status: string
+  started_at: number
+  updated_at: number
+  finished_at: number | null
+}
+
+test('migration 161 creates section_runs with both indexes on a fresh database and backfills on a database migrated through 160', () => {
+  const freshDb = openForgeDatabase(createTempDb())
+  const freshTables = freshDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_runs'").all() as Array<{ name: string }>
+  expect(freshTables).toHaveLength(1)
+  expect(indexExists(freshDb, 'idx_section_runs_one_active')).toBe(true)
+  expect(indexExists(freshDb, 'idx_section_runs_session')).toBe(true)
+  const migrationRow = freshDb.prepare('SELECT COUNT(*) AS count FROM migrations WHERE id = ?').get('161') as { count: number }
+  expect(migrationRow.count).toBe(1)
+  freshDb.close()
+
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '160')
+
+  insertLegacyLoop(db, {
+    loopName: 'loop-section',
+    status: 'running',
+    sessionId: 'sess-section',
+    phase: 'auditing',
+    startedAt: 10,
+    currentSectionIndex: 1,
+    totalSections: 3,
+    standbySessionId: 'standby-section',
+  })
+  db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, created_at)
+    VALUES ('proj-1', 'loop-section', 1, 'beta', 'Beta', 'Beta content', 1)
+  `).run()
+
+  insertLegacyLoop(db, {
+    loopName: 'loop-plain',
+    status: 'completed',
+    sessionId: 'sess-plain',
+    phase: 'coding',
+    startedAt: 20,
+    completedAt: 21,
+  })
+
+  insertLegacyLoop(db, {
+    loopName: 'loop-post',
+    status: 'errored',
+    sessionId: 'sess-post',
+    phase: 'post_action',
+    startedAt: 30,
+    currentSectionIndex: 1,
+    totalSections: 2,
+    completedAt: 31,
+  })
+
+  insertLegacyLoop(db, {
+    loopName: 'loop-completed-section',
+    status: 'completed',
+    sessionId: 'sess-completed',
+    phase: 'coding',
+    startedAt: 40,
+    currentSectionIndex: 0,
+    totalSections: 2,
+    completedAt: 41,
+  })
+  db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, section_id, title, content, created_at)
+    VALUES ('proj-1', 'loop-completed-section', 0, 'alpha', 'Alpha', 'Alpha content', 1)
+  `).run()
+
+  applySingleMigration(db, '161')
+
+  const rows = db.prepare(SECTION_RUN_SELECT).all() as SectionRunSelectRow[]
+  expect(rows).toEqual([
+    {
+      project_id: 'proj-1',
+      loop_name: 'loop-completed-section',
+      kind: 'section',
+      section_id: 'alpha',
+      section_index: 0,
+      phase: 'coding',
+      session_id: 'sess-completed',
+      standby_session_id: null,
+      status: 'active',
+      started_at: 40,
+      updated_at: 40,
+      finished_at: null,
+    },
+    {
+      project_id: 'proj-1',
+      loop_name: 'loop-plain',
+      kind: 'plan',
+      section_id: '',
+      section_index: 0,
+      phase: 'coding',
+      session_id: 'sess-plain',
+      standby_session_id: null,
+      status: 'active',
+      started_at: 20,
+      updated_at: 20,
+      finished_at: null,
+    },
+    {
+      project_id: 'proj-1',
+      loop_name: 'loop-post',
+      kind: 'post_action',
+      section_id: '',
+      section_index: 1,
+      phase: 'post_action',
+      session_id: 'sess-post',
+      standby_session_id: null,
+      status: 'active',
+      started_at: 30,
+      updated_at: 30,
+      finished_at: null,
+    },
+    {
+      project_id: 'proj-1',
+      loop_name: 'loop-section',
+      kind: 'section',
+      section_id: 'beta',
+      section_index: 1,
+      phase: 'auditing',
+      session_id: 'sess-section',
+      standby_session_id: 'standby-section',
+      status: 'active',
+      started_at: 10,
+      updated_at: 10,
+      finished_at: null,
+    },
+  ])
+
+  const countBefore = db.prepare('SELECT COUNT(*) AS c FROM section_runs').get() as { c: number }
+  applySingleMigration(db, '161')
+  const countAfter = db.prepare('SELECT COUNT(*) AS c FROM section_runs').get() as { c: number }
+  expect(countAfter.c).toBe(countBefore.c)
+
+  db.close()
+})
+
+test('migration 161 backfills generated section ids when section_plans is missing', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '160')
+
+  insertLegacyLoop(db, {
+    loopName: 'loop-noplan',
+    status: 'running',
+    sessionId: 'sess-noplan',
+    phase: 'auditing',
+    startedAt: 5,
+    currentSectionIndex: 1,
+    totalSections: 2,
+  })
+
+  db.run('DROP TABLE section_plans')
+  applySingleMigration(db, '161')
+
+  const runs = db.prepare(`
+    SELECT kind, section_id, section_index, status
+    FROM section_runs
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-noplan' AND status = 'active'
+  `).all() as Array<{ kind: string; section_id: string; section_index: number; status: string }>
+  expect(runs).toEqual([
+    { kind: 'section', section_id: 'section-2', section_index: 1, status: 'active' },
+  ])
+
+  expect(() => applySingleMigration(db, '161')).not.toThrow()
+  const count = db.prepare("SELECT COUNT(*) AS c FROM section_runs WHERE project_id = 'proj-1' AND loop_name = 'loop-noplan'").get() as { c: number }
+  expect(count.c).toBe(1)
+
+  db.close()
+})
+
+test('migration 161 trigger creates an active run for a raw loop insert', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-raw', 'running', 'sess-raw', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 7)
+  `).run()
+
+  const rawRuns = db.prepare(`
+    SELECT kind, section_id, section_index, session_id, status, started_at
+    FROM section_runs
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-raw' AND status = 'active'
+  `).all() as Array<{ kind: string; section_id: string; section_index: number; session_id: string; status: string; started_at: number }>
+  expect(rawRuns).toEqual([
+    { kind: 'plan', section_id: '', section_index: 0, session_id: 'sess-raw', status: 'active', started_at: 7 },
+  ])
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, current_section_index, total_sections)
+    VALUES ('proj-1', 'loop-raw-section', 'running', 'sess-raw-section', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 8, 1, 2)
+  `).run()
+
+  const sectionRuns = db.prepare(`
+    SELECT kind, section_id, section_index, session_id, status
+    FROM section_runs
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-raw-section' AND status = 'active'
+  `).all() as Array<{ kind: string; section_id: string; section_index: number; session_id: string; status: string }>
+  expect(sectionRuns).toEqual([
+    { kind: 'section', section_id: 'section-2', section_index: 1, session_id: 'sess-raw-section', status: 'active' },
+  ])
+
+  db.close()
+})

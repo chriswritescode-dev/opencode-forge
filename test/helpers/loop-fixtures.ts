@@ -44,6 +44,9 @@ export function makeLoopState(overrides: Partial<LoopState> = {}): LoopState {
     auditorVariant: undefined,
     currentSectionIndex: 0,
     totalSections: 0,
+    sectionRunKind: 'plan',
+    sectionId: '',
+    sectionRunKey: 'plan',
     ...overrides,
   }
 }

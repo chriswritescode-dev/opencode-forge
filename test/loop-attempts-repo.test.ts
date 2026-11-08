@@ -36,6 +36,13 @@ describe('LoopAttemptsRepo', () => {
     ).run(projectId, name, sessionId, Date.now())
   }
 
+  function setLoopSession(sessionId: string): void {
+    db.prepare(`UPDATE loops SET current_session_id = ? WHERE project_id = ? AND loop_name = ?`)
+      .run(sessionId, projectId, loopName)
+    db.prepare(`UPDATE section_runs SET session_id = ? WHERE project_id = ? AND loop_name = ? AND status = 'active'`)
+      .run(sessionId, projectId, loopName)
+  }
+
   beforeEach(() => {
     testDb = createTestDb()
     db = testDb.db
@@ -122,7 +129,8 @@ describe('LoopAttemptsRepo', () => {
       repo.record(baseRecord({ completionKey: 'key-1', iteration: 1 }))
       repo.record(baseRecord({ completionKey: 'key-2', iteration: 2 }))
 
-      db.run(`UPDATE loops SET current_session_id = ?, iteration = 0 WHERE project_id = ? AND loop_name = ?`, ['sess-b', projectId, loopName])
+      db.run(`UPDATE loops SET iteration = 0 WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('sess-b')
 
       const restarted = repo.record(baseRecord({ completionKey: 'key-3', sourceSessionId: 'sess-b', iteration: 0 }))
       expect(restarted).not.toBeNull()
@@ -260,7 +268,7 @@ describe('LoopAttemptsRepo', () => {
       repo.record(baseRecord({ completionKey: 'k2' }))
       repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1')
 
-      db.run(`UPDATE loops SET current_session_id = 'auditor-1' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('auditor-1')
       expect(repo.finishAudit(projectId, loopName, 'section:0', 'auditor-1', 'dirty', [finding('src/x.ts', 1)])).toBe(true)
 
       repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-2')
@@ -273,7 +281,7 @@ describe('LoopAttemptsRepo', () => {
     test('does not bind finished rows', () => {
       repo.record(baseRecord({ completionKey: 'k1' }))
       repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1')
-      db.run(`UPDATE loops SET current_session_id = 'auditor-1' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('auditor-1')
       repo.finishAudit(projectId, loopName, 'section:0', 'auditor-1', 'clean', [])
 
       repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-2')
@@ -293,7 +301,8 @@ describe('LoopAttemptsRepo', () => {
         let calls = 0
         const replaceSession = () => {
           calls += 1
-          db.prepare(`UPDATE loops SET current_session_id = ?, phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run('auditor-1', projectId, loopName)
+          db.prepare(`UPDATE loops SET phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run(projectId, loopName)
+          setLoopSession('auditor-1')
         }
 
         repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1', replaceSession)
@@ -315,7 +324,8 @@ describe('LoopAttemptsRepo', () => {
         let calls = 0
         const replaceSession = () => {
           calls += 1
-          db.prepare(`UPDATE loops SET current_session_id = ?, phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run('auditor-1', projectId, loopName)
+          db.prepare(`UPDATE loops SET phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run(projectId, loopName)
+          setLoopSession('auditor-1')
         }
 
         expect(() => repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1', replaceSession)).toThrow(/simulated bind failure/)
@@ -327,11 +337,12 @@ describe('LoopAttemptsRepo', () => {
 
       test('stale source rejects and never invokes the callback', () => {
         repo.record(baseRecord({ completionKey: 'k1' }))
-        db.run(`UPDATE loops SET current_session_id = 'sess-b' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+        setLoopSession('sess-b')
         let calls = 0
         const replaceSession = () => {
           calls += 1
-          db.prepare(`UPDATE loops SET current_session_id = ?, phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run('auditor-1', projectId, loopName)
+          db.prepare(`UPDATE loops SET phase = 'auditing' WHERE project_id = ? AND loop_name = ?`).run(projectId, loopName)
+          setLoopSession('auditor-1')
         }
 
         expect(() => repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1', replaceSession)).toThrow('Audit handoff source session is no longer active')
@@ -347,7 +358,7 @@ describe('LoopAttemptsRepo', () => {
     test('sets auditedAt, outcome, and findings on the bound row', () => {
       repo.record(baseRecord({ completionKey: 'k1' }))
       repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1')
-      db.run(`UPDATE loops SET current_session_id = 'auditor-1' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('auditor-1')
 
       const before = Date.now()
       const ok = repo.finishAudit(projectId, loopName, 'section:0', 'auditor-1', 'dirty', [finding('src/a.ts', 3), finding('src/b.ts', 7, 'warning')])
@@ -367,7 +378,7 @@ describe('LoopAttemptsRepo', () => {
     test('is idempotent: the second finalize for the same auditor is a no-op', () => {
       repo.record(baseRecord({ completionKey: 'k1' }))
       repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1')
-      db.run(`UPDATE loops SET current_session_id = 'auditor-1' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('auditor-1')
 
       expect(repo.finishAudit(projectId, loopName, 'section:0', 'auditor-1', 'clean', [])).toBe(true)
       const finished = repo.latest(projectId, loopName, 'section:0')
@@ -383,10 +394,11 @@ describe('LoopAttemptsRepo', () => {
       repo.record(baseRecord({ completionKey: 'k1' }))
       repo.bindAudit(projectId, loopName, 'section:0', sessionA, 'auditor-1')
 
-      db.run(`UPDATE loops SET current_session_id = 'auditor-other' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('auditor-other')
       expect(repo.finishAudit(projectId, loopName, 'section:0', 'auditor-1', 'clean', [])).toBe(false)
 
-      db.run(`UPDATE loops SET current_session_id = 'auditor-1', status = 'completed' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('auditor-1')
+      db.run(`UPDATE loops SET status = 'completed' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
       expect(repo.finishAudit(projectId, loopName, 'section:0', 'auditor-1', 'clean', [])).toBe(false)
 
       const row = repo.latest(projectId, loopName, 'section:0')
@@ -396,7 +408,7 @@ describe('LoopAttemptsRepo', () => {
 
     test('returns false when no row is bound to the auditor', () => {
       repo.record(baseRecord({ completionKey: 'k1' }))
-      db.run(`UPDATE loops SET current_session_id = 'auditor-1' WHERE project_id = ? AND loop_name = ?`, [projectId, loopName])
+      setLoopSession('auditor-1')
       expect(repo.finishAudit(projectId, loopName, 'section:0', 'auditor-1', 'clean', [])).toBe(false)
     })
   })

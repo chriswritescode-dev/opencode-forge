@@ -3,6 +3,13 @@ import type { Logger, LoopSandboxSettings } from '../../types'
 import { readLoopSandboxSettings } from '../../sandbox/loop-settings'
 import { findPartialMatch } from '../../utils/partial-match'
 import {
+  resolveSectionRunTarget,
+  sectionRunKey,
+  type SectionRunKind,
+  type SectionRunTarget,
+} from '../../loop/section-run'
+import { createSectionRunsRepo } from './section-runs-repo'
+import {
   handoffSchemaForRole,
   LOOP_HANDOFF_PHASES,
   LOOP_HANDOFF_ROLES,
@@ -52,6 +59,9 @@ export interface LoopRow {
   baseCommit: string | null
   /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
   standbySessionId: string | null
+  sectionRunKind: SectionRunKind
+  sectionId: string
+  sectionRunKey: string
 }
 
 export interface LoopLargeFields {
@@ -197,6 +207,9 @@ function mapRow(row: LoopRowRaw): LoopRow {
     sandboxSettings: parseSandboxSettings(row.sandbox_settings),
     baseCommit: row.base_commit,
     standbySessionId: row.standby_session_id,
+    sectionRunKind: row.section_run_kind as SectionRunKind,
+    sectionId: row.section_run_section_id,
+    sectionRunKey: sectionRunKey(row.section_run_kind as SectionRunKind, row.section_run_section_id),
   }
 }
 
@@ -248,6 +261,8 @@ interface LoopRowRaw {
   sandbox_settings: string | null
   base_commit: string | null
   standby_session_id: string | null
+  section_run_kind: string
+  section_run_section_id: string
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
@@ -260,6 +275,24 @@ const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktre
   standby_session_id`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
+
+const LOOP_SELECT_COLUMNS = `l.project_id, l.loop_name, l.status,
+  r.session_id AS current_session_id,
+  l.worktree, l.worktree_dir, l.worktree_branch, l.project_dir,
+  l.max_iterations, l.iteration, l.audit_count, l.error_count,
+  r.phase AS phase,
+  l.execution_model, l.auditor_model, l.model_failed, l.sandbox, l.sandbox_container,
+  l.started_at, l.completed_at, l.termination_reason, l.completion_summary,
+  l.workspace_id, l.host_session_id,
+  r.section_index AS current_section_index,
+  l.total_sections,
+  l.execution_variant, l.auditor_variant, l.auditor_fallback_index, l.sandbox_settings, l.base_commit,
+  r.standby_session_id AS standby_session_id,
+  r.kind AS section_run_kind,
+  r.section_id AS section_run_section_id`
+
+const LOOP_ACTIVE_RUN_JOIN = `LEFT JOIN section_runs r
+  ON r.project_id = l.project_id AND r.loop_name = l.loop_name AND r.status = 'active'`
 
 const HANDOFF_COLUMNS = `id, project_id, loop_name, session_id, role, phase, section_index,
   iteration, payload, status, created_at, resolved_at`
@@ -343,6 +376,8 @@ function handoffRecordForRole<R extends LoopHandoffRole>(
 }
 
 export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
+  const sectionRuns = createSectionRunsRepo(db)
+
   const insertStmt = db.prepare(`
     INSERT INTO loops (${LOOP_COLUMNS})
     VALUES (${LOOP_COLUMN_PLACEHOLDERS})
@@ -357,9 +392,10 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   `)
 
   const getStmt = db.prepare(`
-    SELECT ${LOOP_COLUMNS}
-    FROM loops
-    WHERE project_id = ? AND loop_name = ?
+    SELECT ${LOOP_SELECT_COLUMNS}
+    FROM loops l
+    ${LOOP_ACTIVE_RUN_JOIN}
+    WHERE l.project_id = ? AND l.loop_name = ?
   `)
 
   const getLargeStmt = db.prepare(`
@@ -369,21 +405,23 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
   `)
 
   const getBySessionIdStmt = db.prepare(`
-    SELECT ${LOOP_COLUMNS}
-    FROM loops
-    WHERE project_id = ? AND current_session_id = ? AND status = 'running'
+    SELECT ${LOOP_SELECT_COLUMNS}
+    FROM loops l
+    ${LOOP_ACTIVE_RUN_JOIN}
+    WHERE l.project_id = ? AND r.session_id = ? AND l.status = 'running'
   `)
 
   const listByStatusBase = `
-    SELECT ${LOOP_COLUMNS}
-    FROM loops
-    WHERE project_id = ? AND status IN
+    SELECT ${LOOP_SELECT_COLUMNS}
+    FROM loops l
+    ${LOOP_ACTIVE_RUN_JOIN}
+    WHERE l.project_id = ? AND l.status IN
   `
 
   /** Prepared on first use: it reads loop_transitions, which databases opened without migrations may lack. */
   const listSidebarRowsSql = `
-    SELECT l.loop_name, l.status, l.iteration, l.max_iterations, l.started_at, l.phase,
-           l.current_section_index, l.total_sections,
+    SELECT l.loop_name, l.status, l.iteration, l.max_iterations, l.started_at,
+           r.phase AS phase, r.section_index AS current_section_index, l.total_sections,
            (
              SELECT MAX(t.created_at)
              FROM loop_transitions t
@@ -391,6 +429,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
                AND t.event_type != 'restart' AND t.to_phase IS NOT NULL AND t.created_at >= l.started_at
            ) AS phase_changed_at
     FROM loops l
+    ${LOOP_ACTIVE_RUN_JOIN}
     WHERE l.project_id = ?
     ORDER BY l.status = 'running' DESC, l.started_at DESC
     LIMIT ?
@@ -560,6 +599,10 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     DELETE FROM loop_large_fields WHERE project_id = ? AND loop_name = ?
   `)
 
+  const totalSectionsStmt = db.prepare(`
+    SELECT total_sections FROM loops WHERE project_id = ? AND loop_name = ?
+  `)
+
   const updatePendingHandoffStmt = db.prepare(`
     UPDATE loop_handoffs
     SET session_id = ?, role = ?, phase = ?, section_index = ?, iteration = ?, payload = ?, created_at = ?
@@ -642,6 +685,33 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     ]
   }
 
+  function totalSectionsOf(projectId: string, loopName: string): number {
+    const row = totalSectionsStmt.get(projectId, loopName) as { total_sections: number } | null
+    return row?.total_sections ?? 0
+  }
+
+  function resolveTarget(
+    projectId: string,
+    loopName: string,
+    phase: LoopRow['phase'],
+    totalSections: number,
+    currentSectionIndex: number,
+  ): SectionRunTarget {
+    return resolveSectionRunTarget(
+      { phase, totalSections, currentSectionIndex },
+      (index) => sectionRuns.sectionIdAt(projectId, loopName, index),
+    )
+  }
+
+  function applyPhaseChange(projectId: string, loopName: string, phase: LoopRow['phase']): void {
+    const active = sectionRuns.getActive(projectId, loopName)
+    if (active && (active.kind === 'post_action') !== (phase === 'post_action')) {
+      const totalSections = totalSectionsOf(projectId, loopName)
+      sectionRuns.moveActive(projectId, loopName, resolveTarget(projectId, loopName, phase, totalSections, active.sectionIndex))
+    }
+    sectionRuns.updateActive(projectId, loopName, { phase })
+  }
+
   return {
     insert(row: LoopRow, large: LoopLargeFields): boolean {
       const runInsert = db.transaction(() => {
@@ -654,6 +724,17 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           return false
         }
         upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null)
+        sectionRuns.activate(
+          row.projectId,
+          row.loopName,
+          resolveTarget(row.projectId, row.loopName, row.phase, row.totalSections ?? 0, row.currentSectionIndex ?? 0),
+          {
+            sessionId: row.currentSessionId,
+            phase: row.phase,
+            standbySessionId: row.standbySessionId ?? null,
+          },
+          row.startedAt,
+        )
         return true
       })
       return runInsert()
@@ -676,6 +757,17 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           )
         }
         upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null)
+        sectionRuns.activate(
+          row.projectId,
+          row.loopName,
+          resolveTarget(row.projectId, row.loopName, row.phase, row.totalSections ?? 0, row.currentSectionIndex ?? 0),
+          {
+            sessionId: row.currentSessionId,
+            phase: row.phase,
+            standbySessionId: row.standbySessionId ?? null,
+          },
+          row.startedAt,
+        )
       })
       runRestore()
     },
@@ -702,7 +794,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[] {
       if (statuses.length === 0) return []
       const placeholders = statuses.map(() => '?').join(',')
-      const sql = `${listByStatusBase} (${placeholders}) ORDER BY started_at DESC`
+      const sql = `${listByStatusBase} (${placeholders}) ORDER BY l.started_at DESC`
       const stmt = db.prepare(sql)
       const rows = stmt.all(projectId, ...statuses) as LoopRowRaw[]
       return rows.map(mapRow)
@@ -740,7 +832,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void {
-      updatePhaseStmt.run(phase, projectId, loopName)
+      const runTxn = db.transaction(() => {
+        updatePhaseStmt.run(phase, projectId, loopName)
+        applyPhaseChange(projectId, loopName, phase)
+      })
+      runTxn()
     },
 
     updateIteration(projectId: string, loopName: string, iteration: number): void {
@@ -767,11 +863,19 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void {
-      setCurrentSessionIdStmt.run(sessionId, projectId, loopName)
+      const runTxn = db.transaction(() => {
+        setCurrentSessionIdStmt.run(sessionId, projectId, loopName)
+        sectionRuns.updateActive(projectId, loopName, { sessionId })
+      })
+      runTxn()
     },
 
     setStandbySessionId(projectId: string, loopName: string, sessionId: string | null): void {
-      setStandbySessionIdStmt.run(sessionId, projectId, loopName)
+      const runTxn = db.transaction(() => {
+        setStandbySessionIdStmt.run(sessionId, projectId, loopName)
+        sectionRuns.updateActive(projectId, loopName, { standbySessionId: sessionId })
+      })
+      runTxn()
     },
 
     setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void {
@@ -805,7 +909,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     setPhaseAndResetError(projectId: string, loopName: string, phase: LoopRow['phase']): void {
-      setPhaseAndResetErrorStmt.run(phase, projectId, loopName)
+      const runTxn = db.transaction(() => {
+        setPhaseAndResetErrorStmt.run(phase, projectId, loopName)
+        applyPhaseChange(projectId, loopName, phase)
+      })
+      runTxn()
     },
 
     replaceSession(
@@ -828,6 +936,8 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         if (opts.resetError) {
           resetErrorStmt.run(projectId, loopName)
         }
+        applyPhaseChange(projectId, loopName, opts.phase)
+        sectionRuns.updateActive(projectId, loopName, { sessionId: opts.sessionId, phase: opts.phase })
       })
       runTxn()
     },
@@ -861,6 +971,17 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           projectId,
           loopName,
         )
+        sectionRuns.activate(
+          projectId,
+          loopName,
+          resolveTarget(projectId, loopName, opts.phase, opts.totalSections, opts.currentSectionIndex),
+          {
+            sessionId: opts.sessionId,
+            phase: opts.phase,
+            standbySessionId: null,
+          },
+          opts.startedAt,
+        )
       })
       runTxn()
     },
@@ -879,7 +1000,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
         summary?: string
       }
     ): void {
-      terminateStmt.run(opts.status, opts.completedAt, opts.reason, opts.summary ?? null, projectId, loopName)
+      const runTxn = db.transaction(() => {
+        terminateStmt.run(opts.status, opts.completedAt, opts.reason, opts.summary ?? null, projectId, loopName)
+        sectionRuns.updateActive(projectId, loopName, { standbySessionId: null })
+      })
+      runTxn()
     },
 
     delete(projectId: string, loopName: string): void {
@@ -893,11 +1018,37 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     setCurrentSectionIndex(projectId, loopName, index) {
-      db.prepare(`UPDATE loops SET current_section_index = ? WHERE project_id = ? AND loop_name = ?`).run(index, projectId, loopName)
+      const runTxn = db.transaction(() => {
+        db.prepare(`UPDATE loops SET current_section_index = ? WHERE project_id = ? AND loop_name = ?`).run(index, projectId, loopName)
+        const active = sectionRuns.getActive(projectId, loopName)
+        if (active) {
+          sectionRuns.moveActive(
+            projectId,
+            loopName,
+            resolveTarget(projectId, loopName, active.phase, totalSectionsOf(projectId, loopName), index),
+          )
+        }
+      })
+      runTxn()
     },
 
     setTotalSections(projectId, loopName, total) {
-      db.prepare(`UPDATE loops SET total_sections = ? WHERE project_id = ? AND loop_name = ?`).run(total, projectId, loopName)
+      const runTxn = db.transaction(() => {
+        db.prepare(`UPDATE loops SET total_sections = ? WHERE project_id = ? AND loop_name = ?`).run(total, projectId, loopName)
+        if (total > 0) {
+          const active = sectionRuns.getActive(projectId, loopName)
+          if (active && active.sectionIndex >= total) {
+            db.prepare(`UPDATE loops SET current_section_index = ? WHERE project_id = ? AND loop_name = ?`)
+              .run(total - 1, projectId, loopName)
+            sectionRuns.moveActive(
+              projectId,
+              loopName,
+              resolveTarget(projectId, loopName, active.phase, total, total - 1),
+            )
+          }
+        }
+      })
+      runTxn()
     },
 
     upsertPendingHandoff(input: LoopHandoffWriteInput & { projectId: string }): { record: LoopHandoffRecord; replaced: boolean } {

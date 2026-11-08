@@ -583,4 +583,47 @@ export const migrations: Migration[] = [
       if (!hasDependencies) db.run(loadSql('160_create_section_dependencies.sql'))
     },
   },
+  {
+    id: '161',
+    description: 'Create section_runs and backfill one active run per loop',
+    apply: (db: Database) => {
+      const hasSectionRuns = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_runs'").all() as unknown[]).length > 0
+      if (hasSectionRuns) return
+      db.run(loadSql('161_create_section_runs.sql'))
+      const hasSectionPlans = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all() as unknown[]).length > 0
+      const sectionIdExpr = hasSectionPlans
+        ? `COALESCE((SELECT p.section_id FROM section_plans p WHERE p.project_id = l.project_id AND p.loop_name = l.loop_name AND p.section_index = l.current_section_index), 'section-' || (l.current_section_index + 1))`
+        : `'section-' || (l.current_section_index + 1)`
+      db.run(`
+        INSERT INTO section_runs (
+          project_id, loop_name, kind, section_id, section_index, phase, session_id,
+          standby_session_id, status, started_at, updated_at, finished_at
+        )
+        SELECT l.project_id, l.loop_name,
+          CASE WHEN l.phase = 'post_action' THEN 'post_action' WHEN l.total_sections > 0 THEN 'section' ELSE 'plan' END,
+          CASE WHEN l.phase = 'post_action' OR l.total_sections <= 0 THEN '' ELSE ${sectionIdExpr} END,
+          l.current_section_index, l.phase, l.current_session_id, l.standby_session_id,
+          'active', l.started_at, l.started_at, NULL
+        FROM loops l
+      `)
+      const triggerSectionIdExpr = hasSectionPlans
+        ? `COALESCE((SELECT section_id FROM section_plans WHERE project_id = NEW.project_id AND loop_name = NEW.loop_name AND section_index = NEW.current_section_index), 'section-' || (NEW.current_section_index + 1))`
+        : `'section-' || (NEW.current_section_index + 1)`
+      db.run(`
+        CREATE TRIGGER IF NOT EXISTS trg_loops_insert_section_run AFTER INSERT ON loops
+        BEGIN
+          INSERT OR REPLACE INTO section_runs (
+            project_id, loop_name, kind, section_id, section_index, phase, session_id,
+            standby_session_id, status, started_at, updated_at, finished_at
+          ) VALUES (
+            NEW.project_id, NEW.loop_name,
+            CASE WHEN NEW.phase = 'post_action' THEN 'post_action' WHEN NEW.total_sections > 0 THEN 'section' ELSE 'plan' END,
+            CASE WHEN NEW.phase = 'post_action' OR NEW.total_sections <= 0 THEN '' ELSE ${triggerSectionIdExpr} END,
+            NEW.current_section_index, NEW.phase, NEW.current_session_id, NEW.standby_session_id,
+            'active', NEW.started_at, NEW.started_at, NULL
+          );
+        END
+      `)
+    },
+  },
 ]

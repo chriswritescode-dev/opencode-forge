@@ -1,5 +1,6 @@
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import type { LoopSandboxSettings } from '../types'
+import type { SectionRunKind } from './section-run'
 
 interface LoopStateBase {
   active: boolean
@@ -40,6 +41,9 @@ interface LoopStateBase {
   baseCommit?: string
   /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
   standbySessionId?: string
+  sectionRunKind: SectionRunKind
+  sectionId: string
+  sectionRunKey: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -95,6 +99,9 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     sandboxSettings: row.sandboxSettings ?? undefined,
     baseCommit: row.baseCommit ?? undefined,
     standbySessionId: row.standbySessionId ?? undefined,
+    sectionRunKind: row.sectionRunKind,
+    sectionId: row.sectionId,
+    sectionRunKey: row.sectionRunKey,
   }
 
   switch (row.phase) {
@@ -150,5 +157,8 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     sandboxSettings: state.sandboxSettings ?? null,
     baseCommit: state.baseCommit ?? null,
     standbySessionId: state.standbySessionId ?? null,
+    sectionRunKind: state.sectionRunKind,
+    sectionId: state.sectionId,
+    sectionRunKey: state.sectionRunKey,
   }
 }

@@ -9,6 +9,9 @@ export { createReviewFindingsRepo } from './repos/review-findings-repo'
 
 export { createSectionPlansRepo } from './repos/section-plans-repo'
 
+export { createSectionRunsRepo } from './repos/section-runs-repo'
+export type { SectionRunRow, SectionRunsRepo } from './repos/section-runs-repo'
+
 export { createLoopTransitionsRepo } from './repos/loop-transitions-repo'
 
 export { createPlanAmendmentsRepo } from './repos/plan-amendments-repo'

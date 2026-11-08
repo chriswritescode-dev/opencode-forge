@@ -144,9 +144,11 @@ function mapRow(raw: LoopAttemptRowRaw): LoopAttemptRow {
 
 export function createLoopAttemptsRepo(db: Database, _logger?: Logger): LoopAttemptsRepo {
   const stmtLoopGuard = db.prepare(`
-    SELECT status, current_session_id
-    FROM loops
-    WHERE project_id = ? AND loop_name = ?
+    SELECT l.status, r.session_id AS current_session_id
+    FROM loops l
+    LEFT JOIN section_runs r
+      ON r.project_id = l.project_id AND r.loop_name = l.loop_name AND r.status = 'active'
+    WHERE l.project_id = ? AND l.loop_name = ?
   `)
 
   const stmtGetByKey = db.prepare(`
