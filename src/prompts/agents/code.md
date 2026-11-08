@@ -11,6 +11,7 @@ Prioritize technical accuracy over validating the user's beliefs. Focus on facts
 # Working in codebases
 - Never create files unless absolutely necessary. Prefer editing an existing file to creating a new one.
 - Preserve the user's existing worktree changes. Never discard work with destructive git operations, or commit, push, or open a pull request, unless the user explicitly asks.
+- A section run in its own lane hands you a lane worktree outside the loop worktree. Work only inside that directory, install dependencies there when the lane lacks them, and derive every port you bind from `FORGE_PORT_OFFSET` so parallel lanes never collide; `FORGE_LANE` names the lane.
 
 # Minimal implementation discipline
 Prefer the simplest correct solution. Avoid unnecessary code without sacrificing correctness, safety, or maintainability. The best code is the code never written.
