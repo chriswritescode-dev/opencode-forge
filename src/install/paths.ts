@@ -37,6 +37,14 @@ export function resolveConfigPath(): string {
   return join(resolveConfigDir(), 'forge-config.jsonc')
 }
 
+export function resolveProjectsConfigPath(): string {
+  return join(resolveConfigDir(), 'forge-projects.jsonc')
+}
+
+export function resolveSecretsPath(): string {
+  return join(resolveConfigDir(), 'forge-secrets.env')
+}
+
 /** opencode V2's CLI config file, which lists plugin entries for both surfaces. */
 export function resolveCliConfigPath(): string {
   return join(resolveConfigDir(), 'cli.json')

@@ -180,7 +180,7 @@ Notes:
 | `tui.showVersion` | `true` | Show the Forge version in the sidebar title. |
 | `tui.keybinds.executePlan` | `"<leader>f"` | Open the execution dialog. Avoid `<leader>e`, which conflicts with opencode's built-in `editor_open`. |
 | `tui.keybinds.dashboard` | `""` | Optional keybind for `Open dashboard`, which opens the TUI dashboard. Empty registers the command without a default binding. |
-| `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle sandbox`, which opens the menu that turns the project host-session sandbox on or off for the current session and sets its CPUs, memory, and LAN access. Empty registers the command without a default binding. Requires `sandbox.enabled`. |
+| `tui.keybinds.toggleHostSandbox` | `""` | Optional keybind for `Toggle sandbox`, which opens the menu that turns the project host-session sandbox on or off for the current session and sets its CPUs, memory, LAN access, and [environment variables](sandbox.md#sandbox-environment-variables). Empty registers the command without a default binding. Requires `sandbox.enabled`. |
 | `tui.keybinds.toggleAutoApprove` | `""` | Optional keybind for `Toggle auto-approve`, which turns per-session auto-approve on or off for the current session. Empty registers the command without a default binding. |
 
 The dashboard has no configuration of its own: it is a TUI route that reads every value from the attached server over `FORGE_RPC`. Open it with `Open dashboard` or the `tui.keybinds.dashboard` binding; see [Dashboard](dashboard.md). A `dashboard` block left over from an older config is ignored.
@@ -205,12 +205,13 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
 | `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
 | `sandbox.autoApprovePermissions` | `true` | Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox, including a session sandboxed from the `Host sandbox` menu, using the same policy as per-session auto-approve (`autoApprove.deny` matches and OpenCode `deny` rules are denied; everything else, including explicit `ask` rules, is allowed). Set `false` to keep prompting in sandboxed sessions; a per-session `Toggle auto-approve` still applies. See [Sandbox](sandbox.md#permission-auto-approval). |
+| `sandbox.env` | `{}` | Literal environment variables injected into every sandbox, as `NAME: "value"` pairs. Applied at create time and when a running host sandbox's environment is changed from the TUI. See [Sandbox → Sandbox Environment Variables](sandbox.md#sandbox-environment-variables). |
 | `sandbox.network.allow` | `[]` | Egress allow-list applied at create time. An empty list or `*`/`**` wildcard allows public egress; concrete hosts enable deny-by-default with an allow rule per validated host. Secret destinations also contribute allowed hosts. `allowLan: true` additionally allows msb's private-address group, regardless of the host list. |
-| `sandbox.network.env` | `[]` | Host environment variables to inject into the sandbox at create time as bare names (values never appear on forge's command line). |
+| `sandbox.network.env` | `[]` | Variable names to inject into the sandbox at create time as bare names, so values never appear on forge's command line. Each value comes from the environment that launched OpenCode, falling back to the secrets file when it is not set there; a name set in neither place is skipped and logged. Names from the per-repository config add to this list. See [Sandbox → Sandbox Environment Variables](sandbox.md#sandbox-environment-variables). |
 | `sandbox.network.secrets` | `[]` | Host-held credentials bound at create time. Each entry names a host env var and the hosts allowed to receive its real value; the value never enters the guest. The named variable must be exported in the environment that launches opencode — a bound secret with a missing variable breaks every sandboxed shell command. |
 | `sandbox.network.allowLan` | `false` | Allow the sandbox to reach private (LAN) address ranges, which msb blocks by default even when public egress is open. This exposes every service on your LAN to commands the agent runs. Applied at create time. |
 
-The TUI execution dialog can override `sandbox.resources.*` and `sandbox.network.allowLan` per loop when launching in Loop mode; the overrides are persisted on the loop row and applied when its sandbox is created. See [TUI → Loop Settings](tui.md#loop-settings). The `Host sandbox` menu overrides CPUs, memory, and LAN access for the project's host sandbox; see [TUI → Host Sandbox Menu](tui.md#host-sandbox-menu).
+The TUI execution dialog can override `sandbox.resources.*` and `sandbox.network.allowLan` per loop when launching in Loop mode; the overrides are persisted on the loop row and applied when its sandbox is created. See [TUI → Loop Settings](tui.md#loop-settings). The `Host sandbox` menu overrides CPUs, memory, LAN access, and [environment variables](sandbox.md#sandbox-environment-variables) for the project's host sandbox; see [TUI → Host Sandbox Menu](tui.md#host-sandbox-menu).
 
 ### Sandbox network egress
 
@@ -241,6 +242,30 @@ Credentials that should never be readable inside the guest belong in `sandbox.ne
 Each named variable must be exported in the environment that **launches opencode**. Once a secret is bound, every `msb exec` fails with `invalid config: secret <name>: host environment variable <name> is not set` if the variable is absent from the invoking process's environment; because the shell shim inherits opencode's environment, a missing variable breaks every sandboxed shell command. Forge logs an explicit warning naming the variable.
 
 Adopting an existing sandbox (for example after a plugin restart) converges the bound secrets with `msb modify` exactly once per adoption per plugin instance: `--secret <env>@<hosts>` refreshes the current value of every configured entry, and `--secret-rm <env>` drops entries that are no longer configured. A refresh failure blocks adoption without marking the sandbox converged, so a later startup can retry. The previous per-sandbox plaintext env file under `<dataDir>/sandbox-env/` is gone.
+
+### Project and secrets files
+
+Per-repository sandbox settings live in `~/.config/opencode/forge-projects.jsonc`, one entry per repository keyed by OpenCode's project id:
+
+```jsonc
+{
+  "projects": {
+    "c5ebe09cfb13b2d8308d7d4765d09b199779d7c5": {
+      "name": "opencode-forge",
+      "sandbox": {
+        "env": { "NODE_ENV": "test" },
+        "network": { "env": ["DATABASE_URL"] }
+      }
+    }
+  }
+}
+```
+
+`name` is a readability label only; it is not used for matching. For a git repository with an `origin` remote the project id is derived from the normalized remote, so every clone of the same remote shares the entry across machines. The file is read whenever a sandbox is created or its settings are applied, so edits need no restart, and it is the file the `Toggle sandbox` dialog edits.
+
+`~/.config/opencode/forge-secrets.env` is an optional per-machine dotenv file (`NAME=value` lines) that supplies values for names listed in `sandbox.network.env`; names not listed anywhere are not injected. Keep it at mode `600`. Both paths follow `XDG_CONFIG_HOME`.
+
+See [Sandbox → Sandbox Environment Variables](sandbox.md#sandbox-environment-variables) for precedence, name rules, when changes take effect, and security notes.
 
 ## Auto-Approve
 

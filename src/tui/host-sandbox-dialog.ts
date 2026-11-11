@@ -1,8 +1,9 @@
-import type { ForgeLoopDefaults } from '../host/forge-rpc'
+import type { ForgeLoopDefaults, ForgeSandboxEnv } from '../host/forge-rpc'
 import type { SandboxOverrides } from '../types'
+import { isSandboxEnvName, readSandboxEnvNames, readSandboxEnvValues } from '../sandbox/env'
 import { readSandboxOverrides, resolveSandboxAllowLan, resolveSandboxResources } from '../sandbox/loop-settings'
 import type { ForgeTuiHost, ForgeTuiSelectOption } from './host'
-import type { HostSandboxToggle } from './host-sandbox'
+import type { HostSandboxSettingsChange, HostSandboxToggle } from './host-sandbox'
 import { DEFAULT_SUFFIX, RESOURCE_FIELDS, formatLanAccess, promptResourceOverride } from './loop-settings-dialog'
 import { deriveSessionSandboxAcknowledged, deriveSessionSandboxDisplayStatus, type SessionSandboxPreference } from './session-sandbox-store'
 
@@ -17,6 +18,7 @@ export interface HostSandboxDialogDeps {
   currentSessionId(): string | null
   /** Server defaults for the settings rows; null shows the rows without default values. */
   loadDefaults(): Promise<ForgeLoopDefaults | null>
+  loadEnv(): Promise<ForgeSandboxEnv | null>
 }
 
 function overridesEqual(a: SandboxOverrides | undefined, b: SandboxOverrides | undefined): boolean {
@@ -38,12 +40,13 @@ export function buildHostSandboxOptions(
   sessionId: string,
   draft: SandboxOverrides | undefined,
   defaults: ForgeLoopDefaults | null,
+  env?: { draft: ForgeSandboxEnv; saved: ForgeSandboxEnv },
 ): ForgeTuiSelectOption<string>[] {
   const status = deriveSessionSandboxDisplayStatus(preference, sessionId)
   const on = status === 'enabled' || status === 'loading'
   const running = isHostSandboxRunning(preference)
   const saved = preference.desired?.overrides
-  const changed = !overridesEqual(draft, saved)
+  const changed = !overridesEqual(draft, saved) || (env !== undefined && JSON.stringify(env.draft) !== JSON.stringify(env.saved))
   const options: ForgeTuiSelectOption<string>[] = [{
     title: `Sandbox: ${STATUS_LABELS[status]}`,
     value: 'toggle',
@@ -68,6 +71,16 @@ export function buildHostSandboxOptions(
       ? 'Press enter to change; applying recreates the sandbox (in-sandbox state is lost)'
       : 'Press enter to change whether the sandbox can reach private (LAN) addresses',
   })
+  if (env) {
+    const count = Object.keys(env.draft.values).length + env.draft.passthrough.length
+    options.push({
+      title: count === 0 ? 'Environment: none' : `Environment: ${count} variable${count === 1 ? '' : 's'}`,
+      value: 'env',
+      description: running
+        ? 'Press enter to edit; applying restarts the sandbox (files kept, running processes stop)'
+        : 'Press enter to edit the variables this repository\'s sandboxes get',
+    })
+  }
   if (readSandboxOverrides(draft)) {
     options.push({ title: 'Reset to defaults', value: 'reset', description: 'Clear every host sandbox setting override' })
   }
@@ -104,6 +117,74 @@ async function confirmRecreate(
   return choice === 'recreate'
 }
 
+export async function editSandboxEnv(host: ForgeTuiHost, env: ForgeSandboxEnv): Promise<ForgeSandboxEnv> {
+  let values: Record<string, string> = { ...env.values }
+  let passthrough: string[] = [...env.passthrough]
+  const normalize = (): void => {
+    values = readSandboxEnvValues(values)
+    passthrough = readSandboxEnvNames(passthrough)
+  }
+  let current: string | undefined
+  for (;;) {
+    const options: ForgeTuiSelectOption<string>[] = []
+    for (const name of Object.keys(values).sort()) {
+      options.push({
+        title: `${name}=${values[name]}`,
+        value: `value:${name}`,
+        description: 'Press enter to change the value; leave it empty to remove the variable',
+      })
+    }
+    for (const name of [...passthrough].sort()) {
+      options.push({
+        title: `${name} (from the host)`,
+        value: `host:${name}`,
+        description: 'Value comes from the host environment or forge-secrets.env; press enter to remove',
+      })
+    }
+    options.push(
+      { title: 'Add variable', value: 'add', description: 'Set a name and a value, stored in the per-repo config' },
+      { title: 'Add host variable', value: 'addHost', description: 'Pass a variable through by name; its value comes from the host environment or forge-secrets.env' },
+      { title: 'Done', value: 'done', description: 'Return to the sandbox menu' },
+    )
+    const choice = await host.select({ title: 'Sandbox environment', options, current })
+    if (choice === undefined || choice === 'done') return { values, passthrough }
+    current = choice
+    if (choice === 'add' || choice === 'addHost') {
+      const entered = await host.prompt({ title: 'Variable name', placeholder: 'e.g. NODE_ENV', value: '' })
+      if (entered === undefined) continue
+      const name = entered.trim()
+      if (!isSandboxEnvName(name)) {
+        host.toast({ message: `Invalid variable name "${name}"`, variant: 'error', duration: 4000 })
+        continue
+      }
+      if (choice === 'addHost') {
+        passthrough = [...passthrough, name]
+        const { [name]: _previous, ...rest } = values
+        values = rest
+      } else {
+        const enteredValue = await host.prompt({ title: name, placeholder: 'Value', value: '' })
+        if (enteredValue === undefined) continue
+        values = { ...values, [name]: enteredValue }
+        passthrough = passthrough.filter((entry) => entry !== name)
+      }
+    } else if (choice.startsWith('value:')) {
+      const name = choice.slice('value:'.length)
+      const entered = await host.prompt({ title: name, placeholder: 'Leave empty to remove', value: values[name] ?? '' })
+      if (entered === undefined) continue
+      if (entered === '') {
+        const { [name]: _previous, ...rest } = values
+        values = rest
+      } else {
+        values = { ...values, [name]: entered }
+      }
+    } else if (choice.startsWith('host:')) {
+      const name = choice.slice('host:'.length)
+      passthrough = passthrough.filter((entry) => entry !== name)
+    }
+    normalize()
+  }
+}
+
 /**
  * Runs the host sandbox menu for the current session. Settings edits stay in a draft until the
  * user turns the sandbox on or off (which sends them along) or applies them, so several edits
@@ -117,7 +198,9 @@ export async function editHostSandbox(deps: HostSandboxDialogDeps): Promise<void
     return
   }
   const defaults = await deps.loadDefaults()
+  const savedEnv = await deps.loadEnv()
   let draft = sandbox.preference()?.desired?.overrides
+  let envDraft = savedEnv
   let current: string | undefined
   for (;;) {
     const preference = sandbox.preference()
@@ -127,18 +210,32 @@ export async function editHostSandbox(deps: HostSandboxDialogDeps): Promise<void
     }
     const choice = await host.select({
       title: 'Toggle sandbox',
-      options: buildHostSandboxOptions(preference, sessionId, draft, defaults),
+      options: buildHostSandboxOptions(
+        preference,
+        sessionId,
+        draft,
+        defaults,
+        envDraft && savedEnv ? { draft: envDraft, saved: savedEnv } : undefined,
+      ),
       current,
     })
     if (choice === undefined || choice === 'done') return
     current = choice
     if (choice === 'toggle' || choice === 'apply') {
-      const changed = !overridesEqual(draft, preference.desired?.overrides)
-      if (changed && !(await confirmRecreate(host, preference, draft, defaults))) continue
-      const overrides = changed ? (readSandboxOverrides(draft) ?? {}) : undefined
-      if (choice === 'toggle') await sandbox.toggle(overrides)
-      else if (overrides) await sandbox.setOverrides(overrides)
+      const overridesChanged = !overridesEqual(draft, preference.desired?.overrides)
+      const envChanged = envDraft !== null && savedEnv !== null && JSON.stringify(envDraft) !== JSON.stringify(savedEnv)
+      if (overridesChanged && !(await confirmRecreate(host, preference, draft, defaults))) continue
+      const settings: HostSandboxSettingsChange = {
+        ...(overridesChanged ? { overrides: readSandboxOverrides(draft) ?? {} } : {}),
+        ...(envChanged && envDraft ? { env: envDraft } : {}),
+      }
+      if (choice === 'toggle') await sandbox.toggle(overridesChanged || envChanged ? settings : undefined)
+      else if (overridesChanged || envChanged) await sandbox.applySettings(settings)
       return
+    }
+    if (choice === 'env' && envDraft) {
+      envDraft = await editSandboxEnv(host, envDraft)
+      continue
     }
     if (choice === 'reset') {
       draft = undefined

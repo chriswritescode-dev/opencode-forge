@@ -19,6 +19,7 @@ import {
   readForgePlanDeleteOutput,
   readForgeProjectChangedEvent,
   readForgeProjectFindings,
+  readForgeSandboxEnv,
   readForgeSessionPlan,
   readForgeVersion,
   readForgeWorktrees,
@@ -440,7 +441,7 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
           {
             id: 'forge.sandbox.toggleHost',
             title: 'Toggle sandbox',
-            description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox or on the host, and set its CPUs, memory, and LAN access',
+            description: 'Run this session\'s agent shell, glob, and grep calls in the sandbox or on the host, and set its CPUs, memory, LAN access, and environment variables',
             group: 'Forge',
             palette: true,
             ...(opts.keybinds.toggleHostSandbox ? { bind: opts.keybinds.toggleHostSandbox } : {}),
@@ -452,6 +453,10 @@ export function setupForgeTuiV2(context: Plugin.Context): () => void {
                 loadDefaults: async () => {
                   const defaults = await call((rpc, location) => rpc.loopDefaults({}, location), readForgeLoopDefaults)
                   return 'error' in defaults ? null : defaults
+                },
+                loadEnv: async () => {
+                  const env = await call((rpc, location) => rpc.sandboxEnv({}, location), readForgeSandboxEnv)
+                  return 'error' in env ? null : env
                 },
               })
             },

@@ -7,6 +7,7 @@ import { getRestartability } from '../loop/restartability'
 import { forgeWorktreesRoot, listForgeWorktreeDirs, loopBranchExists } from '../workspace/forge-naming'
 import { isSandboxConfigEnabled } from '../sandbox/context'
 import { readSandboxOverrides } from '../sandbox/loop-settings'
+import { readProjectConfig, writeProjectSandboxEnv } from '../project-config'
 import { errorMessage } from '../utils/error-message'
 import type { LoopInfo } from '../utils/tui-models'
 import {
@@ -19,6 +20,7 @@ import {
   type ForgeLoopRestartOutput,
   type ForgeLoopsOutput,
   type ForgeLoopSidebarOutput,
+  type ForgeSandboxEnvOutput,
   type ForgeSessionPlanOutput,
   type ForgeWorktreesOutput,
 } from '../host/forge-rpc'
@@ -30,6 +32,7 @@ export interface TuiRpcServiceDeps {
   loopsRepo: LoopsRepo
   plansRepo: PlansRepo
   sandboxPreferences: SessionSandboxPreferencesRepo
+  projectName?: string
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
   /** Notified after the desired host-sandbox revision is written. */
   onHostSandboxChanged?: () => void
@@ -43,6 +46,7 @@ export interface TuiRpcService {
   getSessionPlan(sessionId: string, projectId?: string): ForgeSessionPlanOutput
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
   getHostSandboxState(): ForgeHostSandboxStateOutput
+  getSandboxEnv(): ForgeSandboxEnvOutput
   requestHostSandbox(request: ForgeHostSandboxSetInput): ForgeHostSandboxSetOutput
 }
 
@@ -139,16 +143,28 @@ export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
       }
     },
 
+    getSandboxEnv(): ForgeSandboxEnvOutput {
+      try {
+        const sandbox = readProjectConfig(deps.projectId).sandbox
+        return { values: sandbox?.env ?? {}, passthrough: sandbox?.network?.env ?? [] }
+      } catch (err) {
+        return { error: errorMessage(err) }
+      }
+    },
+
     requestHostSandbox(request: ForgeHostSandboxSetInput): ForgeHostSandboxSetOutput {
       if (!isSandboxConfigEnabled(deps.config)) {
         return { error: FORGE_HOST_SANDBOX_DISABLED_ERROR }
       }
-      if (request.enabled === undefined && request.overrides === undefined) {
-        return { error: 'Host sandbox request changes nothing: pass enabled or overrides' }
+      if (request.enabled === undefined && request.overrides === undefined && request.env === undefined) {
+        return { error: 'Host sandbox request changes nothing: pass enabled, overrides, or env' }
       }
       let revision: string
       try {
         revision = randomUUID()
+        if (request.env !== undefined) {
+          writeProjectSandboxEnv(deps.projectId, { name: deps.projectName, env: request.env.values, passthrough: request.env.passthrough })
+        }
         deps.sandboxPreferences.updateDesired(deps.projectId, (current) => {
           const binding = request.enabled !== undefined
             ? { enabled: request.enabled, sessionId: request.sessionId }

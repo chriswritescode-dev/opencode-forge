@@ -319,6 +319,7 @@ describe('V2 server setup', () => {
       sessionPlan: (input: { sessionId: string }) => Promise<Record<string, unknown>>
       loopRestart: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
       hostSandboxState: () => Promise<Record<string, unknown>>
+      sandboxEnv: () => Promise<Record<string, unknown>>
       hostSandboxSet: (input: { sessionId: string; enabled: boolean }) => Promise<Record<string, unknown>>
       worktrees: () => Promise<Record<string, unknown>>
     }
@@ -331,6 +332,8 @@ describe('V2 server setup', () => {
 
     const hostState = await handlers.hostSandboxState()
     expect(hostState.configEnabled).toBe(true)
+
+    await expect(handlers.sandboxEnv()).resolves.toEqual({ values: {}, passthrough: [] })
 
     const set = await handlers.hostSandboxSet({ sessionId: 'ses_host', enabled: true })
     expect(typeof set.revision).toBe('string')

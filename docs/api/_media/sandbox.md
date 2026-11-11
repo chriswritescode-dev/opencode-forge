@@ -117,7 +117,70 @@ Forge applies the rules at sandbox **create time** only. msb rules are per sandb
 
 msb's default egress is deny with an implicit `allow@public`, so private (LAN) address ranges are blocked even when public egress is open, including with the `*` wildcard. Set `sandbox.network.allowLan: true` (default `false`) to let the sandbox reach them. Forge then creates the sandbox with `--net public,private`, or appends `--net-rule allow@private` when an allow-list is active. Public-host restrictions remain, but the entire private-address group is allowed independently of the host list, even if every configured host is invalid. This exposes every service on your LAN (routers, NAS, other machines) to commands the agent runs, so keep it off unless a task needs it.
 
-The loop settings dialog and the `Host sandbox` menu override it per sandbox. Like the other egress rules it is fixed at create time: changing it on a running host sandbox removes and recreates the sandbox, after confirmation. Host bind mounts survive (they are host directories), but the VM root filesystem, the Docker and cache disks, and all running processes are lost — the removal deletes the sandbox's named Docker and cache volumes along with it. Forge reads the current setting back from `msb inspect` rather than assuming it, and refuses to apply overrides when that read fails, so a LAN restriction is never assumed to hold.
+The loop settings dialog and the `Host sandbox` menu override it per sandbox. Like the other egress rules it is fixed at create time: changing it on a running host sandbox removes and recreates the sandbox, after confirmation. Host bind mounts survive (they are host directories), but the VM root filesystem, the Docker and cache disks, and all running processes are lost — the removal deletes the sandbox's named Docker and cache volumes along with it. Forge reads the current setting back from `msb inspect` rather than assuming it, and refuses to apply overrides when that read fails, so a LAN restriction is never assumed to hold. The same menu also has an Environment entry for this repository's [sandbox environment variables](#sandbox-environment-variables); applying it restarts a running host sandbox the same way.
+
+## Sandbox Environment Variables
+
+A sandbox can receive environment variables from three places:
+
+- **Global config** — `~/.config/opencode/forge-config.jsonc`: `sandbox.env` holds literal `NAME: "value"` pairs applied to every sandbox, and `sandbox.network.env` lists names whose value is read from the environment that launched OpenCode.
+- **Per-repository config** — `~/.config/opencode/forge-projects.jsonc`: one entry per repository, keyed by OpenCode's project id, with the same two settings for that repository.
+- **Secrets file** — `~/.config/opencode/forge-secrets.env`: an optional per-machine file that supplies values for names listed in `sandbox.network.env`.
+
+Literal values, globally:
+
+```jsonc
+{
+  "sandbox": {
+    "env": { "NODE_ENV": "test", "API_URL": "https://staging.example.com" }
+  }
+}
+```
+
+And for one repository:
+
+```jsonc
+{
+  "projects": {
+    "c5ebe09cfb13b2d8308d7d4765d09b199779d7c5": {
+      "name": "opencode-forge",
+      "sandbox": {
+        "env": { "NODE_ENV": "test", "API_URL": "https://staging.example.com" },
+        "network": { "env": ["DATABASE_URL"] }
+      }
+    }
+  }
+}
+```
+
+The per-repository key is OpenCode's own project id. For a git repository with an `origin` remote it is derived from the normalized remote (`host/path`), so every clone of the same remote gets the same id on every machine — which is what makes the file safe to copy or sync between machines. Repositories without an `origin` remote fall back to an id that may differ per machine, and changing the remote URL changes the id. `name` is a label written for readability only; it is not used for matching. Forge reads the file whenever a sandbox is created or its settings are applied, so edits do not need an OpenCode restart, and comments in it are preserved when Forge updates it. It can be edited by hand or from the TUI: the `Toggle sandbox` dialog has an Environment entry that edits the entry of the repository that is currently open.
+
+The secrets file uses dotenv format (`NAME=value` lines, `#` comments, optional quotes) and is not meant to be synced between machines. It only supplies values for names listed in `sandbox.network.env` (global or per-repository); a name in the file that is not listed anywhere is not injected. Keep it at mode `600`; Forge logs a warning when it is readable by other users.
+
+All three paths follow `XDG_CONFIG_HOME`, like `forge-config.jsonc`. The options themselves are listed in [Configuration → Sandbox](configuration.md#sandbox).
+
+### Precedence
+
+Later sources win:
+
+1. Names listed in `sandbox.network.env`, resolved from the environment that launched OpenCode, then from the secrets file.
+2. Literal values in the global `sandbox.env`.
+3. Literal values in the per-repository `sandbox.env`.
+
+### Name Rules
+
+Names must match `[A-Za-z_][A-Za-z0-9_]*`. `PATH`, `HOME`, and names starting with `MSB_` are rejected. Invalid entries are ignored and logged.
+
+### When Changes Apply
+
+New sandboxes, including every loop sandbox, get the environment when they are created. A running host-session sandbox is updated when the environment is changed from the TUI or the sandbox is toggled, and applying a change restarts it: files and disks are kept, running processes stop. An already-running loop sandbox keeps the environment it was created with.
+
+### Security Notes
+
+- These are plain environment variables: anything injected this way is readable by the agent inside the sandbox (`env`, `printenv`). The secrets file keeps values out of the synced config and out of the repository; it does not hide them from a sandboxed agent that receives them.
+- Credentials that only need to be sent to specific hosts belong in `sandbox.network.secrets`, where the real value never enters the sandbox.
+- With the sandbox on, the secrets file is outside the sandbox mounts, so the agent's shell, search, and file tools cannot read it, and Forge refuses any custom mount (`sandbox.mounts`, `loop.allowExternalDirectories`) that would contain it. A session running without the sandbox runs as the user and can read the file like any other file in the home directory.
+- Values are passed to msb through its process environment when a sandbox is created. When the environment of an already-running sandbox is changed, msb only accepts `NAME=value` arguments, so changed values are briefly visible in the host process list. msb stores the sandbox environment in its own sandbox config in plain text.
 
 ## Environment Passthrough
 
@@ -133,7 +196,7 @@ Select host environment variables can be injected into the sandbox at create tim
 }
 ```
 
-Forge passes each name as the bare `-e <NAME>` form, so msb resolves the value from its own environment and the value never appears on forge's command line (or in `ps` output). Only names that are set in the host process are injected; unset names are skipped and logged.
+Forge passes each name as the bare `-e <NAME>` form, so msb resolves the value from its own environment and the value never appears on forge's command line (or in `ps` output) at create time. The value is taken from the environment that launched OpenCode; when the name is not set there, it falls back to the secrets file. A name set in neither place is skipped and logged. See [Sandbox Environment Variables](#sandbox-environment-variables) for precedence and the security notes.
 
 ## Secrets
 
@@ -293,7 +356,7 @@ The mount is read-only because the setting exists to grant read access. To make 
 
 The TUI execution dialog can override these for a single loop when launching in Loop mode, and can turn the sandbox off for that loop. The overrides are persisted on the loop row and read back whenever its sandbox is (re)created, so a restarted loop keeps its resources and a loop launched with the sandbox off stays off. They apply when the loop's sandbox is created, and a per-loop setting can turn the sandbox off, never on when the server has `sandbox.enabled: false`. See [TUI → Loop Settings](tui.md#loop-settings).
 
-The `Host sandbox` menu overrides `cpus` and `memory` (and LAN access) for the project's host sandbox. The overrides are stored with the host sandbox's desired state, so they survive restarts. Unlike a loop's, they are also applied to a host sandbox that already exists: a CPU or memory change runs `msb modify <sandbox> --cpus <n> --memory <size> --restart`. msb cannot resize a running microVM live, so the sandbox restarts. Its root filesystem and the Docker and cache disks are kept; running processes, including the Docker daemon and its containers, are not. See [TUI → Host Sandbox Menu](tui.md#host-sandbox-menu). A failed resize is handled like a failed start: the sandbox is removed and the session is blocked until the sandbox is turned on again.
+The `Host sandbox` menu overrides `cpus` and `memory` (and LAN access, plus this repository's [environment variables](#sandbox-environment-variables)) for the project's host sandbox. The overrides are stored with the host sandbox's desired state, so they survive restarts. Unlike a loop's, they are also applied to a host sandbox that already exists: a CPU or memory change runs `msb modify <sandbox> --cpus <n> --memory <size> --restart`. msb cannot resize a running microVM live, so the sandbox restarts. Its root filesystem and the Docker and cache disks are kept; running processes, including the Docker daemon and its containers, are not. See [TUI → Host Sandbox Menu](tui.md#host-sandbox-menu). A failed resize is handled like a failed start: the sandbox is removed and the session is blocked until the sandbox is turned on again.
 
 Every sandboxed request's context note states the sandbox's CPUs, memory, and LAN access. After the sandbox a session was using restarts (a resize) or is recreated (a LAN change, or turned off and on between two requests), the next request's note says so once and names what was lost, so the agent restarts services or reinstalls tooling instead of assuming they are still there.
 

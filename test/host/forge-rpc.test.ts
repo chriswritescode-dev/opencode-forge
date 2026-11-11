@@ -16,6 +16,7 @@ import {
   readForgeAmendmentDiff,
   readForgePlanDeleteOutput,
   readForgeProjectChangedEvent,
+  readForgeSandboxEnv,
   readForgeSessionPlan,
   readForgeDashboardSummary,
   readForgeVersion,
@@ -23,6 +24,7 @@ import {
   toForgeRpcJson,
 } from '../../src/host/forge-rpc'
 import { FORGE_PLUGIN_ID } from '../../src/constants/plugin'
+import { expectMatchesJsonSchema } from '../helpers/json-schema'
 
 describe('FORGE_RPC', () => {
   test('uses the plugin id and exposes every method in contract order', () => {
@@ -37,6 +39,7 @@ describe('FORGE_RPC', () => {
       'sessionPlan',
       'loopRestart',
       'hostSandboxState',
+      'sandboxEnv',
       'hostSandboxSet',
       'worktrees',
       'version',
@@ -551,6 +554,33 @@ describe('FORGE_RPC', () => {
     expect(readForgeHostSandboxSetOutput({ revision: 'rev-1' })).toEqual({ revision: 'rev-1' })
     expect(readForgeHostSandboxSetOutput({ error: 'disabled' })).toEqual({ error: 'disabled' })
     expect(readForgeHostSandboxSetOutput({})).toEqual({ error: 'Forge returned an invalid host sandbox result' })
+  })
+
+  test('readForgeSandboxEnv keeps valid values and drops invalid names', () => {
+    expect(readForgeSandboxEnv({
+      values: { NODE_ENV: 'test', 'BAD-NAME': 'drop', PATH: '/bin' },
+      passthrough: ['DATABASE_URL', 'PATH', 'DATABASE_URL'],
+    })).toEqual({ values: { NODE_ENV: 'test' }, passthrough: ['DATABASE_URL'] })
+    expect(readForgeSandboxEnv({ values: {}, passthrough: [] })).toEqual({ values: {}, passthrough: [] })
+    expect(readForgeSandboxEnv({ error: 'no projects file' })).toEqual({ error: 'no projects file' })
+    expect(readForgeSandboxEnv(null)).toEqual({ error: 'Forge returned an invalid sandbox environment' })
+    expectMatchesJsonSchema(FORGE_RPC.methods.sandboxEnv.output, { values: { NODE_ENV: 'test' }, passthrough: ['DATABASE_URL'] })
+    expectMatchesJsonSchema(FORGE_RPC.methods.sandboxEnv.output, { values: {}, passthrough: [] })
+  })
+
+  test('hostSandboxSet accepts an env payload and rejects a non-string value', () => {
+    expectMatchesJsonSchema(FORGE_RPC.methods.hostSandboxSet.input, {
+      sessionId: 'ses_1',
+      env: { values: { NODE_ENV: 'test' }, passthrough: ['DATABASE_URL'] },
+    })
+    expect(() => expectMatchesJsonSchema(FORGE_RPC.methods.hostSandboxSet.input, {
+      sessionId: 'ses_1',
+      env: { values: { NODE_ENV: 1 }, passthrough: [] },
+    })).toThrow(/\$\.env\.values\.NODE_ENV/)
+    expect(() => expectMatchesJsonSchema(FORGE_RPC.methods.hostSandboxSet.input, {
+      sessionId: 'ses_1',
+      env: { values: {} },
+    })).toThrow(/\$\.env\.passthrough/)
   })
 
   test('readForgeWorktrees keeps a root and dir list and surfaces errors', () => {

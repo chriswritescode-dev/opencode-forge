@@ -44,6 +44,8 @@ export function buildMsbExecArgs(name: string, command: string, opts?: BuildMsbE
 
 export const SANDBOX_CACHE_DIR = '/opt/forge/cache'
 
+export const SANDBOX_ENV_LABEL = 'forge.env'
+
 /** msb's default `/tmp` tmpfs is 512 MiB, which test suites and builds exhaust; Forge raises it. */
 export const SANDBOX_TMPFS = '/tmp:2g'
 
@@ -249,10 +251,15 @@ export function buildMsbCreateArgs(
   }
   // Bare `-e <NAME>` only: msb resolves the key from its own environment at start, so the value
   // never appears in forge's argv (and never in `ps` output), unlike `-e NAME=VALUE`.
+  const envNames: string[] = []
   for (const rawName of opts.env ?? []) {
     const name = rawName.trim()
     if (!name || name.includes('=')) continue
     args.push('-e', name)
+    envNames.push(name)
+  }
+  if (envNames.length > 0) {
+    args.push('--label', `${SANDBOX_ENV_LABEL}=${envNames.sort().join(',')}`)
   }
   // Reference form only (`env@host[,host...]`): msb rejects the inline `ENV=VALUE@HOST` form
   // outright, and a secret with no allowed destination is refused, so blank or `=`-bearing env
@@ -349,6 +356,29 @@ export function parseMsbInspectSecretNames(stdout: string): string[] | null {
   return names
 }
 
+export function parseMsbInspectEnv(stdout: string): { env: Record<string, string>; managed: string[] } | null {
+  let data: unknown
+  try {
+    data = JSON.parse(stdout)
+  } catch {
+    return null
+  }
+  if (!isRecord(data) || !isRecord(data.config)) return null
+  const env: Record<string, string> = {}
+  const entries = data.config.env
+  if (Array.isArray(entries)) {
+    for (const raw of entries) {
+      if (!isRecord(raw)) continue
+      const { key, value } = raw
+      if (typeof key === 'string' && typeof value === 'string') env[key] = value
+    }
+  }
+  const labels = data.config.labels
+  const label = isRecord(labels) ? labels[SANDBOX_ENV_LABEL] : undefined
+  const managed = typeof label === 'string' ? label.split(',').filter(Boolean) : []
+  return { env, managed }
+}
+
 /**
  * Extracts the CPUs, memory, and LAN access of a sandbox from `msb inspect --format json`
  * (`config.resources.{cpus,memory_mib}`, and an allow egress rule for the `private` group in
@@ -423,7 +453,7 @@ export type MsbAvailability =
 
 export type CommandRunner = (
   args: string[],
-  opts?: { timeout?: number; stdin?: string; abort?: AbortSignal },
+  opts?: { timeout?: number; stdin?: string; abort?: AbortSignal; env?: Record<string, string> },
 ) => Promise<CommandResult>
 
 /** Vendor-documented installer for the msb CLI. Shared by the runtime hint and the setup CLI. */
@@ -478,8 +508,9 @@ export interface CreateSandboxOpts {
   resources?: SandboxResources
   networkAllow?: string[]
   restrictEgress?: boolean
-  /** Host environment variable names injected into the guest via bare `-e <NAME>`. */
-  env?: string[]
+  /** Environment variables injected into the guest: names go out as bare `-e <NAME>` and the
+   *  values travel in msb's own process environment. */
+  env?: Record<string, string>
   /** Host-held credentials bound via `--secret <env>@<hosts>`; values never enter the guest. */
   secrets?: SandboxSecretConfig[]
   /** Allow egress to private (LAN) ranges. Create-time only: msb cannot change it later. */
@@ -521,6 +552,7 @@ export interface SandboxRuntime {
    *  resize a running microVM live, so the sandbox restarts: its disks survive, its processes do
    *  not. Rejects when msb refuses the change. */
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
+  applySandboxEnv(name: string, env: Record<string, string>): Promise<boolean>
 }
 
 const MSB_TEMPLATE_LOAD_TIMEOUT = 600000
@@ -535,6 +567,14 @@ const MSB_VOLUME_REMOVE_MISSING_RE = /not found|no such volume|unknown volume|do
  * Recreating with `--replace` is msb's own documented way out.
  */
 const MSB_CREATE_EXISTS_RE = /already exists/i
+
+function mergeSandboxEnv(env: Record<string, string>): Record<string, string> {
+  const merged: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) merged[key] = value
+  }
+  return { ...merged, ...env }
+}
 
 /**
  * Assembles a `SandboxRuntime` from the pure `msb` helpers, routing every method through an
@@ -572,6 +612,8 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     workspaces: SandboxWorkspace[],
     opts: CreateSandboxOpts,
   ): Promise<void> {
+    const env = opts.env ?? {}
+    const envNames = Object.keys(env)
     const args = buildMsbCreateArgs(name, workspaces, {
       image: opts.image,
       memory: normalizeMsbSize(opts.resources?.memory, logger),
@@ -580,11 +622,14 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
       restrictEgress: opts.restrictEgress,
       dockerDisk: normalizeMsbSize(opts.resources?.dockerDisk, logger),
       cacheDisk: normalizeMsbSize(opts.resources?.cacheDisk, logger),
-      env: opts.env,
+      env: envNames,
       secrets: opts.secrets,
       allowLan: opts.allowLan,
     })
-    const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
+    const runOpts = envNames.length > 0
+      ? { timeout: MSB_DEFAULT_TIMEOUT, env: mergeSandboxEnv(env) }
+      : { timeout: MSB_DEFAULT_TIMEOUT }
+    const result = await run(args, runOpts)
     if (result.exitCode === 0) return
     if (!MSB_CREATE_EXISTS_RE.test(`${result.stdout}\n${result.stderr}`)) {
       throw new Error(`Failed to create sandbox: ${result.stderr}`)
@@ -592,7 +637,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     logger.log(
       `Sandbox: msb reports ${name} already exists but it was not reusable (orphaned state); recreating with --replace`,
     )
-    const replaced = await run([...args, '--replace'], { timeout: MSB_DEFAULT_TIMEOUT })
+    const replaced = await run([...args, '--replace'], runOpts)
     if (replaced.exitCode !== 0) {
       throw new Error(`Failed to create sandbox: ${replaced.stderr}`)
     }
@@ -712,6 +757,49 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     }
   }
 
+  async function applySandboxEnv(name: string, env: Record<string, string>): Promise<boolean> {
+    let parsed: { env: Record<string, string>; managed: string[] } | null
+    try {
+      const inspect = await run(['inspect', name, '--format', 'json'], { timeout: MSB_QUERY_TIMEOUT })
+      parsed = inspect.exitCode === 0 ? parseMsbInspectEnv(inspect.stdout) : null
+    } catch {
+      parsed = null
+    }
+    if (!parsed) throw new Error(`Could not read the environment of sandbox ${name}`)
+
+    const currentEnv = parsed.env
+    const currentManaged = parsed.managed
+    const toSet = Object.entries(env).filter(([key, value]) => currentEnv[key] !== value)
+    const desiredKeys = new Set(Object.keys(env))
+    const toRemove = currentManaged.filter((key) => !desiredKeys.has(key))
+    if (toSet.length === 0 && toRemove.length === 0) return false
+
+    const keys = Object.keys(env).sort()
+    const args = ['modify', name]
+    for (const [key, value] of toSet) args.push('--env', `${key}=${value}`)
+    for (const key of toRemove) args.push('--env-rm', key)
+    if (keys.length > 0) {
+      if (keys.join(',') !== currentManaged.join(',')) args.push('--label', `${SANDBOX_ENV_LABEL}=${keys.join(',')}`)
+    } else if (currentManaged.length > 0) {
+      args.push('--label-rm', SANDBOX_ENV_LABEL)
+    }
+    args.push('--next-start')
+    const result = await run(args, { timeout: MSB_DEFAULT_TIMEOUT })
+    if (result.exitCode !== 0) {
+      let detail = result.stderr || result.stdout
+      const values = [...toSet.flatMap(([key, value]) => [value, currentEnv[key]]), ...toRemove.map((key) => currentEnv[key])]
+      for (const value of values) {
+        if (value) detail = detail.replaceAll(value, '***')
+      }
+      throw new Error(`Failed to update the environment of sandbox ${name}: ${detail}`)
+    }
+    const stopped = await run(['stop', name, '--quiet'], { timeout: MSB_DEFAULT_TIMEOUT })
+    if (stopped.exitCode !== 0) {
+      throw new Error(`Failed to stop sandbox ${name} to apply its environment: ${stopped.stderr || stopped.stdout}`)
+    }
+    return true
+  }
+
   return {
     checkAvailable,
     templateExists,
@@ -725,5 +813,6 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     refreshSandboxSecrets,
     readSandboxSettings,
     resizeSandbox,
+    applySandboxEnv,
   }
 }

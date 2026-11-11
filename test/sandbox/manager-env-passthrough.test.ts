@@ -20,25 +20,33 @@ describe('SandboxManager create-time env and secrets', () => {
     if (value === undefined) delete process.env[name]; else process.env[name] = value
   }
 
-  test('start forwards only env names that are set on the host and logs the omissions', async () => {
-    setEnv('FORGE_TEST_DEFINED', 'abc123')
-    setEnv('FORGE_TEST_UNDEFINED', undefined)
-
+  test('start passes the resolveEnv map to createSandbox', async () => {
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
+    const resolveEnv = vi.fn(() => ({ NODE_ENV: 'test', DATABASE_URL: 'postgres://localhost/db' }))
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
-      network: { env: ['FORGE_TEST_DEFINED', 'FORGE_TEST_UNDEFINED'] },
+      resolveEnv,
     }
 
     const manager = createSandboxManager(runtime, config, logger)
     await manager.start('test', '/home/user/worktrees/feature')
 
     const createCall = runtime.getCreateSandboxCalls()[0]
-    expect(createCall[2]?.env).toEqual(['FORGE_TEST_DEFINED'])
-    expect(createCall[2]?.env).not.toContain('FORGE_TEST_UNDEFINED')
-    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('FORGE_TEST_UNDEFINED'))
-    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('not set'))
+    expect(resolveEnv).toHaveBeenCalledTimes(1)
+    expect(createCall[2]?.env).toEqual({ NODE_ENV: 'test', DATABASE_URL: 'postgres://localhost/db' })
+  })
+
+  test('start passes an empty env map when no resolver is configured', async () => {
+    const runtime = createMockSandboxRuntime()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
+
+    const manager = createSandboxManager(runtime, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const createCall = runtime.getCreateSandboxCalls()[0]
+    expect(createCall[2]?.env).toEqual({})
   })
 
   test('start forwards configured secrets only when their host variable is set', async () => {
@@ -128,8 +136,8 @@ describe('SandboxManager create-time env and secrets', () => {
     const logger = createMockLogger()
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
+      resolveEnv: () => ({ FORGE_TEST_TOKEN: 'super-secret-value' }),
       network: {
-        env: ['FORGE_TEST_TOKEN'],
         secrets: [{ env: 'FORGE_TEST_TOKEN', hosts: ['api.example.com'] }],
       },
     }
@@ -138,14 +146,12 @@ describe('SandboxManager create-time env and secrets', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const createCall = runtime.getCreateSandboxCalls()[0]
-    expect(createCall[2]?.env).toEqual(['FORGE_TEST_TOKEN'])
+    expect(createCall[2]?.env).toEqual({ FORGE_TEST_TOKEN: 'super-secret-value' })
     expect(createCall[2]?.secrets).toEqual([{ env: 'FORGE_TEST_TOKEN', hosts: ['api.example.com'] }])
-    // Only names (bare `-e NAME`) and references (`ENV@HOST`) are forwarded, never values.
-    expect(JSON.stringify(createCall)).not.toContain('super-secret-value')
-    expect(JSON.stringify(createCall)).not.toContain('=')
+    expect(JSON.stringify(createCall[1])).not.toContain('super-secret-value')
   })
 
-  test('with no network config, start forwards empty env and secrets lists', async () => {
+  test('with no network config, start forwards an empty env map and secrets list', async () => {
     const runtime = createMockSandboxRuntime()
     const logger = createMockLogger()
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
@@ -154,7 +160,7 @@ describe('SandboxManager create-time env and secrets', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const createCall = runtime.getCreateSandboxCalls()[0]
-    expect(createCall[2]?.env).toEqual([])
+    expect(createCall[2]?.env).toEqual({})
     expect(createCall[2]?.secrets).toEqual([])
   })
 

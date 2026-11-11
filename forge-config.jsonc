@@ -94,6 +94,9 @@
     // Resolve permission prompts to allow or deny in sessions whose shell runs in a sandbox (e.g.
     // after turning it on in the `Host sandbox` menu), using the auto-approve policy. Defaults to true.
     // "autoApprovePermissions": true,
+    // Literal environment variables injected into every sandbox as name: value pairs. They are plain
+    // guest environment variables, so commands the agent runs can read them. Defaults to {}.
+    // "env": { "NODE_ENV": "test" },
     // Host environment variables pass through at create time as bare names (msb resolves each name
     // from its own environment, so values never appear on forge's command line); host-held
     // secrets are bound reference-only and exposed inside the sandbox as $MSB_<env> placeholders
@@ -102,11 +105,12 @@
     //   // OPT-IN egress restriction: hosts the sandbox may reach. Leave empty (or omit) for
     //   // msb's default of allowing all public egress.
     //   "allow": ["registry.npmjs.org"],
-    //   // Host environment variable names to inject into the sandbox at create time.
-    //   // Only names set in the host process are injected, as ordinary guest environment
-    //   // variables (msb resolves a bare name from its own environment, so the value never
-    //   // appears on forge's command line). Host-held credentials belong in "secrets" instead,
-    //   // which never enter the guest.
+    //   // Host environment variable names to inject into the sandbox at create time. Each value is
+    //   // taken from the process that launched opencode, falling back to forge-secrets.env when it
+    //   // is not set there; a name set in neither place is skipped and logged. Names are injected
+    //   // as ordinary guest environment variables (msb resolves a bare name from its own
+    //   // environment, so the value never appears on forge's command line). Host-held credentials
+    //   // belong in "secrets" instead, which never enter the guest.
     //   "env": ["MY_VAR"],
     //   // Host-held credentials bound at create time. Each entry references a host env var and
     //   // the hostnames allowed to receive its real value at the network boundary; the value

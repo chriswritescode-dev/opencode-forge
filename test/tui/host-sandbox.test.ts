@@ -160,7 +160,7 @@ describe('createHostSandboxToggle', () => {
   test('a toggle with drafted overrides sends both in one request', async () => {
     const { toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
 
-    const pending = toggle.toggle({ resources: { cpus: '6' } })
+    const pending = toggle.toggle({ overrides: { resources: { cpus: '6' } } })
     await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
     acknowledge()
     toggle.refresh()
@@ -169,7 +169,33 @@ describe('createHostSandboxToggle', () => {
     expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: true, overrides: { resources: { cpus: '6' } } })
   })
 
-  test('setOverrides changes settings without touching the on/off binding', async () => {
+  test('toggle with drafted settings sends both in one request', async () => {
+    const { toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
+    const env = { values: { NODE_ENV: 'test' }, passthrough: [] }
+
+    const pending = toggle.toggle({ overrides: { resources: { cpus: '6' } }, env })
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: true, overrides: { resources: { cpus: '6' } }, env })
+  })
+
+  test('toggle with env sends the continuation with the enabled flag', async () => {
+    const { toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
+    const env = { values: {}, passthrough: ['TOKEN'] }
+
+    const pending = toggle.toggle({ env })
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
+    acknowledge()
+    toggle.refresh()
+    await pending
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', enabled: true, env })
+  })
+
+  test('applySettings changes settings without touching the on/off binding', async () => {
     const { toasts, toggle, setState, acknowledge } = setup({ sessionId: 'ses_1' })
 
     const on = toggle.toggle()
@@ -178,7 +204,7 @@ describe('createHostSandboxToggle', () => {
     toggle.refresh()
     await on
 
-    const change = toggle.setOverrides({ resources: { memory: '12g' }, allowLan: true })
+    const change = toggle.applySettings({ overrides: { resources: { memory: '12g' }, allowLan: true } })
     await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(2))
     acknowledge()
     toggle.refresh()
@@ -187,6 +213,23 @@ describe('createHostSandboxToggle', () => {
     expect(setState).toHaveBeenLastCalledWith({ sessionId: 'ses_1', overrides: { resources: { memory: '12g' }, allowLan: true } })
     expect(toggle.preference()?.desired).toMatchObject({ enabled: true, sessionId: 'ses_1', overrides: { allowLan: true } })
     expect(toasts.at(-1)).toMatchObject({ variant: 'success', message: 'Host sandbox settings applied' })
+  })
+
+  test('applySettings with env sends it through the long acknowledgement path', async () => {
+    vi.useFakeTimers()
+    const { toasts, toggle, setState } = setup({ sessionId: 'ses_1' })
+    const env = { values: { NODE_ENV: 'test' }, passthrough: [] }
+
+    const pending = toggle.applySettings({ env })
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(setState).toHaveBeenCalledWith({ sessionId: 'ses_1', env })
+    expect(toasts).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(105_000)
+    await pending
+
+    expect(toasts.at(-1)?.message).toContain('Timed out waiting for sandbox acknowledgement')
   })
 
   test('surfaces a read error and keeps the preference unavailable', async () => {

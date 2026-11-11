@@ -807,12 +807,76 @@ describe('SandboxManager', () => {
       await manager.ensureRunning('test', '/path')
       const instanceId = manager.getActive('test')?.instanceId
 
-      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('resized')
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('restarted')
 
       expect(runtime.getResizeCalls()).toEqual([['forge-test', { cpus: '6', memory: '12g' }]])
       expect(runtime.getRemoveSandboxCalls()).toEqual([])
       expect(runtime.getCreateSandboxCalls()).toHaveLength(0)
       expect(manager.getActive('test')).toMatchObject({ instanceId, settings: { cpus: 6, memoryMib: 12288, allowLan: false } })
+    })
+
+    test('an env change restarts the existing sandbox through applySandboxEnv', async () => {
+      const runtime = createMockSandboxRuntime()
+      const resolveEnv = vi.fn(() => ({ NODE_ENV: 'test' }))
+      const manager = createSandboxManager(
+        runtime,
+        { image: 'img', resources: { cpus: '4', memory: '8g' }, resolveEnv },
+        createMockLogger(),
+      )
+      runtime.setSandboxState('forge-test', 'running')
+      runtime.setSandboxSettings('forge-test', { cpus: 4, memoryMib: 8192, allowLan: false })
+      runtime.setApplyEnvResult(true)
+      await manager.ensureRunning('test', '/path')
+
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('restarted')
+
+      expect(runtime.getApplyEnvCalls()).toEqual([['forge-test', { NODE_ENV: 'test' }]])
+      expect(runtime.getResizeCalls()).toEqual([])
+      expect(runtime.getRemoveSandboxCalls()).toEqual([])
+    })
+
+    test('applyOverrides returns unchanged when the env resolver reports no change', async () => {
+      const runtime = createMockSandboxRuntime()
+      const resolveEnv = vi.fn(() => ({ NODE_ENV: 'test' }))
+      const manager = createSandboxManager(
+        runtime,
+        { image: 'img', resources: { cpus: '4', memory: '8g' }, resolveEnv },
+        createMockLogger(),
+      )
+      runtime.setSandboxState('forge-test', 'running')
+      runtime.setSandboxSettings('forge-test', { cpus: 4, memoryMib: 8192, allowLan: false })
+      await manager.ensureRunning('test', '/path')
+
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('unchanged')
+
+      expect(runtime.getApplyEnvCalls()).toEqual([['forge-test', { NODE_ENV: 'test' }]])
+    })
+
+    test('never calls applySandboxEnv when no env resolver is configured', async () => {
+      const { runtime, manager } = setup(undefined)
+
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('unchanged')
+
+      expect(runtime.getApplyEnvCalls()).toEqual([])
+    })
+
+    test('a resize and an env change apply in a single converge call', async () => {
+      const runtime = createMockSandboxRuntime()
+      const resolveEnv = () => ({ NODE_ENV: 'test' })
+      const manager = createSandboxManager(
+        runtime,
+        { image: 'img', resources: { cpus: '6', memory: '12g' }, resolveEnv },
+        createMockLogger(),
+      )
+      runtime.setSandboxState('forge-test', 'running')
+      runtime.setSandboxSettings('forge-test', { cpus: 4, memoryMib: 8192, allowLan: false })
+      runtime.setApplyEnvResult(true)
+      await manager.ensureRunning('test', '/path')
+
+      await expect(manager.applyOverrides('test', '/path')).resolves.toBe('restarted')
+
+      expect(runtime.getResizeCalls()).toEqual([['forge-test', { cpus: '6', memory: '12g' }]])
+      expect(runtime.getApplyEnvCalls()).toEqual([['forge-test', { NODE_ENV: 'test' }]])
     })
 
     test('a LAN access change recreates the sandbox with the new policy', async () => {

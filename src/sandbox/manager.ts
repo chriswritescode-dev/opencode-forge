@@ -19,9 +19,11 @@ export interface SandboxManagerConfig {
    * `applyOverrides` to converge an existing sandbox.
    */
   resolveOverrides?: (worktreeName: string) => SandboxOverrides | undefined
+  resolveEnv?: () => Record<string, string>
   sourceProjectDir?: string
   mountProjectReadonly?: boolean
   customMounts?: SandboxMountConfig[]
+  protectedPaths?: string[]
   buildContextDir?: string
   /**
    * Extra `docker build` arguments for the image-missing hint, so the printed
@@ -42,14 +44,13 @@ export interface SandboxManagerConfig {
    */
   tmpDir?: string
   /**
-   * Network policy for the msb sandbox. `env` lists host environment variable names to inject
-   * into the guest at create time (bare `-e <NAME>`, so values stay off the command line).
-   * `secrets` lists host-held credentials that never enter the guest (msb substitutes them only
-   * for the listed hosts at the network boundary). `allow` opts into egress restriction: when it
-   * is empty msb's own allow-public default applies, and configuring any host switches the
-   * sandbox to deny-by-default with one allow rule per validated host.
+   * Network policy for the msb sandbox. `secrets` lists host-held credentials that never enter
+   * the guest (msb substitutes them only for the listed hosts at the network boundary). `allow`
+   * opts into egress restriction: when it is empty msb's own allow-public default applies, and
+   * configuring any host switches the sandbox to deny-by-default with one allow rule per
+   * validated host.
    */
-  network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
+  network?: { allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
 }
 
 function normalizeContainerPath(path: string): string {
@@ -108,6 +109,7 @@ export function resolveCustomMounts(
   raw: SandboxMountConfig[] | undefined,
   reservedHostPaths: ReadonlySet<string>,
   logger: Logger,
+  protectedPaths: readonly string[] = [],
 ): SandboxMount[] {
   if (!raw || raw.length === 0) return []
   const resolved: SandboxMount[] = []
@@ -125,6 +127,11 @@ export function resolveCustomMounts(
     const hostDir = resolve(host)
     if (!existsSync(hostDir)) {
       logger.log(`Sandbox: skipping custom mount; host path does not exist: ${hostDir}`)
+      continue
+    }
+    const canonicalHostDir = canonicalizePath(hostDir)
+    if (protectedPaths.some((p) => isSameOrDescendantPath(canonicalizePath(p), canonicalHostDir))) {
+      logger.log(`Sandbox: skipping custom mount; it would expose a protected file: ${hostDir}`)
       continue
     }
     const collision = findContainerPathCollision(hostDir, used)
@@ -153,7 +160,7 @@ export interface ActiveSandbox {
 }
 
 /** How {@link SandboxManager.applyOverrides} converged a sandbox. */
-export type ApplyOverridesOutcome = 'unchanged' | 'resized' | 'recreated'
+export type ApplyOverridesOutcome = 'unchanged' | 'restarted' | 'recreated'
 
 export interface SandboxManager {
   runtime: SandboxRuntime
@@ -167,9 +174,9 @@ export interface SandboxManager {
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
   /**
    * Converges an existing sandbox to its effective settings (persisted overrides over config).
-   * A CPU or memory change restarts the sandbox in place, keeping its disks; a LAN access change
-   * recreates it, because msb fixes network policy at create time. Rejects when the current
-   * settings cannot be read, so a LAN restriction is never assumed to hold.
+   * A CPU, memory, or environment change restarts the sandbox in place, keeping its disks; a LAN
+   * access change recreates it, because msb fixes network policy at create time. Rejects when the
+   * current settings cannot be read, so a LAN restriction is never assumed to hold.
    */
   applyOverrides(worktreeName: string, projectDir: string): Promise<ApplyOverridesOutcome>
 }
@@ -303,7 +310,7 @@ export function createSandboxManager(
     if (projectMount) reserved.add(projectMount.containerDir)
     if (toolOutputMount) reserved.add(toolOutputMount.containerDir)
     if (tmpMount) reserved.add(tmpMount.containerDir)
-    const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
+    const customMounts = resolveCustomMounts(config.customMounts, reserved, logger, config.protectedPaths)
 
     // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
     // it survives any conflict and keeps the whole git metadata region writable), then the
@@ -448,21 +455,6 @@ export function createSandboxManager(
   }
 
   /**
-   * Resolves the configured env passthrough against the live host environment. msb fails the
-   * create when a bare `-e NAME` references an unset host variable, so only defined values are
-   * forwarded and the omission is logged.
-   */
-  function resolvePassthroughEnv(): string[] {
-    return (config.network?.env ?? []).filter((name) => {
-      if (process.env[name] === undefined) {
-        logger.log(`Sandbox: skipping env passthrough ${name}: host variable is not set`)
-        return false
-      }
-      return true
-    })
-  }
-
-  /**
    * Resolves the configured secrets against the live host environment. Entries without an env
    * name or allowed hosts are misconfigurations, and msb refuses a secret whose host variable is
    * unset at create, so each skipped entry is logged with its reason.
@@ -580,7 +572,7 @@ export function createSandboxManager(
       resources: target.resources,
       networkAllow: buildNetworkAllow(config.network?.allow, secrets, logger),
       restrictEgress: egressRestrictionRequested(config.network?.allow, secrets),
-      env: resolvePassthroughEnv(),
+      env: config.resolveEnv?.() ?? {},
       secrets,
       allowLan: target.allowLan,
     })
@@ -799,15 +791,26 @@ export function createSandboxManager(
 
     const cpus = target.cpus ?? current.cpus
     const memoryMib = target.memoryMib ?? current.memoryMib
+    let restarted = false
     if (cpus === current.cpus && memoryMib === current.memoryMib) {
       active.settings = current
-      return 'unchanged'
+    } else {
+      logger.log(`Sandbox ${active.containerName}: resizing to cpus=${cpus} memory=${memoryMib}MiB (restarts the sandbox)`)
+      await runtime.resizeSandbox(active.containerName, { cpus: target.resources.cpus, memory: target.resources.memory })
+      active.settings = { cpus, memoryMib, allowLan: current.allowLan }
+      lastLivenessCheck.set(worktreeName, Date.now())
+      restarted = true
     }
-    logger.log(`Sandbox ${active.containerName}: resizing to cpus=${cpus} memory=${memoryMib}MiB (restarts the sandbox)`)
-    await runtime.resizeSandbox(active.containerName, { cpus: target.resources.cpus, memory: target.resources.memory })
-    active.settings = { cpus, memoryMib, allowLan: current.allowLan }
-    lastLivenessCheck.set(worktreeName, Date.now())
-    return 'resized'
+
+    if (config.resolveEnv) {
+      const changed = await runtime.applySandboxEnv(active.containerName, config.resolveEnv())
+      if (changed) {
+        lastLivenessCheck.set(worktreeName, Date.now())
+        restarted = true
+      }
+    }
+
+    return restarted ? 'restarted' : 'unchanged'
   }
 
   /**

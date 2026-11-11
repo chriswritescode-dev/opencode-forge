@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join, resolve, relative } from 'path'
 import { tmpdir } from 'os'
 import { resolveCustomMounts } from '../../src/sandbox/manager'
@@ -135,6 +135,49 @@ describe('resolveCustomMounts', () => {
     expect(result).toHaveLength(1)
     expect(logger.log).toHaveBeenCalledTimes(1)
     expect(logger.log.mock.calls[0][0]).toContain('missing host path')
+  })
+
+  test('a mount equal to a protected path is skipped and logged', () => {
+    const dir = withTempDir()
+    const logger = createMockLogger()
+    const opaque = join(dir, 'forge-secrets.opaque')
+    writeFileSync(opaque, 'x')
+    const raw: SandboxMountConfig[] = [
+      { host: opaque },
+    ]
+    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger, [opaque])
+    expect(result).toEqual([])
+    expect(logger.log).toHaveBeenCalledTimes(1)
+    expect(logger.log.mock.calls[0][0]).toContain('would expose a protected file')
+    expect(logger.log.mock.calls[0][0]).toContain(opaque)
+  })
+
+  test('a mount containing a protected path is skipped and logged', () => {
+    const dir = withTempDir()
+    const logger = createMockLogger()
+    const protectedDir = join(dir, 'secrets')
+    mkdirSync(protectedDir, { recursive: true })
+    const raw: SandboxMountConfig[] = [
+      { host: dir },
+    ]
+    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger, [protectedDir])
+    expect(result).toEqual([])
+    expect(logger.log).toHaveBeenCalledTimes(1)
+    expect(logger.log.mock.calls[0][0]).toContain('would expose a protected file')
+    expect(logger.log.mock.calls[0][0]).toContain(dir)
+  })
+
+  test('an unrelated mount is kept when protected paths are configured', () => {
+    const dir = withTempDir()
+    const logger = createMockLogger()
+    const raw: SandboxMountConfig[] = [
+      { host: dir },
+    ]
+    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger, [join(dir, '..', 'elsewhere')])
+    expect(result).toEqual([
+      { hostDir: resolve(dir), containerDir: resolve(dir), readOnly: true },
+    ])
+    expect(logger.log).not.toHaveBeenCalled()
   })
 
   test('relative host path that exists in cwd is skipped', () => {

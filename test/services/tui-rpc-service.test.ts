@@ -7,15 +7,19 @@ import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { SessionSandboxDesiredState } from '../../src/storage'
 import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput } from '../../src/host/forge-rpc'
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
+import { readProjectConfig, writeProjectSandboxEnv } from '../../src/project-config'
+import { resolveProjectsConfigPath } from '../../src/install/paths'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
 import { makeLoopRow } from '../helpers/dashboard-fixtures'
 import { createMockLogger } from '../helpers/logger'
+import { useTempConfigHome } from '../helpers/temp-config'
 import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'project-a'
 const logger = createMockLogger()
 
 describe('createTuiRpcService', () => {
+  const configHome = useTempConfigHome('forge-tui-rpc-config')
   let tempDir: string
   let db: ReturnType<typeof createTestDb>['db']
   let testDb: ReturnType<typeof createTestDb>
@@ -260,6 +264,21 @@ describe('createTuiRpcService', () => {
     })
   })
 
+  describe('getSandboxEnv', () => {
+    test('returns an empty environment when the projects file is missing', () => {
+      expect(createService().getSandboxEnv()).toEqual({ values: {}, passthrough: [] })
+    })
+
+    test('returns the stored environment for the project', () => {
+      writeProjectSandboxEnv(PROJECT, { env: { NODE_ENV: 'test' }, passthrough: ['DATABASE_URL'] })
+
+      expect(createService().getSandboxEnv()).toEqual({
+        values: { NODE_ENV: 'test' },
+        passthrough: ['DATABASE_URL'],
+      })
+    })
+  })
+
   describe('requestHostSandbox', () => {
     test('refuses to write when sandboxing is disabled by config', () => {
       const service = createService({ config: { sandbox: { enabled: false } } })
@@ -309,9 +328,47 @@ describe('createTuiRpcService', () => {
       expect(sandboxPreferences.getDesired(PROJECT)?.overrides).toBeUndefined()
     })
 
+    test('an env change writes the project entry and keeps the desired binding and overrides', () => {
+      const onHostSandboxChanged = vi.fn()
+      const service = createService({ projectName: 'forge', onHostSandboxChanged })
+      service.requestHostSandbox({ sessionId: 'session-1', enabled: true, overrides: { resources: { cpus: '6' } } })
+      onHostSandboxChanged.mockClear()
+
+      const result = service.requestHostSandbox({
+        sessionId: 'session-2',
+        env: { values: { NODE_ENV: 'test' }, passthrough: ['DATABASE_URL'] },
+      })
+      if ('error' in result) throw new Error(result.error)
+
+      expect(typeof result.revision).toBe('string')
+      expect(readProjectConfig(PROJECT)).toEqual({
+        name: 'forge',
+        sandbox: { env: { NODE_ENV: 'test' }, network: { env: ['DATABASE_URL'] } },
+      })
+      expect(sandboxPreferences.getDesired(PROJECT)).toMatchObject({
+        revision: result.revision,
+        enabled: true,
+        sessionId: 'session-1',
+        overrides: { resources: { cpus: '6' } },
+      })
+      expect(onHostSandboxChanged).toHaveBeenCalledTimes(1)
+    })
+
+    test('an env change against an unparseable projects file errors and leaves the desired row unchanged', () => {
+      mkdirSync(join(configHome(), 'opencode'), { recursive: true })
+      writeFileSync(resolveProjectsConfigPath(), '{ not json')
+      const service = createService()
+      service.requestHostSandbox({ sessionId: 'session-1', enabled: true })
+      const before = sandboxPreferences.getDesired(PROJECT)
+
+      expect(service.requestHostSandbox({ sessionId: 'session-1', env: { values: { NODE_ENV: 'test' }, passthrough: [] } }))
+        .toMatchObject({ error: expect.stringContaining('not valid JSONC') })
+      expect(sandboxPreferences.getDesired(PROJECT)).toEqual(before)
+    })
+
     test('refuses a request that changes nothing', () => {
       expect(createService().requestHostSandbox({ sessionId: 'session-1' }))
-        .toEqual({ error: 'Host sandbox request changes nothing: pass enabled or overrides' })
+        .toEqual({ error: 'Host sandbox request changes nothing: pass enabled, overrides, or env' })
     })
   })
 })

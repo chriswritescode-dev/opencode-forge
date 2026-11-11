@@ -4,6 +4,7 @@ import {
   type ForgeHostSandboxSetOutput,
   type ForgeHostSandboxStateOutput,
   type ForgeRpcError,
+  type ForgeSandboxEnv,
   type ForgeToastInput,
 } from '../host/forge-rpc'
 import {
@@ -22,18 +23,24 @@ export interface HostSandboxToggleDeps {
   toast(input: ForgeToastInput): void
 }
 
+export interface HostSandboxSettingsChange {
+  overrides?: SandboxOverrides
+  env?: ForgeSandboxEnv
+}
+
 export interface HostSandboxToggle {
   /** Latest desired/applied preference pair, or null when sandboxing is disabled by config. */
   preference: Accessor<SessionSandboxPreference | null>
   /** Re-read the current state; coalesced with any in-flight read. */
   refresh(): void
-  /** Turns the sandbox on or off for the current session, replacing the overrides when given. */
-  toggle(overrides?: SandboxOverrides): Promise<void>
+  /** Turns the sandbox on or off for the current session, replacing the overrides and repository environment when given. */
+  toggle(settings?: HostSandboxSettingsChange): Promise<void>
   /**
-   * Replaces the project's host sandbox overrides (`{}` resets them) without changing whether the
-   * sandbox is on. A running sandbox is restarted or recreated to apply them.
+   * Replaces the project's host sandbox overrides (`{}` resets them) and/or this repository's
+   * sandbox environment without changing whether the sandbox is on. A running sandbox is
+   * restarted or recreated to apply them.
    */
-  setOverrides(overrides: SandboxOverrides): Promise<void>
+  applySettings(settings: HostSandboxSettingsChange): Promise<void>
   dispose(): void
 }
 
@@ -219,14 +226,14 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     }
   }
 
-  const toggle = async (overrides?: SandboxOverrides): Promise<void> => {
+  const toggle = async (settings?: HostSandboxSettingsChange): Promise<void> => {
     let enabling = true
     await request({
       label: 'Sandbox toggle',
-      timeoutMs: overrides ? OVERRIDES_ACK_TIMEOUT_MS : TOGGLE_ACK_TIMEOUT_MS,
+      timeoutMs: settings?.overrides || settings?.env ? OVERRIDES_ACK_TIMEOUT_MS : TOGGLE_ACK_TIMEOUT_MS,
       build: (current, sessionId) => {
         enabling = !(current.desired?.enabled === true && current.desired.sessionId === sessionId)
-        return { enabled: enabling, ...(overrides ? { overrides } : {}) }
+        return { enabled: enabling, ...settings }
       },
       success: (applied) => applied.enabled
         ? 'Host sandbox enabled for this session. Agent shell, glob, and grep calls run in the sandbox; commands you run yourself stay on the host.'
@@ -235,10 +242,10 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     })
   }
 
-  const setOverrides = (overrides: SandboxOverrides): Promise<void> => request({
+  const applySettings = (settings: HostSandboxSettingsChange): Promise<void> => request({
     label: 'Sandbox settings',
     timeoutMs: OVERRIDES_ACK_TIMEOUT_MS,
-    build: () => ({ overrides }),
+    build: () => settings,
     success: (applied) => applied.enabled
       ? 'Host sandbox settings applied'
       : 'Host sandbox settings saved; they apply when the sandbox is next turned on',
@@ -249,7 +256,7 @@ export function createHostSandboxToggle(deps: HostSandboxToggleDeps): HostSandbo
     preference,
     refresh: coordinator.trigger,
     toggle,
-    setOverrides,
+    applySettings,
     dispose() {
       lifecycle.abort()
       waiter?.cancel()

@@ -230,6 +230,17 @@ export interface SandboxConfig {
   network?: SandboxNetworkConfig
   /** Resolve permission prompts to allow or deny, using the auto-approve policy, for sessions whose shell runs in a sandbox. Does not affect per-session auto-approve. Default: true. */
   autoApprovePermissions?: boolean
+  env?: Record<string, string>
+}
+
+export interface ProjectSandboxConfig {
+  env?: Record<string, string>
+  network?: { env?: string[] }
+}
+
+export interface ProjectConfig {
+  name?: string
+  sandbox?: ProjectSandboxConfig
 }
 
 /** An extra deny rule applied only while auto-approve is on, using OpenCode permission action/resource wildcard syntax. */

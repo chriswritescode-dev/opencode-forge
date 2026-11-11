@@ -111,6 +111,7 @@ export async function setupForgeV2(ctx: Plugin.Context): Promise<() => Promise<v
       loopRestart: async (input) => withCore(core, (active) =>
         active.tui.restartLoop(input as ForgeLoopRestartInput)),
       hostSandboxState: async () => withCore(core, (active) => active.tui.getHostSandboxState()),
+      sandboxEnv: async () => withCore(core, (active) => active.tui.getSandboxEnv()),
       hostSandboxSet: async (input) => withCore(core, (active) =>
         active.tui.requestHostSandbox(input as ForgeHostSandboxSetInput)),
       worktrees: async () => withCore(core, (active) => active.tui.listWorktrees()),

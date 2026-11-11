@@ -11,12 +11,14 @@ import {
   dockerDataVolumeName,
   cacheDiskVolumeName,
   SANDBOX_CACHE_DIR,
+  SANDBOX_ENV_LABEL,
   parseMsbSandboxList,
   parseMsbSandboxListOrNull,
   mapMsbStatus,
   parseMsbImageList,
   msbImageMatches,
   parseMsbInspectSecretNames,
+  parseMsbInspectEnv,
   parseMsbInspectRuntimeSettings,
   msbSizeToMib,
   checkMsbAvailability,
@@ -248,6 +250,8 @@ describe('create args', () => {
       'GITHUB_TOKEN',
       '-e',
       'CI',
+      '--label',
+      'forge.env=CI,GITHUB_TOKEN',
     ])
     expect(args.join(' ')).not.toContain('GITHUB_TOKEN=')
   })
@@ -273,11 +277,27 @@ describe('create args', () => {
       'forge-c-cache-data:/opt/forge/cache:kind=disk,size=16g',
       '-e',
       'KEEP',
+      '--label',
+      'forge.env=KEEP',
     ])
     expect(args.join(' ')).not.toContain('secret')
     expect(args.join(' ')).not.toContain('value')
     expect(args.join(' ')).not.toContain('GITHUB_TOKEN=')
     expect(args.join(' ')).not.toContain('LEAK=')
+  })
+
+  test('labels the managed env names in sorted order and emits no label without names', () => {
+    const labeled = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: ['ZEBRA', 'ALPHA'],
+    })
+    expect(labeled.slice(-2)).toEqual(['--label', `${SANDBOX_ENV_LABEL}=ALPHA,ZEBRA`])
+
+    const unlabeled = buildMsbCreateArgs('forge-c', [{ hostDir: '/a', containerDir: '/a' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: [' ', 'A=B'],
+    })
+    expect(unlabeled).not.toContain('--label')
   })
 
   test('trims whitespace around env names before emitting -e', () => {
@@ -829,6 +849,46 @@ describe('inspect secret parsing', () => {
   })
 })
 
+describe('inspect env parsing', () => {
+  test('extracts the sandbox environment and the managed names from the label', () => {
+    const stdout = JSON.stringify({
+      config: {
+        env: [
+          { key: 'PATH', value: '/usr/bin' },
+          { key: 'NODE_ENV', value: 'test' },
+        ],
+        labels: { [SANDBOX_ENV_LABEL]: 'NODE_ENV,DATABASE_URL' },
+      },
+    })
+    expect(parseMsbInspectEnv(stdout)).toEqual({
+      env: { PATH: '/usr/bin', NODE_ENV: 'test' },
+      managed: ['NODE_ENV', 'DATABASE_URL'],
+    })
+  })
+
+  test('an absent env list and label yield an empty map and list', () => {
+    const stdout = JSON.stringify({ config: { labels: {} } })
+    expect(parseMsbInspectEnv(stdout)).toEqual({ env: {}, managed: [] })
+  })
+
+  test('drops env entries that are not string key/value pairs', () => {
+    const stdout = JSON.stringify({ config: { env: [{ key: 'A' }, { key: 'B', value: '2' }, 'x'] } })
+    expect(parseMsbInspectEnv(stdout)).toEqual({ env: { B: '2' }, managed: [] })
+  })
+
+  test('drops empty parts of the managed label', () => {
+    const stdout = JSON.stringify({ config: { labels: { [SANDBOX_ENV_LABEL]: 'A,,B,' } } })
+    expect(parseMsbInspectEnv(stdout)?.managed).toEqual(['A', 'B'])
+  })
+
+  test('returns null for unparseable or malformed output so callers fail closed', () => {
+    expect(parseMsbInspectEnv('not json')).toBeNull()
+    expect(parseMsbInspectEnv('[]')).toBeNull()
+    expect(parseMsbInspectEnv('{}')).toBeNull()
+    expect(parseMsbInspectEnv('{"config":[]}')).toBeNull()
+  })
+})
+
 describe('inspect runtime settings parsing', () => {
   const resources = { cpus: 2, max_cpus: 2, memory_mib: 4096, max_memory_mib: 4096 }
   const hostDns = { action: 'allow', destination: { group: 'host' }, direction: 'egress', ports: [{ start: 53, end: 53 }], protocols: ['udp', 'tcp'] }
@@ -939,12 +999,12 @@ describe('availability', () => {
 describe('runtime', () => {
   interface Rec {
     args: string[]
-    opts?: { timeout?: number; stdin?: string; abort?: AbortSignal }
+    opts?: { timeout?: number; stdin?: string; abort?: AbortSignal; env?: Record<string, string> }
   }
   function recordingRunner(handler?: (rec: Rec) => { stdout: string; stderr: string; exitCode: number }) {
     const calls: Rec[] = []
     const runner: CommandRunner = async (args, opts) => {
-      const rec = { args, opts: { timeout: opts?.timeout, stdin: opts?.stdin, abort: opts?.abort } }
+      const rec = { args, opts: { timeout: opts?.timeout, stdin: opts?.stdin, abort: opts?.abort, env: opts?.env } }
       calls.push(rec)
       const res = handler ? handler(rec) : { stdout: '', stderr: '', exitCode: 0 }
       return res
@@ -1072,20 +1132,49 @@ describe('runtime', () => {
     expect(calls[0].args).toContain('forge-c-docker-data:/var/lib/docker:kind=disk,size=32g')
   })
 
-  test('createSandbox forwards env and secrets into the create args', async () => {
+  test('createSandbox forwards env names in the args and values only in the runner environment', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })
     await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
       image: 'oc-forge-sandbox:latest',
-      env: ['GITHUB_TOKEN'],
+      env: { GITHUB_TOKEN: 'tok-123', CI: '1' },
       secrets: [{ env: 'API_KEY', hosts: ['api.example.com'] }],
     })
     expect(calls[0].args).toContain('-e')
     expect(calls[0].args).toContain('GITHUB_TOKEN')
+    expect(calls[0].args).toContain('--label')
+    expect(calls[0].args).toContain(`${SANDBOX_ENV_LABEL}=CI,GITHUB_TOKEN`)
     expect(calls[0].args).toContain('--secret')
     expect(calls[0].args).toContain('API_KEY@api.example.com')
+    expect(calls[0].opts?.env).toMatchObject({ GITHUB_TOKEN: 'tok-123', CI: '1' })
+    expect(calls[0].args.join(' ')).not.toContain('tok-123')
     expect(calls[0].args.join(' ')).not.toContain('GITHUB_TOKEN=')
     expect(calls[0].args.join(' ')).not.toContain('API_KEY=')
+  })
+
+  test('createSandbox with an empty env map passes no environment to the runner', async () => {
+    const { calls, runner } = recordingRunner()
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-c', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+    })
+    expect(calls[0].opts?.env).toBeUndefined()
+  })
+
+  test('createSandbox passes the environment to the --replace retry as well', async () => {
+    const { calls, runner } = recordingRunner((rec) =>
+      rec.args.includes('--replace')
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: alreadyExistsStderr, exitCode: 1 },
+    )
+    const rt = createMsbRuntime(logger, { run: runner })
+    await rt.createSandbox('forge-x', [{ hostDir: '/work', containerDir: '/work' }], {
+      image: 'oc-forge-sandbox:latest',
+      env: { TOKEN: 'tok-123' },
+    })
+    expect(calls).toHaveLength(2)
+    expect(calls[0].opts?.env).toMatchObject({ TOKEN: 'tok-123' })
+    expect(calls[1].opts?.env).toMatchObject({ TOKEN: 'tok-123' })
   })
 
   test('createSandbox throws on non-zero exit', async () => {
@@ -1373,6 +1462,150 @@ describe('runtime', () => {
     await expect(rt.resizeSandbox('forge-c', { cpus: '2' })).rejects.toThrow('Failed to resize sandbox forge-c: boom')
     await rt.resizeSandbox('forge-c', {})
     expect(calls).toHaveLength(1)
+  })
+
+  function envInspectStdout(env: Record<string, string>, managed: string[]): string {
+    return JSON.stringify({
+      name: 'forge-c',
+      status: 'Running',
+      config: {
+        env: [...Object.entries(env).map(([key, value]) => ({ key, value })), { key: 'PATH', value: '/usr/bin' }],
+        labels: managed.length > 0 ? { [SANDBOX_ENV_LABEL]: managed.join(',') } : {},
+      },
+    })
+  }
+
+  function envRunner(
+    current: Record<string, string>,
+    managed: string[],
+    modifyResult: { stdout: string; stderr: string; exitCode: number } = { stdout: '', stderr: '', exitCode: 0 },
+    stopResult: { stdout: string; stderr: string; exitCode: number } = { stdout: '', stderr: '', exitCode: 0 },
+  ) {
+    return recordingRunner((rec) => {
+      if (rec.args[0] === 'inspect') return { stdout: envInspectStdout(current, managed), stderr: '', exitCode: 0 }
+      if (rec.args[0] === 'stop') return stopResult
+      return modifyResult
+    })
+  }
+
+  test('applySandboxEnv returns false and never invokes msb modify when nothing changed', async () => {
+    const { calls, runner } = envRunner({ NODE_ENV: 'test' }, ['NODE_ENV'])
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(rt.applySandboxEnv('forge-c', { NODE_ENV: 'test' })).resolves.toBe(false)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].args).toEqual(['inspect', 'forge-c', '--format', 'json'])
+  })
+
+  test('applySandboxEnv applies a changed value and a new key through --env', async () => {
+    const { calls, runner } = envRunner({ NODE_ENV: 'old' }, ['NODE_ENV'])
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(
+      rt.applySandboxEnv('forge-c', { NODE_ENV: 'test', API_URL: 'https://api.example.com' }),
+    ).resolves.toBe(true)
+
+    expect(calls[1].args).toEqual([
+      'modify',
+      'forge-c',
+      '--env',
+      'NODE_ENV=test',
+      '--env',
+      'API_URL=https://api.example.com',
+      '--label',
+      'forge.env=API_URL,NODE_ENV',
+      '--next-start',
+    ])
+    expect(calls[1].args.at(-1)).toBe('--next-start')
+    expect(calls[1].opts?.timeout).toBe(MSB_DEFAULT_TIMEOUT)
+    expect(calls[2].args).toEqual(['stop', 'forge-c', '--quiet'])
+  })
+
+  test('applySandboxEnv removes only managed keys that are no longer desired', async () => {
+    const { calls, runner } = envRunner({ NODE_ENV: 'test', OLD_TOKEN: 'x' }, ['NODE_ENV', 'OLD_TOKEN'])
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(rt.applySandboxEnv('forge-c', { NODE_ENV: 'test' })).resolves.toBe(true)
+
+    expect(calls[1].args).toEqual([
+      'modify',
+      'forge-c',
+      '--env-rm',
+      'OLD_TOKEN',
+      '--label',
+      'forge.env=NODE_ENV',
+      '--next-start',
+    ])
+    expect(calls[1].args.join(' ')).not.toContain('PATH')
+  })
+
+  test('applySandboxEnv updates the label when the key set changes and removes it when the map empties', async () => {
+    const changed = envRunner({ NODE_ENV: 'test' }, ['NODE_ENV', 'OLD_TOKEN'])
+    const rt = createMsbRuntime(logger, { run: changed.runner })
+    await expect(rt.applySandboxEnv('forge-c', { NODE_ENV: 'test' })).resolves.toBe(true)
+    expect(changed.calls[1].args).toContain('--label')
+
+    const emptied = envRunner({ NODE_ENV: 'test' }, ['NODE_ENV'])
+    const rt2 = createMsbRuntime(logger, { run: emptied.runner })
+    await expect(rt2.applySandboxEnv('forge-c', {})).resolves.toBe(true)
+    expect(emptied.calls[1].args).toEqual([
+      'modify',
+      'forge-c',
+      '--env-rm',
+      'NODE_ENV',
+      '--label-rm',
+      SANDBOX_ENV_LABEL,
+      '--next-start',
+    ])
+  })
+
+  test('applySandboxEnv throws when the environment cannot be read', async () => {
+    const failing = createMsbRuntime(logger, {
+      run: recordingRunner(() => ({ stdout: '', stderr: 'boom', exitCode: 1 })).runner,
+    })
+    await expect(failing.applySandboxEnv('forge-c', { A: '1' })).rejects.toThrow(
+      'Could not read the environment of sandbox forge-c',
+    )
+
+    const malformed = createMsbRuntime(logger, {
+      run: recordingRunner(() => ({ stdout: 'not json', stderr: '', exitCode: 0 })).runner,
+    })
+    await expect(malformed.applySandboxEnv('forge-c', { A: '1' })).rejects.toThrow(
+      'Could not read the environment of sandbox forge-c',
+    )
+  })
+
+  test('applySandboxEnv throws when msb refuses the modification', async () => {
+    const { runner } = envRunner({}, [], { stdout: '', stderr: 'restart required', exitCode: 1 })
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(rt.applySandboxEnv('forge-c', { A: '1' })).rejects.toThrow(
+      'Failed to update the environment of sandbox forge-c: restart required',
+    )
+  })
+
+  test('applySandboxEnv keeps old and new env values out of a modify failure message', async () => {
+    const { calls, runner } = envRunner(
+      { A: 'old-value', GONE: 'gone-value' },
+      ['A', 'GONE'],
+      { stdout: '', stderr: 'rejected A=old-value -> A=s3cr3t-value, GONE=gone-value', exitCode: 1 },
+    )
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(rt.applySandboxEnv('forge-c', { A: 's3cr3t-value' })).rejects.toThrow(
+      'Failed to update the environment of sandbox forge-c: rejected A=*** -> A=***, GONE=***',
+    )
+    expect(calls.some((call) => call.args[0] === 'stop')).toBe(false)
+  })
+
+  test('applySandboxEnv throws when the sandbox cannot be stopped after the change is saved', async () => {
+    const { runner } = envRunner({}, [], undefined, { stdout: '', stderr: 'busy', exitCode: 1 })
+    const rt = createMsbRuntime(logger, { run: runner })
+
+    await expect(rt.applySandboxEnv('forge-c', { A: '1' })).rejects.toThrow(
+      'Failed to stop sandbox forge-c to apply its environment: busy',
+    )
   })
 
   test('readSandboxSettings returns null instead of rejecting on a failed inspect', async () => {

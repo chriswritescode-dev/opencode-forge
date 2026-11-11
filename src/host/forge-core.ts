@@ -34,6 +34,11 @@ import type { ForgeWorkspaceAdapter } from '../workspace/forge-adapter'
 import { ensureShellShim } from '../sandbox/shell-shim'
 import type { ToolContext } from '../tools'
 
+import { basename } from 'path'
+import { resolveSecretsPath } from '../install/paths'
+import { readProjectConfig } from '../project-config'
+import { readSandboxSecrets, resolveSandboxEnv } from '../sandbox/env'
+
 import { LRUCache } from '../utils/lru-cache'
 import { ParentLookupUndeterminedError } from '../utils/session-ancestry'
 import { resolveSessionAutoApproveFlag } from '../utils/session-auto-approve-flag'
@@ -533,6 +538,13 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
         resolveOverrides: (worktreeName) => worktreeName === hostSandboxManagerKey
           ? sandboxPreferences.getDesired(projectId)?.overrides
           : readSandboxOverrides(loopsRepo.get(projectId, worktreeName)?.sandboxSettings),
+        resolveEnv: () => resolveSandboxEnv({
+          config: config.sandbox,
+          project: readProjectConfig(projectId).sandbox,
+          secrets: readSandboxSecrets(resolveSecretsPath(), logger),
+          logger,
+        }),
+        protectedPaths: [resolveSecretsPath()],
       }, logger, defaultGitService)
       logger.log('Sandbox manager initialized')
     } catch (err) {
@@ -892,6 +904,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     loopsRepo,
     plansRepo,
     sandboxPreferences,
+    projectName: basename(projectRoot),
     async restartLoop(request) {
       const response = await executionService.dispatch(
         { surface: 'api', projectId, directory: projectRoot },

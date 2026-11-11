@@ -35,7 +35,7 @@ When auto-approve is on for the current session, including when it is inherited 
 
 | Command | Description |
 |---------|-------------|
-| `Toggle sandbox` | Turn the sandbox on or off for the current session and set its CPUs, memory, and LAN access |
+| `Toggle sandbox` | Turn the sandbox on or off for the current session and set its CPUs, memory, LAN access, and [environment variables](sandbox.md#sandbox-environment-variables) |
 | `Toggle auto-approve` | Turn per-session auto-approve on or off for the current session |
 | `Build sandbox template` | Build, save, and load the sandbox template image |
 | `Open dashboard` | Open the Forge dashboard pages in the TUI |
@@ -51,6 +51,7 @@ The project has one host sandbox, bound to one session at a time. The menu shows
 - **Sandbox** — on, off, starting, or failed for the current session. Pressing enter turns it on (moving it from another session if needed) or off, and sends any changed settings below in the same request, then closes the menu.
 - **CPUs**, **Memory** — resource overrides, validated like the loop settings. Defaults come from the server's `sandbox.resources` and are marked `(default)`.
 - **LAN access** — whether the sandbox can reach private (LAN) address ranges, which msb blocks by default. The default is the server's `sandbox.network.allowLan`.
+- **Environment** — this repository's literal sandbox variables and passthrough names, edited in a submenu; applying a change restarts a running sandbox. See [Sandbox → Sandbox Environment Variables](sandbox.md#sandbox-environment-variables).
 - **Reset to defaults** — clears every override.
 - **Apply settings** — shown when a setting changed; sends the changes without turning the sandbox on or off. **Discard changes** closes without sending.
 

@@ -12,14 +12,16 @@ export interface MockSandboxRuntime extends SandboxRuntime {
     [
       string,
       SandboxWorkspace[],
-      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] } | undefined,
+      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: Record<string, string>; secrets?: SandboxSecretConfig[] } | undefined,
     ]
   >
   getRefreshSecretCalls(): Array<[string, SandboxSecretConfig[]]>
   getRemoveSandboxCalls(): string[]
   getResizeCalls(): Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]>
+  getApplyEnvCalls(): Array<[string, Record<string, string>]>
   /** Sets what `readSandboxSettings` reports for a sandbox; `null` simulates an unreadable one. */
   setSandboxSettings(name: string, settings: SandboxRuntimeSettings | null): void
+  setApplyEnvResult(changed: boolean): void
   setSandboxes(newSandboxes: string[]): void
   setRunning(name: string, running: boolean): void
   setSandboxState(name: string, state: SandboxState): void
@@ -37,18 +39,20 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     [
       string,
       SandboxWorkspace[],
-      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] } | undefined,
+      { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: Record<string, string>; secrets?: SandboxSecretConfig[] } | undefined,
     ]
   > = []
   const removeSandboxCalls: string[] = []
   const refreshSecretCalls: Array<[string, SandboxSecretConfig[]]> = []
   const resizeCalls: Array<[string, Pick<SandboxResources, 'cpus' | 'memory'>]> = []
+  const applyEnvCalls: Array<[string, Record<string, string>]> = []
   const sandboxSettings = new Map<string, SandboxRuntimeSettings | null>()
   let sandboxes = ['forge-foo', 'forge-bar']
   const sandboxStates = new Map<string, SandboxState>()
   let shouldBeAvailable = true
   let shouldTemplateExist = true
   let shouldRemoveThrow = false
+  let applyEnvResult = false
 
   const mock: MockSandboxRuntime = {
     checkAvailable: async () => shouldBeAvailable
@@ -59,7 +63,7 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     createSandbox: async (
       name: string,
       workspaces: SandboxWorkspace[],
-      opts?: { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: string[]; secrets?: SandboxSecretConfig[] },
+      opts?: { image?: string; resources?: SandboxResources; networkAllow?: string[]; env?: Record<string, string>; secrets?: SandboxSecretConfig[] },
     ) => {
       createSandboxCalls.push([name, workspaces, opts])
       sandboxStates.set(name, 'running')
@@ -86,12 +90,20 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
     resizeSandbox: async (name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>) => {
       resizeCalls.push([name, resources])
     },
+    applySandboxEnv: async (name: string, env: Record<string, string>) => {
+      applyEnvCalls.push([name, env])
+      return applyEnvResult
+    },
     getCreateSandboxCalls: () => createSandboxCalls,
     getRefreshSecretCalls: () => refreshSecretCalls,
     getRemoveSandboxCalls: () => removeSandboxCalls,
     getResizeCalls: () => resizeCalls,
+    getApplyEnvCalls: () => applyEnvCalls,
     setSandboxSettings: (name: string, settings: SandboxRuntimeSettings | null) => {
       sandboxSettings.set(name, settings)
+    },
+    setApplyEnvResult: (changed: boolean) => {
+      applyEnvResult = changed
     },
     setSandboxes: (newSandboxes: string[]) => {
       sandboxes = newSandboxes
