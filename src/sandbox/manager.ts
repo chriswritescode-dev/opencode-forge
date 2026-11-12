@@ -259,6 +259,10 @@ export function createSandboxManager(
       return
     }
     if (status.kind === 'failed') {
+      const availability = await runtime.checkAvailable()
+      if (!availability.available && availability.reason === 'not-installed') {
+        throw new Error(describeMsbUnavailable(availability))
+      }
       throw new Error(`Sandbox template check failed: msb images: ${status.detail}`)
     }
     if (status.kind === 'unknown') {

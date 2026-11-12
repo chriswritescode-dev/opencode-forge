@@ -9,7 +9,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | Option | Default | Description |
 |---|---:|---|
 | `dataDir` | `""` | Data directory for `forge.db` and worktrees. Empty resolves to the platform data dir. It does not relocate the default log path, which is always derived from the platform data dir; set `logging.file` to move logs. |
-| `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before the cleanup sweep. |
+| `completedLoopTtlMs` | `604800000` | TTL for ended loops (every status but `running`: completed, cancelled, errored, stalled, interrupted) before the cleanup sweep. |
 | `executionModel` | `""` | Fallback model override for plan execution sessions, and the model of the bundled `minion` subagent (OpenCode's default model when unset). Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |

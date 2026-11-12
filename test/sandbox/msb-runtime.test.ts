@@ -1568,6 +1568,15 @@ describe('runtime', () => {
     await expect(rt.checkTemplate('oc-forge-sandbox:latest')).resolves.toEqual({ kind: 'unknown', detail: 'boom' })
   })
 
+  test('checkTemplate reports unknown when msb images times out', async () => {
+    const timedOut = recordingRunner(() => ({ stdout: '', stderr: '', exitCode: 124 }))
+    const rt = createMsbRuntime(logger, { run: timedOut.runner })
+    await expect(rt.checkTemplate('oc-forge-sandbox:latest')).resolves.toEqual({
+      kind: 'unknown',
+      detail: '`msb images` did not answer in time',
+    })
+  })
+
   test('loadTemplate records the input and tag flags with the load timeout', async () => {
     const { calls, runner } = recordingRunner()
     const rt = createMsbRuntime(logger, { run: runner })

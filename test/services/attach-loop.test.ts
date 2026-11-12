@@ -692,6 +692,30 @@ describe('attachLoopToSession', () => {
     expect((deps.loop.service as any).getActiveState(loopName)?.sessionId).toBe('sess_restarted')
   })
 
+  test('a first prompt that succeeds after the loop restarted into another session records no first prompt', async () => {
+    const { deps, loopsRepo, promptAsyncMock } = setupAttach()
+    const loopName = 'restarted-after-successful-prompt'
+    deps.loop.terminate = vi.fn(async () => true)
+    promptAsyncMock.mockImplementation(async () => {
+      deps.loop.service.registerLoopSession('sess_restarted_after_prompt', loopName)
+    })
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      sectionedAttachInput(loopName, 'sess_stale_success'),
+    )
+
+    expect(result.ok).toBe(true)
+    await vi.waitFor(() => expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false))
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    expect(loopsRepo.get(PROJECT_ID, loopName)!.firstPromptSentAt).toBeNull()
+    expect(deps.loopHandler!.startWatchdog).not.toHaveBeenCalled()
+    expect(deps.loop.terminate).not.toHaveBeenCalled()
+    expect((deps.loop.service as any).getActiveState(loopName)?.sessionId).toBe('sess_restarted_after_prompt')
+  })
+
   test('answers the start before the section snapshot and records the first prompt once it resolves', async () => {
     const { deps, loopsRepo, promptAsyncMock } = setupAttach()
     const loopName = 'reply-before-snapshot'

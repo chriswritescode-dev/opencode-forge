@@ -6,6 +6,7 @@ import { createMockLogger } from '../helpers/logger'
 
 const available: MsbAvailability = { available: true }
 const hostUnsupported: MsbAvailability = { available: false, reason: 'host-unsupported', detail: 'mock daemon down' }
+const notInstalled: MsbAvailability = { available: false, reason: 'not-installed' }
 const indeterminate: MsbAvailability = { available: false, reason: 'unknown', detail: 'probe timed out' }
 
 describe('SandboxManager caching', () => {
@@ -147,6 +148,45 @@ describe('SandboxManager caching', () => {
     mockRuntime.setTemplateStatus({ kind: 'present' })
     await expect(manager.start('test-wt', '/tmp/project')).resolves.toEqual({ containerName: 'forge-test-wt' })
     expect(mockRuntime.checkTemplate).toHaveBeenCalledTimes(2)
+  })
+
+  it('should report a missing msb CLI when the template check fails on an uninstalled host', async () => {
+    mockRuntime.checkAvailable = vi.fn()
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce(notInstalled)
+    mockRuntime.setTemplateStatus({ kind: 'failed', detail: 'spawn msb ENOENT' })
+
+    const manager = createSandboxManager(mockRuntime, { image: 'oc-forge-sandbox:latest' }, mockLogger)
+
+    await expect(manager.start('test-wt', '/tmp/project')).rejects.toThrow('The msb sandbox CLI is not installed')
+    expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
+  })
+
+  it('should keep the msb images detail when the template check fails and the probe is indeterminate', async () => {
+    mockRuntime.checkAvailable = vi.fn()
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce(indeterminate)
+    mockRuntime.setTemplateStatus({ kind: 'failed', detail: 'catalog ancestor /home/u/.microsandbox permits path substitution' })
+
+    const manager = createSandboxManager(mockRuntime, { image: 'oc-forge-sandbox:latest' }, mockLogger)
+
+    const error = await manager.start('test-wt', '/tmp/project').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('Sandbox template check failed: msb images: catalog ancestor')
+    expect(mockRuntime.getCreateSandboxCalls()).toHaveLength(0)
+  })
+
+  it('should keep the msb images detail when the template check fails and msb doctor also fails', async () => {
+    mockRuntime.checkAvailable = vi.fn()
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce(hostUnsupported)
+    mockRuntime.setTemplateStatus({ kind: 'failed', detail: 'catalog ancestor /home/u/.microsandbox permits path substitution' })
+
+    const manager = createSandboxManager(mockRuntime, { image: 'oc-forge-sandbox:latest' }, mockLogger)
+
+    const error = await manager.start('test-wt', '/tmp/project').catch((e: unknown) => e)
+    expect((error as Error).message).toContain('catalog ancestor')
+    expect((error as Error).message).not.toContain('cannot run microVMs')
   })
 
   it('should continue when the template query is indeterminate', async () => {

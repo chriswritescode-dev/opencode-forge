@@ -233,6 +233,8 @@ type TerminationReason =
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
   | { kind: 'provider_limit'; message: string }
+  | { kind: 'start_interrupted' }
+  | { kind: 'first_prompt_failed'; message: string }
 ```
 
 ### Public API
@@ -369,7 +371,7 @@ Drives the `msb` CLI to provision isolated sandboxes for loop execution.
 ```typescript
 interface SandboxRuntime {
   checkAvailable(): Promise<MsbAvailability>
-  templateExists(ref: string): Promise<boolean>
+  checkTemplate(ref: string): Promise<MsbTemplateStatus>
   loadTemplate(tarPath: string, ref: string): Promise<void>
   createSandbox(name: string, workspaces: SandboxWorkspace[], opts: CreateSandboxOpts): Promise<void>
   removeSandbox(name: string): Promise<void>
@@ -382,6 +384,8 @@ interface SandboxRuntime {
   resizeSandbox(name: string, resources: Pick<SandboxResources, 'cpus' | 'memory'>): Promise<void>
 }
 ```
+
+`checkTemplate` resolves `'present'` when `msb images` lists the reference, `'missing'` when the query succeeds without it, and `'failed'` with the `msb images` stderr (falling back to stdout, then the exit code) on a non-zero exit. A query that throws or exceeds the command timeout resolves `'unknown'` with a detail instead, because no answer is not evidence that the template is absent.
 
 ### SandboxManager Interface
 

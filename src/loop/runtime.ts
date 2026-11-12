@@ -3403,13 +3403,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // the decision is re-made from the authoritative under-lock state; the same
       // lock also serializes this termination with phase-rotation ticks (see
       // `terminateLoopByName`).
-      const didTerminate = await withStateLock(state.loopName, async () => {
-        const current = loopService.getActiveState(state.loopName)
-        if (!current || !isInterruptedStart({ ...current, projectId })) return false
-        await terminateLoop(state.loopName, current, { kind: 'start_interrupted' })
-        return true
-      })
-      if (didTerminate) terminated.push(state.loopName)
+      try {
+        const didTerminate = await withStateLock(state.loopName, async () => {
+          const current = loopService.getActiveState(state.loopName)
+          if (!current || !isInterruptedStart({ ...current, projectId })) return false
+          await terminateLoop(state.loopName, current, { kind: 'start_interrupted' })
+          return true
+        })
+        if (didTerminate) terminated.push(state.loopName)
+      } catch (err) {
+        logger.error(`Loop: failed to reconcile interrupted start for ${state.loopName}`, err)
+      }
     }
     return terminated
   }

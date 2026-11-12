@@ -23,6 +23,7 @@ import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { buildExecutionDeps, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
+import { isStartInFlight } from '../../src/loop/start-owner'
 
 const mockLogger = createMockLogger()
 
@@ -2970,5 +2971,66 @@ describe('handleLoopRestart restartability rules', () => {
     expect(termRow.status).toBe('errored')
     expect(termRow.reason).toContain('provider_limit')
     expect(rows.filter((r) => r.transitionKind === 'rollback')).toHaveLength(0)
+  })
+
+  test('a provider-limit restart keeps its start in flight past runExclusive so a reconcile cannot mark it start-interrupted', async () => {
+    const loopName = 'provider-limit-in-flight-window'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      iteration: 2,
+      totalSections: 0,
+    })
+
+    const inFlightAfterLockRelease: boolean[] = []
+    const inFlightDuringTerminate: boolean[] = []
+    const reconcileTerminations: string[] = []
+
+    const terminate = async (name: string, reason: any) => {
+      inFlightDuringTerminate.push(isStartInFlight(PROJECT_ID, name))
+      const state = loopService.getActiveState(name)
+      if (!state?.active) return false
+      loopService.terminate(name, {
+        status: 'errored',
+        reason: reason.kind === 'provider_limit' ? `provider_limit: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      return true
+    }
+
+    const { service, client } = await createMockService({
+      terminate,
+      runExclusive: async (name: string, fn: () => Promise<any>) => {
+        const result = await fn()
+        const inFlight = isStartInFlight(PROJECT_ID, name)
+        inFlightAfterLockRelease.push(inFlight)
+        if (!inFlight) {
+          reconcileTerminations.push(name)
+          await terminate(name, { kind: 'start_interrupted' })
+        }
+        return result
+      },
+    })
+
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(inFlightAfterLockRelease).toEqual([true])
+    expect(inFlightDuringTerminate).toEqual([true])
+    expect(reconcileTerminations).toEqual([])
+    const row = loopsRepo.get(PROJECT_ID, loopName)
+    expect(row).not.toBeNull()
+    expect(row!.status).toBe('errored')
+    expect(row!.terminationReason).toContain('provider_limit')
+    expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false)
   })
 })

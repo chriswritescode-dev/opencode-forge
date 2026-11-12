@@ -27,7 +27,7 @@ The first view lists one row per project with Forge data: the union of loop proj
 Each row shows the loop status, name, current phase (`—` once the loop has completed), an iteration meter, a 1-based section meter (`—` when the loop has no sections), the bug count, cost, duration, and last activity.
 
 - `s` cycles the sort: recent (server order), cost, duration, findings (bug count).
-- `f` cycles the status filter: all, running, completed, cancelled, errored, stalled.
+- `f` cycles the status filter: all, running, completed, cancelled, errored, stalled, interrupted.
 
 ### Findings
 

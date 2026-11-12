@@ -562,6 +562,9 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     } catch (err) {
       return { kind: 'unknown', detail: errorMessage(err) }
     }
+    if (result.exitCode === COMMAND_TIMEOUT_EXIT_CODE) {
+      return { kind: 'unknown', detail: '`msb images` did not answer in time' }
+    }
     if (result.exitCode !== 0) {
       return {
         kind: 'failed',

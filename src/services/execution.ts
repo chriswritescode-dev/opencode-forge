@@ -589,87 +589,100 @@ export async function attachLoopToSession(
 
   let releaseFirstPromptHold = (): void => {}
   let handedOff = false
+  let startInFlightToken: string | undefined
   const attachOwnsLoop = (): boolean => deps.loop.service.getActiveState(loopName)?.sessionId === sessionId
 
   async function sendAttachFirstPrompt(updatedState: import('../loop/state').LoopState, totalSections: number): Promise<void> {
     try {
-      if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
-      if (!attachOwnsLoop()) {
-        deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
-        return
-      }
-      const promptText = totalSections > 0
-        ? deps.loop.service.buildSectionInitialPrompt(updatedState)
-        : deps.loop.service.buildPlanInitialPrompt(planText)
-      const sessionDir = worktreeDir
-      const promptParts = [{ type: 'text' as const, text: promptText }]
-      const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
-      const promptResult = await sendLoopPrompt({
-        projectId: ctx.projectId,
-        loopName,
-        sessionId,
-        agent: 'code',
-        logger: deps.logger,
-        primaryModel: loopModel,
-        useInFlightGuard: false,
-        performPrompt: async (model) => {
-          markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
-          releaseFirstPromptHold()
-          try {
-            await deps.client.session.promptAsync({
-              sessionID: sessionId,
-              directory: sessionDir,
-              parts: promptParts,
-              agent: 'code',
-              ...workspaceParam,
-              ...(model ? { model } : {}),
-            })
-            return {}
-          } catch (err) {
-            return { error: err }
-          }
-        },
-      })
-
-      if (promptResult.result.error) {
+      try {
+        if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
         if (!attachOwnsLoop()) {
-          deps.logger.error(`attachLoopToSession: initial prompt failed after loop ${loopName} moved to another session; leaving its state alone`, promptResult.result.error)
+          deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
           return
         }
-        const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
-        if (limitReason) {
-          deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
-          await deps.loop.terminate(loopName, { kind: 'provider_limit', message: limitReason })
+        const promptText = totalSections > 0
+          ? deps.loop.service.buildSectionInitialPrompt(updatedState)
+          : deps.loop.service.buildPlanInitialPrompt(planText)
+        const sessionDir = worktreeDir
+        const promptParts = [{ type: 'text' as const, text: promptText }]
+        const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
+        const promptResult = await sendLoopPrompt({
+          projectId: ctx.projectId,
+          loopName,
+          sessionId,
+          agent: 'code',
+          logger: deps.logger,
+          primaryModel: loopModel,
+          useInFlightGuard: false,
+          performPrompt: async (model) => {
+            markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
+            releaseFirstPromptHold()
+            try {
+              await deps.client.session.promptAsync({
+                sessionID: sessionId,
+                directory: sessionDir,
+                parts: promptParts,
+                agent: 'code',
+                ...workspaceParam,
+                ...(model ? { model } : {}),
+              })
+              return {}
+            } catch (err) {
+              return { error: err }
+            }
+          },
+        })
+
+        if (promptResult.result.error) {
+          if (!attachOwnsLoop()) {
+            deps.logger.error(`attachLoopToSession: initial prompt failed after loop ${loopName} moved to another session; leaving its state alone`, promptResult.result.error)
+            return
+          }
+          const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
+          if (limitReason) {
+            deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
+            await deps.loop.terminate(loopName, { kind: 'provider_limit', message: limitReason })
+            return
+          }
+          deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
+          await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(promptResult.result.error) })
           return
         }
-        deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
-        await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(promptResult.result.error) })
+      } catch (err) {
+        deps.logger.error('attachLoopToSession: unexpected error while sending the first prompt', err)
+        if (attachOwnsLoop()) {
+          try {
+            await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(err) })
+          } catch (terminateErr) {
+            deps.logger.error('attachLoopToSession: failed to terminate after a first prompt error', terminateErr)
+          }
+        }
         return
       }
 
-      deps.loop.service.recordFirstPromptSent(loopName)
-
-      if (startWatchdog && deps.loopHandler) {
-        deps.loopHandler.startWatchdog(loopName)
+      if (!attachOwnsLoop()) {
+        deps.logger.log(`attachLoopToSession: loop ${loopName} moved to another session after its first prompt; skipping first-prompt bookkeeping`)
+        return
       }
 
-      if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
-        deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-          deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
-        })
-      }
-    } catch (err) {
-      deps.logger.error('attachLoopToSession: unexpected error while sending the first prompt', err)
-      if (attachOwnsLoop()) {
-        try {
-          await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(err) })
-        } catch (terminateErr) {
-          deps.logger.error('attachLoopToSession: failed to terminate after a first prompt error', terminateErr)
+      try {
+        deps.loop.service.recordFirstPromptSent(loopName)
+
+        if (startWatchdog && deps.loopHandler) {
+          deps.loopHandler.startWatchdog(loopName)
         }
+
+        if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
+          deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
+            deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
+          })
+        }
+      } catch (err) {
+        deps.logger.error('attachLoopToSession: failed to finish first-prompt bookkeeping after the prompt was sent', err)
       }
     } finally {
       releaseFirstPromptHold()
-      clearStartInFlight(ctx.projectId, loopName)
+      if (startInFlightToken) clearStartInFlight(ctx.projectId, loopName, startInFlightToken)
     }
   }
 
@@ -707,7 +720,7 @@ export async function attachLoopToSession(
       startOwner: currentStartOwner(),
     }
 
-    markStartInFlight(ctx.projectId, loopName)
+    startInFlightToken = markStartInFlight(ctx.projectId, loopName)
     deps.loop.service.setState(loopName, state)
     deps.loop.service.registerLoopSession(sessionId, loopName)
     deps.loop.registerSessionReverseIndex(sessionId, loopName)
@@ -798,7 +811,7 @@ export async function attachLoopToSession(
   } finally {
     if (!handedOff) {
       releaseFirstPromptHold()
-      clearStartInFlight(ctx.projectId, loopName)
+      if (startInFlightToken) clearStartInFlight(ctx.projectId, loopName, startInFlightToken)
     }
   }
 }
@@ -1577,321 +1590,322 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // without any lock held.
       | { ok: false; error: string; providerLimitMessage: string }
 
-    const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
-      // Re-read authoritative state under the per-loop lock.
-      //
-      // Race-condition fix: when the pre-lock snapshot was inactive (cancelled or
-      // errored) a second concurrent restart could have already completed by the
-      // time we acquire the lock.  In that case we must reject the second
-      // restart instead of silently overwriting the first.
-      //
-      // For active loops the original code already aborted and updated state here.
-      // We preserve that behavior by checking `stoppedState.active` first.
-      const latestState = deps.loop.service.getActiveState(stoppedState.loopName)
-      if (command.expectedStartedAt !== undefined) {
-        const expectedMs = Date.parse(command.expectedStartedAt)
-        const currentMs = Date.parse((latestState ?? stoppedState).startedAt)
-        if (!Number.isFinite(expectedMs) || expectedMs !== currentMs) {
-          return {
-            ok: false,
-            error: `Loop "${stoppedState.loopName}" was restarted since it was selected. Reopen the restart dialog to see its current state.`,
+    const restartStartToken = markStartInFlight(ctx.projectId, stoppedState.loopName)
+    let outcome: RestartOutcome
+    try {
+      outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
+        // Re-read authoritative state under the per-loop lock.
+        //
+        // Race-condition fix: when the pre-lock snapshot was inactive (cancelled or
+        // errored) a second concurrent restart could have already completed by the
+        // time we acquire the lock.  In that case we must reject the second
+        // restart instead of silently overwriting the first.
+        //
+        // For active loops the original code already aborted and updated state here.
+        // We preserve that behavior by checking `stoppedState.active` first.
+        const latestState = deps.loop.service.getActiveState(stoppedState.loopName)
+        if (command.expectedStartedAt !== undefined) {
+          const expectedMs = Date.parse(command.expectedStartedAt)
+          const currentMs = Date.parse((latestState ?? stoppedState).startedAt)
+          if (!Number.isFinite(expectedMs) || expectedMs !== currentMs) {
+            return {
+              ok: false,
+              error: `Loop "${stoppedState.loopName}" was restarted since it was selected. Reopen the restart dialog to see its current state.`,
+            }
           }
         }
-      }
-      if (!latestState && stoppedState.active) {
-        // Active loop vanished under lock — treat as removed.
-        return { ok: false, error: `Loop "${stoppedState.loopName}" has been removed.` }
-      }
-      if (latestState && latestState.active && !stoppedState.active) {
-        // Pre-lock was inactive but authoritative state is now active — a
-        // concurrent restart finished. Reject so we don't silently overwrite it.
-        return {
-          ok: false,
-          error: `Loop "${stoppedState.loopName}" is already active with session ${latestState.sessionId}. Use --force to abort and restart.`,
+        if (!latestState && stoppedState.active) {
+          // Active loop vanished under lock — treat as removed.
+          return { ok: false, error: `Loop "${stoppedState.loopName}" has been removed.` }
         }
-      }
+        if (latestState && latestState.active && !stoppedState.active) {
+          // Pre-lock was inactive but authoritative state is now active — a
+          // concurrent restart finished. Reject so we don't silently overwrite it.
+          return {
+            ok: false,
+            error: `Loop "${stoppedState.loopName}" is already active with session ${latestState.sessionId}. Use --force to abort and restart.`,
+          }
+        }
 
-      const graphState = latestState ?? stoppedState
-      if (!graphState.totalSections) {
-        const graphErrors = decomposePlanSections(graphState.prompt ?? '').graphErrors
-        if (graphErrors.length > 0) {
-          return { ok: false, error: `Plan section graph is invalid:\n- ${graphErrors.join('\n- ')}` }
+        const graphState = latestState ?? stoppedState
+        if (!graphState.totalSections) {
+          const graphErrors = decomposePlanSections(graphState.prompt ?? '').graphErrors
+          if (graphErrors.length > 0) {
+            return { ok: false, error: `Plan section graph is invalid:\n- ${graphErrors.join('\n- ')}` }
+          }
         }
-      }
 
-      if (stoppedState.active && latestState) {
-        // The pre-lock snapshot was active — the original code already ran this
-        // block to abort and refresh from latestState.
-        try {
-          await deps.client.session.abort({ sessionID: latestState.sessionId })
-        } catch (err) {
-          return { ok: false, error: `Could not abort active loop session ${latestState.sessionId}: ${err instanceof Error ? err.message : String(err)}` }
-        }
-        await deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
-        Object.assign(stoppedState, latestState)
-        Object.assign(previousState, latestState)
-        previousSessionId = latestState.sessionId
-      } else {
-        // Inactive loop (or pre-lock was active but latestState is null — loop
-        // vanished, already returned above if active). Use whatever we have.
-        if (latestState) {
+        if (stoppedState.active && latestState) {
+          // The pre-lock snapshot was active — the original code already ran this
+          // block to abort and refresh from latestState.
+          try {
+            await deps.client.session.abort({ sessionID: latestState.sessionId })
+          } catch (err) {
+            return { ok: false, error: `Could not abort active loop session ${latestState.sessionId}: ${err instanceof Error ? err.message : String(err)}` }
+          }
+          await deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
           Object.assign(stoppedState, latestState)
           Object.assign(previousState, latestState)
           previousSessionId = latestState.sessionId
-        }
-      }
-
-      const overrideAuditorModel = normalizeModelString(command.auditorModel)
-      const overrideAuditorVariant = normalizeModelString(command.auditorVariant)
-      if (overrideAuditorModel) {
-        stoppedState.auditorModel = overrideAuditorModel
-      }
-      if (command.auditorVariant !== undefined) {
-        stoppedState.auditorVariant = overrideAuditorVariant
-      }
-
-      const overrideExecutionModel = normalizeModelString(command.executionModel)
-      const overrideExecutionVariant = normalizeModelString(command.executionVariant)
-      if (overrideExecutionModel) {
-        stoppedState.executionModel = overrideExecutionModel
-      }
-      if (command.executionVariant !== undefined) {
-        stoppedState.executionVariant = overrideExecutionVariant
-      }
-
-      if (stoppedState.standbySessionId && stoppedState.standbySessionId !== previousSessionId) {
-        const standbyPhase = standbyPhaseFor(stoppedState.phase)
-        const standbyUsage = createUsageCapture({
-          client: deps.client,
-          logger: deps.logger,
-          getConfig: () => deps.config,
-          projectId: ctx.projectId,
-          loopSessionUsageRepo: deps.loopSessionUsageRepo,
-        })
-        await standbyUsage.captureLoopSessionUsage({
-          loopName: stoppedState.loopName,
-          sessionId: stoppedState.standbySessionId,
-          directory: stoppedState.worktreeDir,
-          role: usageRoleForPhase(standbyPhase),
-          fallbackModel: standbyUsage.getFallbackModelForSession(stoppedState, standbyPhase),
-        })
-        await deleteSessionBestEffort(
-          deps.client,
-          { sessionID: stoppedState.standbySessionId, directory: stoppedState.worktreeDir },
-          deps.logger,
-          `loop-restart: failed to delete standby session ${stoppedState.standbySessionId}`,
-        )
-      }
-
-      deps.loop.service.discardPendingHandoff(stoppedState.loopName)
-
-      if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
-        deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
-        // Persist the terminal transition row so the disabled post-action
-        // restart outcome is logged through the same shared path used by the
-        // runtime. The canonical terminateLoop/terminateAll paths are not
-        // invoked here (this loop is already stopped/inactive); we record
-        // directly against the loopService's transition repository. Best-effort:
-        // recordTransition wraps the repo insert in try/catch and never
-        // throws into the restart flow.
-        const fromPhase = stoppedState.phase
-        const iteration = stoppedState.iteration ?? 0
-        const sectionIndex = transitionSectionIndex(stoppedState)
-        deps.loop.service.terminate(stoppedState.loopName, { status: 'completed', reason: 'completed', completedAt: Date.now() })
-        deps.loop.service.recordTerminalTransition(stoppedState.loopName, {
-          reason: { kind: 'completed' },
-          fromPhase,
-          iteration,
-          sectionIndex,
-        })
-        return { ok: false, error: 'Loop implementation already completed; post-action is disabled — nothing to restart.' }
-      }
-
-      const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
-      const permissionRuleset = buildPermissionRulesetForPhase(stoppedState.phase, permissionOptions)
-
-      stoppedState.iteration = 1
-
-      // Create new session for restart
-
-      // eslint-disable-next-line prefer-const
-      let newSessionId: string | undefined
-
-      if (stoppedState.worktree) {
-        const { createBuiltinWorktreeWorkspace, getForgeWorkspaceEntry } = await import('../workspace/forge-worktree')
-        const previousEntry = stoppedState.workspaceId
-          ? await getForgeWorkspaceEntry(deps.client, stoppedState.workspaceId).catch(() => undefined)
-          : undefined
-        const mergedExtra = {
-          ...(previousEntry?.extra ?? {}),
-          ...loopSandboxWorkspaceExtra(stoppedState.sandboxSettings),
-        }
-        const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
-          loopName: stoppedState.loopName,
-          directory: stoppedState.projectDir || ctx.directory,
-          branch: stoppedState.worktreeBranch,
-          extra: Object.keys(mergedExtra).length > 0 ? mergedExtra : undefined,
-        }, deps.logger)
-        if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
-        const ws = wsResult.workspace
-        stoppedState.workspaceId = ws.workspaceId
-        stoppedState.worktreeDir = ws.directory
-        stoppedState.worktreeBranch = ws.branch
-      }
-
-      if (restartSandbox && deps.sandboxManager) {
-        try {
-          const sandboxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir, undefined, stoppedState.sandboxSettings)
-          deps.logger.log(`loop-restart: started sandbox container ${sandboxResult.containerName}`)
-        } catch (err) {
-          deps.logger.error('loop-restart: failed to start sandbox container', err)
-          return { ok: false, error: 'Restart failed: could not start sandbox container.' }
-        }
-      }
-
-      // Unified session creation for restart (always a single code session)
-      const createResult = await createLoopSessionWithWorkspace({
-        client: deps.client,
-        title: formatLoopSessionTitle(stoppedState.loopName, {
-          iteration: stoppedState.iteration ?? 0,
-          currentSectionIndex: stoppedState.currentSectionIndex ?? 0,
-          totalSections: stoppedState.totalSections ?? 0,
-        }),
-        directory: stoppedState.worktreeDir,
-        permission: permissionRuleset,
-        workspaceId: stoppedState.workspaceId,
-        loopName: stoppedState.loopName,
-        logPrefix: 'loop-restart',
-        logger: deps.logger,
-      })
-
-      if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
-
-      newSessionId = createResult.sessionId
-      if (createResult.bindFailed) {
-        stoppedState.workspaceId = undefined
-        bindFailed = true
-      }
-
-      // Unified section extraction on restart — preserve existing progress if sections exist.
-      if (!stoppedState.totalSections) {
-        const planText = stoppedState.prompt ?? ''
-        const decomposition = applyPlanDecomposition({
-          projectId: ctx.projectId,
-          loopName: stoppedState.loopName,
-          planText,
-          loopsRepo: deps.loopsRepo,
-          sectionPlansRepo: deps.sectionPlansRepo,
-        })
-        if (!decomposition.ok) {
-          return { ok: false, error: `Plan section graph is invalid:\n- ${decomposition.errors.join('\n- ')}` }
-        }
-        stoppedState.totalSections = decomposition.totalSections
-        if (stoppedState.totalSections > 0) {
-          stoppedState.currentSectionIndex = 0
-        }
-      }
-      // else: existing totalSections preserved as-is
-
-      const effectiveSessionId = newSessionId!
-      const restartPhase = stoppedState.phase === 'post_action' ? 'post_action' as const : 'coding' as const
-
-      const newState: import('../loop/state').LoopState = {
-        active: true,
-        sessionId: effectiveSessionId,
-        loopName: stoppedState.loopName,
-        worktreeDir: stoppedState.worktreeDir,
-        projectDir: stoppedState.projectDir || stoppedState.worktreeDir,
-        worktreeBranch: stoppedState.worktreeBranch,
-        iteration: stoppedState.iteration,
-        maxIterations: stoppedState.maxIterations,
-        startedAt: new Date().toISOString(),
-        prompt: stoppedState.prompt,
-        phase: restartPhase,
-        errorCount: 0,
-        auditCount: 0,
-        status: 'running',
-        worktree: stoppedState.worktree,
-        sandbox: restartSandbox,
-        sandboxContainer: restartSandbox ? deps.sandboxManager?.runtime.sandboxContainerName(stoppedState.loopName) : undefined,
-        sandboxSettings: stoppedState.sandboxSettings,
-        baseCommit: stoppedState.baseCommit,
-        executionModel: stoppedState.executionModel,
-        auditorModel: stoppedState.auditorModel,
-        executionVariant: stoppedState.executionVariant,
-        auditorVariant: stoppedState.auditorVariant,
-        workspaceId: stoppedState.workspaceId,
-        hostSessionId: stoppedState.hostSessionId,
-        currentSectionIndex: stoppedState.currentSectionIndex,
-        totalSections: stoppedState.totalSections,
-      }
-      // Build appropriate prompt based on persisted state
-      let promptText: string
-      let postActionCfg: ResolvedPostActionConfig | undefined
-
-      if (stoppedState.phase === 'post_action') {
-        postActionCfg = resolvePostActionConfig(deps.config)
-        promptText = deps.loop.service.buildPostActionPrompt(newState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
-      } else if (stoppedState.totalSections > 0) {
-        // Use persisted section state to build the correct section prompt
-        const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
-        if (deps.loop.service.getBlockingBugFindings(stoppedState).length > 0) {
-          promptText = deps.loop.service.buildSectionContinuationPrompt(newState, undefined, outstandingBugs)
         } else {
-          promptText = deps.loop.service.buildSectionInitialPrompt(newState)
+          // Inactive loop (or pre-lock was active but latestState is null — loop
+          // vanished, already returned above if active). Use whatever we have.
+          if (latestState) {
+            Object.assign(stoppedState, latestState)
+            Object.assign(previousState, latestState)
+            previousSessionId = latestState.sessionId
+          }
         }
-      } else {
-        // Legacy non-sectioned prompt
-        promptText = deps.loop.service.buildPlanInitialPrompt(stoppedState.prompt ?? '')
-      }
 
-      const restartAuditorState = {
-        ...stoppedState,
-        auditorModel: normalizeModelString(stoppedState.auditorModel ?? deps.config.auditorModel),
-        modelFailed: false,
-        auditorFallbackIndex: 0,
-      }
-      const restartAuditorChoice = auditorModelChoiceAt(buildAuditorModelChain(deps.config, restartAuditorState), 0)
-      const restartAuditorModel = restartAuditorChoice.model
-      const loopModel = stoppedState.phase === 'post_action' && postActionCfg?.model
-        ? parseModelString(postActionCfg.model)
-        : stoppedState.phase === 'post_action'
-          ? restartAuditorModel
-          : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
-      // When a configured post-action model is used, fall back to the loop's auditor model if it fails.
-      const loopFallbackModel = stoppedState.phase === 'post_action' && postActionCfg?.model
-        ? restartAuditorModel
-        : undefined
-      const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
+        const overrideAuditorModel = normalizeModelString(command.auditorModel)
+        const overrideAuditorVariant = normalizeModelString(command.auditorVariant)
+        if (overrideAuditorModel) {
+          stoppedState.auditorModel = overrideAuditorModel
+        }
+        if (command.auditorVariant !== undefined) {
+          stoppedState.auditorVariant = overrideAuditorVariant
+        }
 
-      let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
+        const overrideExecutionModel = normalizeModelString(command.executionModel)
+        const overrideExecutionVariant = normalizeModelString(command.executionVariant)
+        if (overrideExecutionModel) {
+          stoppedState.executionModel = overrideExecutionModel
+        }
+        if (command.executionVariant !== undefined) {
+          stoppedState.executionVariant = overrideExecutionVariant
+        }
 
-      const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
-        markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
-        const variant = stoppedState.phase === 'post_action'
-          ? (postActionCfg?.model && model === loopModel ? undefined : restartAuditorChoice.variant)
-          : stoppedState.executionVariant
-        try {
-          await deps.client.session.promptAsync({
-            sessionID: effectiveSessionId,
-            directory: stoppedState.worktreeDir,
-            parts: [{ type: 'text' as const, text: promptText }],
-            agent: 'code',
-            ...(model ? { model, ...(variant ? { variant } : {}) } : {}),
-            ...workspaceParam,
+        if (stoppedState.standbySessionId && stoppedState.standbySessionId !== previousSessionId) {
+          const standbyPhase = standbyPhaseFor(stoppedState.phase)
+          const standbyUsage = createUsageCapture({
+            client: deps.client,
+            logger: deps.logger,
+            getConfig: () => deps.config,
+            projectId: ctx.projectId,
+            loopSessionUsageRepo: deps.loopSessionUsageRepo,
           })
-          return {}
-        } catch (err) {
-          return { error: err }
+          await standbyUsage.captureLoopSessionUsage({
+            loopName: stoppedState.loopName,
+            sessionId: stoppedState.standbySessionId,
+            directory: stoppedState.worktreeDir,
+            role: usageRoleForPhase(standbyPhase),
+            fallbackModel: standbyUsage.getFallbackModelForSession(stoppedState, standbyPhase),
+          })
+          await deleteSessionBestEffort(
+            deps.client,
+            { sessionID: stoppedState.standbySessionId, directory: stoppedState.worktreeDir },
+            deps.logger,
+            `loop-restart: failed to delete standby session ${stoppedState.standbySessionId}`,
+          )
         }
-      }
 
-      const restartPhaseChanged = restartPhase !== stoppedState.phase
+        deps.loop.service.discardPendingHandoff(stoppedState.loopName)
 
-      // Restart sends the persisted phase's prompt as the code agent: the post-action
-      // session must be able to call `loop-complete`, which the auditor agent excludes.
-      markStartInFlight(ctx.projectId, stoppedState.loopName)
-      try {
+        if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
+          deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
+          // Persist the terminal transition row so the disabled post-action
+          // restart outcome is logged through the same shared path used by the
+          // runtime. The canonical terminateLoop/terminateAll paths are not
+          // invoked here (this loop is already stopped/inactive); we record
+          // directly against the loopService's transition repository. Best-effort:
+          // recordTransition wraps the repo insert in try/catch and never
+          // throws into the restart flow.
+          const fromPhase = stoppedState.phase
+          const iteration = stoppedState.iteration ?? 0
+          const sectionIndex = transitionSectionIndex(stoppedState)
+          deps.loop.service.terminate(stoppedState.loopName, { status: 'completed', reason: 'completed', completedAt: Date.now() })
+          deps.loop.service.recordTerminalTransition(stoppedState.loopName, {
+            reason: { kind: 'completed' },
+            fromPhase,
+            iteration,
+            sectionIndex,
+          })
+          return { ok: false, error: 'Loop implementation already completed; post-action is disabled — nothing to restart.' }
+        }
+
+        const permissionOptions = await resolveLoopPermissionOptionsForWorkspace(deps.client, deps.config, stoppedState.workspaceId)
+        const permissionRuleset = buildPermissionRulesetForPhase(stoppedState.phase, permissionOptions)
+
+        stoppedState.iteration = 1
+
+        // Create new session for restart
+
+        // eslint-disable-next-line prefer-const
+        let newSessionId: string | undefined
+
+        if (stoppedState.worktree) {
+          const { createBuiltinWorktreeWorkspace, getForgeWorkspaceEntry } = await import('../workspace/forge-worktree')
+          const previousEntry = stoppedState.workspaceId
+            ? await getForgeWorkspaceEntry(deps.client, stoppedState.workspaceId).catch(() => undefined)
+            : undefined
+          const mergedExtra = {
+            ...(previousEntry?.extra ?? {}),
+            ...loopSandboxWorkspaceExtra(stoppedState.sandboxSettings),
+          }
+          const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
+            loopName: stoppedState.loopName,
+            directory: stoppedState.projectDir || ctx.directory,
+            branch: stoppedState.worktreeBranch,
+            extra: Object.keys(mergedExtra).length > 0 ? mergedExtra : undefined,
+          }, deps.logger)
+          if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
+          const ws = wsResult.workspace
+          stoppedState.workspaceId = ws.workspaceId
+          stoppedState.worktreeDir = ws.directory
+          stoppedState.worktreeBranch = ws.branch
+        }
+
+        if (restartSandbox && deps.sandboxManager) {
+          try {
+            const sandboxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir, undefined, stoppedState.sandboxSettings)
+            deps.logger.log(`loop-restart: started sandbox container ${sandboxResult.containerName}`)
+          } catch (err) {
+            deps.logger.error('loop-restart: failed to start sandbox container', err)
+            return { ok: false, error: 'Restart failed: could not start sandbox container.' }
+          }
+        }
+
+        // Unified session creation for restart (always a single code session)
+        const createResult = await createLoopSessionWithWorkspace({
+          client: deps.client,
+          title: formatLoopSessionTitle(stoppedState.loopName, {
+            iteration: stoppedState.iteration ?? 0,
+            currentSectionIndex: stoppedState.currentSectionIndex ?? 0,
+            totalSections: stoppedState.totalSections ?? 0,
+          }),
+          directory: stoppedState.worktreeDir,
+          permission: permissionRuleset,
+          workspaceId: stoppedState.workspaceId,
+          loopName: stoppedState.loopName,
+          logPrefix: 'loop-restart',
+          logger: deps.logger,
+        })
+
+        if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
+
+        newSessionId = createResult.sessionId
+        if (createResult.bindFailed) {
+          stoppedState.workspaceId = undefined
+          bindFailed = true
+        }
+
+        // Unified section extraction on restart — preserve existing progress if sections exist.
+        if (!stoppedState.totalSections) {
+          const planText = stoppedState.prompt ?? ''
+          const decomposition = applyPlanDecomposition({
+            projectId: ctx.projectId,
+            loopName: stoppedState.loopName,
+            planText,
+            loopsRepo: deps.loopsRepo,
+            sectionPlansRepo: deps.sectionPlansRepo,
+          })
+          if (!decomposition.ok) {
+            return { ok: false, error: `Plan section graph is invalid:\n- ${decomposition.errors.join('\n- ')}` }
+          }
+          stoppedState.totalSections = decomposition.totalSections
+          if (stoppedState.totalSections > 0) {
+            stoppedState.currentSectionIndex = 0
+          }
+        }
+        // else: existing totalSections preserved as-is
+
+        const effectiveSessionId = newSessionId!
+        const restartPhase = stoppedState.phase === 'post_action' ? 'post_action' as const : 'coding' as const
+
+        const newState: import('../loop/state').LoopState = {
+          active: true,
+          sessionId: effectiveSessionId,
+          loopName: stoppedState.loopName,
+          worktreeDir: stoppedState.worktreeDir,
+          projectDir: stoppedState.projectDir || stoppedState.worktreeDir,
+          worktreeBranch: stoppedState.worktreeBranch,
+          iteration: stoppedState.iteration,
+          maxIterations: stoppedState.maxIterations,
+          startedAt: new Date().toISOString(),
+          prompt: stoppedState.prompt,
+          phase: restartPhase,
+          errorCount: 0,
+          auditCount: 0,
+          status: 'running',
+          worktree: stoppedState.worktree,
+          sandbox: restartSandbox,
+          sandboxContainer: restartSandbox ? deps.sandboxManager?.runtime.sandboxContainerName(stoppedState.loopName) : undefined,
+          sandboxSettings: stoppedState.sandboxSettings,
+          baseCommit: stoppedState.baseCommit,
+          executionModel: stoppedState.executionModel,
+          auditorModel: stoppedState.auditorModel,
+          executionVariant: stoppedState.executionVariant,
+          auditorVariant: stoppedState.auditorVariant,
+          workspaceId: stoppedState.workspaceId,
+          hostSessionId: stoppedState.hostSessionId,
+          currentSectionIndex: stoppedState.currentSectionIndex,
+          totalSections: stoppedState.totalSections,
+        }
+        // Build appropriate prompt based on persisted state
+        let promptText: string
+        let postActionCfg: ResolvedPostActionConfig | undefined
+
+        if (stoppedState.phase === 'post_action') {
+          postActionCfg = resolvePostActionConfig(deps.config)
+          promptText = deps.loop.service.buildPostActionPrompt(newState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
+        } else if (stoppedState.totalSections > 0) {
+          // Use persisted section state to build the correct section prompt
+          const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
+          if (deps.loop.service.getBlockingBugFindings(stoppedState).length > 0) {
+            promptText = deps.loop.service.buildSectionContinuationPrompt(newState, undefined, outstandingBugs)
+          } else {
+            promptText = deps.loop.service.buildSectionInitialPrompt(newState)
+          }
+        } else {
+          // Legacy non-sectioned prompt
+          promptText = deps.loop.service.buildPlanInitialPrompt(stoppedState.prompt ?? '')
+        }
+
+        const restartAuditorState = {
+          ...stoppedState,
+          auditorModel: normalizeModelString(stoppedState.auditorModel ?? deps.config.auditorModel),
+          modelFailed: false,
+          auditorFallbackIndex: 0,
+        }
+        const restartAuditorChoice = auditorModelChoiceAt(buildAuditorModelChain(deps.config, restartAuditorState), 0)
+        const restartAuditorModel = restartAuditorChoice.model
+        const loopModel = stoppedState.phase === 'post_action' && postActionCfg?.model
+          ? parseModelString(postActionCfg.model)
+          : stoppedState.phase === 'post_action'
+            ? restartAuditorModel
+            : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+        // When a configured post-action model is used, fall back to the loop's auditor model if it fails.
+        const loopFallbackModel = stoppedState.phase === 'post_action' && postActionCfg?.model
+          ? restartAuditorModel
+          : undefined
+        const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
+
+        let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
+
+        const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
+          markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
+          const variant = stoppedState.phase === 'post_action'
+            ? (postActionCfg?.model && model === loopModel ? undefined : restartAuditorChoice.variant)
+            : stoppedState.executionVariant
+          try {
+            await deps.client.session.promptAsync({
+              sessionID: effectiveSessionId,
+              directory: stoppedState.worktreeDir,
+              parts: [{ type: 'text' as const, text: promptText }],
+              agent: 'code',
+              ...(model ? { model, ...(variant ? { variant } : {}) } : {}),
+              ...workspaceParam,
+            })
+            return {}
+          } catch (err) {
+            return { error: err }
+          }
+        }
+
+        const restartPhaseChanged = restartPhase !== stoppedState.phase
+
+        // Restart sends the persisted phase's prompt as the code agent: the post-action
+        // session must be able to call `loop-complete`, which the auditor agent excludes.
         deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
           sessionId: newState.sessionId,
           phase: newState.phase,
@@ -1955,133 +1969,146 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           deps.logger.log(`loop-restart: new session not ready yet (attempt ${attempt}/${RESTART_PROMPT_MAX_ATTEMPTS}); retrying prompt in ${backoffMs}ms`)
           await new Promise((resolve) => setTimeout(resolve, backoffMs))
         }
-      } finally {
-        clearStartInFlight(ctx.projectId, stoppedState.loopName)
-      }
 
-      if (promptResult.error) {
-        // Classify provider-limit errors before generic rollback so that a
-        // capped account terminates the loop with the provider_limit reason
-        // instead of silently reverting to the previous terminal state.
-        const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.error))
-        if (limitReason) {
-          deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
-          clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
-          deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
-          // Defer the canonical termination (deps.loop.terminate) to outside
-          // the runExclusive callback: it reacquires the per-loop state lock
-          // via terminateLoopByName, which is non-reentrant, so invoking it
-          // here would deadlock the runExclusive-held lock. The in-memory
-          // cleanup above is lock-free and safe under the held lock. Returning
-          // the marker lets the outer flow terminate after the lock releases.
-          return {
-            ok: false as const,
-            error: `Provider limit on restart prompt: ${limitReason}`,
-            providerLimitMessage: limitReason,
-          }
-        }
-
-        const isConcurrent = promptResult.error instanceof ConcurrentPromptError
-        if (!isConcurrent) {
-          clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
-        }
-        deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
-        // Save section plans before rollback (the DB row stays intact in-place;
-        // transition history is preserved because we never delete the loop row).
-        const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
-        deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
-        try {
-          let restoreRow: import('../loop/state').LoopState
-          if (previousState.active) {
-            // The previous session was already aborted under the lock when we
-            // observed the active loop. Restoring it as active would strand the
-            // loop with a dead session and no watchdog (the aborted session has
-            // no timers and cannot progress). Bake the errored termination into
-            // the restored row so a single in-place UPDATE both restores the
-            // pre-restart fields (phase, section progress, etc.) and marks the
-            // loop errored/restartable. We cannot use `setState` here because
-            // the loop row already exists (created/updated moments earlier by
-            // `loopsRepo.restart`) and `setState` uses a plain INSERT that
-            // raises a primary-key constraint error. `loopsRepo.restore` UPDATEs
-            // in place, preserving child rows (loop_transitions, section_plans)
-            // that an INSERT OR REPLACE or `deleteState` + INSERT would
-            // cascade-delete.
-            restoreRow = {
-              ...previousState,
-              active: false,
-              status: 'errored',
-              terminationReason: 'restart_prompt_failed',
-              completedAt: new Date().toISOString(),
+        if (promptResult.error) {
+          // Classify provider-limit errors before generic rollback so that a
+          // capped account terminates the loop with the provider_limit reason
+          // instead of silently reverting to the previous terminal state.
+          const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.error))
+          if (limitReason) {
+            deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
+            clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
+            deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
+            // Defer the canonical termination (deps.loop.terminate) to outside
+            // the runExclusive callback: it reacquires the per-loop state lock
+            // via terminateLoopByName, which is non-reentrant, so invoking it
+            // here would deadlock the runExclusive-held lock. The in-memory
+            // cleanup above is lock-free and safe under the held lock. Returning
+            // the marker lets the outer flow terminate after the lock releases.
+            return {
+              ok: false as const,
+              error: `Provider limit on restart prompt: ${limitReason}`,
+              providerLimitMessage: limitReason,
             }
-          } else {
-            // Stopped-loop rollback: restore the previous (already-inactive)
-            // row in place so transition history is preserved.
-            restoreRow = previousState
           }
-          deps.loop.service.restoreState(restoreRow.loopName, restoreRow)
-          const restartFromPhase = restartPhase
-          const restartToPhase = previousState.phase ?? 'coding'
-          const iteration = previousState.iteration ?? 0
-          const sectionIndex = transitionSectionIndex(previousState)
-          // Log the rollback restoration whenever the restart actually changed
-          // the persisted phase, so the transition history stays continuous:
-          //   previousPhase -> restartPhase (pre-prompt 'restart' phase row)
-          //   restartPhase -> previousPhase (this 'rollback' row)
-          // When the restart preserved the phase (post_action stays in place),
-          // there is nothing to roll back phase-wise and no rollback row is emitted.
-          if (restartPhaseChanged) {
-            deps.loop.service.recordTransition(previousState.loopName, {
-              eventType: 'restart_prompt_failed',
-              transitionKind: 'rollback',
-              fromPhase: restartFromPhase,
-              toPhase: restartToPhase,
-              iteration,
-              sectionIndex,
-            })
+
+          const isConcurrent = promptResult.error instanceof ConcurrentPromptError
+          if (!isConcurrent) {
+            clearPromptPending(ctx.projectId, stoppedState.loopName, deps.logger)
           }
-          if (previousState.active) {
-            // Active-rollback: the loop was running and the aborted session has
-            // no timers/watchdog to drive progress. Route through the shared
-            // `loopService.terminate` path so the row's terminal status is
-            // set through one canonical helper AND the terminate notification
-            // fires (TUI, host side-effects). This avoids a parallel
-            // `loopsRepo.terminate` write that would leave the notification
-            // path uninformed.
-            deps.loop.service.terminate(previousState.loopName, {
-              status: 'errored',
-              reason: 'restart_prompt_failed',
-              completedAt: Date.now(),
-            })
-            // Terminal transition row for the active-rollback path. Inactive
-            // rollback restores the unchanged inactive row and emits no
-            // terminal row (nothing terminally changed).
-            deps.loop.service.recordTerminalTransition(previousState.loopName, {
-              reason: { kind: 'restart_prompt_failed' },
-              fromPhase: restartToPhase,
-              iteration,
-              sectionIndex,
-            })
+          deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
+          // Save section plans before rollback (the DB row stays intact in-place;
+          // transition history is preserved because we never delete the loop row).
+          const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
+          deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
+          try {
+            let restoreRow: import('../loop/state').LoopState
+            if (previousState.active) {
+              // The previous session was already aborted under the lock when we
+              // observed the active loop. Restoring it as active would strand the
+              // loop with a dead session and no watchdog (the aborted session has
+              // no timers and cannot progress). Bake the errored termination into
+              // the restored row so a single in-place UPDATE both restores the
+              // pre-restart fields (phase, section progress, etc.) and marks the
+              // loop errored/restartable. We cannot use `setState` here because
+              // the loop row already exists (created/updated moments earlier by
+              // `loopsRepo.restart`) and `setState` uses a plain INSERT that
+              // raises a primary-key constraint error. `loopsRepo.restore` UPDATEs
+              // in place, preserving child rows (loop_transitions, section_plans)
+              // that an INSERT OR REPLACE or `deleteState` + INSERT would
+              // cascade-delete.
+              restoreRow = {
+                ...previousState,
+                active: false,
+                status: 'errored',
+                terminationReason: 'restart_prompt_failed',
+                completedAt: new Date().toISOString(),
+              }
+            } else {
+              // Stopped-loop rollback: restore the previous (already-inactive)
+              // row in place so transition history is preserved.
+              restoreRow = previousState
+            }
+            deps.loop.service.restoreState(restoreRow.loopName, restoreRow)
+            const restartFromPhase = restartPhase
+            const restartToPhase = previousState.phase ?? 'coding'
+            const iteration = previousState.iteration ?? 0
+            const sectionIndex = transitionSectionIndex(previousState)
+            // Log the rollback restoration whenever the restart actually changed
+            // the persisted phase, so the transition history stays continuous:
+            //   previousPhase -> restartPhase (pre-prompt 'restart' phase row)
+            //   restartPhase -> previousPhase (this 'rollback' row)
+            // When the restart preserved the phase (post_action stays in place),
+            // there is nothing to roll back phase-wise and no rollback row is emitted.
+            if (restartPhaseChanged) {
+              deps.loop.service.recordTransition(previousState.loopName, {
+                eventType: 'restart_prompt_failed',
+                transitionKind: 'rollback',
+                fromPhase: restartFromPhase,
+                toPhase: restartToPhase,
+                iteration,
+                sectionIndex,
+              })
+            }
+            if (previousState.active) {
+              // Active-rollback: the loop was running and the aborted session has
+              // no timers/watchdog to drive progress. Route through the shared
+              // `loopService.terminate` path so the row's terminal status is
+              // set through one canonical helper AND the terminate notification
+              // fires (TUI, host side-effects). This avoids a parallel
+              // `loopsRepo.terminate` write that would leave the notification
+              // path uninformed.
+              deps.loop.service.terminate(previousState.loopName, {
+                status: 'errored',
+                reason: 'restart_prompt_failed',
+                completedAt: Date.now(),
+              })
+              // Terminal transition row for the active-rollback path. Inactive
+              // rollback restores the unchanged inactive row and emits no
+              // terminal row (nothing terminally changed).
+              deps.loop.service.recordTerminalTransition(previousState.loopName, {
+                reason: { kind: 'restart_prompt_failed' },
+                fromPhase: restartToPhase,
+                iteration,
+                sectionIndex,
+              })
+            }
+            // Section plans were preserved in place (no cascade); nothing to
+            // re-insert. restoreAll is retained as a no-op safety net in case
+            // a future code path deletes the loop row during rollback.
+            if (savedPlans.length > 0) {
+              deps.sectionPlansRepo?.restoreAll(savedPlans)
+            }
+          } catch (restoreErr) {
+            deps.logger.error('loop-restart: failed to restore previous loop state', restoreErr)
           }
-          // Section plans were preserved in place (no cascade); nothing to
-          // re-insert. restoreAll is retained as a no-op safety net in case
-          // a future code path deletes the loop row during rollback.
-          if (savedPlans.length > 0) {
-            deps.sectionPlansRepo?.restoreAll(savedPlans)
+          if (restartSandbox && deps.sandboxManager) {
+            await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
           }
-        } catch (restoreErr) {
-          deps.logger.error('loop-restart: failed to restore previous loop state', restoreErr)
+          return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
         }
+
+        deps.loop.service.recordFirstPromptSent(stoppedState.loopName)
+        deps.loopHandler!.startWatchdog(stoppedState.loopName)
+
+        return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
+      })
+
+      // Provider-limit termination deferred from inside the runExclusive
+      // callback. The callback cannot call deps.loop.terminate itself because
+      // that reacquires the non-reentrant per-loop state lock held by
+      // runExclusive (terminateLoopByName -> withStateLock -> deadlock). Perform
+      // the canonical termination here, after the lock has been released.
+      if (!outcome.ok && 'providerLimitMessage' in outcome) {
+        await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: outcome.providerLimitMessage })
         if (restartSandbox && deps.sandboxManager) {
           await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
         }
-        return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
+        return fail('internal_error', 500, outcome.error)
       }
-
-      deps.loop.service.recordFirstPromptSent(stoppedState.loopName)
-      deps.loopHandler!.startWatchdog(stoppedState.loopName)
-
-      return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
-    })
+    } finally {
+      clearStartInFlight(ctx.projectId, stoppedState.loopName, restartStartToken)
+    }
 
     const restartSucceeded = (
       sessionId: string,
@@ -2109,19 +2136,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         bindFailed: bindFailedValue,
         iteration: stoppedState.iteration,
       })
-    }
-
-    // Provider-limit termination deferred from inside the runExclusive
-    // callback. The callback cannot call deps.loop.terminate itself because
-    // that reacquires the non-reentrant per-loop state lock held by
-    // runExclusive (terminateLoopByName -> withStateLock -> deadlock). Perform
-    // the canonical termination here, after the lock has been released.
-    if (!outcome.ok && 'providerLimitMessage' in outcome) {
-      await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: outcome.providerLimitMessage })
-      if (restartSandbox && deps.sandboxManager) {
-        await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
-      }
-      return fail('internal_error', 500, outcome.error)
     }
 
     if (!outcome.ok) return fail('internal_error', 500, outcome.error)

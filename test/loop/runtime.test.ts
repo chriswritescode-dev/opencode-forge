@@ -11,6 +11,7 @@ import {
   clearStartInFlight,
   currentStartOwner,
   isInterruptedStart,
+  isStartInFlight,
   markStartInFlight,
   START_INTERRUPTED_BACKSTOP_MS,
   type InterruptedStartRow,
@@ -5289,13 +5290,32 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('this process is not interrupted while its start is in flight', () => {
       const loopName = 'interrupted-unit-current-owner'
       const row = interruptedRow({ loopName, startOwner: currentStartOwner() })
-      markStartInFlight(PROJECT_ID, loopName)
+      const token = markStartInFlight(PROJECT_ID, loopName)
       try {
         expect(isInterruptedStart(row, { isProcessAlive: deadProbe })).toBe(false)
       } finally {
-        clearStartInFlight(PROJECT_ID, loopName)
+        clearStartInFlight(PROJECT_ID, loopName, token)
       }
       expect(isInterruptedStart(row, { isProcessAlive: deadProbe })).toBe(true)
+    })
+
+    test('overlapping in-flight starts on one loop are cleared independently', () => {
+      const loopName = 'interrupted-unit-overlapping-starts'
+      const firstToken = markStartInFlight(PROJECT_ID, loopName)
+      const secondToken = markStartInFlight(PROJECT_ID, loopName)
+      try {
+        clearStartInFlight(PROJECT_ID, loopName, firstToken)
+        expect(isStartInFlight(PROJECT_ID, loopName)).toBe(true)
+        expect(isInterruptedStart(
+          interruptedRow({ loopName, startOwner: currentStartOwner() }),
+          { isProcessAlive: deadProbe },
+        )).toBe(false)
+        clearStartInFlight(PROJECT_ID, loopName, secondToken)
+        expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false)
+      } finally {
+        clearStartInFlight(PROJECT_ID, loopName, firstToken)
+        clearStartInFlight(PROJECT_ID, loopName, secondToken)
+      }
     })
 
     test('rows without an owner, with a first prompt, or outside running are not interrupted', () => {
@@ -5350,13 +5370,41 @@ describe('stall handling terminates with stall timeout when configured cap is re
       }))
 
       const { loop: newInstance, loopsRepo } = buildRuntime()
-      markStartInFlight(PROJECT_ID, loopName)
+      const token = markStartInFlight(PROJECT_ID, loopName)
       try {
         expect(await newInstance.reconcileInterruptedStarts()).toEqual([])
         expect(loopsRepo.get(PROJECT_ID, loopName)?.status).toBe('running')
       } finally {
-        clearStartInFlight(PROJECT_ID, loopName)
+        clearStartInFlight(PROJECT_ID, loopName, token)
       }
+    })
+
+    test('reconcile continues past a loop whose termination throws', async () => {
+      const failingLoop = 'interrupted-start-terminate-throws'
+      const healthyLoop = 'interrupted-start-terminate-succeeds'
+      const startOwner = `${hostname()}:${exitedChildPid()}:dead-token`
+      buildRuntime()
+      for (const loopName of [failingLoop, healthyLoop]) {
+        loopService.setState(loopName, makeLoopState({
+          loopName,
+          sessionId: `${loopName}-session`,
+          startOwner,
+          firstPromptSentAt: undefined,
+        }))
+      }
+
+      const { loop: newInstance, loopsRepo } = buildRuntime()
+      const terminate = loopService.terminate.bind(loopService)
+      vi.spyOn(loopService, 'terminate').mockImplementation((name, opts) => {
+        if (name === failingLoop) throw new Error('terminate exploded')
+        return terminate(name, opts)
+      })
+
+      const terminated = await newInstance.reconcileInterruptedStarts()
+
+      expect(terminated).toEqual([healthyLoop])
+      expect(loopsRepo.get(PROJECT_ID, healthyLoop)?.status).toBe('interrupted')
+      expect(loopsRepo.get(PROJECT_ID, failingLoop)?.status).toBe('running')
     })
   })
 })

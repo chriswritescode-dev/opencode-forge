@@ -5,7 +5,7 @@ import { processShared, projectLoopKey } from '../utils/process-shared'
 import { SNAPSHOT_TIMEOUT_MS } from './code-graph'
 
 const ownerToken = processShared('start-owner.v1', () => randomUUID())
-const startsInFlight = processShared('start-in-flight.v1', () => new Set<string>())
+const startsInFlight = processShared('start-in-flight.v2', () => new Map<string, Set<string>>())
 
 export const START_INTERRUPTED_BACKSTOP_MS = MSB_DEFAULT_TIMEOUT + SNAPSHOT_TIMEOUT_MS + 3 * 60_000
 
@@ -13,16 +13,26 @@ export function currentStartOwner(): string {
   return `${hostname()}:${process.pid}:${ownerToken}`
 }
 
-export function markStartInFlight(projectId: string, loopName: string): void {
-  startsInFlight.add(projectLoopKey(projectId, loopName))
+export function markStartInFlight(projectId: string, loopName: string): string {
+  const key = projectLoopKey(projectId, loopName)
+  const token = randomUUID()
+  const tokens = startsInFlight.get(key)
+  if (tokens) tokens.add(token)
+  else startsInFlight.set(key, new Set([token]))
+  return token
 }
 
-export function clearStartInFlight(projectId: string, loopName: string): void {
-  startsInFlight.delete(projectLoopKey(projectId, loopName))
+export function clearStartInFlight(projectId: string, loopName: string, token: string): void {
+  const key = projectLoopKey(projectId, loopName)
+  const tokens = startsInFlight.get(key)
+  if (!tokens) return
+  tokens.delete(token)
+  if (tokens.size === 0) startsInFlight.delete(key)
 }
 
 export function isStartInFlight(projectId: string, loopName: string): boolean {
-  return startsInFlight.has(projectLoopKey(projectId, loopName))
+  const tokens = startsInFlight.get(projectLoopKey(projectId, loopName))
+  return tokens != null && tokens.size > 0
 }
 
 export interface InterruptedStartRow {
