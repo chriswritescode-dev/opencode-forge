@@ -1042,6 +1042,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       auditorVariant: input.auditorVariant || undefined,
       hostSessionId: input.sessionId || undefined,
       sandbox: readLoopSandboxSettings(input.sandbox),
+      requestKey: input.requestKey?.trim() || undefined,
       lifecycle: { startWatchdog: true },
     }))
     if (!response.ok) return { error: response.error.message }
@@ -1051,6 +1052,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
       ...(response.data.worktreeBranch ? { branch: response.data.worktreeBranch } : {}),
       ...(response.data.worktreeDir ? { worktreeDir: response.data.worktreeDir } : {}),
       ...(response.data.workspaceId ? { workspaceId: response.data.workspaceId } : {}),
+      ...(response.data.deduped !== undefined ? { deduped: response.data.deduped } : {}),
+      ...(response.data.status !== undefined ? { status: response.data.status } : {}),
     }
   }
 

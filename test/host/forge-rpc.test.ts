@@ -67,6 +67,24 @@ describe('FORGE_RPC', () => {
     expect(readForgeExecutePlanOutput(null)).toEqual({ error: 'Forge returned an invalid plan execution result' })
   })
 
+  test('executePlan accepts an optional request key and exposes the dedupe output fields', () => {
+    const method = FORGE_RPC.methods.executePlan
+    expect(method.input.properties.requestKey).toEqual({ type: 'string', minLength: 1 })
+    expect(method.input.required).not.toContain('requestKey')
+    expect(method.input.required).toEqual(['sessionId', 'mode', 'title', 'plan'])
+    expect(method.output.properties.deduped).toEqual({ type: 'boolean' })
+    expect(method.output.properties.status).toEqual({ type: 'string' })
+  })
+
+  test('readForgeExecutePlanOutput keeps the dedupe fields and drops mistyped ones', () => {
+    expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'loop-a', deduped: true, status: 'running' }))
+      .toEqual({ sessionId: 'ses_1', loopName: 'loop-a', deduped: true, status: 'running' })
+    expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', loopName: 'loop-a', deduped: true, status: 'cancelled' }))
+      .toEqual({ sessionId: 'ses_1', loopName: 'loop-a', deduped: true, status: 'cancelled' })
+    expect(readForgeExecutePlanOutput({ sessionId: 'ses_1', deduped: 'yes', status: 3 }))
+      .toEqual({ sessionId: 'ses_1' })
+  })
+
   test('executePlan accepts an explicit branch and baseRef', () => {
     const method = FORGE_RPC.methods.executePlan
     expect(method.input.properties.branch).toEqual({ type: 'string', minLength: 1 })

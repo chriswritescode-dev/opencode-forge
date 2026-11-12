@@ -4,6 +4,15 @@ import { join } from 'path'
 
 const dispatched: Array<Record<string, unknown>> = []
 
+const defaultDispatchResult: Record<string, unknown> = {
+  sessionId: 'ses_loop',
+  loopName: 'loop-a',
+  worktreeDir: '/wt',
+  workspaceId: 'ws-1',
+  worktreeBranch: 'pm-61-export',
+}
+let dispatchResult: Record<string, unknown> = { ...defaultDispatchResult }
+
 vi.mock('../../src/services/execution', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/execution')>()
   return {
@@ -13,7 +22,7 @@ vi.mock('../../src/services/execution', async (importOriginal) => {
         dispatched.push(command)
         return {
           ok: true as const,
-          data: { sessionId: 'ses_loop', loopName: 'loop-a', worktreeDir: '/wt', workspaceId: 'ws-1', worktreeBranch: 'pm-61-export' },
+          data: dispatchResult,
         }
       },
     }),
@@ -32,6 +41,7 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
 
   beforeEach(() => {
     dispatched.length = 0
+    dispatchResult = { ...defaultDispatchResult }
     testDir = join(TEST_ROOT, Math.random().toString(36).slice(2))
     mkdirSync(testDir, { recursive: true })
     core = null
@@ -118,6 +128,55 @@ describe('createForgeCore executeTuiPlan loop settings', () => {
     expect(command.branch).toBe('pm-61-export')
     expect(command.baseRef).toBe('origin/pm-61-export')
     expect(result).toMatchObject({ branch: 'pm-61-export' })
+  })
+
+  test('forwards a trimmed requestKey and reports the deduped loop', async () => {
+    dispatchResult = { ...defaultDispatchResult, deduped: true, status: 'running' }
+    const built = await buildCore()
+
+    const result = await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      requestKey: '  req-1  ',
+    })
+
+    const command = dispatched.at(-1) as Record<string, unknown>
+    expect(command.type).toBe('loop.start')
+    expect(command.requestKey).toBe('req-1')
+    expect(result).toEqual({
+      sessionId: 'ses_loop',
+      loopName: 'loop-a',
+      branch: 'pm-61-export',
+      worktreeDir: '/wt',
+      workspaceId: 'ws-1',
+      deduped: true,
+      status: 'running',
+    })
+  })
+
+  test('omits a blank requestKey and does not invent dedupe fields', async () => {
+    const built = await buildCore()
+
+    const result = await built.executeTuiPlan({
+      sessionId: 'ses_host_1',
+      mode: 'loop',
+      title: 'Ship it',
+      plan: '# Plan\n\nDo the thing',
+      requestKey: '   ',
+    })
+
+    const command = dispatched.at(-1) as Record<string, unknown>
+    expect(command.type).toBe('loop.start')
+    expect(command.requestKey).toBeUndefined()
+    expect(result).toEqual({
+      sessionId: 'ses_loop',
+      loopName: 'loop-a',
+      branch: 'pm-61-export',
+      worktreeDir: '/wt',
+      workspaceId: 'ws-1',
+    })
   })
 
   test('ignores branch and baseRef outside loop mode', async () => {

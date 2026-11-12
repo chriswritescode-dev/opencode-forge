@@ -11,7 +11,7 @@ import { publishToast } from '../utils/toast'
 import { errorMessage } from '../utils/error-message'
 
 import type { PlansRepo } from '../storage/repos/plans-repo'
-import type { LoopsRepo } from '../storage/repos/loops-repo'
+import type { LoopsRepo, LoopRow } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata, createPlanExecutionSession } from '../utils/plan-execution'
@@ -193,6 +193,8 @@ export interface StartLoopCommand {
   baseRef?: string
   /** Explicit local branch the loop worktree checks out; omitted uses forge/<slug>. */
   branch?: string
+  /** Client-supplied idempotency key; a repeated key returns the existing loop instead of starting a second one. */
+  requestKey?: string
   lifecycle?: {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
@@ -219,6 +221,7 @@ export interface BuildStartLoopCommandInput {
   sandbox?: LoopSandboxSettings
   baseRef?: string
   branch?: string
+  requestKey?: string
   lifecycle?: StartLoopCommand['lifecycle']
 }
 
@@ -237,6 +240,7 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     sandbox: input.sandbox,
     baseRef: input.baseRef,
     branch: input.branch,
+    requestKey: input.requestKey,
     lifecycle: input.lifecycle,
   }
 }
@@ -326,6 +330,7 @@ export interface LoopStartedResult {
   modelUsed: string | null
   maxIterations: number
   deduped?: boolean
+  status?: LoopStatus
 }
 
 export interface LoopRestartedResult {
@@ -991,6 +996,31 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const projectGuard = guardCommittedProject(ctx)
     if (projectGuard) return projectGuard
 
+    const loopStartedFromRow = (row: LoopRow): LoopStartedResult => ({
+      operation: 'loop.start',
+      sessionId: row.currentSessionId,
+      loopName: row.loopName,
+      displayName: row.loopName,
+      executionName: row.loopName,
+      worktreeDir: row.worktreeDir,
+      worktreeBranch: row.worktreeBranch ?? undefined,
+      workspaceId: row.workspaceId ?? undefined,
+      modelUsed: row.executionModel,
+      maxIterations: row.maxIterations,
+      deduped: true,
+      status: row.status,
+    })
+
+    const requestKey = command.requestKey
+    if (requestKey) {
+      await deps.loop.reconcileInterruptedStarts()
+      const existingRow = deps.loopsRepo.getByRequestKey(ctx.projectId, requestKey)
+      if (existingRow) {
+        deps.logger.log(`handleStartLoop: dedupe — request key ${requestKey} already started loop=${existingRow.loopName}`)
+        return ok(loopStartedFromRow(existingRow))
+      }
+    }
+
     // Resolve plan text
     const planResult = await resolvePlanSource(ctx, command.source, deps)
     if (!planResult.ok) return { ok: false, error: planResult.error }
@@ -1013,7 +1043,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     )
 
     // In-flight dedupe: suppress concurrent starts for the same source
-    const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
+    const dedupeKey = requestKey
+      ? `${ctx.projectId}::key::${requestKey}`
+      : `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
     const existing = inFlightLoopStarts.get(dedupeKey)
     if (existing) {
       deps.logger.log(`handleStartLoop: dedupe — concurrent start suppressed for key=${dedupeKey}`)
@@ -1227,11 +1259,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         planText,
         startWatchdog: command.lifecycle?.startWatchdog,
         abortSourceSessionOnSuccess: command.lifecycle?.abortSourceSessionOnSuccess,
+        requestKey,
         onStarted: command.lifecycle?.onStarted,
       })
 
       if (!attachResult.ok) {
         await rollbackLoopStart()
+        if (requestKey) {
+          const winnerRow = deps.loopsRepo.getByRequestKey(ctx.projectId, requestKey)
+          if (winnerRow && winnerRow.loopName !== uniqueLoopName) return ok(loopStartedFromRow(winnerRow))
+        }
         return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
       }
 
@@ -1252,6 +1289,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId,
         modelUsed,
         maxIterations,
+        status: 'running',
       })
       
     } catch (err) {

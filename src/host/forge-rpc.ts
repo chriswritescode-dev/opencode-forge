@@ -88,10 +88,12 @@ export interface ForgeExecutePlanInput {
   maxIterations?: number
   /** Per-loop sandbox overrides; omitted fields fall back to the `sandbox` config. */
   sandbox?: LoopSandboxSettings
+  /** Client-supplied idempotency key; a repeated key returns the same loop instead of starting a second one. */
+  requestKey?: string
 }
 
 export type ForgeExecutePlanOutput =
-  | { sessionId: string; loopName?: string; branch?: string; worktreeDir?: string; workspaceId?: string }
+  | { sessionId: string; loopName?: string; branch?: string; worktreeDir?: string; workspaceId?: string; deduped?: boolean; status?: string }
   | { error: string }
 
 /**
@@ -312,6 +314,7 @@ export const FORGE_RPC = {
           auditorVariant: OPTIONAL_STRING,
           maxIterations: { type: 'integer', minimum: 0 },
           sandbox: SANDBOX_SETTINGS_SCHEMA,
+          requestKey: { type: 'string', minLength: 1 },
         },
         required: ['sessionId', 'mode', 'title', 'plan'],
         additionalProperties: false,
@@ -324,6 +327,8 @@ export const FORGE_RPC = {
           branch: OPTIONAL_STRING,
           worktreeDir: OPTIONAL_STRING,
           workspaceId: OPTIONAL_STRING,
+          deduped: { type: 'boolean' },
+          status: OPTIONAL_STRING,
           error: OPTIONAL_STRING,
         },
         additionalProperties: false,
@@ -523,7 +528,17 @@ export function readForgeExecutePlanOutput(value: unknown): ForgeExecutePlanOutp
     if (typeof record.sessionId !== 'string') return { error: 'Forge returned no session for the plan execution' }
     const optional = (key: 'loopName' | 'branch' | 'worktreeDir' | 'workspaceId') =>
       typeof record[key] === 'string' ? { [key]: record[key] as string } : {}
-    return { sessionId: record.sessionId, ...optional('loopName'), ...optional('branch'), ...optional('worktreeDir'), ...optional('workspaceId') }
+    const deduped = typeof record.deduped === 'boolean' ? { deduped: record.deduped } : {}
+    const status = typeof record.status === 'string' ? { status: record.status } : {}
+    return {
+      sessionId: record.sessionId,
+      ...optional('loopName'),
+      ...optional('branch'),
+      ...optional('worktreeDir'),
+      ...optional('workspaceId'),
+      ...deduped,
+      ...status,
+    }
   })
 }
 

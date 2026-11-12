@@ -585,6 +585,161 @@ describe('handleStartLoop concurrent-start dedupe', () => {
   })
 })
 
+describe('handleStartLoop request key dedupe', () => {
+  function buildRequestKeyMocks() {
+    let sessionCounter = 0
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_test',
+          directory: '/tmp/wt/abc',
+          branch: 'opencode/abc',
+          type: 'worktree',
+          name: 'opencode/abc',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+        warp: async () => {},
+      },
+      session: {
+        create: async () => ({ id: `session_test_${++sessionCounter}` }),
+        get: async () => ({}),
+      },
+    })
+
+    const sandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    return { client, sandboxManager }
+  }
+
+  function buildRequestKeyService(
+    db: ReturnType<typeof createTestDb>['db'],
+    mocks: ReturnType<typeof buildRequestKeyMocks>,
+  ) {
+    const built = buildExecutionDeps(db, {
+      client: mocks.client,
+      gitService: mockGitService,
+      sandboxManager: mocks.sandboxManager as any,
+      loop: {
+        generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
+      },
+    })
+    return { ...built, service: createForgeExecutionService(built.deps) }
+  }
+
+  test('a repeated request key returns the same loop without creating anything', async () => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
+    const mocks = buildRequestKeyMocks()
+    const firstInstance = buildRequestKeyService(db, mocks)
+    const secondInstance = buildRequestKeyService(db, mocks)
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Keyed Plan\n\nDo the thing.' },
+      requestKey: 'req-1',
+    }
+
+    const first = await firstInstance.service.dispatch(ctx, command)
+    const second = await secondInstance.service.dispatch(ctx, command)
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+
+    expect(second.data.loopName).toBe(first.data.loopName)
+    expect(second.data.sessionId).toBe(first.data.sessionId)
+    expect(second.data.worktreeBranch).toBe(first.data.worktreeBranch)
+    expect(second.data.worktreeDir).toBe(first.data.worktreeDir)
+    expect(first.data.status).toBe('running')
+    expect(first.data.deduped).toBeUndefined()
+    expect(second.data.deduped).toBe(true)
+    expect(second.data.status).toBe('running')
+
+    expect(mocks.client.workspace.create).toHaveBeenCalledTimes(1)
+    expect(mocks.client.session.create).toHaveBeenCalledTimes(1)
+    expect(firstInstance.loopsRepo.listAll(PROJECT_ID)).toHaveLength(1)
+  })
+
+  test('a same-key start after cancellation returns the cancelled loop without creating anything', async () => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
+    const mocks = buildRequestKeyMocks()
+    const firstInstance = buildRequestKeyService(db, mocks)
+    const secondInstance = buildRequestKeyService(db, mocks)
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Cancel Keyed Plan\n\nDo the thing.' },
+      requestKey: 'req-cancel',
+    }
+
+    const first = await firstInstance.service.dispatch(ctx, command)
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+
+    firstInstance.loopService.terminate(first.data.loopName, {
+      status: 'cancelled',
+      reason: 'user_aborted',
+      completedAt: Date.now(),
+    })
+
+    const second = await secondInstance.service.dispatch(ctx, command)
+
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    expect(second.data.loopName).toBe(first.data.loopName)
+    expect(second.data.deduped).toBe(true)
+    expect(second.data.status).toBe('cancelled')
+
+    expect(mocks.client.workspace.create).toHaveBeenCalledTimes(1)
+    expect(mocks.client.session.create).toHaveBeenCalledTimes(1)
+    expect(secondInstance.loopsRepo.listAll(PROJECT_ID)).toHaveLength(1)
+  })
+
+  test('a start without a request key still gets a suffixed name on the second start', async () => {
+    const testDb = createTestDb()
+    openDbs.push(testDb)
+    const db = testDb.db
+    const mocks = buildRequestKeyMocks()
+    const instance = buildRequestKeyService(db, mocks)
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Suffix Plan\n\nDo the thing.' },
+    }
+
+    const first = await instance.service.dispatch(ctx, command)
+    const second = await instance.service.dispatch(ctx, command)
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+    expect(second.data.loopName).not.toBe(first.data.loopName)
+    expect(second.data.loopName.startsWith('suffix-plan')).toBe(true)
+    expect(second.data.deduped).toBeUndefined()
+
+    expect(mocks.client.workspace.create).toHaveBeenCalledTimes(2)
+    expect(mocks.client.session.create).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('handleStartLoop variant config fallback', () => {
   const PROJECT_ID = 'test-project'
 
