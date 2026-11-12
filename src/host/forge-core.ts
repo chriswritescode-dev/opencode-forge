@@ -577,8 +577,8 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
           }
           return
         }
-        const exists = await runtime.templateExists(sandboxImage)
-        if (!exists) {
+        const status = await runtime.checkTemplate(sandboxImage)
+        if (status.kind === 'missing') {
           logger.log(`Sandbox template "${sandboxImage}" not found — publishing toast`)
           publishToast({
             client: forgeClient,
@@ -589,6 +589,19 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
             variant: 'warning',
             duration: 10_000,
           })
+        } else if (status.kind === 'failed') {
+          logger.log(`Sandbox template check failed: ${status.detail}`)
+          publishToast({
+            client: forgeClient,
+            directory,
+            logger,
+            title: 'Sandbox template check failed',
+            message: status.detail,
+            variant: 'warning',
+            duration: 10_000,
+          })
+        } else if (status.kind === 'unknown') {
+          logger.log(`Sandbox template check could not run: ${status.detail}`)
         }
       } catch (err: unknown) {
         logger.log(`Sandbox image check: ${errorMessage(err)}`)

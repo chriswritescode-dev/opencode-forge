@@ -318,7 +318,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(createArgs.permission).toContainEqual({ permission: 'webfetch', pattern: '*', action: 'deny' })
   })
 
-  test('fails and rolls back when sandbox manager present but start throws', async () => {
+  test('fails and rolls back when sandbox start throws, propagating the msb detail', async () => {
     const { client } = createFakeForgeClient({
       workspace: {
         create: async () => ({
@@ -336,7 +336,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     const mockSandboxManager = {
       docker: {} as any,
-      start: vi.fn().mockRejectedValue(new Error('Docker is not available. Please ensure Docker is running.')),
+      start: vi.fn().mockRejectedValue(new Error('Sandbox template check failed: msb images: catalog ancestor /home/u/.microsandbox permits path substitution')),
       stop: vi.fn().mockResolvedValue(undefined),
       getActive: vi.fn().mockReturnValue(null),
       isActive: vi.fn().mockReturnValue(false),
@@ -371,6 +371,8 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(result).toHaveProperty('error')
     if (!result.ok) {
       expect(result.error.code).toBe('internal_error')
+      expect(result.error.message).toContain('catalog ancestor')
+      expect(result.error.message).toContain('Failed to start sandbox')
     }
 
     // Verify rollback was invoked (session aborted, workspace removed)

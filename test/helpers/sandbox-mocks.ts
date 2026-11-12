@@ -1,4 +1,4 @@
-import type { SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/msb'
+import type { MsbTemplateStatus, SandboxWorkspace, SandboxRuntime, SandboxState } from '../../src/sandbox/msb'
 import type { SandboxResources, SandboxSecretConfig } from '../../src/types'
 import type { SandboxRuntimeSettings } from '../../src/sandbox/loop-settings'
 
@@ -25,6 +25,7 @@ export interface MockSandboxRuntime extends SandboxRuntime {
   setSandboxState(name: string, state: SandboxState): void
   setAvailable(available: boolean): void
   setTemplateExists(exists: boolean): void
+  setTemplateStatus(status: MsbTemplateStatus): void
   setRemoveThrow(shouldThrow: boolean): void
 }
 
@@ -47,14 +48,14 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
   let sandboxes = ['forge-foo', 'forge-bar']
   const sandboxStates = new Map<string, SandboxState>()
   let shouldBeAvailable = true
-  let shouldTemplateExist = true
+  let templateStatus: MsbTemplateStatus = { kind: 'present' }
   let shouldRemoveThrow = false
 
   const mock: MockSandboxRuntime = {
     checkAvailable: async () => shouldBeAvailable
       ? { available: true as const }
       : { available: false as const, reason: 'host-unsupported' as const, detail: 'mock daemon down' },
-    templateExists: async () => shouldTemplateExist,
+    checkTemplate: async () => templateStatus,
     loadTemplate: async () => {},
     createSandbox: async (
       name: string,
@@ -106,7 +107,10 @@ export function createMockSandboxRuntime(): MockSandboxRuntime {
       shouldBeAvailable = available
     },
     setTemplateExists: (exists: boolean) => {
-      shouldTemplateExist = exists
+      templateStatus = exists ? { kind: 'present' } : { kind: 'missing' }
+    },
+    setTemplateStatus: (status: MsbTemplateStatus) => {
+      templateStatus = status
     },
     setRemoveThrow: (shouldThrow: boolean) => {
       shouldRemoveThrow = shouldThrow

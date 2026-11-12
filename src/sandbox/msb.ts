@@ -2,6 +2,7 @@ import type { Logger, SandboxResources, SandboxSecretConfig } from '../types'
 import { runCommand, COMMAND_TIMEOUT_EXIT_CODE, type CommandResult } from './process'
 import { MSB_SIZE_RE, SANDBOX_RESOURCE_DEFAULTS, type SandboxRuntimeSettings } from './loop-settings'
 import { isRecord } from '../utils/is-record'
+import { errorMessage } from '../utils/error-message'
 
 export function sanitizeMsbName(raw: string): string {
   const name = raw
@@ -421,6 +422,12 @@ export type MsbAvailability =
   | { available: true }
   | { available: false; reason: 'not-installed' | 'host-unsupported' | 'unknown'; detail?: string }
 
+export type MsbTemplateStatus =
+  | { kind: 'present' }
+  | { kind: 'missing' }
+  | { kind: 'failed'; detail: string }
+  | { kind: 'unknown'; detail: string }
+
 export type CommandRunner = (
   args: string[],
   opts?: { timeout?: number; stdin?: string; abort?: AbortSignal },
@@ -499,7 +506,7 @@ export interface SandboxExecOpts {
  *  rules live in `CreateSandboxOpts.networkAllow`). */
 export interface SandboxRuntime {
   checkAvailable(): Promise<MsbAvailability>
-  templateExists(ref: string): Promise<boolean>
+  checkTemplate(ref: string): Promise<MsbTemplateStatus>
   loadTemplate(tarPath: string, ref: string): Promise<void>
   createSandbox(name: string, workspaces: SandboxWorkspace[], opts: CreateSandboxOpts): Promise<void>
   removeSandbox(name: string): Promise<void>
@@ -548,14 +555,20 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
     return checkMsbAvailability(run)
   }
 
-  async function templateExists(ref: string): Promise<boolean> {
+  async function checkTemplate(ref: string): Promise<MsbTemplateStatus> {
+    let result: CommandResult
     try {
-      const result = await run(['images', '--format', 'json'])
-      if (result.exitCode !== 0) return false
-      return msbImageMatches(parseMsbImageList(result.stdout), ref)
-    } catch {
-      return false
+      result = await run(['images', '--format', 'json'])
+    } catch (err) {
+      return { kind: 'unknown', detail: errorMessage(err) }
     }
+    if (result.exitCode !== 0) {
+      return {
+        kind: 'failed',
+        detail: result.stderr.trim() || result.stdout.trim() || `msb images exited with code ${result.exitCode}`,
+      }
+    }
+    return msbImageMatches(parseMsbImageList(result.stdout), ref) ? { kind: 'present' } : { kind: 'missing' }
   }
 
   async function loadTemplate(tarPath: string, ref: string): Promise<void> {
@@ -714,7 +727,7 @@ export function createMsbRuntime(logger: Logger, opts?: { run?: CommandRunner })
 
   return {
     checkAvailable,
-    templateExists,
+    checkTemplate,
     loadTemplate,
     createSandbox,
     removeSandbox,

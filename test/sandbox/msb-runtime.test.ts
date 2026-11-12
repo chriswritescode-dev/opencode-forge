@@ -1525,22 +1525,47 @@ describe('runtime', () => {
     expect(calls[1].args.join(' ')).not.toContain('super-secret')
   })
 
-  test('templateExists matches parsed image references', async () => {
+  test('checkTemplate reports the template as present or missing from parsed image references', async () => {
     const stdout = JSON.stringify([{ reference: 'docker.io/library/oc-forge-sandbox:latest' }])
     const { runner } = recordingRunner(() => ({ stdout, stderr: '', exitCode: 0 }))
     const rt = createMsbRuntime(logger, { run: runner })
-    await expect(rt.templateExists('oc-forge-sandbox:latest')).resolves.toBe(true)
-    await expect(rt.templateExists('oc-forge-sandbox:other')).resolves.toBe(false)
+    await expect(rt.checkTemplate('oc-forge-sandbox:latest')).resolves.toEqual({ kind: 'present' })
+    await expect(rt.checkTemplate('oc-forge-sandbox:other')).resolves.toEqual({ kind: 'missing' })
   })
 
-  test('templateExists returns false on a non-zero exit and on a throw', async () => {
-    const failing = recordingRunner(() => ({ stdout: '', stderr: 'err', exitCode: 1 }))
+  test('checkTemplate reports the msb images failure detail on a non-zero exit', async () => {
+    const failing = recordingRunner(() => ({
+      stdout: '',
+      stderr: 'catalog ancestor /home/u/.microsandbox permits path substitution',
+      exitCode: 1,
+    }))
     const rt = createMsbRuntime(logger, { run: failing.runner })
-    await expect(rt.templateExists('oc-forge-sandbox:latest')).resolves.toBe(false)
+    await expect(rt.checkTemplate('oc-forge-sandbox:latest')).resolves.toEqual({
+      kind: 'failed',
+      detail: 'catalog ancestor /home/u/.microsandbox permits path substitution',
+    })
+  })
 
+  test('checkTemplate falls back to stdout and then the exit code for a failure detail', async () => {
+    const stdoutFallback = recordingRunner(() => ({ stdout: 'some stdout error', stderr: '   \n', exitCode: 2 }))
+    const rt = createMsbRuntime(logger, { run: stdoutFallback.runner })
+    await expect(rt.checkTemplate('oc-forge-sandbox:latest')).resolves.toEqual({
+      kind: 'failed',
+      detail: 'some stdout error',
+    })
+
+    const exitCodeFallback = recordingRunner(() => ({ stdout: '', stderr: '', exitCode: 3 }))
+    const rt2 = createMsbRuntime(logger, { run: exitCodeFallback.runner })
+    await expect(rt2.checkTemplate('oc-forge-sandbox:latest')).resolves.toEqual({
+      kind: 'failed',
+      detail: 'msb images exited with code 3',
+    })
+  })
+
+  test('checkTemplate reports unknown when the runner throws', async () => {
     const throwing = recordingRunner(() => { throw new Error('boom') })
-    const rt2 = createMsbRuntime(logger, { run: throwing.runner })
-    await expect(rt2.templateExists('oc-forge-sandbox:latest')).resolves.toBe(false)
+    const rt = createMsbRuntime(logger, { run: throwing.runner })
+    await expect(rt.checkTemplate('oc-forge-sandbox:latest')).resolves.toEqual({ kind: 'unknown', detail: 'boom' })
   })
 
   test('loadTemplate records the input and tag flags with the load timeout', async () => {

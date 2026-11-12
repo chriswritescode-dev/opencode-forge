@@ -8,6 +8,7 @@
 import type { PluginConfig, Logger, LoopSandboxSettings } from '../types'
 import type { ForgeClient } from '../client/port'
 import { publishToast } from '../utils/toast'
+import { errorMessage } from '../utils/error-message'
 
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
@@ -1175,7 +1176,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           } catch (err) {
             deps.logger.error('handleStartLoop: failed to start sandbox; rolling back loop start', err)
             await rollbackLoopStart()
-            return fail('internal_error', 500, 'Failed to start sandbox')
+            return fail('internal_error', 500, `Failed to start sandbox: ${errorMessage(err)}`)
           }
         }
       }
