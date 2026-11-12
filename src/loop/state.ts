@@ -40,6 +40,9 @@ interface LoopStateBase {
   baseCommit?: string
   /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
   standbySessionId?: string
+  requestKey?: string
+  firstPromptSentAt?: string
+  startOwner?: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -95,6 +98,9 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     sandboxSettings: row.sandboxSettings ?? undefined,
     baseCommit: row.baseCommit ?? undefined,
     standbySessionId: row.standbySessionId ?? undefined,
+    requestKey: row.requestKey ?? undefined,
+    firstPromptSentAt: row.firstPromptSentAt ? new Date(row.firstPromptSentAt).toISOString() : undefined,
+    startOwner: row.startOwner ?? undefined,
   }
 
   switch (row.phase) {
@@ -150,5 +156,8 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     sandboxSettings: state.sandboxSettings ?? null,
     baseCommit: state.baseCommit ?? null,
     standbySessionId: state.standbySessionId ?? null,
+    requestKey: state.requestKey ?? null,
+    firstPromptSentAt: state.firstPromptSentAt ? new Date(state.firstPromptSentAt).getTime() : null,
+    startOwner: state.startOwner ?? null,
   }
 }

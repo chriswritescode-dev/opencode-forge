@@ -177,7 +177,7 @@ function ForgeLoopsSidebar(props: {
     if (status === 'running') return text.feedback.info.base
     if (status === 'completed') return text.feedback.success.base
     if (status === 'errored') return text.feedback.error.base
-    if (status === 'stalled') return text.feedback.warning.base
+    if (status === 'stalled' || status === 'interrupted') return text.feedback.warning.base
     return text.muted
   }
 

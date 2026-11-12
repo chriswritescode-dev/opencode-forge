@@ -2146,6 +2146,163 @@ test('migration 160 skips a database without section_plans', () => {
   db.close()
 })
 
+test('migration 161 rebuilds loops with start tracking columns and the interrupted status', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '160')
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary, workspace_id, host_session_id, current_section_index, total_sections, execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit, standby_session_id)
+    VALUES ('proj-1', 'loop-running', 'running', 'sess-running', 1, '/tmp/wt', 'branch-1', '/tmp/proj', 7, 3, 2, 1, 'auditing', 'a/exec', 'a/audit', 0, 1, 'container-1', 100, NULL, NULL, NULL, 'ws-1', 'host-1', 1, 2, 'high', 'low', 2, '{"enabled":false}', 'abc123', 'sess-standby')
+  `).run()
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary, workspace_id, host_session_id, current_section_index, total_sections, execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit, standby_session_id)
+    VALUES ('proj-1', 'loop-ended', 'completed', 'sess-ended', 0, '/tmp/wt', NULL, '/tmp/proj', 5, 4, 3, 0, 'coding', NULL, 'a/audit', 1, 0, NULL, 50, 60, 'completed', 'summary', NULL, NULL, 2, 2, NULL, 'low', 0, NULL, NULL, NULL)
+  `).run()
+
+  // The migration runner disables FK enforcement around every migration so the
+  // loops table rebuild does not cascade into child tables.
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '161')
+  db.run('PRAGMA foreign_keys=ON')
+
+  const running = db.prepare("SELECT * FROM loops WHERE loop_name = 'loop-running'").get() as Record<string, unknown>
+  expect(running).toEqual({
+    project_id: 'proj-1',
+    loop_name: 'loop-running',
+    status: 'running',
+    current_session_id: 'sess-running',
+    worktree: 1,
+    worktree_dir: '/tmp/wt',
+    worktree_branch: 'branch-1',
+    project_dir: '/tmp/proj',
+    max_iterations: 7,
+    iteration: 3,
+    audit_count: 2,
+    error_count: 1,
+    phase: 'auditing',
+    execution_model: 'a/exec',
+    auditor_model: 'a/audit',
+    model_failed: 0,
+    sandbox: 1,
+    sandbox_container: 'container-1',
+    started_at: 100,
+    completed_at: null,
+    termination_reason: null,
+    completion_summary: null,
+    workspace_id: 'ws-1',
+    host_session_id: 'host-1',
+    current_section_index: 1,
+    total_sections: 2,
+    execution_variant: 'high',
+    auditor_variant: 'low',
+    auditor_fallback_index: 2,
+    sandbox_settings: '{"enabled":false}',
+    base_commit: 'abc123',
+    standby_session_id: 'sess-standby',
+    request_key: null,
+    first_prompt_sent_at: null,
+    start_owner: null,
+  })
+
+  const ended = db.prepare("SELECT * FROM loops WHERE loop_name = 'loop-ended'").get() as Record<string, unknown>
+  expect(ended).toEqual({
+    project_id: 'proj-1',
+    loop_name: 'loop-ended',
+    status: 'completed',
+    current_session_id: 'sess-ended',
+    worktree: 0,
+    worktree_dir: '/tmp/wt',
+    worktree_branch: null,
+    project_dir: '/tmp/proj',
+    max_iterations: 5,
+    iteration: 4,
+    audit_count: 3,
+    error_count: 0,
+    phase: 'coding',
+    execution_model: null,
+    auditor_model: 'a/audit',
+    model_failed: 1,
+    sandbox: 0,
+    sandbox_container: null,
+    started_at: 50,
+    completed_at: 60,
+    termination_reason: 'completed',
+    completion_summary: 'summary',
+    workspace_id: null,
+    host_session_id: null,
+    current_section_index: 2,
+    total_sections: 2,
+    execution_variant: null,
+    auditor_variant: 'low',
+    auditor_fallback_index: 0,
+    sandbox_settings: null,
+    base_commit: null,
+    standby_session_id: null,
+    request_key: null,
+    first_prompt_sent_at: null,
+    start_owner: null,
+  })
+
+  const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(schema.sql).toContain("status IN ('running','completed','cancelled','errored','stalled','interrupted')")
+  expect(schema.sql).toContain("phase IN ('coding','auditing','post_action')")
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-interrupted', 'interrupted', 'sess-interrupted', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  const interrupted = db.prepare("SELECT status FROM loops WHERE loop_name = 'loop-interrupted'").get() as { status: string }
+  expect(interrupted.status).toBe('interrupted')
+
+  const insertWithKey = db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, request_key)
+    VALUES ('proj-1', ?, 'running', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1, ?)
+  `)
+  insertWithKey.run('loop-key-1', 'sess-key-1', 'req-dup')
+  expect(() => insertWithKey.run('loop-key-2', 'sess-key-2', 'req-dup')).toThrow(/UNIQUE constraint failed/)
+
+  const insertWithoutKey = db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', ?, 'completed', ?, 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `)
+  for (const suffix of ['a', 'b', 'c']) {
+    insertWithoutKey.run(`loop-null-key-${suffix}`, `sess-null-key-${suffix}`)
+  }
+  const nullKeyCount = db.prepare('SELECT COUNT(*) AS count FROM loops WHERE request_key IS NULL').get() as { count: number }
+  expect(nullKeyCount.count).toBe(6)
+
+  expect(indexExists(db, 'idx_loops_status')).toBe(true)
+  expect(indexExists(db, 'idx_loops_completed_at')).toBe(true)
+  expect(indexExists(db, 'idx_loops_project_name')).toBe(true)
+  const sessionIdx = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'").get() as { sql: string } | null
+  expect(sessionIdx!.sql).toContain("status = 'running'")
+  const requestKeyIdx = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_request_key'").get() as { sql: string } | null
+  expect(requestKeyIdx!.sql).toContain('request_key IS NOT NULL')
+
+  db.close()
+})
+
+test('migration 161 is idempotent', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  applyMigrationsThrough(db, '160')
+
+  db.run('PRAGMA foreign_keys=OFF')
+  applySingleMigration(db, '161')
+  expect(() => applySingleMigration(db, '161')).not.toThrow()
+  db.run('PRAGMA foreign_keys=ON')
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  for (const name of ['request_key', 'first_prompt_sent_at', 'start_owner']) {
+    expect(cols.filter((c) => c.name === name).length).toBe(1)
+  }
+  const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(schema.sql).toContain("'interrupted'")
+
+  db.close()
+})
+
 test('deleting a loop cascades its section_dependencies rows away', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)

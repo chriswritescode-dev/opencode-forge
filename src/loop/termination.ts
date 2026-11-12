@@ -1,4 +1,6 @@
-export type TerminationStatus = 'completed' | 'cancelled' | 'errored' | 'stalled'
+import type { LoopStatus } from '../constants/loop'
+
+export type TerminationStatus = Exclude<LoopStatus, 'running'>
 
 export type TerminationReason =
   | { kind: 'completed' }
@@ -14,6 +16,8 @@ export type TerminationReason =
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
   | { kind: 'provider_limit'; message: string }
+  | { kind: 'start_interrupted' }
+  | { kind: 'first_prompt_failed'; message: string }
 
 export function terminationStatusFor(reason: TerminationReason): TerminationStatus {
   switch (reason.kind) {
@@ -25,6 +29,8 @@ export function terminationStatusFor(reason: TerminationReason): TerminationStat
       return 'cancelled'
     case 'stall_timeout':
       return 'stalled'
+    case 'start_interrupted':
+      return 'interrupted'
     default:
       return 'errored'
   }
@@ -38,6 +44,8 @@ export function terminationReasonToString(reason: TerminationReason): string {
       return `error_max_retries: ${reason.message}`
     case 'provider_limit':
       return `provider_limit: ${reason.message}`
+    case 'first_prompt_failed':
+      return `first_prompt_failed: ${reason.message}`
     default:
       return reason.kind
   }
@@ -51,6 +59,7 @@ export function parseTerminationReasonString(str: string): TerminationReason {
     if (prefix === 'worktree_failed') return { kind: 'worktree_failed', message }
     if (prefix === 'error_max_retries') return { kind: 'error_max_retries', message }
     if (prefix === 'provider_limit') return { kind: 'provider_limit', message }
+    if (prefix === 'first_prompt_failed') return { kind: 'first_prompt_failed', message }
   }
 
   // For simple kinds without messages
@@ -58,7 +67,7 @@ export function parseTerminationReasonString(str: string): TerminationReason {
     'completed', 'cancelled', 'user_aborted', 'shutdown',
     'max_iterations', 'stall_timeout', 'missing_worktree_dir',
     'session_creation_failed', 'handoff_missing',
-    'restart_prompt_failed',
+    'restart_prompt_failed', 'start_interrupted',
   ] as const
 
   if ((knownKinds as readonly string[]).includes(str)) {

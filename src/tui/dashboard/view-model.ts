@@ -1,3 +1,4 @@
+import { LOOP_STATUSES } from '../../constants/loop'
 import type {
   ForgeDashboardLoopSummary,
   ForgeDashboardProjectSummary,
@@ -185,7 +186,7 @@ export function sortLoops(loops: ForgeDashboardLoopSummary[], mode: SortMode): F
   return sorted
 }
 
-export const LOOP_STATUS_FILTERS = ['all', 'running', 'completed', 'cancelled', 'errored', 'stalled'] as const
+export const LOOP_STATUS_FILTERS = ['all', ...LOOP_STATUSES] as const
 
 export type LoopStatusFilter = (typeof LOOP_STATUS_FILTERS)[number]
 
@@ -206,14 +207,8 @@ export function filterLoopsByStatus(
 
 /** Row counts per status filter, including the unfiltered total under `all`. */
 export function statusCounts(loops: ForgeDashboardLoopSummary[]): Record<LoopStatusFilter, number> {
-  const counts: Record<LoopStatusFilter, number> = {
-    all: loops.length,
-    running: 0,
-    completed: 0,
-    cancelled: 0,
-    errored: 0,
-    stalled: 0,
-  }
+  const counts = { all: loops.length } as Record<LoopStatusFilter, number>
+  for (const status of LOOP_STATUSES) counts[status] = 0
   for (const loop of loops) counts[loop.status] += 1
   return counts
 }

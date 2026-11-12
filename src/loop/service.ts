@@ -25,7 +25,7 @@ import {
 } from './prompts'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { bumpRecurrence, findingRecurrenceKey, hasEscalatedFindings } from './finding-recurrence'
-import { MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { MAX_TOTAL_SECTIONS, ENDED_LOOP_STATUSES, type LoopStatus } from '../constants/loop'
 import { canonicalizePath } from '../sandbox/path'
 import { blockingBugFindings, isFindingInSectionScope, resolveSectionScope, type SectionScope } from './section-scope'
 import { generatedSectionId, isLastOpenSectionIndex, selectNextSection, validateSectionGraph, type SectionGraphNode } from './section-graph'
@@ -128,10 +128,10 @@ export interface LoopService {
    * next same-section phase switch.
    */
   setStandbySessionId(name: string, sessionId: string | null): void
-  setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
+  setStatus(name: string, status: LoopStatus): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
-  terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
+  terminate(name: string, opts: { status: Exclude<LoopStatus, 'running'>; reason: string; completedAt: number; summary?: string }): void
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getSectionPlans(state: LoopState): SectionPlanRow[]
@@ -296,7 +296,7 @@ export function createLoopService(
     persistState(name, state, 'restore')
   }
 
-  function setStatus(name: string, status: LoopRow['status']): void {
+  function setStatus(name: string, status: LoopStatus): void {
     const state = getAnyState(name)
     loopsRepo.setStatus(projectId, name, status)
     notifyLoopChange('status', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
@@ -410,7 +410,7 @@ export function createLoopService(
   }
 
   function listRecent(): LoopState[] {
-    const rows = loopsRepo.listByStatus(projectId, ['completed', 'cancelled', 'errored', 'stalled'])
+    const rows = loopsRepo.listByStatus(projectId, ENDED_LOOP_STATUSES)
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
       return hydratePlanFromPlans(loopRowToState(row, large))
@@ -686,7 +686,7 @@ export function createLoopService(
     notifyLoopChange('post-action-report', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
+  function terminate(name: string, opts: { status: Exclude<LoopStatus, 'running'>; reason: string; completedAt: number; summary?: string }): void {
     const state = getAnyState(name)
     loopsRepo.terminate(projectId, name, opts)
     coderDecisionsByLoop.delete(name)

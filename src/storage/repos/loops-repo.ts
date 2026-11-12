@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import type { Logger, LoopSandboxSettings } from '../../types'
 import { readLoopSandboxSettings } from '../../sandbox/loop-settings'
+import { LOOP_STATUSES, type LoopStatus } from '../../constants/loop'
 import { findPartialMatch } from '../../utils/partial-match'
 import {
   handoffSchemaForRole,
@@ -18,7 +19,7 @@ import {
 export interface LoopRow {
   projectId: string
   loopName: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: LoopStatus
   currentSessionId: string
   worktree: boolean
   worktreeDir: string
@@ -52,6 +53,9 @@ export interface LoopRow {
   baseCommit: string | null
   /** The other role's session for the current section, kept for reuse on the next same-section phase switch: the coder session while auditing, the audit session while coding. */
   standbySessionId: string | null
+  requestKey: string | null
+  firstPromptSentAt: number | null
+  startOwner: string | null
 }
 
 export interface LoopLargeFields {
@@ -79,7 +83,8 @@ export interface LoopsRepo {
   get(projectId: string, loopName: string): LoopRow | null
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
-  listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
+  getByRequestKey(projectId: string, requestKey: string): LoopRow | null
+  listByStatus(projectId: string, statuses: readonly LoopStatus[]): LoopRow[]
   listAll(projectId: string): LoopRow[]
   listSidebarRows(projectId: string, limit: number): LoopSidebarRow[]
   updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void
@@ -93,6 +98,7 @@ export interface LoopsRepo {
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
   /** Record (or clear, with null) the other role's session kept for same-section reuse. */
   setStandbySessionId(projectId: string, loopName: string, sessionId: string | null): void
+  setFirstPromptSentAt(projectId: string, loopName: string, at: number): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
@@ -128,6 +134,7 @@ export interface LoopsRepo {
       currentSectionIndex: number
       totalSections: number
       startedAt: number
+      startOwner: string
       /** Primary auditor model used for the restarted prompt; persisted so later chain resolution agrees. */
       auditorModel: string | null
       auditorVariant?: string | null
@@ -197,6 +204,9 @@ function mapRow(row: LoopRowRaw): LoopRow {
     sandboxSettings: parseSandboxSettings(row.sandbox_settings),
     baseCommit: row.base_commit,
     standbySessionId: row.standby_session_id,
+    requestKey: row.request_key,
+    firstPromptSentAt: row.first_prompt_sent_at,
+    startOwner: row.start_owner,
   }
 }
 
@@ -248,6 +258,9 @@ interface LoopRowRaw {
   sandbox_settings: string | null
   base_commit: string | null
   standby_session_id: string | null
+  request_key: string | null
+  first_prompt_sent_at: number | null
+  start_owner: string | null
 }
 
 const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
@@ -257,7 +270,7 @@ const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktre
   termination_reason, completion_summary, workspace_id, host_session_id,
   current_section_index, total_sections,
   execution_variant, auditor_variant, auditor_fallback_index, sandbox_settings, base_commit,
-  standby_session_id`
+  standby_session_id, request_key, first_prompt_sent_at, start_owner`
 
 const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
 
@@ -374,6 +387,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     WHERE project_id = ? AND current_session_id = ? AND status = 'running'
   `)
 
+  const getByRequestKeyStmt = db.prepare(`
+    SELECT ${LOOP_COLUMNS}
+    FROM loops
+    WHERE project_id = ? AND request_key = ?
+  `)
+
   const listByStatusBase = `
     SELECT ${LOOP_COLUMNS}
     FROM loops
@@ -434,6 +453,11 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
   const setStandbySessionIdStmt = db.prepare(`
     UPDATE loops SET standby_session_id = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const setFirstPromptSentAtStmt = db.prepare(`
+    UPDATE loops SET first_prompt_sent_at = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -509,6 +533,8 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       model_failed = 0,
       auditor_fallback_index = 0,
       standby_session_id = NULL,
+      first_prompt_sent_at = NULL,
+      start_owner = ?,
       sandbox = ?,
       sandbox_container = ?,
       workspace_id = ?,
@@ -548,7 +574,8 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       completion_summary = ?, workspace_id = ?, host_session_id = ?,
       current_section_index = ?, total_sections = ?,
       execution_variant = ?, auditor_variant = ?, auditor_fallback_index = ?,
-      sandbox_settings = ?, base_commit = ?, standby_session_id = ?
+      sandbox_settings = ?, base_commit = ?, standby_session_id = ?,
+      request_key = ?, first_prompt_sent_at = ?, start_owner = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -639,6 +666,9 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       serializeSandboxSettings(row.sandboxSettings),
       row.baseCommit ?? null,
       row.standbySessionId ?? null,
+      row.requestKey ?? null,
+      row.firstPromptSentAt ?? null,
+      row.startOwner ?? null,
     ]
   }
 
@@ -699,7 +729,12 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
       return row ? mapRow(row) : null
     },
 
-    listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[] {
+    getByRequestKey(projectId: string, requestKey: string): LoopRow | null {
+      const row = getByRequestKeyStmt.get(projectId, requestKey) as LoopRowRaw | null
+      return row ? mapRow(row) : null
+    },
+
+    listByStatus(projectId: string, statuses: readonly LoopStatus[]): LoopRow[] {
       if (statuses.length === 0) return []
       const placeholders = statuses.map(() => '?').join(',')
       const sql = `${listByStatusBase} (${placeholders}) ORDER BY started_at DESC`
@@ -709,8 +744,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     listAll(projectId: string): LoopRow[] {
-      const allStatuses: LoopRow['status'][] = ['running', 'completed', 'cancelled', 'errored', 'stalled']
-      return this.listByStatus(projectId, allStatuses)
+      return this.listByStatus(projectId, LOOP_STATUSES)
     },
 
     listSidebarRows(projectId: string, limit: number): LoopSidebarRow[] {
@@ -772,6 +806,10 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
 
     setStandbySessionId(projectId: string, loopName: string, sessionId: string | null): void {
       setStandbySessionIdStmt.run(sessionId, projectId, loopName)
+    },
+
+    setFirstPromptSentAt(projectId: string, loopName: string, at: number): void {
+      setFirstPromptSentAtStmt.run(at, projectId, loopName)
     },
 
     setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void {
@@ -845,6 +883,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
           opts.phase,
           opts.iteration,
           opts.auditCount,
+          opts.startOwner,
           opts.sandbox ? 1 : 0,
           opts.sandboxContainer,
           opts.workspaceId,
@@ -888,7 +927,7 @@ export function createLoopsRepo(db: Database, logger?: Logger): LoopsRepo {
     },
 
     findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] } {
-      const all = this.listByStatus(projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
+      const all = this.listByStatus(projectId, LOOP_STATUSES)
       return findPartialMatch(name, all, (row: LoopRow) => [row.loopName, row.worktreeBranch ?? undefined])
     },
 

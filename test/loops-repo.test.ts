@@ -50,6 +50,9 @@ describe('LoopsRepo', () => {
     auditorVariant: null,
     baseCommit: null,
     standbySessionId: null,
+    requestKey: null,
+    firstPromptSentAt: null,
+    startOwner: null,
   }
 
   const testLarge: LoopLargeFields = {
@@ -498,6 +501,7 @@ describe('LoopsRepo', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         startedAt: Date.now(),
+        startOwner: 'test-owner',
       })
 
       expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
@@ -548,6 +552,7 @@ describe('LoopsRepo', () => {
       currentSectionIndex: 0,
       totalSections: 0,
       startedAt: Date.now(),
+      startOwner: 'test-owner',
       ...overrides,
     })
 
@@ -623,6 +628,7 @@ describe('LoopsRepo', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         startedAt: Date.now(),
+        startOwner: 'test-owner',
       })
 
       const large = repo.getLarge(testRow.projectId, testRow.loopName)
@@ -724,6 +730,7 @@ describe('LoopsRepo', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         startedAt: Date.now(),
+        startOwner: 'test-owner',
       })
       expect(repo.getLarge(testRow.projectId, 'post-action-loop')!.postActionReport).toBeNull()
 
@@ -762,6 +769,7 @@ describe('LoopsRepo', () => {
       currentSectionIndex: 0,
       totalSections: 0,
       startedAt: Date.now(),
+      startOwner: 'test-owner',
     })
 
     test('insert + get round-trips sandboxSettings', () => {
@@ -839,9 +847,68 @@ describe('LoopsRepo', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         startedAt: Date.now(),
+        startOwner: 'test-owner',
       })
 
       expect(repo.get(testRow.projectId, testRow.loopName)!.baseCommit).toBe(SHA)
+    })
+  })
+
+  describe('start tracking', () => {
+    test('insert + get round-trips requestKey, firstPromptSentAt and startOwner', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'loop-start-tracking',
+        currentSessionId: 'session-start-tracking',
+        requestKey: 'req-1',
+        firstPromptSentAt: 1234,
+        startOwner: 'owner-1',
+      }
+      repo.insert(row, testLarge)
+
+      const retrieved = repo.get(row.projectId, row.loopName)!
+      expect(retrieved.requestKey).toBe('req-1')
+      expect(retrieved.firstPromptSentAt).toBe(1234)
+      expect(retrieved.startOwner).toBe('owner-1')
+    })
+
+    test('getByRequestKey returns the matching row and null for an unknown key', () => {
+      repo.insert({ ...testRow, requestKey: 'req-lookup', startOwner: 'owner-1' }, testLarge)
+
+      const found = repo.getByRequestKey(testRow.projectId, 'req-lookup')
+      expect(found?.loopName).toBe(testRow.loopName)
+      expect(repo.getByRequestKey(testRow.projectId, 'req-missing')).toBeNull()
+    })
+
+    test('setFirstPromptSentAt persists the timestamp', () => {
+      repo.insert(testRow, testLarge)
+
+      repo.setFirstPromptSentAt(testRow.projectId, testRow.loopName, 9999)
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.firstPromptSentAt).toBe(9999)
+    })
+
+    test('restart clears firstPromptSentAt and writes the supplied startOwner', () => {
+      repo.insert({ ...testRow, firstPromptSentAt: 1234, startOwner: 'owner-1' }, testLarge)
+
+      repo.restart(testRow.projectId, testRow.loopName, {
+        sessionId: 'restart-session',
+        phase: 'coding',
+        iteration: 0,
+        auditCount: 0,
+        sandbox: false,
+        sandboxContainer: null,
+        workspaceId: null,
+        auditorModel: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        startedAt: Date.now(),
+        startOwner: 'owner-2',
+      })
+
+      const retrieved = repo.get(testRow.projectId, testRow.loopName)!
+      expect(retrieved.firstPromptSentAt).toBeNull()
+      expect(retrieved.startOwner).toBe('owner-2')
     })
   })
 

@@ -127,7 +127,7 @@ function statusColor(colors: DashboardColors, status: string): ColorInput {
   if (status === 'running') return colors.info
   if (status === 'completed') return colors.success
   if (status === 'errored') return colors.error
-  if (status === 'stalled') return colors.warning
+  if (status === 'stalled' || status === 'interrupted') return colors.warning
   return colors.muted
 }
 

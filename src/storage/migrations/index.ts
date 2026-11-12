@@ -583,4 +583,13 @@ export const migrations: Migration[] = [
       if (!hasDependencies) db.run(loadSql('160_create_section_dependencies.sql'))
     },
   },
+  {
+    id: '161',
+    description: "Loops start tracking: 'interrupted' status, request_key, first_prompt_sent_at, start_owner",
+    apply: (db: Database) => {
+      const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string } | null
+      if (row?.sql?.includes("'interrupted'")) return
+      db.run(loadSql('161_loops_start_tracking.sql'))
+    },
+  },
 ]

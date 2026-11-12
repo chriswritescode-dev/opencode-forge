@@ -21,7 +21,7 @@ import { createUsageCapture } from '../loop/runtime-usage'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopPermissionOptions } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildPermissionRulesetForPhase, resolveLoopPermissionOptions, type LoopStatus } from '../constants/loop'
 import { resolveLoopPermissionOptionsForWorkspace } from '../utils/loop-permission-options'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -353,7 +353,7 @@ export interface LoopCancelledResult {
 export interface LoopStatusView {
   loopName: string
   displayName: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: LoopStatus
   phase?: string
   iteration: number
   maxIterations: number
@@ -1823,6 +1823,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
         startedAt: new Date(newState.startedAt).getTime(),
+        startOwner: '',
       })
 
       deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)

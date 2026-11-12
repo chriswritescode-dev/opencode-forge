@@ -14,6 +14,17 @@ export type LoopSessionReuseRole = 'code' | 'auditor'
 /** Worktree path of the code-graph index link Forge writes for sandboxed loops. */
 export const CODE_GRAPH_LINK_NAME = '.codegraph'
 
+/** Every persisted loop status, in dashboard display order. Single source for status lists. */
+export const LOOP_STATUSES = ['running', 'completed', 'cancelled', 'errored', 'stalled', 'interrupted'] as const
+
+export type LoopStatus = (typeof LOOP_STATUSES)[number]
+
+/** Every terminal status: a loop the runtime is not driving. */
+export const ENDED_LOOP_STATUSES: readonly LoopStatus[] = LOOP_STATUSES.filter((status) => status !== 'running')
+
+/** Terminal statuses whose worktree registration is kept because the loop can be restarted. */
+export const RESTARTABLE_ENDED_LOOP_STATUSES: readonly LoopStatus[] = ['cancelled', 'errored', 'stalled', 'interrupted']
+
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 /** Maximum number of plan sections a loop may execute. Shared by the

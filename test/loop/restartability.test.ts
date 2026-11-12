@@ -81,4 +81,12 @@ describe('getRestartability', () => {
     expect(result.restartRequiresForce).toBe(true)
     expect(result.restartBlockedReason).toBe('active_requires_force')
   })
+
+  it('restarts an interrupted loop when the worktree directory exists', () => {
+    const state = makeLoopState({ ...STATE_DEFAULTS, status: 'interrupted', terminationReason: 'start_interrupted' })
+    const result = getRestartability(state, { worktreeExists: () => true })
+    expect(result.restartable).toBe(true)
+    expect(result.restartRequiresForce).toBe(false)
+    expect(result.restartBlockedReason).toBeUndefined()
+  })
 })

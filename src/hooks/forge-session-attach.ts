@@ -6,6 +6,7 @@ import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/conte
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
 import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
+import { RESTARTABLE_ENDED_LOOP_STATUSES } from '../constants/loop'
 import { publishToast } from '../utils/toast'
 
 export interface ForgeSessionAttachHookDeps {
@@ -289,7 +290,7 @@ async function attachForgeSession(
       )
       if (!result.ok && result.code === 'conflict') {
           const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
-          const removalAction = row?.status === 'cancelled' || row?.status === 'errored' || row?.status === 'stalled'
+          const removalAction = row != null && RESTARTABLE_ENDED_LOOP_STATUSES.includes(row.status)
             ? 'remove-registration-only'
             : 'remove-fully'
           publishAttachFailureToast(
@@ -306,7 +307,7 @@ async function attachForgeSession(
           )
         } else if (!result.ok && result.code !== 'already_attached') {
           const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
-          const removalAction = row?.status === 'cancelled' || row?.status === 'errored' || row?.status === 'stalled'
+          const removalAction = row != null && RESTARTABLE_ENDED_LOOP_STATUSES.includes(row.status)
             ? 'remove-registration-only'
             : 'remove-fully'
           publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, removalAction === 'remove-registration-only'

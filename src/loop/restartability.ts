@@ -5,10 +5,11 @@
 
 import { existsSync } from 'fs'
 import { parseTerminationReasonString } from '../loop'
+import type { LoopStatus } from '../constants/loop'
 
 export interface RestartableLoopState {
   loopName: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: LoopStatus
   terminationReason?: string | null
   worktree?: boolean
   worktreeDir?: string
@@ -35,7 +36,7 @@ export interface RestartabilityResult {
  * - Missing worktree blocks restart ONLY when the scratch branch is also gone;
  *   if the branch survives, restart recreates the worktree from it
  * - Active/running loops require force
- * - All other terminal states (cancelled, errored, stalled) are restartable without force
+ * - All other terminal states (cancelled, errored, stalled, interrupted) are restartable without force
  *
  * @param opts.branchExists Lazy predicate that reports whether the loop's scratch
  *   branch still exists. It is only consulted when the worktree directory is
@@ -95,7 +96,7 @@ export function getRestartability(
     }
   }
   
-  // All other terminal states (cancelled, errored, stalled) are restartable without force
+  // All other terminal states (cancelled, errored, stalled, interrupted) are restartable without force
   return {
     restartable: true,
     restartRequiresForce: false,

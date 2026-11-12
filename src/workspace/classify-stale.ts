@@ -11,6 +11,7 @@
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { ForgeWorkspaceEntry } from './forge-worktree'
 import { getForgeWorkspaceLoopName } from './forge-worktree'
+import { RESTARTABLE_ENDED_LOOP_STATUSES } from '../constants/loop'
 
 const PENDING_ATTACH_GRACE_MS = 5 * 60 * 1000
 
@@ -67,7 +68,7 @@ function isPendingStartWorkspace(
  * 7. loopsRepo.get returns null → remove-fully/missing-row
  * 8. loop status === 'running' → keep/running
  * 9. loop status === 'completed' → remove-fully/completed
- * 10. loop status in ['cancelled', 'errored', 'stalled'] → remove-registration-only/restartable
+ * 10. loop status in ['cancelled', 'errored', 'stalled', 'interrupted'] → remove-registration-only/restartable
  */
 export function classifyForgeWorkspace(
   entry: ForgeWorkspaceEntry,
@@ -120,7 +121,7 @@ export function classifyForgeWorkspace(
     return { action: 'remove-fully', reason: 'completed', loopName }
   }
 
-  // Check 10: non-running restartable loops (cancelled, errored, stalled)
+  // Check 10: non-running restartable loops (cancelled, errored, stalled, interrupted)
   // Remove registration only, preserve worktree for restart.
   //
   // A restart recreates the workspace while the loop row is still terminal and
@@ -130,7 +131,7 @@ export function classifyForgeWorkspace(
   // otherwise this safety net tears down the workspace mid-restart and the
   // restart prompt fails with "Workspace not found". Genuinely stale terminal
   // workspaces carry an old timestamp and fall through to removal.
-  if (row.status === 'cancelled' || row.status === 'errored' || row.status === 'stalled') {
+  if (RESTARTABLE_ENDED_LOOP_STATUSES.includes(row.status)) {
     if (isPendingStartWorkspace(entry, options)) {
       return { action: 'keep', reason: 'pending-start' }
     }

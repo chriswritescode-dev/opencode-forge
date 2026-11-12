@@ -8,6 +8,7 @@
  */
 
 import type { ProviderList } from '../client/port'
+import type { LoopStatus } from '../constants/loop'
 
 export interface ModelInfo {
   id: string
@@ -43,7 +44,7 @@ export interface ModelSortOptions {
 
 export type LoopInfo = {
   name: string
-  status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  status: LoopStatus
   phase: string
   iteration: number
   maxIterations: number

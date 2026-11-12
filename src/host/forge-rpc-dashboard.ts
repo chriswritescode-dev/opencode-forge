@@ -1,3 +1,4 @@
+import { LOOP_STATUSES } from '../constants/loop'
 import type { LoopRow } from '../storage/repos/loops-repo'
 import type {
   LoopUsageAggregate,
@@ -28,13 +29,7 @@ function enumList<Union>() {
   ): List => list
 }
 
-const DASHBOARD_LOOP_STATUSES = enumList<LoopRow['status']>()([
-  'running',
-  'completed',
-  'cancelled',
-  'errored',
-  'stalled',
-])
+const DASHBOARD_LOOP_STATUSES = enumList<LoopRow['status']>()([...LOOP_STATUSES])
 
 const DASHBOARD_LOOP_PHASES = enumList<LoopRow['phase']>()([
   'coding',
