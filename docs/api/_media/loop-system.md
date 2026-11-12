@@ -13,7 +13,7 @@ The loop system provides autonomous iterative development with automatic code au
 ### Restartability
 
 - **Any non-completed loop is restartable** via explicit restart when the worktree is available.
-- Restartable statuses: `running`, `cancelled`, `errored`, `stalled`.
+- Restartable statuses: `running`, `cancelled`, `errored`, `stalled`, `interrupted`.
 - **Completed loops are history-only** and cannot be restarted.
 - **A missing worktree blocks restart only when the scratch branch is gone too** — if the branch survives, restart recreates the worktree from it (`git worktree add <branch>`); when both are gone the work is unrecoverable.
 
@@ -28,7 +28,7 @@ The loop system provides autonomous iterative development with automatic code au
 ### Stale Workspace Sweep
 
 - Stale workspace sweep is **teardown cleanup-only**, not boot-time recovery.
-- Sweep removes workspace registrations for non-running restartable loops (`cancelled`, `errored`, `stalled`) while preserving worktrees for manual restart.
+- Sweep removes workspace registrations for non-running restartable loops (`cancelled`, `errored`, `stalled`, `interrupted`) while preserving worktrees for manual restart.
 - Completed loops are fully removed (registration + worktree).
 - Running loops are never touched by sweep.
 
@@ -92,12 +92,25 @@ interface LoopState {
   auditorFallbackIndex?: number      // Index into the auditor model fallback chain
   workspaceId?: string               // OpenCode workspace ID
   hostSessionId?: string             // Host session ID for post-completion redirect
+  requestKey?: string                // Client idempotency key supplied at start
+  firstPromptSentAt?: string         // ISO timestamp of the first prompt send
+  startOwner?: string                // <hostname>:<pid>:<process token> of the starting process
   currentSectionIndex: number
   totalSections: number
 }
 ```
 
+`completed`, `cancelled`, `errored`, `stalled`, and `interrupted` are terminal: the runtime is not driving the loop. `interrupted` is recorded only for a loop that was persisted `running` but never sent its first prompt.
+
 Per-turn output lives in `loop_handoffs`, not on the loop row: only the current record is `pending`, it resolves to `applied` or `discarded`, and the resolved rows remain as history. `lastAuditResult` and `completionSummary` on the loop row are display text, never decision input.
+
+## Loop Start and First Prompt
+
+A start persists `request_key` and `start_owner` (the starting process's `<hostname>:<pid>:<process token>`) along with the loop row, and `executePlan` returns the new loop as `status: 'running'` before the attach code-graph snapshot and the first prompt run. Those two steps run in a detached continuation: on a successful send it records `first_prompt_sent_at` (single writer: `LoopService.recordFirstPromptSent`), starts the watchdog, and aborts the source session; if the prompt cannot be sent it terminates the loop with `first_prompt_failed: <message>`, or with `provider_limit` when the failure is a provider limit. A TUI-owned attachment that sends its own first prompt (`sendInitialPrompt: false`) also records the first prompt, so reconciliation never kills a healthy loop.
+
+Because the plugin can exit between persisting the row and sending the prompt, `running` loops without a sent first prompt are detected only when read, never during plugin boot: `reconcileInterruptedStarts` (`src/loop/runtime.ts`) runs from the `loops` RPC, the `loop-status` tool, `loopRestart`, and a keyed `executePlan`, re-checks each candidate under the loop state lock, and terminates it with `start_interrupted`. `isInterruptedStart` (`src/loop/start-owner.ts`) marks a loop only when it is `running`, has no `first_prompt_sent_at`, and has a parseable `start_owner` whose owner is gone — this process's own token with no in-flight start, this host with a dead PID, or `START_INTERRUPTED_BACKSTOP_MS` elapsed since `startedAt`. A loop that sent its first prompt, or a legacy row with a NULL `start_owner`, is never marked.
+
+A start carrying a `requestKey` is idempotent: a repeated key returns the existing loop's row as `deduped: true` with that loop's status, before plan resolution or any side effect. See [Architecture](architecture.md) for the `executePlan` contract.
 
 ## Handoff-Driven Turn Ends
 
@@ -313,6 +326,8 @@ In addition to a clean audit, the loop terminates when:
 - **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
 - **Consecutive errors** — 3 consecutive errors in either phase.
 - **Missing handoff** — 3 turns in coding or auditing without a `loop-handoff` record terminate with `terminationReason: 'handoff_missing'`; a post-action turn without `loop-complete` completes instead.
+- **Interrupted start** — A loop persisted `running` that never sent its first prompt terminates with `terminationReason: 'start_interrupted'` when reconciliation reads it (see [Loop Start and First Prompt](#loop-start-and-first-prompt)).
+- **First prompt failed** — A start whose first prompt cannot be sent terminates with `terminationReason: 'first_prompt_failed: <message>'` (or `provider_limit` for a provider limit).
 
 ## Post-Completion Action Phase
 
