@@ -31,13 +31,14 @@ export interface TuiRpcServiceDeps {
   plansRepo: PlansRepo
   sandboxPreferences: SessionSandboxPreferencesRepo
   restartLoop(request: ForgeLoopRestartInput): Promise<ForgeLoopRestartOutput>
+  reconcileInterruptedStarts: () => Promise<unknown>
   /** Notified after the desired host-sandbox revision is written. */
   onHostSandboxChanged?: () => void
   logger: Logger
 }
 
 export interface TuiRpcService {
-  listLoops(): ForgeLoopsOutput
+  listLoops(): Promise<ForgeLoopsOutput>
   listLoopSidebar(limit: number): ForgeLoopSidebarOutput
   listWorktrees(): ForgeWorktreesOutput
   getSessionPlan(sessionId: string, projectId?: string): ForgeSessionPlanOutput
@@ -68,6 +69,8 @@ function rowToLoopInfo(row: LoopRow): LoopInfo {
     restartRequiresForce: restartability.restartRequiresForce,
     restartBlockedMessage: restartability.restartBlockedMessage,
     startedAt: new Date(row.startedAt).toISOString(),
+    firstPromptSent: row.firstPromptSentAt != null,
+    requestKey: row.requestKey ?? undefined,
     executionModel: row.executionModel ?? undefined,
     executionVariant: row.executionVariant ?? undefined,
     auditorModel: row.auditorModel ?? undefined,
@@ -78,8 +81,9 @@ function rowToLoopInfo(row: LoopRow): LoopInfo {
 
 export function createTuiRpcService(deps: TuiRpcServiceDeps): TuiRpcService {
   return {
-    listLoops(): ForgeLoopsOutput {
+    async listLoops(): Promise<ForgeLoopsOutput> {
       try {
+        await deps.reconcileInterruptedStarts()
         return { loops: deps.loopsRepo.listAll(deps.projectId).map((row) => rowToLoopInfo(row)) }
       } catch (err) {
         return { error: errorMessage(err) }

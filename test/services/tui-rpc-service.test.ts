@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
+import { spawnSync } from 'child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { hostname, tmpdir } from 'os'
 import { createLoopsRepo, createPlansRepo, createSessionSandboxPreferencesRepo } from '../../src/storage'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { SessionSandboxDesiredState } from '../../src/storage'
@@ -9,11 +10,18 @@ import { toForgeRpcJson, type ForgeLoopRestartInput, type ForgeLoopRestartOutput
 import { createTuiRpcService, type TuiRpcService, type TuiRpcServiceDeps } from '../../src/services/tui-rpc-service'
 import { forgeWorktreesRoot } from '../../src/workspace/forge-naming'
 import { makeLoopRow } from '../helpers/dashboard-fixtures'
+import { buildLoopRuntime, makeLoopState } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
 import { createTestDb } from '../helpers/test-db'
 
 const PROJECT = 'project-a'
 const logger = createMockLogger()
+
+function exitedChildPid(): number {
+  const result = spawnSync(process.execPath, ['-e', ''])
+  if (result.pid === undefined) throw new Error('spawnSync reported no child pid')
+  return result.pid
+}
 
 describe('createTuiRpcService', () => {
   let tempDir: string
@@ -46,13 +54,14 @@ describe('createTuiRpcService', () => {
       plansRepo,
       sandboxPreferences,
       restartLoop: async () => ({ sessionId: 'ses-default' }),
+      reconcileInterruptedStarts: async () => [],
       logger,
       ...overrides,
     })
   }
 
   describe('listLoops', () => {
-    test('maps loop rows with restartability', () => {
+    test('maps loop rows with restartability', async () => {
       loopsRepo.insert(makeLoopRow({
         projectId: PROJECT,
         loopName: 'loop-done',
@@ -66,7 +75,7 @@ describe('createTuiRpcService', () => {
       }), { lastAuditResult: null })
       loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-running', status: 'running', currentSessionId: 'session-running' }), { lastAuditResult: null })
 
-      const result = createService().listLoops()
+      const result = await createService().listLoops()
       if ('error' in result) throw new Error(result.error)
 
       const done = result.loops.find((loop) => loop.name === 'loop-done')
@@ -93,7 +102,7 @@ describe('createTuiRpcService', () => {
       expect((running as Record<string, unknown> | undefined)?.sections).toBeUndefined()
     })
 
-    test('a loop with unset optional fields is JSON-clean after toForgeRpcJson', () => {
+    test('a loop with unset optional fields is JSON-clean after toForgeRpcJson', async () => {
       loopsRepo.insert(makeLoopRow({
         projectId: PROJECT,
         loopName: 'loop-sparse',
@@ -102,7 +111,7 @@ describe('createTuiRpcService', () => {
         completedAt: null,
       }), { lastAuditResult: null })
 
-      const result = createService().listLoops()
+      const result = await createService().listLoops()
       if ('error' in result) throw new Error(result.error)
       const sparse = result.loops.find((loop) => loop.name === 'loop-sparse')
       expect(Object.hasOwn(sparse ?? {}, 'auditorVariant')).toBe(true)
@@ -115,20 +124,61 @@ describe('createTuiRpcService', () => {
       expect(Object.hasOwn(wire.loops.find((loop) => loop.name === 'loop-sparse') ?? {}, 'auditorVariant')).toBe(false)
     })
 
-    test('carries the loop worktree branch through to the loop info', () => {
+    test('carries the loop worktree branch through to the loop info', async () => {
       loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-branched', status: 'cancelled', worktreeBranch: 'pm-61-export' }), { lastAuditResult: null })
       loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-unbranched', status: 'cancelled', worktreeBranch: null }), { lastAuditResult: null })
 
-      const result = createService().listLoops()
+      const result = await createService().listLoops()
       if ('error' in result) throw new Error(result.error)
 
       expect(result.loops.find((loop) => loop.name === 'loop-branched')?.branch).toBe('pm-61-export')
       expect(result.loops.find((loop) => loop.name === 'loop-unbranched')?.branch).toBeUndefined()
     })
 
-    test('reports an error when the repo throws', () => {
+    test('reports first-prompt and request-key state for a prompted loop', async () => {
+      loopsRepo.insert(makeLoopRow({ projectId: PROJECT, loopName: 'loop-prompted', status: 'running', requestKey: 'req-1' }), { lastAuditResult: null })
+      loopsRepo.setFirstPromptSentAt(PROJECT, 'loop-prompted', Date.now())
+
+      const result = await createService().listLoops()
+      if ('error' in result) throw new Error(result.error)
+
+      expect(result.loops.find((loop) => loop.name === 'loop-prompted')).toMatchObject({
+        firstPromptSent: true,
+        requestKey: 'req-1',
+      })
+    })
+
+    test('reconciles an interrupted start before reading loop rows', async () => {
+      const startOwner = `${hostname()}:${exitedChildPid()}:dead-token`
+      const notify = vi.fn()
+      const runtime = buildLoopRuntime(db, { projectId: PROJECT, notify })
+      runtime.loopService.setState('loop-interrupted', makeLoopState({
+        loopName: 'loop-interrupted',
+        sessionId: 'session-interrupted',
+        startOwner,
+        firstPromptSentAt: undefined,
+        worktreeDir: tempDir,
+        projectDir: tempDir,
+      }))
+
+      const service = createService({
+        reconcileInterruptedStarts: () => runtime.loop.reconcileInterruptedStarts(),
+      })
+      const result = await service.listLoops()
+      if ('error' in result) throw new Error(result.error)
+
+      expect(result.loops.find((loop) => loop.name === 'loop-interrupted')).toMatchObject({
+        status: 'interrupted',
+        restartable: true,
+        restartRequiresForce: false,
+        firstPromptSent: false,
+      })
+      expect(notify.mock.calls.some(([reason, name]) => reason === 'settled' && name === 'loop-interrupted')).toBe(true)
+    })
+
+    test('reports an error when the repo throws', async () => {
       const throwingRepo = { listAll: () => { throw new Error('database gone') } } as unknown as LoopsRepo
-      const result = createService({ loopsRepo: throwingRepo }).listLoops()
+      const result = await createService({ loopsRepo: throwingRepo }).listLoops()
       expect(result).toEqual({ error: 'database gone' })
     })
   })

@@ -478,11 +478,18 @@ describe('FORGE_RPC', () => {
       restartable: true,
       restartRequiresForce: false,
       startedAt: '2026-01-01T00:00:00.000Z',
+      firstPromptSent: false,
     }]
     expect(readForgeLoops({ loops })).toEqual({ loops })
     const loopWithBranch = { ...loops[0], branch: 'pm-61-export' }
     expect(readForgeLoops({ loops: [loopWithBranch] })).toEqual({ loops: [loopWithBranch] })
+    const loopWithRequestKey = { ...loops[0], firstPromptSent: true, requestKey: 'req-1' }
+    expect(readForgeLoops({ loops: [loopWithRequestKey] })).toEqual({ loops: [loopWithRequestKey] })
     expect(readForgeLoops({ loops: [{ name: 'loop-a', status: 'running', restartable: true }] }))
+      .toEqual({ error: 'Forge returned an invalid loop list' })
+    expect(readForgeLoops({ loops: [{ ...loops[0], firstPromptSent: undefined }] }))
+      .toEqual({ error: 'Forge returned an invalid loop list' })
+    expect(readForgeLoops({ loops: [{ ...loops[0], firstPromptSent: 'yes' }] }))
       .toEqual({ error: 'Forge returned an invalid loop list' })
     expect(readForgeLoops({ error: 'no db' })).toEqual({ error: 'no db' })
     expect(readForgeLoops(null)).toEqual({ error: 'Forge returned an invalid loop list' })

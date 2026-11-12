@@ -1,11 +1,20 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import { execSync } from 'child_process'
+import { execSync, spawnSync } from 'child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { hostname, tmpdir } from 'os'
 import type { LoopState } from '../../src/loop/state'
 import { __resetLoopRuntimeSharedState, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
-import { createLoopService } from '../../src/loop/service'
+import { createLoopService, type LoopChangeNotifier } from '../../src/loop/service'
+import { getRestartability } from '../../src/loop/restartability'
+import {
+  clearStartInFlight,
+  currentStartOwner,
+  isInterruptedStart,
+  markStartInFlight,
+  START_INTERRUPTED_BACKSTOP_MS,
+  type InterruptedStartRow,
+} from '../../src/loop/start-owner'
 import { createLoopAttemptsRepo, type LoopAttemptsRepo } from '../../src/storage/repos/loop-attempts-repo'
 import { recordInboxEnqueued, recordInboxSettled, __resetIdleGate } from '../../src/loop/idle-gate'
 import {
@@ -82,6 +91,7 @@ describe('Loop Runtime', () => {
       getParentSessionId?: (sessionId: string) => Promise<string | null>
       sandboxManager?: LoopRuntimeDeps['sandboxManager']
       loopAttemptsRepo?: LoopAttemptsRepo
+      notify?: LoopChangeNotifier
     } = {},
   ) => {
     const runtime = buildLoopRuntime(db, {
@@ -94,6 +104,7 @@ describe('Loop Runtime', () => {
       getParentSessionId: overrides.getParentSessionId,
       sandboxManager: overrides.sandboxManager,
       loopAttemptsRepo: overrides.loopAttemptsRepo,
+      notify: overrides.notify,
     })
 
     loopService = runtime.loopService
@@ -5221,6 +5232,131 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       expect(service.buildSectionInitialPrompt(state)).not.toContain('## Code graph')
       expect(service.buildSectionAuditPrompt(state)).not.toContain('## Code graph')
+    })
+  })
+
+  describe('interrupted start reconciliation', () => {
+    const aliveProbe = () => true
+    const deadProbe = () => false
+
+    function interruptedRow(overrides: Partial<InterruptedStartRow> = {}): InterruptedStartRow {
+      return {
+        projectId: PROJECT_ID,
+        loopName: 'interrupted-unit',
+        status: 'running',
+        firstPromptSentAt: null,
+        startOwner: `${hostname()}:4242:unit-token`,
+        startedAt: Date.now(),
+        ...overrides,
+      }
+    }
+
+    function exitedChildPid(): number {
+      const child = spawnSync(process.execPath, ['-e', ''])
+      if (!child.pid) throw new Error('could not spawn the probe child process')
+      return child.pid
+    }
+
+    test('a running loop with no first prompt and a dead same-host owner is interrupted', () => {
+      expect(isInterruptedStart(interruptedRow(), { isProcessAlive: deadProbe })).toBe(true)
+    })
+
+    test('a live same-host owner younger than the backstop is not interrupted', () => {
+      const now = Date.now()
+      expect(isInterruptedStart(
+        interruptedRow({ startedAt: now }),
+        { now, isProcessAlive: aliveProbe },
+      )).toBe(false)
+    })
+
+    test('a different host is only interrupted after the backstop', () => {
+      const now = Date.now()
+      const foreignOwner = 'another-host:4242:unit-token'
+      expect(isInterruptedStart(
+        interruptedRow({ startOwner: foreignOwner, startedAt: now }),
+        { now, isProcessAlive: deadProbe },
+      )).toBe(false)
+      expect(isInterruptedStart(
+        interruptedRow({ startOwner: foreignOwner, startedAt: now - START_INTERRUPTED_BACKSTOP_MS - 1_000 }),
+        { now, isProcessAlive: deadProbe },
+      )).toBe(true)
+      expect(isInterruptedStart(
+        interruptedRow({ startOwner: foreignOwner, startedAt: 'not-a-timestamp' }),
+        { now, isProcessAlive: deadProbe },
+      )).toBe(false)
+    })
+
+    test('this process is not interrupted while its start is in flight', () => {
+      const loopName = 'interrupted-unit-current-owner'
+      const row = interruptedRow({ loopName, startOwner: currentStartOwner() })
+      markStartInFlight(PROJECT_ID, loopName)
+      try {
+        expect(isInterruptedStart(row, { isProcessAlive: deadProbe })).toBe(false)
+      } finally {
+        clearStartInFlight(PROJECT_ID, loopName)
+      }
+      expect(isInterruptedStart(row, { isProcessAlive: deadProbe })).toBe(true)
+    })
+
+    test('rows without an owner, with a first prompt, or outside running are not interrupted', () => {
+      expect(isInterruptedStart(interruptedRow({ startOwner: null }), { isProcessAlive: deadProbe })).toBe(false)
+      expect(isInterruptedStart(
+        interruptedRow({ firstPromptSentAt: new Date().toISOString() }),
+        { isProcessAlive: deadProbe },
+      )).toBe(false)
+      expect(isInterruptedStart(interruptedRow({ status: 'interrupted' }), { isProcessAlive: deadProbe })).toBe(false)
+    })
+
+    test('an unparseable start owner is never interrupted', () => {
+      for (const startOwner of ['no-separators', ':4242:tok', 'host::tok', 'host:0:tok', 'host:abc:tok']) {
+        expect(isInterruptedStart(interruptedRow({ startOwner }), { isProcessAlive: deadProbe })).toBe(false)
+      }
+    })
+
+    test('reconcile terminates a loop whose start owner died and leaves it restartable', async () => {
+      const loopName = 'interrupted-start-dead-owner'
+      const startOwner = `${hostname()}:${exitedChildPid()}:dead-token`
+      buildRuntime()
+      loopService.setState(loopName, makeLoopState({
+        loopName,
+        sessionId: 'interrupted-dead-session',
+        startOwner,
+        firstPromptSentAt: undefined,
+      }))
+
+      const notify = vi.fn()
+      const { loop: newInstance, loopsRepo } = buildRuntime({ notify })
+
+      const terminated = await newInstance.reconcileInterruptedStarts()
+
+      expect(terminated).toEqual([loopName])
+      expect(loopsRepo.get(PROJECT_ID, loopName)?.status).toBe('interrupted')
+      expect(notify.mock.calls.some(([reason, name]) => reason === 'settled' && name === loopName)).toBe(true)
+      const reloaded = loopService.getAnyState(loopName)
+      expect(reloaded).not.toBeNull()
+      const restartability = getRestartability(reloaded!, { worktreeExists: () => true })
+      expect(restartability.restartable).toBe(true)
+      expect(restartability.restartRequiresForce).toBe(false)
+    })
+
+    test('reconcile keeps a loop whose start this process still has in flight', async () => {
+      const loopName = 'interrupted-start-in-flight'
+      buildRuntime()
+      loopService.setState(loopName, makeLoopState({
+        loopName,
+        sessionId: 'interrupted-in-flight-session',
+        startOwner: currentStartOwner(),
+        firstPromptSentAt: undefined,
+      }))
+
+      const { loop: newInstance, loopsRepo } = buildRuntime()
+      markStartInFlight(PROJECT_ID, loopName)
+      try {
+        expect(await newInstance.reconcileInterruptedStarts()).toEqual([])
+        expect(loopsRepo.get(PROJECT_ID, loopName)?.status).toBe('running')
+      } finally {
+        clearStartInFlight(PROJECT_ID, loopName)
+      }
     })
   })
 })

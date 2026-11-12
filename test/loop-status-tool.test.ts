@@ -1749,3 +1749,91 @@ describe('loop-status restartability display', () => {
     expect(result).toContain('Restart: available with force=true')
   })
 })
+
+describe('loop-status first prompt reporting', () => {
+  let db: Database
+  let dbPath: string
+  let testDb: ReturnType<typeof createTestDb>
+  const projectId = 'test-project'
+  const loopName = 'test-loop-first-prompt'
+
+  beforeEach(() => {
+    testDb = createTestDb()
+    db = testDb.db
+    dbPath = testDb.path
+  })
+
+  afterEach(() => {
+    testDb.cleanup()
+  })
+
+  function buildTools(loopService: ReturnType<typeof createLoopService>) {
+    const { client: forgeClient } = createFakeForgeClient()
+    const logger = createLogger({ enabled: false, file: '' })
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      client: forgeClient,
+      pendingTeardowns: createPendingTeardownRegistry(),
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+    return { tools, loopsRepo }
+  }
+
+  function buildLoopService() {
+    const logger = createLogger({ enabled: false, file: '' })
+    return createLoopService(createLoopsRepo(db), createPlansRepo(db), createReviewFindingsRepo(db), projectId, logger)
+  }
+
+  test('unprompted running loop reports first prompt not sent in list and detail', async () => {
+    const loopService = buildLoopService()
+    const worktreeDir = `${TEST_DIR}/worktree-first-prompt-unprompted`
+    mkdirSync(worktreeDir, { recursive: true })
+    loopService.setState(loopName, makeLoopState({
+      loopName,
+      sessionId: 'session-unprompted',
+      worktreeDir,
+      projectDir: TEST_DIR,
+      firstPromptSentAt: undefined,
+    }))
+
+    const { tools } = buildTools(loopService)
+
+    const listOutput = await tools['loop-status'].execute({}, { sessionID: 'test-session' } as any)
+    expect(listOutput).toContain('First prompt: not sent')
+
+    const detailOutput = await tools['loop-status'].execute({ name: loopName }, { sessionID: 'test-session' } as any)
+    expect(detailOutput).toContain('First prompt: not sent')
+  })
+
+  test('prompted loop reports first prompt sent and its request key in detail', async () => {
+    const loopService = buildLoopService()
+    const worktreeDir = `${TEST_DIR}/worktree-first-prompt-sent`
+    mkdirSync(worktreeDir, { recursive: true })
+    loopService.setState(loopName, makeLoopState({
+      loopName,
+      sessionId: 'session-prompted',
+      worktreeDir,
+      projectDir: TEST_DIR,
+      firstPromptSentAt: new Date().toISOString(),
+      requestKey: 'req-abc',
+    }))
+
+    const { tools } = buildTools(loopService)
+
+    const detailOutput = await tools['loop-status'].execute({ name: loopName }, { sessionID: 'test-session' } as any)
+    expect(detailOutput).toContain('First prompt: sent')
+    expect(detailOutput).toContain('Request key: req-abc')
+  })
+})

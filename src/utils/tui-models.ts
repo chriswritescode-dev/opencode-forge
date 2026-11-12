@@ -53,6 +53,8 @@ export type LoopInfo = {
   restartRequiresForce: boolean
   restartBlockedMessage?: string
   startedAt?: string
+  firstPromptSent: boolean
+  requestKey?: string
   executionModel?: string
   executionVariant?: string
   auditorModel?: string

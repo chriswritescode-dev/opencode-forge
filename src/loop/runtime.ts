@@ -50,6 +50,7 @@ import {
 } from './code-graph'
 import { listSnapshotChangedRanges } from '../utils/audit-snapshot'
 import { extractSectionFiles } from '../utils/plan-structure'
+import { isInterruptedStart } from './start-owner'
 
 import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { resolvePostActionConfig } from './post-action-config'
@@ -159,6 +160,13 @@ export interface Loop {
    * No-op when the instance has no directory.
    */
   superviseOwnedLoops(): string[]
+  /**
+   * Terminally reconciles running loops whose first prompt never started and whose
+   * start owner is gone (or is this process with no start in flight), returning the
+   * loop names it terminated. Not called from plugin init: plugin init must not
+   * resurrect or kill loops persisted before it.
+   */
+  reconcileInterruptedStarts(): Promise<string[]>
   getStallInfo(name: string): LoopWatchdogStallInfo | null
   restart(name: string, params: { newState: LoopState; newSessionId: string }): void
   generateUniqueLoopName(baseName: string, isTaken?: (name: string) => boolean): string
@@ -3387,6 +3395,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
+  async function reconcileInterruptedStarts(): Promise<string[]> {
+    const terminated: string[] = []
+    for (const state of listActive()) {
+      if (!isInterruptedStart({ ...state, projectId })) continue
+      // The loop's first prompt can land between the list read and the lock, so
+      // the decision is re-made from the authoritative under-lock state; the same
+      // lock also serializes this termination with phase-rotation ticks (see
+      // `terminateLoopByName`).
+      const didTerminate = await withStateLock(state.loopName, async () => {
+        const current = loopService.getActiveState(state.loopName)
+        if (!current || !isInterruptedStart({ ...current, projectId })) return false
+        await terminateLoop(state.loopName, current, { kind: 'start_interrupted' })
+        return true
+      })
+      if (didTerminate) terminated.push(state.loopName)
+    }
+    return terminated
+  }
+
   async function clearLoopTimers(loopName: string): Promise<void> {
     watchdog.stop(loopName)
 
@@ -3615,6 +3642,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     holdUntilFirstPrompt,
     startWatchdog,
     superviseOwnedLoops,
+    reconcileInterruptedStarts,
     getStallInfo,
     restart,
     generateUniqueLoopName,

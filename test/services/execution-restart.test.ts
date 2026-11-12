@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawnSync } from 'child_process'
 import { join } from 'path'
-import { tmpdir } from 'os'
+import { hostname, tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -21,7 +21,7 @@ import type { LoopService } from '../../src/loop/service'
 import type { Database } from 'bun:sqlite'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
-import { buildExecutionDeps } from '../helpers/loop-fixtures'
+import { buildExecutionDeps, buildLoopRuntime } from '../helpers/loop-fixtures'
 import { createMockLogger } from '../helpers/logger'
 
 const mockLogger = createMockLogger()
@@ -117,6 +117,9 @@ describe('handleLoopRestart from stall_timeout', () => {
     startedAt: number
     baseCommit: string | null
     standbySessionId: string | null
+    startOwner: string | null
+    firstPromptSentAt: number | null
+    requestKey: string | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -137,6 +140,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       startedAt: Date.now(),
       baseCommit: null as string | null,
       standbySessionId: null as string | null,
+      startOwner: null as string | null,
+      firstPromptSentAt: null as number | null,
+      requestKey: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -170,6 +176,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       totalSections: opts.totalSections,
       baseCommit: opts.baseCommit,
       standbySessionId: opts.standbySessionId,
+      startOwner: opts.startOwner,
+      firstPromptSentAt: opts.firstPromptSentAt,
+      requestKey: opts.requestKey,
     }, { lastAuditResult: null })
   }
 
@@ -1804,6 +1813,64 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(result.error.message).toContain('Could not abort active loop session session-old: abort failed')
     expect(client.session.create).not.toHaveBeenCalled()
     expect(loopsRepo.get(PROJECT_ID, 'abort-failure-loop')!.currentSessionId).toBe('session-old')
+  })
+
+  test('restart reconciles an interrupted start and sends the section-0 initial prompt once', async () => {
+    const child = spawnSync(process.execPath, ['-e', ''])
+    const deadOwner = `${hostname()}:${String(child.pid)}:dead`
+
+    insertLoop({
+      loopName: 'interrupted-restart-loop',
+      status: 'running',
+      terminationReason: null,
+      totalSections: 1,
+      startOwner: deadOwner,
+    })
+
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: 'interrupted-restart-loop',
+      sections: [{ index: 0, title: 'Setup', content: '# Setup\nInstall deps' }],
+    })
+
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session-interrupted' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      toast: async () => {},
+    })
+
+    const runtime = buildLoopRuntime(db, { projectId: PROJECT_ID, client })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(
+      buildExecutionDeps(db, { client, loop: runtime.loop }).deps,
+    )
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'interrupted-restart-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const prompts = calls.filter((call) => call.method === 'session.promptAsync')
+    expect(prompts).toHaveLength(1)
+    const promptText = (prompts[0].params as { parts: Array<{ text: string }> }).parts[0].text
+    expect(promptText).toContain('Setup')
+
+    const row = loopsRepo.get(PROJECT_ID, 'interrupted-restart-loop')!
+    expect(typeof row.firstPromptSentAt).toBe('number')
+    expect(row.status).toBe('running')
   })
 })
 

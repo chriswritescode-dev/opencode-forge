@@ -223,13 +223,15 @@ const LOOP_INFO_SCHEMA = {
     restartRequiresForce: { type: 'boolean' },
     restartBlockedMessage: OPTIONAL_STRING,
     startedAt: OPTIONAL_STRING,
+    firstPromptSent: { type: 'boolean' },
+    requestKey: OPTIONAL_STRING,
     executionModel: OPTIONAL_STRING,
     executionVariant: OPTIONAL_STRING,
     auditorModel: OPTIONAL_STRING,
     auditorVariant: OPTIONAL_STRING,
     branch: OPTIONAL_STRING,
   },
-  required: ['name', 'status', 'phase', 'iteration', 'maxIterations', 'sessionId', 'restartable', 'restartRequiresForce', 'startedAt'],
+  required: ['name', 'status', 'phase', 'iteration', 'maxIterations', 'sessionId', 'restartable', 'restartRequiresForce', 'startedAt', 'firstPromptSent'],
   additionalProperties: false,
 } as const
 
@@ -542,6 +544,7 @@ export function readForgeLoops(value: unknown): ForgeLoopsOutput {
     && typeof row.sessionId === 'string'
     && typeof row.restartable === 'boolean'
     && typeof row.restartRequiresForce === 'boolean'
+    && typeof row.firstPromptSent === 'boolean'
     && typeof row.startedAt === 'string')
 }
 

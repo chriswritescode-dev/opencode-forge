@@ -905,6 +905,7 @@ export async function createForgeCore(config: PluginConfig, host: ForgeHostInput
     loopsRepo,
     plansRepo,
     sandboxPreferences,
+    reconcileInterruptedStarts: () => loopHandler.loop.reconcileInterruptedStarts(),
     async restartLoop(request) {
       const response = await executionService.dispatch(
         { surface: 'api', projectId, directory: projectRoot },

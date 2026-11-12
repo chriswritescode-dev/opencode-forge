@@ -763,6 +763,7 @@ export async function attachLoopToSession(
     }
 
     if (!sendInitialPrompt) {
+      deps.loop.service.recordFirstPromptSent(loopName)
       if (startWatchdog && deps.loopHandler) {
         deps.loopHandler.startWatchdog(loopName)
       }
@@ -1482,6 +1483,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const name = command.selector.name
+    await deps.loop.reconcileInterruptedStarts()
     const active = deps.loop.listActive()
     const recent = deps.loop.listRecent()
     const allStates = [...active, ...recent]
@@ -1824,47 +1826,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         : undefined
       const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
-      // Restart sends the persisted phase's prompt as the code agent: the post-action
-      // session must be able to call `loop-complete`, which the auditor agent excludes.
-      markStartInFlight(ctx.projectId, stoppedState.loopName)
-      deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
-        sessionId: newState.sessionId,
-        phase: newState.phase,
-        iteration: newState.iteration,
-        auditCount: newState.auditCount,
-        sandbox: newState.sandbox ?? false,
-        sandboxContainer: newState.sandboxContainer ?? null,
-        workspaceId: newState.workspaceId ?? null,
-        auditorModel: restartAuditorState.auditorModel ?? null,
-        auditorVariant: command.auditorVariant === undefined ? undefined : overrideAuditorVariant ?? null,
-        executionModel: overrideExecutionModel,
-        executionVariant: command.executionVariant === undefined ? undefined : overrideExecutionVariant ?? null,
-        currentSectionIndex: newState.currentSectionIndex,
-        totalSections: newState.totalSections,
-        startedAt: new Date(newState.startedAt).getTime(),
-        startOwner: currentStartOwner(),
-      })
-
-      deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
-      deps.loop.registerSessionReverseIndex(effectiveSessionId, stoppedState.loopName)
-
-      // Record restart phase transition immediately after persisting the new
-      // phase, before sending the restart prompt. A provider-limit or other
-      // prompt send failure may then terminate the loop — the phase row must
-      // already be in place so the transition log shows the real sequence
-      // (phase change → terminal). We skip when persisted phase matches the
-      // restart phase (post_action stays in place).
-      const restartPhaseChanged = restartPhase !== stoppedState.phase
-      if (restartPhaseChanged) {
-        deps.loop.service.recordTransition(stoppedState.loopName, {
-          eventType: 'restart',
-          transitionKind: 'phase',
-          fromPhase: stoppedState.phase,
-          toPhase: restartPhase,
-          iteration: 1,
-          sectionIndex: transitionSectionIndex(stoppedState),
-        })
-      }
+      let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
 
       const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
         markPromptSent(ctx.projectId, stoppedState.loopName, effectiveSessionId, deps.logger)
@@ -1886,12 +1848,54 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      // Retry the prompt with backoff: a just-created + warped session can briefly
-      // report "Session not found" before it is durably registered. Without this,
-      // a transient race tore the restart down and reverted the loop to terminal.
-      const RESTART_PROMPT_MAX_ATTEMPTS = 4
-      let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
+      const restartPhaseChanged = restartPhase !== stoppedState.phase
+
+      // Restart sends the persisted phase's prompt as the code agent: the post-action
+      // session must be able to call `loop-complete`, which the auditor agent excludes.
+      markStartInFlight(ctx.projectId, stoppedState.loopName)
       try {
+        deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
+          sessionId: newState.sessionId,
+          phase: newState.phase,
+          iteration: newState.iteration,
+          auditCount: newState.auditCount,
+          sandbox: newState.sandbox ?? false,
+          sandboxContainer: newState.sandboxContainer ?? null,
+          workspaceId: newState.workspaceId ?? null,
+          auditorModel: restartAuditorState.auditorModel ?? null,
+          auditorVariant: command.auditorVariant === undefined ? undefined : overrideAuditorVariant ?? null,
+          executionModel: overrideExecutionModel,
+          executionVariant: command.executionVariant === undefined ? undefined : overrideExecutionVariant ?? null,
+          currentSectionIndex: newState.currentSectionIndex,
+          totalSections: newState.totalSections,
+          startedAt: new Date(newState.startedAt).getTime(),
+          startOwner: currentStartOwner(),
+        })
+
+        deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
+        deps.loop.registerSessionReverseIndex(effectiveSessionId, stoppedState.loopName)
+
+        // Record restart phase transition immediately after persisting the new
+        // phase, before sending the restart prompt. A provider-limit or other
+        // prompt send failure may then terminate the loop — the phase row must
+        // already be in place so the transition log shows the real sequence
+        // (phase change → terminal). We skip when persisted phase matches the
+        // restart phase (post_action stays in place).
+        if (restartPhaseChanged) {
+          deps.loop.service.recordTransition(stoppedState.loopName, {
+            eventType: 'restart',
+            transitionKind: 'phase',
+            fromPhase: stoppedState.phase,
+            toPhase: restartPhase,
+            iteration: 1,
+            sectionIndex: transitionSectionIndex(stoppedState),
+          })
+        }
+
+        // Retry the prompt with backoff: a just-created + warped session can briefly
+        // report "Session not found" before it is durably registered. Without this,
+        // a transient race tore the restart down and reverted the loop to terminal.
+        const RESTART_PROMPT_MAX_ATTEMPTS = 4
         for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
           const { result } = await sendLoopPrompt({
             projectId: ctx.projectId,
