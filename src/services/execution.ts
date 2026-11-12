@@ -43,6 +43,7 @@ import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
 import { defaultGitService, type GitService } from '../utils/git-service'
+import { currentStartOwner, markStartInFlight, clearStartInFlight } from '../loop/start-owner'
 
 /**
  * A freshly created + warped loop session can transiently report "Session not
@@ -131,6 +132,7 @@ export interface AttachLoopInput {
   startWatchdog?: boolean
   sendInitialPrompt?: boolean
   abortSourceSessionOnSuccess?: boolean
+  requestKey?: string
   onStarted?: (info: {
     sessionId: string
     loopName: string
@@ -523,7 +525,7 @@ export async function attachLoopToSession(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
   input: AttachLoopInput,
-): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed' | 'provider_limit'; message: string }> {
+): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'conflict' | 'internal_error'; message: string }> {
   const {
     sessionId,
     workspaceId,
@@ -581,7 +583,90 @@ export async function attachLoopToSession(
     (await resolveHostSessionDirectory(deps.client, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
 
   let releaseFirstPromptHold = (): void => {}
+  let handedOff = false
   const attachOwnsLoop = (): boolean => deps.loop.service.getActiveState(loopName)?.sessionId === sessionId
+
+  async function sendAttachFirstPrompt(updatedState: import('../loop/state').LoopState, totalSections: number): Promise<void> {
+    try {
+      if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
+      if (!attachOwnsLoop()) {
+        deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
+        return
+      }
+      const promptText = totalSections > 0
+        ? deps.loop.service.buildSectionInitialPrompt(updatedState)
+        : deps.loop.service.buildPlanInitialPrompt(planText)
+      const sessionDir = worktreeDir
+      const promptParts = [{ type: 'text' as const, text: promptText }]
+      const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
+      const promptResult = await sendLoopPrompt({
+        projectId: ctx.projectId,
+        loopName,
+        sessionId,
+        agent: 'code',
+        logger: deps.logger,
+        primaryModel: loopModel,
+        useInFlightGuard: false,
+        performPrompt: async (model) => {
+          markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
+          releaseFirstPromptHold()
+          try {
+            await deps.client.session.promptAsync({
+              sessionID: sessionId,
+              directory: sessionDir,
+              parts: promptParts,
+              agent: 'code',
+              ...workspaceParam,
+              ...(model ? { model } : {}),
+            })
+            return {}
+          } catch (err) {
+            return { error: err }
+          }
+        },
+      })
+
+      if (promptResult.result.error) {
+        if (!attachOwnsLoop()) {
+          deps.logger.error(`attachLoopToSession: initial prompt failed after loop ${loopName} moved to another session; leaving its state alone`, promptResult.result.error)
+          return
+        }
+        const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
+        if (limitReason) {
+          deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
+          await deps.loop.terminate(loopName, { kind: 'provider_limit', message: limitReason })
+          return
+        }
+        deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
+        await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(promptResult.result.error) })
+        return
+      }
+
+      deps.loop.service.recordFirstPromptSent(loopName)
+
+      if (startWatchdog && deps.loopHandler) {
+        deps.loopHandler.startWatchdog(loopName)
+      }
+
+      if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
+        deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
+          deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
+        })
+      }
+    } catch (err) {
+      deps.logger.error('attachLoopToSession: unexpected error while sending the first prompt', err)
+      if (attachOwnsLoop()) {
+        try {
+          await deps.loop.terminate(loopName, { kind: 'first_prompt_failed', message: errorMessage(err) })
+        } catch (terminateErr) {
+          deps.logger.error('attachLoopToSession: failed to terminate after a first prompt error', terminateErr)
+        }
+      }
+    } finally {
+      releaseFirstPromptHold()
+      clearStartInFlight(ctx.projectId, loopName)
+    }
+  }
 
   try {
     // Persist loop state
@@ -613,8 +698,11 @@ export async function attachLoopToSession(
       hostSessionId: input.hostSessionId,
       currentSectionIndex: 0,
       totalSections: 0,
+      requestKey: input.requestKey,
+      startOwner: currentStartOwner(),
     }
 
+    markStartInFlight(ctx.projectId, loopName)
     deps.loop.service.setState(loopName, state)
     deps.loop.service.registerLoopSession(sessionId, loopName)
     deps.loop.registerSessionReverseIndex(sessionId, loopName)
@@ -682,77 +770,9 @@ export async function attachLoopToSession(
       return { ok: true, loopName }
     }
 
-    const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
-    if (totalSections > 0) await deps.loop.snapshotSectionCodeGraph(updatedState)
-    if (!attachOwnsLoop()) {
-      deps.logger.log(`attachLoopToSession: loop ${loopName} was cancelled or restarted before its first prompt was built; skipping prompt and watchdog`)
-      return { ok: true, loopName }
-    }
-    const promptText = totalSections > 0
-      ? deps.loop.service.buildSectionInitialPrompt(updatedState)
-      : deps.loop.service.buildPlanInitialPrompt(planText)
-
-    // Send initial prompt with fallback
-    const sessionDir = worktreeDir
-    const promptParts = [{ type: 'text' as const, text: promptText }]
-    const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
-
-    const promptResult = await sendLoopPrompt({
-      projectId: ctx.projectId,
-      loopName,
-      sessionId,
-      agent: 'code',
-      logger: deps.logger,
-      primaryModel: loopModel,
-      useInFlightGuard: false,
-      performPrompt: async (model) => {
-        markPromptSent(ctx.projectId, loopName, sessionId, deps.logger)
-        releaseFirstPromptHold()
-        try {
-          await deps.client.session.promptAsync({
-            sessionID: sessionId,
-            directory: sessionDir,
-            parts: promptParts,
-            agent: 'code',
-            ...workspaceParam,
-            ...(model ? { model } : {}),
-          })
-          return {}
-        } catch (err) {
-          return { error: err }
-        }
-      },
-    })
-
-    if (promptResult.result.error) {
-      if (!attachOwnsLoop()) {
-        deps.logger.error(`attachLoopToSession: initial prompt failed after loop ${loopName} moved to another session; leaving its state alone`, promptResult.result.error)
-        return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
-      }
-      const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
-      if (limitReason) {
-        deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
-        await deps.loop.terminate(loopName, { kind: 'provider_limit', message: limitReason })
-        return { ok: false, code: 'provider_limit', message: `Provider limit on initial prompt: ${limitReason}` }
-      }
-      deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
-      deps.loop.unregisterSessionReverseIndex(sessionId)
-      deps.loop.service.deleteState(loopName)
-      return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
-    }
-
-    // Success: start watchdog if requested
-    if (startWatchdog && deps.loopHandler) {
-      deps.loopHandler.startWatchdog(loopName)
-    }
-
-    // Abort source session if requested
-    if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
-      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
-      })
-    }
-
+    const updatedState: import('../loop/state').LoopState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
+    handedOff = true
+    void sendAttachFirstPrompt(updatedState, totalSections)
     return { ok: true, loopName }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -770,7 +790,10 @@ export async function attachLoopToSession(
       message: isAlreadyExists ? `Loop ${loopName} already attached` : 'Failed to attach loop to session',
     }
   } finally {
-    releaseFirstPromptHold()
+    if (!handedOff) {
+      releaseFirstPromptHold()
+      clearStartInFlight(ctx.projectId, loopName)
+    }
   }
 }
 
@@ -1207,12 +1230,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
 
       if (!attachResult.ok) {
-        // Provider-limit failures already terminate the loop row via
-        // attachLoopToSession; rolling back would delete the restartable
-        // errored row and workspace, defeating loop-status restart=true.
-        if (attachResult.code !== 'provider_limit') {
-          await rollbackLoopStart()
-        }
+        await rollbackLoopStart()
         return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
       }
 
@@ -1808,6 +1826,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Restart sends the persisted phase's prompt as the code agent: the post-action
       // session must be able to call `loop-complete`, which the auditor agent excludes.
+      markStartInFlight(ctx.projectId, stoppedState.loopName)
       deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
         sessionId: newState.sessionId,
         phase: newState.phase,
@@ -1823,7 +1842,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         currentSectionIndex: newState.currentSectionIndex,
         totalSections: newState.totalSections,
         startedAt: new Date(newState.startedAt).getTime(),
-        startOwner: '',
+        startOwner: currentStartOwner(),
       })
 
       deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
@@ -1872,26 +1891,30 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // a transient race tore the restart down and reverted the loop to terminal.
       const RESTART_PROMPT_MAX_ATTEMPTS = 4
       let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
-      for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
-        const { result } = await sendLoopPrompt({
-          projectId: ctx.projectId,
-          loopName: stoppedState.loopName,
-          sessionId: effectiveSessionId,
-          agent: 'code',
-          logger: deps.logger,
-          primaryModel: loopModel,
-          fallbackModel: loopFallbackModel,
-          useInFlightGuard: true,
-          clearPendingOnError: false,
-          performPrompt: performRestartPrompt,
-        })
-        promptResult = result
-        if (!result.error || !isTransientSessionError(result.error) || attempt === RESTART_PROMPT_MAX_ATTEMPTS) {
-          break
+      try {
+        for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
+          const { result } = await sendLoopPrompt({
+            projectId: ctx.projectId,
+            loopName: stoppedState.loopName,
+            sessionId: effectiveSessionId,
+            agent: 'code',
+            logger: deps.logger,
+            primaryModel: loopModel,
+            fallbackModel: loopFallbackModel,
+            useInFlightGuard: true,
+            clearPendingOnError: false,
+            performPrompt: performRestartPrompt,
+          })
+          promptResult = result
+          if (!result.error || !isTransientSessionError(result.error) || attempt === RESTART_PROMPT_MAX_ATTEMPTS) {
+            break
+          }
+          const backoffMs = 250 * attempt
+          deps.logger.log(`loop-restart: new session not ready yet (attempt ${attempt}/${RESTART_PROMPT_MAX_ATTEMPTS}); retrying prompt in ${backoffMs}ms`)
+          await new Promise((resolve) => setTimeout(resolve, backoffMs))
         }
-        const backoffMs = 250 * attempt
-        deps.logger.log(`loop-restart: new session not ready yet (attempt ${attempt}/${RESTART_PROMPT_MAX_ATTEMPTS}); retrying prompt in ${backoffMs}ms`)
-        await new Promise((resolve) => setTimeout(resolve, backoffMs))
+      } finally {
+        clearStartInFlight(ctx.projectId, stoppedState.loopName)
       }
 
       if (promptResult.error) {
@@ -2012,6 +2035,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
       }
 
+      deps.loop.service.recordFirstPromptSent(stoppedState.loopName)
       deps.loopHandler!.startWatchdog(stoppedState.loopName)
 
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }

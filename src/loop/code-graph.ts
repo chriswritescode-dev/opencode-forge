@@ -32,7 +32,7 @@ const REPORT_WRITE_CHUNK_LENGTH = 64 * 1024
 /** The runner's own deadline: one exec may build a full index for a loop's first snapshot. */
 const RUNNER_DEADLINE_MS = 540000
 /** Host-side exec timeout, a margin past the runner's deadline so the runner normally reports it itself. */
-const SNAPSHOT_TIMEOUT_MS = 600000
+export const SNAPSHOT_TIMEOUT_MS = 600000
 /** Only tests that import a changed file directly: each extra level pulls in most of the suite once a widely imported module changes. */
 const AFFECTED_MAX_DEPTH = 1
 /** Callers listed per changed symbol at an audit checkpoint; the rest are only counted. */

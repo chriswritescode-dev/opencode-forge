@@ -2,10 +2,15 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { buildExecutionDeps, makeLoopState } from '../helpers/loop-fixtures'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { createTestDb } from '../helpers/test-db'
+import { isStartInFlight } from '../../src/loop/start-owner'
 
 type PromptCallArgs = { agent?: string; sessionID?: string; parts: Array<{ text: string }> }
 
 const PROJECT_ID = 'test-project'
+
+async function waitForPrompt(promptAsyncMock: ReturnType<typeof vi.fn>): Promise<void> {
+  await vi.waitFor(() => expect(promptAsyncMock).toHaveBeenCalled())
+}
 
 describe('attachLoopToSession', () => {
   let db: ReturnType<typeof createTestDb>['db']
@@ -72,13 +77,13 @@ describe('attachLoopToSession', () => {
     expect(state!.maxIterations).toBe(50)
 
     // Verify code-agent prompt was sent
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(promptAsyncMock).toHaveBeenCalledTimes(1))
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.sessionID).toBe('sess_abc')
 
     // Verify watchdog was started
-    expect(deps.loopHandler!.startWatchdog).toHaveBeenCalledWith('my-loop')
+    await vi.waitFor(() => expect(deps.loopHandler!.startWatchdog).toHaveBeenCalledWith('my-loop'))
   })
 
   test('onStarted callback is invoked after state persistence', async () => {
@@ -117,11 +122,12 @@ describe('attachLoopToSession', () => {
     })
   })
 
-  test('prompt failure returns ok:false and cleans up state', async () => {
+  test('prompt failure after the reply terminates the loop with first_prompt_failed', async () => {
     const { deps, promptAsyncMock } = setupAttach()
 
     // Make promptAsync throw an error (port contract: throws on failure)
     promptAsyncMock.mockImplementationOnce(async () => { throw new Error('network timeout') })
+    deps.loop.terminate = vi.fn(async () => true)
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -142,14 +148,9 @@ describe('attachLoopToSession', () => {
       },
     )
 
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.code).toBe('prompt_failed')
-    }
+    expect(result.ok).toBe(true)
 
-    // State should be cleaned up on failure
-    const state = (deps.loop.service as any).getActiveState('fail-loop')
-    expect(state).toBeNull()
+    await vi.waitFor(() => expect(deps.loop.terminate).toHaveBeenCalledWith('fail-loop', { kind: 'first_prompt_failed', message: 'network timeout' }))
   })
 
   test('attachLoopToSession does NOT call loop.deleteState when setState throws because loop already exists', async () => {
@@ -336,7 +337,7 @@ describe('attachLoopToSession', () => {
     expect(state!.currentSectionIndex).toBe(0)
     expect(state!.totalSections).toBe(2)
 
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(promptAsyncMock).toHaveBeenCalledTimes(1))
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
   })
@@ -376,6 +377,7 @@ describe('attachLoopToSession', () => {
     const state = (deps.loop.service as any).getActiveState('phase-loop')
     expect(state).not.toBeNull()
     expect(state!.totalSections).toBe(0)
+    await waitForPrompt(promptAsyncMock)
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     const promptText = promptCallArgs.parts[0].text as string
     expect(promptText.startsWith(planText)).toBe(true)
@@ -412,7 +414,7 @@ describe('attachLoopToSession', () => {
     expect(state).not.toBeNull()
     expect(state!.totalSections).toBe(0)
 
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(promptAsyncMock).toHaveBeenCalledTimes(1))
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.parts[0].text).toContain(planText)
@@ -443,7 +445,7 @@ describe('attachLoopToSession', () => {
 
     expect(result.ok).toBe(true)
 
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(promptAsyncMock).toHaveBeenCalledTimes(1))
     const promptCallArgs = promptAsyncMock.mock.calls[0]![0]
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.sessionID).toBe('sess_nodecomp')
@@ -529,13 +531,13 @@ describe('attachLoopToSession', () => {
     const { deps, loopsRepo, promptAsyncMock } = setupAttach()
     const loopName = 'cancelled-during-snapshot'
 
-    deps.loop.snapshotSectionCodeGraph = async () => {
-      loopsRepo.terminate(PROJECT_ID, loopName, {
-        status: 'cancelled',
-        reason: 'user',
-        completedAt: Date.now(),
-      })
-    }
+    let resolveSnapshot: () => void = () => {}
+    const snapshotStarted = new Promise<void>((resolve) => {
+      deps.loop.snapshotSectionCodeGraph = () => {
+        resolve()
+        return new Promise<void>((r) => { resolveSnapshot = r })
+      }
+    })
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -570,6 +572,16 @@ describe('attachLoopToSession', () => {
     )
 
     expect(result.ok).toBe(true)
+    await snapshotStarted
+
+    loopsRepo.terminate(PROJECT_ID, loopName, {
+      status: 'cancelled',
+      reason: 'user',
+      completedAt: Date.now(),
+    })
+    resolveSnapshot()
+
+    await vi.waitFor(() => expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false))
     expect(promptAsyncMock).not.toHaveBeenCalled()
     expect(deps.loopHandler!.startWatchdog).not.toHaveBeenCalled()
 
@@ -627,8 +639,8 @@ describe('attachLoopToSession', () => {
     expect(result.ok).toBe(true)
     expect(hold).toHaveBeenCalledTimes(1)
     expect(hold.mock.calls[0]![0].sessionId).toBe('sess_held')
+    await vi.waitFor(() => expect(promptAsyncMock).toHaveBeenCalledTimes(1))
     expect(heldDuringSnapshot).toBe(true)
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
     expect(release).toHaveBeenCalled()
     expect(release.mock.invocationCallOrder[0]!).toBeLessThan(promptAsyncMock.mock.invocationCallOrder[0]!)
   })
@@ -650,6 +662,7 @@ describe('attachLoopToSession', () => {
     )
 
     expect(result.ok).toBe(true)
+    await vi.waitFor(() => expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false))
     expect(promptAsyncMock).not.toHaveBeenCalled()
     expect(deps.loopHandler!.startWatchdog).not.toHaveBeenCalled()
     expect((deps.loop.service as any).getActiveState(loopName)?.sessionId).toBe('sess_restarted')
@@ -659,6 +672,7 @@ describe('attachLoopToSession', () => {
   test('a failed first prompt leaves the state of a loop restarted into another session alone', async () => {
     const { deps, promptAsyncMock } = setupAttach()
     const loopName = 'restarted-during-prompt'
+    deps.loop.terminate = vi.fn(async () => true)
     promptAsyncMock.mockImplementation(async () => {
       deps.loop.service.registerLoopSession('sess_restarted', loopName)
       throw new Error('session aborted')
@@ -671,7 +685,92 @@ describe('attachLoopToSession', () => {
       sectionedAttachInput(loopName, 'sess_stale_prompt'),
     )
 
-    expect(result).toMatchObject({ ok: false, code: 'prompt_failed' })
+    expect(result.ok).toBe(true)
+    await vi.waitFor(() => expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false))
+    expect(promptAsyncMock).toHaveBeenCalled()
+    expect(deps.loop.terminate).not.toHaveBeenCalled()
     expect((deps.loop.service as any).getActiveState(loopName)?.sessionId).toBe('sess_restarted')
+  })
+
+  test('answers the start before the section snapshot and records the first prompt once it resolves', async () => {
+    const { deps, loopsRepo, promptAsyncMock } = setupAttach()
+    const loopName = 'reply-before-snapshot'
+
+    let resolveSnapshot: () => void = () => {}
+    const snapshotStarted = new Promise<void>((resolve) => {
+      deps.loop.snapshotSectionCodeGraph = () => {
+        resolve()
+        return new Promise<void>((r) => { resolveSnapshot = r })
+      }
+    })
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      sectionedAttachInput(loopName, 'sess_reply_first'),
+    )
+
+    expect(result.ok).toBe(true)
+    await snapshotStarted
+    expect(promptAsyncMock).not.toHaveBeenCalled()
+
+    resolveSnapshot()
+    await vi.waitFor(() => expect(promptAsyncMock).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(loopsRepo.get(PROJECT_ID, loopName)!.firstPromptSentAt).not.toBeNull())
+    expect(loopsRepo.get(PROJECT_ID, loopName)!.startOwner).toMatch(/^.+:\d+:.+$/)
+  })
+
+  test('terminates with first_prompt_failed when the prompt fails after the reply', async () => {
+    const { deps, loopsRepo, promptAsyncMock } = setupAttach()
+    const loopName = 'first-prompt-failed'
+
+    promptAsyncMock.mockImplementation(async () => { throw new Error('network timeout') })
+    deps.loop.terminate = vi.fn(async (name: string, reason: any) => {
+      deps.loop.service.terminate(name, {
+        status: 'errored',
+        reason: reason.kind === 'first_prompt_failed' ? `first_prompt_failed: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      return true
+    })
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      sectionedAttachInput(loopName, 'sess_first_prompt_failed'),
+    )
+
+    expect(result.ok).toBe(true)
+    await vi.waitFor(() => expect(loopsRepo.get(PROJECT_ID, loopName)!.status).toBe('errored'))
+
+    const row = loopsRepo.get(PROJECT_ID, loopName)!
+    expect(row.terminationReason).toMatch(/^first_prompt_failed: /)
+    expect(row.worktreeDir).toBeTruthy()
+    await vi.waitFor(() => expect(isStartInFlight(PROJECT_ID, loopName)).toBe(false))
+  })
+
+  test('terminates with provider_limit when the first prompt hits a provider limit', async () => {
+    const { deps, promptAsyncMock } = setupAttach()
+    const loopName = 'first-prompt-provider-limit'
+
+    promptAsyncMock.mockImplementation(async () => {
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+    deps.loop.terminate = vi.fn(async () => true)
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      sectionedAttachInput(loopName, 'sess_provider_limit'),
+    )
+
+    expect(result.ok).toBe(true)
+    await vi.waitFor(() => expect(deps.loop.terminate).toHaveBeenCalledWith(
+      loopName,
+      expect.objectContaining({ kind: 'provider_limit', message: expect.stringContaining('usage limit') }),
+    ))
   })
 })

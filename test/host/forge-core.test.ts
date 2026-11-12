@@ -265,7 +265,7 @@ describe('createForgeCore', () => {
       .toEqual({ type: 'hostSandboxChanged', projectId: built.projectId })
   })
 
-  test('emits one coalesced loopsChanged on a loop change', async () => {
+  test('emits a coalesced loopsChanged for the restart and its first prompt', async () => {
     const events: ForgeTuiEvent[] = []
     const built = await buildCore({ sandbox: { enabled: false } }, undefined, { publishTuiEvent: (event) => events.push(event) })
 
@@ -289,6 +289,7 @@ describe('createForgeCore', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(events.filter((event) => event.type === 'loopsChanged')).toEqual([
+      { type: 'loopsChanged', projectId: built.projectId },
       { type: 'loopsChanged', projectId: built.projectId },
     ])
   })

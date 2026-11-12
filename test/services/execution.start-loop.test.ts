@@ -3,7 +3,8 @@ import { generateUniqueName } from '../../src/loop/name-uniqueness'
 import { createForgeExecutionService } from '../../src/services/execution'
 import type { Logger } from '../../src/types'
 import { buildLoopPermissionRuleset, resolveLoopPermissionOptions, MAX_TOTAL_SECTIONS } from '../../src/constants/loop'
-import type { LoopService } from '../../src/loop/service'
+import { createLoopService, type LoopService } from '../../src/loop/service'
+import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createTestDb } from '../helpers/test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
 import { buildExecutionDeps } from '../helpers/loop-fixtures'
@@ -698,7 +699,7 @@ describe('handleStartLoop variant config fallback', () => {
 describe('handleStartLoop base ref, branch, and base commit', () => {
   function buildHarness(
     workspaceCreate?: () => Promise<Record<string, unknown>>,
-    overrides: { gitService?: any; logger?: Logger } = {},
+    overrides: { gitService?: any; logger?: Logger; loop?: Record<string, unknown> } = {},
   ) {
     const testDb = createTestDb()
     openDbs.push(testDb)
@@ -719,9 +720,10 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
       logger: overrides.logger ?? mockLogger,
       loop: {
         generateUniqueLoopName: (baseName, isTaken) => uniqueLoopNameFor(built.loopService, baseName, isTaken),
+        ...(overrides.loop ?? {}),
       },
     })
-    return { ...built, client }
+    return { ...built, client, db }
   }
 
   test('forwards baseRef to workspace creation and persists the resolved base commit', async () => {
@@ -1097,6 +1099,102 @@ describe('handleStartLoop base ref, branch, and base commit', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.data.loopName).toBe('taken-branch-1')
+  })
+
+  test('answers the start before the code-graph snapshot and records the first prompt when it resolves', async () => {
+    const planText = '<!-- forge-section -->\n## Setup\n### Files\n- package.json\nInstall.\n<!-- forge-section -->\n## Build\n### Files\n- src/index.ts\nCompile.'
+    let resolveStarted = (): void => {}
+    const snapshotStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let resolveSnapshot = (): void => {}
+    const pending = new Promise<void>((resolve) => {
+      resolveSnapshot = resolve
+    })
+
+    const h = buildHarness(undefined, {
+      loop: {
+        snapshotSectionCodeGraph: () => {
+          resolveStarted()
+          return pending
+        },
+      },
+    })
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(h.deps)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.data.sessionId).toBe('sess-base')
+    expect(result.data.loopName).toBe('setup')
+    expect(result.data.worktreeBranch).toBe('forge/base-loop')
+    expect(result.data.worktreeDir).toBe('/tmp/wt/base')
+    expect(result.data.workspaceId).toBe('ws_base')
+
+    await snapshotStarted
+    expect(h.client.session.promptAsync).not.toHaveBeenCalled()
+
+    resolveSnapshot()
+    await vi.waitFor(() => expect(h.client.session.promptAsync).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() =>
+      expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.firstPromptSentAt).not.toBeNull(),
+    )
+  })
+
+  test('a failing first prompt after the reply terminates first_prompt_failed and keeps the restartable worktree row', async () => {
+    const notifySpy = vi.fn()
+    const h = buildHarness()
+    h.client.session.promptAsync.mockRejectedValue(new Error('network timeout'))
+
+    const serviceWithNotify = createLoopService(
+      h.loopsRepo,
+      h.plansRepo,
+      h.reviewFindingsRepo,
+      PROJECT_ID,
+      h.deps.logger,
+      undefined,
+      notifySpy,
+      h.sectionPlansRepo,
+      createLoopTransitionsRepo(h.db),
+    )
+    h.deps.loop.service = serviceWithNotify
+    h.deps.loop.terminate = vi.fn(async (name: string, reason: any) => {
+      h.loopsRepo.terminate(PROJECT_ID, name, {
+        status: 'errored',
+        reason: reason.kind === 'first_prompt_failed' ? `first_prompt_failed: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      notifySpy('settled', name)
+      return true
+    })
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService(h.deps)
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.start' as const, source: { kind: 'inline', planText: '# Failing Prompt Plan\n\nBody.' } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    await vi.waitFor(() => expect(h.loopsRepo.get(PROJECT_ID, result.data.loopName)!.status).toBe('errored'))
+
+    const row = h.loopsRepo.get(PROJECT_ID, result.data.loopName)!
+    expect(row.terminationReason).toMatch(/^first_prompt_failed: /)
+    expect(row.worktree).toBe(true)
+    expect(row.worktreeDir).toBeTruthy()
+    expect(h.deps.loop.terminate).toHaveBeenCalledWith(result.data.loopName, {
+      kind: 'first_prompt_failed',
+      message: 'network timeout',
+    })
+    expect(notifySpy).toHaveBeenCalledWith('settled', result.data.loopName)
   })
 })
 

@@ -129,6 +129,7 @@ export interface LoopService {
    */
   setStandbySessionId(name: string, sessionId: string | null): void
   setStatus(name: string, status: LoopStatus): void
+  recordFirstPromptSent(name: string): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
   terminate(name: string, opts: { status: Exclude<LoopStatus, 'running'>; reason: string; completedAt: number; summary?: string }): void
@@ -299,6 +300,12 @@ export function createLoopService(
   function setStatus(name: string, status: LoopStatus): void {
     const state = getAnyState(name)
     loopsRepo.setStatus(projectId, name, status)
+    notifyLoopChange('status', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
+  function recordFirstPromptSent(name: string): void {
+    const state = getAnyState(name)
+    loopsRepo.setFirstPromptSentAt(projectId, name, Date.now())
     notifyLoopChange('status', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -1191,6 +1198,7 @@ export function createLoopService(
     resolveActiveLoopForSession,
     findActiveByWorktreeDir,
     setStatus,
+    recordFirstPromptSent,
     buildContinuationPrompt,
     buildCoderFollowUpPrompt,
     buildAuditFollowUpPrompt,
