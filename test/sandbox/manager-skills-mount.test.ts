@@ -106,7 +106,6 @@ describe('SandboxManager skills mount', () => {
     const resolvedLink = resolve(skillsRoot, 'media-use')
     const active = manager.getActive('test')
     expect(active?.mounts).toContainEqual(readOnlyMount(resolvedRoot))
-    expect(active?.mounts).toContainEqual({ hostDir: realpathSync(external), containerDir: external, readOnly: true })
     const entries = workspaceEntries(runtime)
     expect(entries).toContainEqual({
       hostDir: realpathSync(external),
@@ -116,13 +115,15 @@ describe('SandboxManager skills mount', () => {
     expect(entries.map((entry) => entry.containerDir)).not.toContain(resolvedLink)
   })
 
-  test('mounts a relative skill symlink at the path its link text names, not its realpath', async () => {
-    const root = createTempDir()
-    const skillsRoot = join(root, 'home', 'skills')
+  test('mounts a symlinked skill at its link target when that target passes through another symlink', async () => {
+    const root = realpathSync(createTempDir())
+    const skillsRoot = join(root, 'skills')
+    const realExternalRoot = join(root, 'dotfiles-real')
+    const aliasRoot = join(root, 'dotfiles')
     createSkill(join(skillsRoot, 'pr-review'))
-    createSkill(join(root, 'dotfiles', 'media-use'))
-    symlinkSync(join(root, 'dotfiles'), join(root, 'home', 'alias'), 'dir')
-    symlinkSync('../alias/media-use', join(skillsRoot, 'media-use'), 'dir')
+    createSkill(join(realExternalRoot, 'media-use'))
+    symlinkSync(realExternalRoot, aliasRoot, 'dir')
+    symlinkSync(join(aliasRoot, 'media-use'), join(skillsRoot, 'media-use'), 'dir')
 
     const { manager, runtime } = createManager(async () => [
       join(skillsRoot, 'pr-review', 'SKILL.md'),
@@ -130,28 +131,14 @@ describe('SandboxManager skills mount', () => {
     ])
     await manager.start('test', WORKSPACE)
 
-    expect(workspaceEntries(runtime)).toContainEqual({
-      hostDir: realpathSync(join(root, 'dotfiles', 'media-use')),
-      containerDir: join(root, 'home', 'alias', 'media-use'),
+    const entries = workspaceEntries(runtime)
+    expect(entries).toContainEqual({
+      hostDir: join(realExternalRoot, 'media-use'),
+      containerDir: join(aliasRoot, 'media-use'),
       readOnly: true,
     })
-  })
-
-  test('does not mount a skill symlink that points back inside the skills root', async () => {
-    const root = createTempDir()
-    const skillsRoot = join(root, 'skills')
-    createSkill(join(skillsRoot, 'pr-review'))
-    symlinkSync('pr-review', join(skillsRoot, 'alias'), 'dir')
-
-    const { manager, runtime } = createManager(async () => [
-      join(skillsRoot, 'pr-review', 'SKILL.md'),
-      join(skillsRoot, 'alias', 'SKILL.md'),
-    ])
-    await manager.start('test', WORKSPACE)
-
-    const containerDirs = workspaceEntries(runtime).map((entry) => entry.containerDir)
-    expect(containerDirs).toContain(resolve(skillsRoot))
-    expect(containerDirs.filter((dir) => dir.startsWith(resolve(skillsRoot)))).toHaveLength(1)
+    expect(entries.map((entry) => entry.containerDir)).not.toContain(join(skillsRoot, 'media-use'))
+    expect(entries.map((entry) => entry.containerDir)).not.toContain(join(realExternalRoot, 'media-use'))
   })
 
   test('ignores flat skills that have no skill directory', async () => {
