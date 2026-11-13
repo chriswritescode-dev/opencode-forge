@@ -42,11 +42,11 @@ const pendingShellSandboxes = processShared('pending-shell-sandboxes.v1', () => 
 const shellInputSchema = z.looseObject({ command: z.string() })
 
 const toolArgsSchema = z.looseObject({
-  path: z.string().optional(),
-  filePath: z.string().optional(),
-  include: z.string().optional(),
-  pattern: z.string().optional(),
-  patchText: z.string().optional(),
+  path: z.string().optional().catch(undefined),
+  filePath: z.string().optional().catch(undefined),
+  include: z.string().optional().catch(undefined),
+  pattern: z.string().optional().catch(undefined),
+  patchText: z.string().optional().catch(undefined),
 })
 
 async function wrapShellToolForSandbox(ctx: Plugin.Context, core: ForgeHooksV2Core): Promise<void> {
@@ -157,10 +157,8 @@ export async function registerForgeHooksV2(
   await ctx.tool.hook('execute.before', async (event) => {
     await applySubagentDefaultModel(ctx, event)
     const input = { tool: toV1ToolName(event.tool), sessionID: event.sessionID, callID: event.id }
-    const parsedArgs = toolArgsSchema.safeParse(event.input)
-    const output = { args: parsedArgs.success ? parsedArgs.data : {} }
+    const output = { args: toolArgsSchema.safeParse(event.input).data ?? {} }
     await core.toolBefore(input, output)
-    if (parsedArgs.success) event.input = output.args
   })
 
   await ctx.tool.hook('execute.after', async (event) => {

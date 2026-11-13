@@ -107,10 +107,12 @@ const permissionRuleSchema = z.looseObject({
   action: z.enum(['allow', 'deny']),
 })
 
+const permissionRulesSchema = z.array(permissionRuleSchema.nullable().catch(null))
+
 export function getForgeWorkspacePermissionRules(entry: Pick<ForgeWorkspaceEntry, 'extra'>): PermissionRule[] {
-  const parsed = z.array(permissionRuleSchema).safeParse(entry.extra?.permissionRules)
+  const parsed = permissionRulesSchema.safeParse(entry.extra?.permissionRules)
   if (!parsed.success) return []
-  return parsed.data.filter(
+  return parsed.data.flatMap((rule) => (rule === null ? [] : [rule])).filter(
     (rule) =>
       rule.permission.length > 0 &&
       rule.pattern.length > 0 &&

@@ -144,21 +144,21 @@ const messagePartUpdatedPropertiesSchema = z.object({
 const sessionErrorPropertiesSchema = z.looseObject({
   sessionID: z.string().min(1),
   error: z.looseObject({
-    name: z.string().optional(),
+    name: z.string().optional().catch(undefined),
     data: z.looseObject({
-      message: z.string().optional(),
-      statusCode: z.number().optional(),
-    }).optional(),
-  }).optional(),
+      message: z.string().optional().catch(undefined),
+      statusCode: z.number().optional().catch(undefined),
+    }).optional().catch(undefined),
+  }).optional().catch(undefined),
 })
 
 const sessionStatusPropertiesSchema = z.looseObject({
   sessionID: z.string().min(1),
   status: z.looseObject({
-    type: z.string().optional(),
-    attempt: z.number().optional(),
-    message: z.string().optional(),
-  }).optional(),
+    type: z.string().optional().catch(undefined),
+    attempt: z.number().optional().catch(undefined),
+    message: z.string().optional().catch(undefined),
+  }).optional().catch(undefined),
 })
 
 const STATE_LOCKS_SHARED_KEY = 'loop-state-locks.v1'

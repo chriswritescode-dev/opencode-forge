@@ -254,6 +254,21 @@ describe('portable workspace permissions', () => {
     expect(getForgeWorkspacePermissionRules(entry)).toEqual([safeRule])
   })
 
+  it('keeps the valid deny rules when another rule is malformed', () => {
+    const safeRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
+    const entry = {
+      extra: {
+        permissionRules: [
+          { permission: 'edit', pattern: '*', action: 'ask' },
+          { permission: 'read' },
+          safeRule,
+        ],
+      },
+    }
+
+    expect(getForgeWorkspacePermissionRules(entry)).toEqual([safeRule])
+  })
+
   it('retries workspace permission lookup after a transient failure', async () => {
     let attempts = 0
     const safeRule = { permission: 'webfetch', pattern: '*', action: 'deny' as const }
