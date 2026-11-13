@@ -4,7 +4,7 @@ import { buildNetworkAllow, egressRestrictionRequested, describeMsbUnavailable, 
 import { resolveSandboxAllowLan, resolveSandboxResources, type SandboxRuntimeSettings } from './loop-settings'
 import type { Logger, SandboxOverrides, SandboxResources, SandboxMountConfig, SandboxSecretConfig } from '../types'
 import { resolve, join, isAbsolute, posix as posixPath } from 'path'
-import { mkdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync, readdirSync, statSync, lstatSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { canonicalizePath, isSameOrDescendantPath, type SandboxMount } from './path'
 import { formatTemplateBuildCommands } from './template'
@@ -20,6 +20,7 @@ export interface SandboxManagerConfig {
   templateBuildArgs?: string[]
   toolOutputDir?: string
   tmpDir?: string
+  skillsDir?: string
   network?: { env?: string[]; allow?: string[]; secrets?: SandboxSecretConfig[]; allowLan?: boolean }
 }
 
@@ -232,11 +233,13 @@ export function createSandboxManager(
 
     const toolOutputMount = resolveToolOutputMount(absolute)
     const tmpMount = resolveTempMount(absolute)
+    const skillsMounts = resolveSkillsMounts(absolute)
 
     const reserved = new Set<string>([worktreeMount.containerDir, ...orderedGitMounts.map((m) => m.containerDir)])
     if (projectMount) reserved.add(projectMount.containerDir)
     if (toolOutputMount) reserved.add(toolOutputMount.containerDir)
     if (tmpMount) reserved.add(tmpMount.containerDir)
+    for (const mount of skillsMounts) reserved.add(mount.containerDir)
     const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
 
     const candidates: SandboxMount[] = [
@@ -245,6 +248,7 @@ export function createSandboxManager(
       ...(projectMount ? [projectMount] : []),
       ...(toolOutputMount ? [toolOutputMount] : []),
       ...(tmpMount ? [tmpMount] : []),
+      ...skillsMounts,
       ...customMounts,
     ]
 
@@ -277,6 +281,53 @@ export function createSandboxManager(
     }
     if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
     return { hostDir: resolved, containerDir: resolved, readOnly: false }
+  }
+
+  function resolveSkillsMounts(workspaceDir: string): SandboxMount[] {
+    const dir = config.skillsDir
+    if (!dir) return []
+    const resolved = resolve(dir)
+    if (!existsSync(resolved)) {
+      logger.log(`Sandbox: skipping skills mount; directory does not exist: ${resolved}`)
+      return []
+    }
+    if (isSameOrDescendantPath(resolved, workspaceDir)) return []
+    const canonicalSkillsDir = canonicalizePath(resolved)
+
+    const mounts: SandboxMount[] = []
+    const seen = new Set<string>()
+    const add = (hostDir: string): void => {
+      if (seen.has(hostDir)) return
+      if (isSameOrDescendantPath(hostDir, workspaceDir)) return
+      if (!existsSync(hostDir)) return
+      seen.add(hostDir)
+      mounts.push({ hostDir, containerDir: hostDir, readOnly: true })
+    }
+
+    add(resolved)
+
+    let entries: string[]
+    try {
+      entries = readdirSync(resolved)
+    } catch (err) {
+      logger.log(`Sandbox: could not list skills directory ${resolved}: ${err instanceof Error ? err.message : String(err)}`)
+      return mounts
+    }
+
+    for (const entry of entries) {
+      const linkPath = join(resolved, entry)
+      try {
+        if (!lstatSync(linkPath).isSymbolicLink()) continue
+        const target = canonicalizePath(linkPath)
+        if (target === linkPath || isSameOrDescendantPath(target, canonicalSkillsDir)) continue
+        if (!existsSync(target) || !statSync(target).isDirectory()) continue
+        add(target)
+      } catch (err) {
+        logger.log(`Sandbox: skipping skills entry ${linkPath}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    return mounts
   }
 
   function detectGitMount(projectDir: string): SandboxMount[] {

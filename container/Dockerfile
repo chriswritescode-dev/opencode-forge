@@ -248,6 +248,22 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# ast-grep pinned to its release zip for the function-flow-reviewer rule sweeps;
+# only `ast-grep` is linked, since the zip's `sg` would shadow Ubuntu's /usr/bin/sg.
+ARG AST_GREP_VERSION=0.51.2
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) ast_grep_arch=x86_64 ;; \
+        arm64) ast_grep_arch=aarch64 ;; \
+        *) echo "unsupported architecture for ast-grep: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/ast-grep.zip "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${ast_grep_arch}-unknown-linux-gnu.zip" \
+    && mkdir -p /opt/ast-grep \
+    && unzip -q /tmp/ast-grep.zip -d /opt/ast-grep \
+    && rm -f /tmp/ast-grep.zip \
+    && ln -sf /opt/ast-grep/ast-grep /usr/local/bin/ast-grep \
+    && chmod -R a+rX /opt/ast-grep \
+    && ast-grep --version
+
 # codegraph — the code index Forge queries for symbols, callers and affected
 # tests. It is installed by default; setting the `codeGraph.install` Forge option
 # to false builds this image with `--build-arg INSTALL_CODEGRAPH=false`, which
@@ -385,9 +401,13 @@ EOF
 # Git LFS filters are configured system-wide so any repo's smudge/clean filters
 # work without a per-user `git lfs install`; the apt package ships only the
 # binary. The safe.directory wildcard then lets git operate on the msb-mounted
-# project directory regardless of owner UID.
+# project directory regardless of owner UID. The system-scope identity is a
+# lowest-precedence fallback for fixtures that run `git commit` (HOME=/opt/forge
+# hides any host ~/.gitconfig), so repo-local and global identities still win.
 RUN git lfs install --system \
-    && git config --system --add safe.directory '*'
+    && git config --system --add safe.directory '*' \
+    && git config --system user.name "Forge Sandbox" \
+    && git config --system user.email "forge-sandbox@localhost"
 
 # Return to the image's default user. `msb exec` (without `-u`) runs commands as
 # this user, so agent commands are unprivileged by default.

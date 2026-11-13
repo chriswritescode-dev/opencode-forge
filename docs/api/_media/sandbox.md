@@ -266,6 +266,8 @@ opencode spills large tool outputs to its truncation directory (`<opencode-data>
 
 opencode's temp directory (`<os-tmp>/opencode` — the path opencode's bash tool advertises to agents as pre-approved scratch space) is handled the same way, but bind-mounted **read-write** at the identical sandbox path, so scratch files an agent writes at that path, from the shell or with `write`, resolve identically on the host and inside the sandbox. It is opencode's own directory — Forge provides no separate scratch directory, and agents can use the advertised OS temp path without issue.
 
+opencode's skills directory (`<config>/opencode/skills`) is bind-mounted **read-only** at the identical sandbox path. The skill tool runs on the host and reports a skill's base directory and companion files as host paths, so without the mount every `read` of a companion file hit the [file-tool boundary](#file-tool-boundary). Direct children that are symlinks to directories outside the skills directory (for example `skills/media-use -> ../../../.claude/skills/media-use`) get their canonical targets mounted read-only too, because the boundary and the shell follow those symlinks to the real path. The mount is skipped when the directory does not exist.
+
 ## File-Tool Boundary
 
 In a sandboxed session (a sandbox loop, its subagents and auditor, or a host session with the sandbox toggled on), the sandbox mounts are the boundary for every tool, including the file tools that run on the host. Before `read`, `write`, `edit`, or `patch` runs, Forge resolves each target path (relative paths against the workspace, `~` against the home directory, symlinks followed to their real location) and:

@@ -123,6 +123,28 @@ test('the image installs a pinned codegraph by default behind a build argument t
   expect(prune).not.toContain('codegraph')
 })
 
+test('the image installs a pinned ast-grep and never links the zip sg', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+
+  expect(dockerfile).toContain('ARG AST_GREP_VERSION=0.51.2')
+  expect(dockerfile).toContain('/app-${ast_grep_arch}-unknown-linux-gnu.zip')
+  expect(dockerfile).toContain('releases/download/${AST_GREP_VERSION}/')
+  expect(dockerfile).toContain('ln -sf /opt/ast-grep/ast-grep /usr/local/bin/ast-grep')
+  expect(dockerfile).toContain('ast-grep --version')
+  expect(dockerfile).not.toContain('/usr/local/bin/sg')
+
+  const installStart = dockerfile.indexOf('ARG AST_GREP_VERSION=')
+  expect(installStart).toBeGreaterThan(-1)
+  expect(installStart).toBeLessThan(dockerfile.lastIndexOf('USER agent'))
+})
+
+test('the image configures a system-scope git identity as a lowest-precedence fallback', () => {
+  const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
+
+  expect(dockerfile).toContain('git config --system user.name "Forge Sandbox"')
+  expect(dockerfile).toContain('git config --system user.email "forge-sandbox@localhost"')
+})
+
 test('globally installed CLIs are built against a store the cache-disk mount cannot shadow', () => {
   const dockerfile = readFileSync(new URL('../../container/Dockerfile', import.meta.url), 'utf-8')
   const globalInstalls = dockerfile.split('\n').filter((line) => line.includes('pnpm add -g'))
