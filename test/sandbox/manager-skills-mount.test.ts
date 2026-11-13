@@ -104,14 +104,17 @@ describe('SandboxManager skills mount', () => {
 
     const resolvedRoot = resolve(skillsRoot)
     const resolvedLink = resolve(skillsRoot, 'media-use')
+    const resolvedExternal = realpathSync(external)
     const active = manager.getActive('test')
     expect(active?.mounts).toContainEqual(readOnlyMount(resolvedRoot))
-    expect(active?.mounts).toContainEqual(readOnlyMount(resolvedLink))
-    expect(workspaceEntries(runtime)).toContainEqual({
-      hostDir: realpathSync(external),
-      containerDir: resolvedLink,
+    expect(active?.mounts).toContainEqual(readOnlyMount(resolvedExternal))
+    const entries = workspaceEntries(runtime)
+    expect(entries).toContainEqual({
+      hostDir: resolvedExternal,
+      containerDir: resolvedExternal,
       readOnly: true,
     })
+    expect(entries.map((entry) => entry.containerDir)).not.toContain(resolvedLink)
   })
 
   test('ignores flat skills that have no skill directory', async () => {

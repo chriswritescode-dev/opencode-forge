@@ -218,13 +218,16 @@ export function resolveSkillMounts(input: SkillMountSelection): SandboxMount[] {
     })
     .sort((a, b) => a.length - b.length)
 
+  const roots = rootCandidates.map((root) => resolve(root))
   const mounts: SandboxMount[] = []
   const accepted: string[] = []
   for (const dir of candidates) {
     const canonical = canonicalizePath(dir)
     if (accepted.some((root) => isSameOrDescendantPath(canonical, root))) continue
     accepted.push(canonical)
-    mounts.push({ hostDir: dir, containerDir: dir, readOnly: true })
+    const nestedUnderRoot = roots.some((root) => dir !== root && isSameOrDescendantPath(dir, root))
+    const target = nestedUnderRoot ? canonical : dir
+    mounts.push({ hostDir: target, containerDir: target, readOnly: true })
   }
   return mounts
 }
